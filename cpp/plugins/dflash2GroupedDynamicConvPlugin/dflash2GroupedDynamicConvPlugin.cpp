@@ -18,6 +18,8 @@
 #include "dflash2GroupedDynamicConvPlugin.h"
 
 #include "common/logger.h"
+#include "common/trtInterop.h"
+#include "common/trtUtils.h"
 #include "kernels/speculative/dflash2GroupedDynamicConv.h"
 
 #include <limits>
@@ -30,6 +32,8 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
+
 namespace
 {
 constexpr char const* kPLUGIN_NAME{"DFlash2GroupedDynamicConvPlugin"};
@@ -103,7 +107,7 @@ bool dimsEqual(Dims const& lhs, Dims const& rhs) noexcept
 }
 
 bool validateShapes(Dims const& hidden, Dims const& delta, Dims const& base, Dims const* output, int32_t kernelSize,
-    int32_t groupSize, bool allowZero) noexcept
+    int32_t groupSize, bool allowZero, bool requireMatchingLeadingDims = true) noexcept
 {
     if (hidden.nbDims < 2 || hidden.nbDims > 4 || delta.nbDims != hidden.nbDims + 1 || base.nbDims != 2)
     {
@@ -119,7 +123,8 @@ bool validateShapes(Dims const& hidden, Dims const& delta, Dims const& base, Dim
     int64_t tokens{1};
     for (int32_t i = 0; i < hidden.nbDims - 1; ++i)
     {
-        if (hidden.d[i] < 0 || (!allowZero && hidden.d[i] == 0) || delta.d[i] != hidden.d[i]
+        if (hidden.d[i] < 0 || delta.d[i] < 0 || (!allowZero && (hidden.d[i] == 0 || delta.d[i] == 0))
+            || (requireMatchingLeadingDims && delta.d[i] != hidden.d[i])
             || (hidden.d[i] != 0 && tokens > std::numeric_limits<int32_t>::max() / hidden.d[i]))
         {
             return false;
@@ -127,6 +132,22 @@ bool validateShapes(Dims const& hidden, Dims const& delta, Dims const& base, Dim
         tokens *= hidden.d[i];
     }
     return output == nullptr || dimsEqual(hidden, *output);
+}
+
+bool validateProfilePeer(Dims const& hidden, Dims const& peer, bool requireMatchingLeadingDims, bool allowZero) noexcept
+{
+    if (hidden.nbDims != peer.nbDims || hidden.d[hidden.nbDims - 1] != peer.d[peer.nbDims - 1])
+    {
+        return false;
+    }
+    for (int32_t i = 0; i < hidden.nbDims - 1; ++i)
+    {
+        if (peer.d[i] < 0 || (!allowZero && peer.d[i] == 0) || (requireMatchingLeadingDims && hidden.d[i] != peer.d[i]))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 int32_t flattenedTokens(Dims const& hidden) noexcept
@@ -291,12 +312,23 @@ int32_t DFlash2GroupedDynamicConvPlugin::configurePlugin(DynamicPluginTensorDesc
                             : (offset == 1 ? inputs[kIN_RESIDUAL].opt : inputs[kIN_RESIDUAL].max))
             : nullptr;
         int32_t const blockSize = runtimeBlockSize(*dims);
-        // TensorRT bounds dimensions independently, so min/max may overestimate a quotient-derived block axis.
-        if (blockSize <= 0 || (offset == 1 && blockSize > mBlockSize)
-            || !validateShapes(*dims, delta, base, nullptr, mKernelSize, mGroupSize, false)
-            || (residual != nullptr && !dimsEqual(*dims, *residual)))
+        // TensorRT bounds the quotient-derived block axis (rows / batch) independently of the batch axis, so the min
+        // endpoint may floor to zero and the max endpoint may exceed the block size. onShapeChange and enqueue check
+        // the real shapes.
+        bool const requireMatchingLeadingDims = offset == 1;
+        bool const allowZero = offset == 0;
+        if ((!allowZero && blockSize <= 0) || (requireMatchingLeadingDims && blockSize > mBlockSize)
+            || !validateShapes(
+                *dims, delta, base, nullptr, mKernelSize, mGroupSize, allowZero, requireMatchingLeadingDims)
+            || (residual != nullptr && !validateProfilePeer(*dims, *residual, requireMatchingLeadingDims, allowZero)))
         {
-            LOG_ERROR("DFlash2GroupedDynamicConvPlugin: invalid optimization profile shape");
+            char const* endpoint = offset == 0 ? "min" : (offset == 1 ? "opt" : "max");
+            LOG_ERROR(
+                "DFlash2GroupedDynamicConvPlugin: invalid %s profile shape: hidden=%s, delta=%s, base=%s, "
+                "residual=%s, configured block size=%d",
+                endpoint, trt_edgellm::dimsToString(*dims).c_str(), trt_edgellm::dimsToString(delta).c_str(),
+                trt_edgellm::dimsToString(base).c_str(),
+                residual == nullptr ? "none" : trt_edgellm::dimsToString(*residual).c_str(), mBlockSize);
             return -1;
         }
     }
@@ -331,17 +363,19 @@ int32_t DFlash2GroupedDynamicConvPlugin::enqueue(PluginTensorDesc const* inputDe
     }
     try
     {
-        rt::Tensor const hidden(const_cast<void*>(inputs[kIN_HIDDEN]), rt::Coords{inputDesc[kIN_HIDDEN].dims},
-            rt::DeviceType::kGPU, inputDesc[kIN_HIDDEN].type);
-        rt::Tensor const delta(const_cast<void*>(inputs[kIN_DELTA]), rt::Coords{inputDesc[kIN_DELTA].dims},
-            rt::DeviceType::kGPU, inputDesc[kIN_DELTA].type);
-        rt::Tensor const base(const_cast<void*>(inputs[kIN_BASE]), rt::Coords{inputDesc[kIN_BASE].dims},
-            rt::DeviceType::kGPU, inputDesc[kIN_BASE].type);
-        rt::Tensor output(outputs[0], rt::Coords{outputDesc[0].dims}, rt::DeviceType::kGPU, outputDesc[0].type);
+        rt::Tensor const hidden(const_cast<void*>(inputs[kIN_HIDDEN]), rt::toCoords(inputDesc[kIN_HIDDEN].dims),
+            rt::DeviceType::kGPU, fromTrt(inputDesc[kIN_HIDDEN].type));
+        rt::Tensor const delta(const_cast<void*>(inputs[kIN_DELTA]), rt::toCoords(inputDesc[kIN_DELTA].dims),
+            rt::DeviceType::kGPU, fromTrt(inputDesc[kIN_DELTA].type));
+        rt::Tensor const base(const_cast<void*>(inputs[kIN_BASE]), rt::toCoords(inputDesc[kIN_BASE].dims),
+            rt::DeviceType::kGPU, fromTrt(inputDesc[kIN_BASE].type));
+        rt::Tensor output(
+            outputs[0], rt::toCoords(outputDesc[0].dims), rt::DeviceType::kGPU, fromTrt(outputDesc[0].type));
         if (mFuseResidual)
         {
-            rt::Tensor const residual(const_cast<void*>(inputs[kIN_RESIDUAL]), rt::Coords{inputDesc[kIN_RESIDUAL].dims},
-                rt::DeviceType::kGPU, inputDesc[kIN_RESIDUAL].type);
+            rt::Tensor const residual(const_cast<void*>(inputs[kIN_RESIDUAL]),
+                rt::toCoords(inputDesc[kIN_RESIDUAL].dims), rt::DeviceType::kGPU,
+                fromTrt(inputDesc[kIN_RESIDUAL].type));
             return kernel::launchDFlash2GroupedDynamicConv(
                        hidden, delta, base, rt::OptionalInputTensor{residual}, output, stream)
                     == cudaSuccess

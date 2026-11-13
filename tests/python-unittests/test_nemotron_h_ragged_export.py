@@ -63,6 +63,75 @@ def _moe_config() -> ModelConfig:
     return config
 
 
+def test_fp8_mamba_conv_projection_has_independent_dense_output(tmp_path):
+    # Given FP8 Mamba weights, when exporting multiple token rows, then the
+    # convolution plugin must not consume a strided slice of a fused GEMM.
+    from tensorrt_edgellm.config import QUANT_FP8
+    from tensorrt_edgellm.models.linear import FP8Linear
+
+    config = _config()
+    config.quant = QuantConfig(quant_type=QUANT_FP8)
+    model = NemotronHCausalLM(config)
+    for module in model.modules():
+        if isinstance(module, FP8Linear):
+            module.weight = torch.ones_like(module.weight,
+                                            dtype=torch.float8_e4m3fn)
+    output = tmp_path / "nemotron-fp8-projection.onnx"
+    _export_model(model, str(output), optimize=False)
+    graph = onnx.load(str(output), load_external_data=False).graph
+    producers = {value: node for node in graph.node for value in node.output}
+    conv = next(node for node in graph.node if node.op_type == "causal_conv1d")
+    producer = producers[conv.input[0]]
+    while producer.op_type in {"Reshape", "Squeeze", "Cast"}:
+        producer = producers[producer.input[0]]
+    assert producer.op_type == "Conv"
+    # Given FP8 constants, when exporting their projection partitions, then
+    # TRT must receive each constant through a supported dequantization path.
+    fp8_names = {
+        value.name
+        for value in graph.initializer
+        if value.data_type == onnx.TensorProto.FLOAT8E4M3FN
+    }
+    unsupported = [
+        node.op_type for node in graph.node
+        if any(name in fp8_names for name in node.input)
+        and node.op_type not in {"DequantizeLinear", "Reshape", "Identity"}
+    ]
+    assert not unsupported
+
+
+@pytest.mark.parametrize("shape", [(4, 16), (2, 3, 16)])
+@pytest.mark.parametrize("quantize_activations", [False, True])
+def test_fp8_mamba_projection_preserves_partition_values(
+        shape, quantize_activations):
+    # Given quantized projection weights, when producing dense conv rows,
+    # then gate, convolution and dt retain the original projection values.
+    from tensorrt_edgellm.config import QUANT_FP8
+    from tensorrt_edgellm.models.nemotron_h.modeling_nemotron_h import \
+        MambaMixer
+
+    config = _config()
+    config.quant = QuantConfig(quant_type=QUANT_FP8)
+    mixer = MambaMixer(config, config.mamba_cfg, "backbone.layers.0.mixer")
+    generator = torch.Generator().manual_seed(20260918)
+    mixer.in_proj.weight = torch.randn(50, 16, generator=generator).to(
+        torch.float8_e4m3fn)
+    mixer.in_proj.weight_scale.fill_(0.0625)
+    mixer.in_proj.input_scale.fill_(0.03125)
+    mixer.in_proj.quantize_activations = quantize_activations
+    # Given a prepared model with replaced weights, when preparing again,
+    # then all three projections must use the newly loaded checkpoint values.
+    mixer.prepare_for_export()
+    mixer.in_proj.weight = torch.randn(50, 16, generator=generator).to(
+        torch.float8_e4m3fn)
+    mixer.prepare_for_export()
+    hidden = torch.randn(shape, generator=generator, dtype=torch.float16)
+    expected = mixer.in_proj(hidden).split([16, 32, 2], dim=-1)
+    actual = mixer._project_inputs(hidden)
+    for result, reference in zip(actual, expected):
+        torch.testing.assert_close(result, reference, rtol=0, atol=0)
+
+
 def test_nemotron_h_export_uses_token_major_resident_state_contract():
     spec = NemotronHCausalLM(_config()).onnx_export_spec()
     args = dict(zip(spec.input_names, spec.args))
@@ -132,6 +201,33 @@ def test_nemotron_h_moe_exports_token_major_hidden_states(tmp_path):
     assert all(
         len(value_info[node.input[0]].type.tensor_type.shape.dim) == 2
         for node in dynamic_quantize)
+
+
+def test_nemotron_h_moe_layer_accepts_token_major_hidden_states():
+    """A MoE layer's mixer must run on the ragged export's 2D [tokens, hidden]
+    hidden_states, not the 3D [batch, seq, hidden] its eager ``forward`` uses.
+
+    Regression test for a ``batch, seq_len, _ = hidden_states.shape`` unpack that
+    ``NemotronHMoEMLP.forward`` carried over from a 3D-only draft: dead (nothing
+    downstream used ``batch``/``seq_len``), but it raised ``ValueError: not enough
+    values to unpack`` the moment a real 2D ragged batch reached it during ONNX
+    export, since MoE-hybrid checkpoints (`nemotron_h` MoE variant) had never
+    actually been exported before.
+    """
+    config = _config()
+    config.layer_types = [LAYER_MAMBA, LAYER_MOE, LAYER_ATTN]
+    config.n_routed_experts = 4
+    config.num_experts_per_tok = 2
+    config.moe_intermediate_size = 32
+    config.moe_shared_expert_intermediate_size = 32
+    config.quant = QuantConfig(quant_type=QUANT_NVFP4, group_size=16)
+
+    spec = NemotronHCausalLM(config).onnx_export_spec()
+    args = dict(zip(spec.input_names, spec.args))
+    assert args["inputs_embeds"].ndim == 2
+
+    outputs = spec.wrapped(*spec.args)
+    assert outputs[0].shape == (2, 32)
 
 
 def test_nemotron_h_export_routes_ragged_metadata_to_plugins(tmp_path):
@@ -219,24 +315,23 @@ def test_nemotron_h_mtp_draft_exports_token_major_attention(tmp_path):
     }
 
 
-@pytest.mark.parametrize(
-    "mode", ["vanilla", "dspark", "dspark_tree", "dflash", "mtp", "mtp_tree"])
+@pytest.mark.parametrize("mode", ["vanilla", "dspark", "dflash", "mtp"])
 def test_nemotron_spec_state_metadata_matches_decoder_mode(tmp_path, mode):
     config = _config()
     if mode != "vanilla":
-        setattr(config, mode.split("_")[0] + "_base", True)
-    if mode.startswith("dspark"):
+        setattr(config, f"{mode}_base", True)
+    if mode == "dspark":
         config.dspark_target_layer_ids = [0]
-        config.dspark_tree_base = mode == "dspark_tree"
     if mode == "dflash":
         config.dflash_target_layer_ids = [0]
-    if mode.startswith("mtp"):
-        config.mtp_tree_base = mode == "mtp_tree"
     model = NemotronHCausalLM(config)
     spec = model.onnx_export_spec()
     assert len(spec.input_names) == len(spec.args) == len(spec.dynamic_shapes)
-    state_names = {"tree_parent_ids", "tree_depths", "valid_tree_counts"}
-    has_tree_state = mode in {"dspark_tree", "dflash", "mtp_tree"}
+    state_names = {
+        "tree_parent_ids", "tree_depths", "valid_tree_counts",
+        "spec_verify_layout"
+    }
+    has_tree_state = mode != "vanilla"
     assert state_names.issubset(spec.input_names) == has_tree_state
     if not has_tree_state:
         assert state_names.isdisjoint(spec.input_names)
@@ -261,4 +356,5 @@ def test_nemotron_spec_state_metadata_matches_decoder_mode(tmp_path, mode):
             attribute.name: attribute.i
             for attribute in node.attribute
         }
-        assert bool(attributes.get("use_ddtree", 0)) == has_tree_state
+        assert "use_ddtree" not in attributes
+        assert bool(attributes["use_spec_verify_state"]) == has_tree_state

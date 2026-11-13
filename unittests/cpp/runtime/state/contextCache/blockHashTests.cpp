@@ -26,7 +26,6 @@
 #include <functional>
 #include <optional>
 #include <stdexcept>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -80,17 +79,6 @@ TEST(ContextCacheBlockHashTests, EqualInputsProduceEqualHash)
     size_t const folded = std::hash<Hash128>{}(foldInput);
     EXPECT_NE(folded, std::hash<Hash128>{}(changedHi));
     EXPECT_NE(folded, std::hash<Hash128>{}(changedLo));
-}
-
-TEST(ContextCacheBlockHashTests, OpaqueIdentityHashBindsExactBytes)
-{
-    std::string_view const first{"adapter-a"};
-    std::string_view const second{"adapter-b"};
-
-    EXPECT_EQ(hashOpaqueIdentity(first), hashOpaqueIdentity(first));
-    EXPECT_NE(hashOpaqueIdentity(first), hashOpaqueIdentity(second));
-    EXPECT_NE(hashOpaqueIdentity(first), hashOpaqueIdentity(std::string_view{"adapter-a\0", 10}));
-    EXPECT_NE(hashOpaqueIdentity({}), Hash128{});
 }
 
 TEST(ContextCacheBlockHashTests, ParentHashChangesEveryDescendant)

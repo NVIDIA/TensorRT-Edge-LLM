@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shared helpers for exporting models via ``tensorrt_edgellm.scripts.export``.
+"""Shared helpers for exporting models via ``tensorrt_edgellm.onnx.cli``.
 
 Used by both ``test_model_export.py`` and standalone exporter tests.
 
@@ -48,6 +48,9 @@ def get_export_model_dir(config: TestConfig) -> str:
     This is the single source of truth for export tests and pipeline
     pre-export steps.
     """
+    if config.llm_precision == "fp16" and (config.token_embedding_precision
+                                           or config.ple_embedding_precision):
+        return config.get_quantized_model_dir()
     if config.fp8_kv_cache and config.llm_precision == "fp16":
         return config.get_kv_cache_quantized_model_dir()
     if config.visual_precision == "fp8" or config.audio_precision == "fp8":
@@ -88,6 +91,31 @@ _OUTPUT_DIR_MAP = {
     (lambda cfg: cfg.get_code2wav_onnx_dir("fp16"), "fp16 Code2Wav"),
     "action": (lambda cfg: cfg.get_action_onnx_dir(), "action expert"),
 }
+
+# Alternative on-disk names for a component, tried in order.  The exporter's
+# ``_LAYOUT_OVERRIDES`` (``tensorrt_edgellm/onnx/cli.py``) renames a few
+# top-level output dirs per model family, so the harvest side has to accept
+# both spellings:
+#   - DiffusionGemma / dllm-family emit ``dllm/`` instead of ``llm/``.
+#   - The Qwen3-Omni families (``qwen3_omni`` / ``qwen3_omni_moe`` /
+#     ``qwen3_omni_next``) emit ``vision/`` instead of ``visual/``.
+# Without the alias the copy is skipped silently and the component never
+# reaches the ONNX dir — the test still passes, but the artifact is lost.
+_SUBDIR_ALIASES = {
+    "llm": ("llm", "dllm"),
+    "visual": ("visual", "vision"),
+}
+
+
+def resolve_export_subdir(tmp_dir: str, subdir: str) -> Optional[str]:
+    """Return the first alias of *subdir* that exists under *tmp_dir*.
+
+    Returns ``None`` when the component was not exported at all.
+    """
+    for name in _SUBDIR_ALIASES.get(subdir, (subdir, )):
+        if os.path.isdir(os.path.join(tmp_dir, name)):
+            return name
+    return None
 
 
 def _copy_subdir(tmp_dir: str, subdir: str, target_dir: str) -> bool:
@@ -132,12 +160,13 @@ def copy_tensorrt_edgellm_output(tmp_dir: str,
             logger.info(msg, *args)
 
     llm_onnx_dir = config.get_llm_onnx_dir()
-    llm_output = os.path.join(tmp_dir, "llm")
-
-    if not os.path.isdir(llm_output):
+    # DiffusionGemma / dllm-family models emit ``dllm/`` instead of ``llm/``.
+    llm_subdir = resolve_export_subdir(tmp_dir, "llm")
+    if llm_subdir is None:
         pytest.fail(
-            f"the checkpoint exporter did not produce llm/ output in {tmp_dir}"
+            f"the checkpoint exporter did not produce llm/ or dllm/ output in {tmp_dir}"
         )
+    llm_output = os.path.join(tmp_dir, llm_subdir)
 
     _log_dir_contents(llm_output, "LLM", test_logger=test_logger)
 
@@ -146,8 +175,8 @@ def copy_tensorrt_edgellm_output(tmp_dir: str,
         # TTS: exporter writes Talker at llm/model.onnx; downstream
         # engine build expects get_llm_onnx_dir()/talker/.
         dst = os.path.join(llm_onnx_dir, "talker")
-        _copy_subdir(tmp_dir, "llm", dst)
-        _log("Copied llm/ → %s (talker)", dst)
+        _copy_subdir(tmp_dir, llm_subdir, dst)
+        _log("Copied %s/ → %s (talker)", llm_subdir, dst)
     else:
         os.makedirs(llm_onnx_dir, exist_ok=True)
         shutil.copytree(llm_output, llm_onnx_dir, dirs_exist_ok=True)
@@ -164,12 +193,15 @@ def copy_tensorrt_edgellm_output(tmp_dir: str,
 
     # --- Generic mapped outputs (visual, audio, future additions) ---
     for subdir, (target_fn, desc) in _OUTPUT_DIR_MAP.items():
-        src = os.path.join(tmp_dir, subdir)
-        if os.path.isdir(src):
-            _log_dir_contents(src, desc.capitalize(), test_logger=test_logger)
+        actual = resolve_export_subdir(tmp_dir, subdir)
+        if actual is None:
+            continue
+        _log_dir_contents(os.path.join(tmp_dir, actual),
+                          desc.capitalize(),
+                          test_logger=test_logger)
         dst = target_fn(config)
-        if _copy_subdir(tmp_dir, subdir, dst):
-            _log("Copied %s/ → %s (%s)", subdir, dst, desc)
+        if _copy_subdir(tmp_dir, actual, dst):
+            _log("Copied %s/ → %s (%s)", actual, dst, desc)
 
 
 # ---------------------------------------------------------------------------
@@ -227,16 +259,14 @@ def _run_export_subprocess(model_dir: str,
                            extra_args: Optional[list] = None,
                            extra_env: Optional[dict] = None,
                            failure_prefix: str = "checkpoint export") -> None:
-    """Invoke ``python3 -m tensorrt_edgellm.scripts.export`` and fail on error.
+    """Invoke ``python3 -m tensorrt_edgellm.onnx.cli`` and fail on error.
 
     Centralizes PYTHONPATH setup, timing, and error handling shared by
     base and draft exports.
     """
     # Optional: EDGELLM_EXPORT_PYTHON (e.g. export venv vs quant venv) set by test harness.
     ex_py = os.environ.get("EDGELLM_EXPORT_PYTHON", "python3")
-    export_cmd = [
-        ex_py, "-m", "tensorrt_edgellm.scripts.export", model_dir, tmp_dir
-    ]
+    export_cmd = [ex_py, "-m", "tensorrt_edgellm.onnx.cli", model_dir, tmp_dir]
     if extra_args:
         export_cmd.extend(extra_args)
 
@@ -255,12 +285,14 @@ def _run_export_subprocess(model_dir: str,
                         f"{result.get('error', 'Unknown error')}")
 
 
-def run_checkpoint_export(config: TestConfig,
-                          test_logger,
-                          model_dir: Optional[str] = None,
-                          timeout: int = 1200,
-                          eagle_base: bool = False) -> None:
-    """Run ``tensorrt_edgellm.scripts.export`` and copy output to final dirs.
+def run_checkpoint_export(
+        config: TestConfig,
+        test_logger,
+        model_dir: Optional[str] = None,
+        timeout: int = 1200,
+        eagle_base: bool = False,
+        components: Optional[tuple[str, ...]] = None) -> None:
+    """Run ``tensorrt_edgellm.onnx.cli`` and copy output to final dirs.
 
     Args:
         config: Test configuration (determines output directories).
@@ -270,6 +302,7 @@ def run_checkpoint_export(config: TestConfig,
         timeout: Export command timeout in seconds.
         eagle_base: When True, pass ``--eagle-base`` to export an EAGLE3
             base model (adds tree-attention I/O and hidden_states output).
+        components: Optional component allowlist passed to the exporter.
     """
     if model_dir is None:
         model_dir = get_export_model_dir(config)
@@ -281,9 +314,13 @@ def run_checkpoint_export(config: TestConfig,
         if eagle_base:
             extra_args.append("--eagle-base")
             label += " (EAGLE base)"
+        if components:
+            extra_args.extend(("--components", ",".join(components)))
         if config.fp8_embedding:
             extra_args.append("--fp8-embedding")
             label += " (FP8 embedding)"
+        if config.target_sm is not None:
+            extra_args.extend(("--target-sm", str(config.target_sm)))
         if config.reduced_vocab_size:
             extra_args.append(
                 f"--reduced-vocab-dir={config.get_reduced_vocab_dir()}")
@@ -317,7 +354,7 @@ def run_checkpoint_export(config: TestConfig,
 def run_tensorrt_edgellm_draft_export(config: TestConfig,
                                       test_logger,
                                       timeout: int = 1200) -> None:
-    """Export the EAGLE draft model via ``tensorrt_edgellm.scripts.export``.
+    """Export the EAGLE draft model via ``tensorrt_edgellm.onnx.cli``.
 
     Uses the quantized draft checkpoint when ``draft_llm_precision`` is a
     quantization that actually produces a quantized dir (i.e. non-fp16 and
@@ -361,7 +398,7 @@ def run_tensorrt_edgellm_mtp_export(config: TestConfig,
                                     timeout: int = 600) -> None:
     """Export MTP base + draft from a single checkpoint via ``--mtp``.
 
-    Calls ``tensorrt_edgellm.scripts.export --mtp`` on the base model checkpoint and
+    Calls ``tensorrt_edgellm.onnx.cli --mtp`` on the base model checkpoint and
     copies outputs:
       - ``llm/``       → ``config.get_llm_onnx_dir()``
       - ``mtp_draft/`` → ``config.get_draft_onnx_dir()``

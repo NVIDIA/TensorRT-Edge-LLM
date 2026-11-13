@@ -94,12 +94,12 @@ void Cosmos3Scheduler::prepare(int64_t numElems)
         for (int32_t i = 0; i < 3; ++i)
         {
             mX0Ring.emplace_back(
-                rt::Coords{numElems}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "cosmos3::schedX0");
+                rt::Coords{numElems}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "cosmos3::schedX0");
         }
-        mLastSample
-            = rt::Tensor(rt::Coords{numElems}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "cosmos3::schedLast");
+        mLastSample = rt::Tensor(
+            rt::Coords{numElems}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "cosmos3::schedLast");
         mScratch = rt::Tensor(
-            rt::Coords{numElems}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "cosmos3::schedScratch");
+            rt::Coords{numElems}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "cosmos3::schedScratch");
         mCapacityElems = numElems;
     }
     else

@@ -18,6 +18,7 @@
 #include "common/pi05Common.h"
 
 #include "common/logger.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 
 #include <algorithm>
@@ -33,7 +34,7 @@ namespace pi05
 void Pi05Component::load(std::string const& engineDir, std::string const& component)
 {
     std::filesystem::path const enginePath = std::filesystem::path(engineDir) / component / (component + ".engine");
-    runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
     if (!runtime)
     {
         throw std::runtime_error("Failed to create TensorRT runtime for pi0.5 " + component);

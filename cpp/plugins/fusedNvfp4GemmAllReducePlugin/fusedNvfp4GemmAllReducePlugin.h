@@ -49,15 +49,19 @@ extern "C" EDGELLM_PLUGIN_EXPORT bool edgellmUnregisterFusedNvfp4WeightResource(
 ///
 /// Baked-weight inputs:
 ///   [0] activation FP4 [B,K]             — FP4 quantized activation
-///   [1] activation_scale FP32 [B,1,K/16] — combined FP32 scale from DequantizeLinear
+///   [1] activation_scale FP8/FP32 [B,1,K/16] — raw FP8 block scale for new fused-path engines, or the
+///                                              legacy combined FP32 scale
 ///   [2] weight_f4 FP4 [N,K]              — NVFP4 quantized weight
 ///   [3] weight_f8_scale FP8 [N,K/16]     — per-block FP8 weight scale
-///   [4] weight_f32_scale FP32 []          — global FP32 weight scale (scalar)
+///   [4] gemm_scale FP32 []                — activation x weight global scale for raw-FP8 activation scales;
+///                                           weight global scale for legacy FP32 activation scales
 ///
 /// External-weight inputs:
 ///   [0] activation FP4 [B,K]             — FP4 quantized activation
-///   [1] activation_scale FP32 [B,1,K/16] — combined FP32 scale from DequantizeLinear
-///   [2] weight_f32_scale FP32 []          — global FP32 weight scale (scalar)
+///   [1] activation_scale FP8/FP32 [B,1,K/16] — raw FP8 block scale for new fused-path engines, or the
+///                                              legacy combined FP32 scale
+///   [2] gemm_scale FP32 []                — activation x weight global scale for raw-FP8 activation scales;
+///                                           weight global scale for legacy FP32 activation scales
 ///
 /// External-weight mode serializes external_weight_resource_id,
 /// weight_out_features, weight_in_features, and weight_scale_cols. Before
@@ -121,6 +125,7 @@ public:
 private:
     bool ensureGemmRunners() noexcept;
     bool resolveExternalWeightResource(int32_t deviceId) noexcept;
+    bool initializeWeightScaleCache() noexcept;
 
     std::string mLayerName;
     std::string mNamespace;
@@ -133,6 +138,7 @@ private:
     uint64_t mExternalWeightResourceGeneration{0};
     void const* mExternalWeight{nullptr};
     void const* mExternalWeightScale{nullptr};
+    int32_t mSMVersion{0};
 
     // Per-instance cached weight scale in SfAtom tiled layout. TensorRT owns
     // plugin lifetime and destroys the instance only after its enqueued work is complete.

@@ -45,7 +45,7 @@ size_t checkedAdd(size_t lhs, size_t rhs, char const* description)
     return lhs + rhs;
 }
 
-void validateGpuTensorLayout(Tensor const& tensor, Coords const& expectedShape, nvinfer1::DataType expectedType,
+void validateGpuTensorLayout(Tensor const& tensor, Coords const& expectedShape, trt_edgellm::DataType expectedType,
     size_t expectedOuterBytes, std::string const& description)
 {
     ELLM_CHECK(tensor.getShape() == expectedShape,
@@ -73,6 +73,13 @@ size_t recurrentStateBytes(MambaCacheManager::Config const& config)
     return checkedMultiply(elements, utils::getTypeSize(config.recurrentStateType), "recurrent dtype");
 }
 
+size_t auxConvStateBytes(HybridCacheManager::AuxConvStateConfig const& config)
+{
+    size_t const elements
+        = checkedMultiply(static_cast<size_t>(config.convDim), static_cast<size_t>(config.convWidth), "aux conv state");
+    return checkedMultiply(elements, utils::getTypeSize(config.dataType), "aux conv state dtype");
+}
+
 size_t convStateBytes(MambaCacheManager::Config const& config)
 {
     size_t const elements = checkedMultiply(
@@ -89,7 +96,7 @@ std::byte* byteOffset(void* pointer, size_t offset)
 
 HybridSnapshotStorage::HybridSnapshotStorage(HybridCacheManager& cacheManager, int32_t recurrentSlotCount,
     int32_t partialKvSlotCount, HybridCacheManager* draftCacheManager, int32_t boundaryHiddenDim,
-    nvinfer1::DataType boundaryHiddenType)
+    trt_edgellm::DataType boundaryHiddenType)
     : mCacheManager(cacheManager)
     , mDraftCacheManager(draftCacheManager)
     , mRecurrentSlotCount(recurrentSlotCount)
@@ -166,6 +173,21 @@ HybridSnapshotStorage::HybridSnapshotStorage(HybridCacheManager& cacheManager, i
                 {recurrentSlotCount, mambaConfig.convDim, mambaConfig.convKernel}, mambaConfig.convStateType, convBytes,
                 "Convolution snapshot layer " + std::to_string(layer));
         }
+        mAuxConvSnapshots.reserve(static_cast<size_t>(cacheManager.numAuxConvStates()));
+        for (int32_t auxIdx = 0; auxIdx < cacheManager.numAuxConvStates(); ++auxIdx)
+        {
+            HybridCacheManager::AuxConvStateConfig const& auxConfig = cacheManager.auxConvStateConfig(auxIdx);
+            size_t const auxBytes = auxConvStateBytes(auxConfig);
+            std::string const auxSuffix = std::to_string(auxIdx);
+            validateGpuTensorLayout(cacheManager.getAuxConvState(auxIdx),
+                {cacheManager.getConfig().maxBatchSize, auxConfig.convDim, auxConfig.convWidth}, auxConfig.dataType,
+                auxBytes, "Live auxiliary conv state " + auxSuffix);
+            mAuxConvSnapshots.emplace_back(Tensor({recurrentSlotCount, auxConfig.convDim, auxConfig.convWidth},
+                DeviceType::kGPU, auxConfig.dataType, "HybridSnapshotStorage::auxConv_" + auxSuffix));
+            validateGpuTensorLayout(mAuxConvSnapshots.back(),
+                {recurrentSlotCount, auxConfig.convDim, auxConfig.convWidth}, auxConfig.dataType, auxBytes,
+                "Auxiliary conv snapshot " + auxSuffix);
+        }
     }
 
     if (partialKvSlotCount > 0)
@@ -193,7 +215,7 @@ HybridSnapshotStorage::HybridSnapshotStorage(HybridCacheManager& cacheManager, i
             KVCacheManager& draftKv = mDraftCacheManager->getKVCacheManager();
             KVCacheManager::Config const& draftKvConfig = draftKv.getConfig();
             ELLM_CHECK(
-                draftKv.numLayers() > 0, "Hybrid MTP snapshot storage requires at least one draft attention layer");
+                draftKv.numLayers() > 0, "Hybrid spec snapshot storage requires at least one draft attention layer");
             mDraftPartialKvSnapshots.reserve(static_cast<size_t>(draftKv.numLayers()));
             for (int32_t layer = 0; layer < draftKv.numLayers(); ++layer)
             {
@@ -227,11 +249,18 @@ HybridSnapshotStorage::HybridSnapshotStorage(HybridCacheManager& cacheManager, i
     }
 }
 
-size_t HybridSnapshotStorage::recurrentBytesPerSlot(MambaCacheManager::Config const& config)
+size_t HybridSnapshotStorage::recurrentBytesPerSlot(HybridCacheManager::Config const& config)
 {
-    ELLM_CHECK(config.numRecurrentLayers >= 0, "Hybrid snapshot recurrent layer count must be non-negative");
-    size_t const layerBytes = checkedAdd(recurrentStateBytes(config), convStateBytes(config), "recurrent layer");
-    return checkedMultiply(layerBytes, static_cast<size_t>(config.numRecurrentLayers), "recurrent layers");
+    MambaCacheManager::Config const& mambaConfig = config.mambaConfig;
+    ELLM_CHECK(mambaConfig.numRecurrentLayers >= 0, "Hybrid snapshot recurrent layer count must be non-negative");
+    size_t const layerBytes
+        = checkedAdd(recurrentStateBytes(mambaConfig), convStateBytes(mambaConfig), "recurrent layer");
+    size_t bytes = checkedMultiply(layerBytes, static_cast<size_t>(mambaConfig.numRecurrentLayers), "recurrent layers");
+    for (HybridCacheManager::AuxConvStateConfig const& auxConfig : config.auxConvStateConfigs)
+    {
+        bytes = checkedAdd(bytes, auxConvStateBytes(auxConfig), "auxiliary conv states");
+    }
+    return bytes;
 }
 
 size_t HybridSnapshotStorage::partialKvBytesPerSlot(KVCacheManager::Config const& config)
@@ -251,7 +280,7 @@ size_t HybridSnapshotStorage::partialKvBytesPerSlot(KVCacheManager::Config const
     return bytes;
 }
 
-size_t HybridSnapshotStorage::boundaryHiddenBytesPerSlot(int32_t boundaryHiddenDim, nvinfer1::DataType type)
+size_t HybridSnapshotStorage::boundaryHiddenBytesPerSlot(int32_t boundaryHiddenDim, trt_edgellm::DataType type)
 {
     ELLM_CHECK(boundaryHiddenDim >= 0, "Hybrid snapshot boundary hidden dimension must be non-negative");
     return checkedMultiply(
@@ -274,6 +303,13 @@ void HybridSnapshotStorage::zeroRecurrent(int32_t batchSlot, cudaStream_t stream
             byteOffset(mamba.getConvState(layer).rawPointer(), static_cast<size_t>(batchSlot) * convBytes), 0,
             convBytes, stream));
     }
+    for (int32_t auxIdx = 0; auxIdx < mCacheManager.numAuxConvStates(); ++auxIdx)
+    {
+        size_t const auxBytes = auxConvStateBytes(mCacheManager.auxConvStateConfig(auxIdx));
+        CUDA_CHECK(cudaMemsetAsync(
+            byteOffset(mCacheManager.getAuxConvState(auxIdx).rawPointer(), static_cast<size_t>(batchSlot) * auxBytes),
+            0, auxBytes, stream));
+    }
 }
 
 void HybridSnapshotStorage::captureRecurrent(int32_t snapshotSlot, int32_t batchSlot, cudaStream_t stream)
@@ -293,6 +329,14 @@ void HybridSnapshotStorage::captureRecurrent(int32_t snapshotSlot, int32_t batch
                                        static_cast<size_t>(snapshotSlot) * convBytes),
             byteOffset(mamba.getConvState(layer).rawPointer(), static_cast<size_t>(batchSlot) * convBytes), convBytes,
             cudaMemcpyDeviceToDevice, stream));
+    }
+    for (int32_t auxIdx = 0; auxIdx < mCacheManager.numAuxConvStates(); ++auxIdx)
+    {
+        size_t const auxBytes = auxConvStateBytes(mCacheManager.auxConvStateConfig(auxIdx));
+        CUDA_CHECK(cudaMemcpyAsync(byteOffset(mAuxConvSnapshots[static_cast<size_t>(auxIdx)].rawPointer(),
+                                       static_cast<size_t>(snapshotSlot) * auxBytes),
+            byteOffset(mCacheManager.getAuxConvState(auxIdx).rawPointer(), static_cast<size_t>(batchSlot) * auxBytes),
+            auxBytes, cudaMemcpyDeviceToDevice, stream));
     }
 }
 
@@ -316,6 +360,15 @@ void HybridSnapshotStorage::restoreRecurrent(int32_t snapshotSlot, int32_t batch
                 mConvSnapshots[static_cast<size_t>(layer)].rawPointer(), static_cast<size_t>(snapshotSlot) * convBytes),
             convBytes, cudaMemcpyDeviceToDevice, stream));
     }
+    for (int32_t auxIdx = 0; auxIdx < mCacheManager.numAuxConvStates(); ++auxIdx)
+    {
+        size_t const auxBytes = auxConvStateBytes(mCacheManager.auxConvStateConfig(auxIdx));
+        CUDA_CHECK(cudaMemcpyAsync(
+            byteOffset(mCacheManager.getAuxConvState(auxIdx).rawPointer(), static_cast<size_t>(batchSlot) * auxBytes),
+            byteOffset(mAuxConvSnapshots[static_cast<size_t>(auxIdx)].rawPointer(),
+                static_cast<size_t>(snapshotSlot) * auxBytes),
+            auxBytes, cudaMemcpyDeviceToDevice, stream));
+    }
 }
 
 void HybridSnapshotStorage::capturePartialKv(
@@ -333,7 +386,7 @@ void HybridSnapshotStorage::restorePartialKv(
 void HybridSnapshotStorage::capturePartialKv(
     int32_t snapshotSlot, PageId sourceBasePage, PageId sourceDraftPage, int32_t validTokenCount, cudaStream_t stream)
 {
-    ELLM_CHECK(mDraftCacheManager != nullptr, "Hybrid MTP partial snapshot storage has no draft cache manager");
+    ELLM_CHECK(mDraftCacheManager != nullptr, "Hybrid spec partial snapshot storage has no draft cache manager");
     capturePartialKv(mCacheManager, mPartialKvSnapshots, snapshotSlot, sourceBasePage, validTokenCount, stream);
     capturePartialKv(
         *mDraftCacheManager, mDraftPartialKvSnapshots, snapshotSlot, sourceDraftPage, validTokenCount, stream);
@@ -342,7 +395,7 @@ void HybridSnapshotStorage::capturePartialKv(
 void HybridSnapshotStorage::restorePartialKv(int32_t snapshotSlot, PageId destinationBasePage,
     PageId destinationDraftPage, int32_t validTokenCount, cudaStream_t stream)
 {
-    ELLM_CHECK(mDraftCacheManager != nullptr, "Hybrid MTP partial snapshot storage has no draft cache manager");
+    ELLM_CHECK(mDraftCacheManager != nullptr, "Hybrid spec partial snapshot storage has no draft cache manager");
     restorePartialKv(mCacheManager, mPartialKvSnapshots, snapshotSlot, destinationBasePage, validTokenCount, stream);
     restorePartialKv(
         *mDraftCacheManager, mDraftPartialKvSnapshots, snapshotSlot, destinationDraftPage, validTokenCount, stream);
@@ -477,7 +530,7 @@ void HybridSnapshotStorage::validatePartialSlots(
         snapshotSlot >= 0 && snapshotSlot < mPartialKvSlotCount, "Hybrid partial KV snapshot slot is out of range");
     ELLM_CHECK(page >= 0 && page < cacheManager.getKVCacheManager().numPages(),
         "Hybrid partial KV physical page is out of range");
-    // Hybrid+MTP retains its boundary token in a private partial page even when the checkpoint length is page-aligned,
+    // Hybrid+spec retains its boundary token in a private partial page even when the checkpoint length is page-aligned,
     // in which case that page holds a full kTOKENS_PER_PAGE tokens; allow the inclusive upper bound.
     ELLM_CHECK(validTokenCount > 0 && validTokenCount <= kTOKENS_PER_PAGE,
         "Hybrid partial KV snapshot must contain a non-empty page");

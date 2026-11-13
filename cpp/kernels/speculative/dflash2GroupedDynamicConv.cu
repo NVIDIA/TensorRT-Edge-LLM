@@ -159,8 +159,8 @@ bool hasGroupedDynamicConvContract(rt::Tensor const& hidden, rt::Tensor const& d
         return false;
     }
     int32_t const groupSize = hiddenSize / groups;
-    nvinfer1::DataType const activationType = hidden.getDataType();
-    if ((activationType != nvinfer1::DataType::kHALF && activationType != nvinfer1::DataType::kBF16)
+    trt_edgellm::DataType const activationType = hidden.getDataType();
+    if ((activationType != trt_edgellm::DataType::kHALF && activationType != trt_edgellm::DataType::kBF16)
         || groupSize % 2 != 0 || delta.getDataType() != activationType || base.getDataType() != activationType
         || baseShape != rt::Coords{kernelSize, hiddenSize} || output.getShape() != hiddenShape || !isGpuTensor(hidden)
         || !isGpuTensor(delta) || !isGpuTensor(base) || !isGpuTensor(output))
@@ -185,8 +185,8 @@ bool hasGroupedDynamicConvContract(rt::Tensor const& hidden, rt::Tensor const& d
     if (residual.has_value())
     {
         rt::Tensor const& residualTensor = residual->get();
-        return residualTensor.getShape() == hiddenShape && residualTensor.getDataType() == nvinfer1::DataType::kFLOAT
-            && output.getDataType() == nvinfer1::DataType::kFLOAT && isGpuTensor(residualTensor);
+        return residualTensor.getShape() == hiddenShape && residualTensor.getDataType() == trt_edgellm::DataType::kFLOAT
+            && output.getDataType() == trt_edgellm::DataType::kFLOAT && isGpuTensor(residualTensor);
     }
     return output.getDataType() == activationType;
 }
@@ -237,12 +237,12 @@ cudaError_t launchDFlash2GroupedDynamicConv(rt::Tensor const& hidden, rt::Tensor
     int32_t const groupSize = hiddenSize / static_cast<int32_t>(deltaShape[hiddenRank]);
     int32_t const tokens = static_cast<int32_t>(hiddenShape.volume() / hiddenSize);
     float const* residualData = residual.has_value() ? residual->get().dataPointer<float>() : nullptr;
-    if (hidden.getDataType() == nvinfer1::DataType::kHALF)
+    if (hidden.getDataType() == trt_edgellm::DataType::kHALF)
     {
         return dispatchTaps(hidden.dataPointer<half>(), delta.dataPointer<half>(), base.dataPointer<half>(),
             output.rawPointer(), tokens, residualData, hiddenSize, blockSize, kernelSize, groupSize, stream);
     }
-    if (hidden.getDataType() == nvinfer1::DataType::kBF16)
+    if (hidden.getDataType() == trt_edgellm::DataType::kBF16)
     {
         return dispatchTaps(hidden.dataPointer<__nv_bfloat16>(), delta.dataPointer<__nv_bfloat16>(),
             base.dataPointer<__nv_bfloat16>(), output.rawPointer(), tokens, residualData, hiddenSize, blockSize,

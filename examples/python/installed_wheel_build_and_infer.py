@@ -107,7 +107,7 @@ def _infer_base(model_dir: Path, engine_dir: Path, prompt: str,
 
 def _build_and_infer_base(model_dir: Path, engine_dir: Path, prompt: str,
                           max_tokens: int) -> Tuple[str, int]:
-    from experimental.builder.cli import main as build
+    from tensorrt_edgellm.builder.cli import main as build
 
     shutil.rmtree(engine_dir, ignore_errors=True)
     build([
@@ -133,7 +133,7 @@ def _build_and_infer_base(model_dir: Path, engine_dir: Path, prompt: str,
 
 def _build_and_infer(model_dir: Path, engine_dir: Path, prompt: str,
                      max_tokens: int) -> Tuple[str, int]:
-    import experimental.server as server_api
+    import tensorrt_edgellm.server as server_api
 
     shutil.rmtree(engine_dir, ignore_errors=True)
     llm = server_api.LLM(

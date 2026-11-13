@@ -17,6 +17,7 @@
 
 // Gemma4 MTP speculative decoding assembled around two substitute engines.
 
+#include "specSessionSupport.h"
 #include "substituteEngine.h"
 
 using namespace trt_edgellm;
@@ -58,7 +59,7 @@ Json makeGemma4MtpDraftConfig(Json const& baseConfig)
     return config;
 }
 
-class Gemma4MtpAssemblyTest : public SpecAssemblyTest
+class Gemma4MtpAssemblyTest : public SpecSessionAssemblyTest
 {
 protected:
     std::filesystem::path stageModelDir() override
@@ -123,4 +124,91 @@ TEST_F(Gemma4MtpAssemblyTest, RejectsAnAssistantWhoseKvPoolGeometryDiffersFromTh
     EXPECT_THAT(message, ::testing::HasSubstr("shared-KV pool geometry mismatch"));
 }
 
+// Given a draft that proposes a distinct, unique-max token at each position and a base verify pass whose argmax
+// at row j matches draft position j (kernel::sequentialAccept's batchArgmax[tokenIdx-1] == batchDraft[tokenIdx]
+// check), plus one extra "free" resampled token past the chain
+// When one round runs
+// Then the whole chain is accepted in a single round, the same kind of exact call sequence MtpAssemblyTest above
+// asserts for the linear-chain decoders
+//
+// Distinct tokens rather than the shared fixture's all-zero tie-break default on purpose: Gemma4MTP's assistant
+// has no KV cache of its own and no draft-side top-1 kernel shared with the base's verify argmax the way EAGLE's
+// does, so under an all-zero tie the two engines' top-1 kernels can disagree on which index wins the tie (draft's
+// own selection ties to the highest vocab index, sequentialAccept's argmax ties to the lowest) -- and
+// sequentialAccept then only ever accepts the unconditional root token per round. Giving each position a real,
+// non-tied peak sidesteps that tie-break-kernel mismatch entirely.
+TEST_F(Gemma4MtpAssemblyTest, AcceptsTheWholeChainInOneRoundWhenEachPositionGenuinelyMatches)
+{
+    using ::testing::_;
+    using ::testing::AllOf;
+    using ::testing::ElementsAre;
+    using ::testing::Field;
+    using ::testing::InSequence;
+
+    auto baseEngine = makeEngine();
+    auto draftEngine = makeEngine();
+    auto& base = *baseEngine;
+    auto& draft = *draftEngine;
+    auto runtime = makeRuntime(makeArtifacts(std::move(baseEngine), std::move(draftEngine)));
+
+    // Draft proposes {kDraft0, kDraft1, kDraft2}, one token per forward. Base verification's four rows are set so
+    // row j's argmax equals draft token j, plus a fourth "free" token past the chain (verifyTokenCount =
+    // kDraftingStep + 1 rows total), so the whole chain accepts in this one round.
+    constexpr int32_t kDraft0{2};
+    constexpr int32_t kDraft1{3};
+    constexpr int32_t kDraft2{5};
+    constexpr int32_t kFreeToken{7};
+    constexpr int32_t kPrefillToken{11};
+
+    {
+        InSequence forwards;
+        // Base model prefill (prompt "a"). Its own sampled seed token is never compared against anything in
+        // sequentialAccept (position 0 of the *next* round is accepted unconditionally), but it is named anyway:
+        // it is the first element of the expected output below, and leaving it to whatever an unconfigured row
+        // decodes to would put a value nobody chose into an assertion about the accepted chain.
+        EXPECT_CALL(base, prepare(kPrefillProfile, _, _, _));
+        EXPECT_CALL(base, execute(_)).WillOnce(emit({kPrefillToken}));
+        // Gemma4 MTP's assistant has no KV cache of its own (zero-copy aliased to base), so there is no separate
+        // drafter-prefill step: every draft forward is decode-profile.
+        EXPECT_CALL(draft, prepare(kDecodeProfile, _, _, _));
+        EXPECT_CALL(draft, execute(_)).WillOnce(emit({kDraft0}));
+        EXPECT_CALL(draft, prepare(kDecodeProfile, _, _, _));
+        EXPECT_CALL(draft, execute(_)).WillOnce(emit({kDraft1}));
+        EXPECT_CALL(draft, prepare(kDecodeProfile, _, _, _));
+        EXPECT_CALL(draft, execute(_)).WillOnce(emit({kDraft2}));
+        // Base model verify: row j predicts the token that follows draft token j, so row j's argmax must equal
+        // draft[j] for sequentialAccept to keep walking the chain instead of stopping at row j.
+        EXPECT_CALL(base,
+            prepare(kDecodeProfile,
+                AllOf(
+                    Field(&rt::InferenceDims::seqLen, kVerifySize), Field(&rt::InferenceDims::selectLen, kVerifySize)),
+                _, _));
+        EXPECT_CALL(base, execute(_)).WillOnce(emit({kDraft0, kDraft1, kDraft2, kFreeToken}));
+    }
+
+    // maxGenerateLength is budget for the *whole* response, and that budget's first token is spent by the
+    // prefill's own sampled token --
+    // acceptAndCommit() clamps the accepted chain to whatever's left of the budget. kVerifySize + 1 leaves
+    // exactly kVerifySize (= kDraftingStep + 1) slots for the accept round, so all four designed chain tokens --
+    // kDraft0/1/2 plus the free resample -- survive the clamp instead of the last one being silently dropped.
+    auto const request = makeGreedyRequest("a", kVerifySize + 1);
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+
+    expectResponseCoversEverySlot(response, 1);
+    ASSERT_EQ(response.outputIds.size(), 1U);
+    // Element 0 is the prefill's own sampled token; the rest is the whole accepted chain from this one round --
+    // the 3 draft proposals plus the base's own free resample.
+    EXPECT_THAT(response.outputIds[0], ElementsAre(kPrefillToken, kDraft0, kDraft1, kDraft2, kFreeToken));
+    EXPECT_EQ(response.finishReasons[0], rt::FinishReason::kLength);
+}
+
 } // namespace
+
+// Given a Gemma4 MTP deployment and two prompts
+// When the second is seated into a running session while the first is mid-generation, or retired unseated
+// Then each decodes exactly as it does alone: the seated draft state moved no token and no round
+TEST_F(Gemma4MtpAssemblyTest, Seating)
+{
+    expectSeating();
+}

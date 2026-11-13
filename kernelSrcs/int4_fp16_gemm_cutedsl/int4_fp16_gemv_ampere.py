@@ -189,6 +189,7 @@ class Int4Fp16GemvAmpere:
         mQW: cute.Tensor,
         mScales: cute.Tensor,
         mOut: cute.Tensor,          # [M, N] fp16, written directly
+        group_size: Int32,
         stream: cuda.CUstream,
     ) -> None:
         num_n_blocks = cute.ceil_div(mOut.shape[1], self.BN)
@@ -198,7 +199,7 @@ class Int4Fp16GemvAmpere:
             # overrides the inferred size, so it must be the allocator's real
             # footprint (sRed [W, 8, M, 2] Float32).
             smem_bytes = self.W * 8 * self.M * 2 * 4
-            self.kernel(mA, mQW, mScales, mOut).launch(
+            self.kernel(mA, mQW, mScales, mOut, group_size).launch(
                 grid=(cute.size(num_n_blocks) * 4, 2, 1),
                 block=[self.num_threads, 1, 1],
                 stream=stream,
@@ -206,7 +207,7 @@ class Int4Fp16GemvAmpere:
                 smem=smem_bytes,
             )
         else:
-            self.kernel(mA, mQW, mScales, mOut).launch(
+            self.kernel(mA, mQW, mScales, mOut, group_size).launch(
                 grid=(cute.size(num_n_blocks) * 4, 2, 1),
                 block=[self.num_threads, 1, 1],
                 stream=stream,
@@ -219,6 +220,7 @@ class Int4Fp16GemvAmpere:
         mQW: cute.Tensor,
         mScales: cute.Tensor,
         mOut: cute.Tensor,
+        group_size: Int32,
     ) -> None:
         tidx, _, _ = cute.arch.thread_idx()
         bx, pblk, _ = cute.arch.block_idx()
@@ -226,7 +228,7 @@ class Int4Fp16GemvAmpere:
         cg = bx % Int32(4)
 
         M = self.M
-        G = Int32(self.group_size)
+        G = group_size
         N = mOut.shape[1]
         K = mA.shape[1]
         num_k_tiles = K // Int32(self.BK)
@@ -474,6 +476,7 @@ def run(
         if export_only
         else cuda.CUstream(cp.cuda.get_current_stream().ptr)
     )
+    group_size_i32 = cutlass.Int32(group_size)
 
     if export_only:
         mA = make_row_major_2d_placeholder(cutlass.Float16)
@@ -487,7 +490,7 @@ def run(
         print(f"{_tag} Compiling kernel (gpu_arch={gpu_arch or 'default'})...")
         t0 = time.time()
         compiled = cute.compile(
-            kernel, mA, mQW, mScales, mOut, current_stream,
+            kernel, mA, mQW, mScales, mOut, group_size_i32, current_stream,
             options=compile_opts,
         )
         print(f"{_tag} Compilation time: {time.time() - t0:.4f}s")
@@ -526,11 +529,12 @@ def run(
 
     print(f"{_tag} Compiling kernel...")
     t0 = time.time()
-    compiled = cute.compile(kernel, mA, mQW, mScales, mOut, current_stream)
+    compiled = cute.compile(kernel, mA, mQW, mScales, mOut, group_size_i32,
+                            current_stream)
     print(f"{_tag} Compilation time: {time.time() - t0:.4f}s")
 
     if not skip_ref_check:
-        compiled(mA, mQW, mScales, mOut, current_stream)
+        compiled(mA, mQW, mScales, mOut, group_size_i32, current_stream)
         torch.cuda.synchronize()
         diff = (out_t.to(torch.float32) - ref.to(torch.float32)).abs()
         max_abs = diff.max().item()
@@ -550,11 +554,11 @@ def run(
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     for _ in range(max(warmup_iterations, 0)):
-        compiled(mA, mQW, mScales, mOut, current_stream)
+        compiled(mA, mQW, mScales, mOut, group_size_i32, current_stream)
     torch.cuda.synchronize()
     start.record()
     for _ in range(max(iterations, 1)):
-        compiled(mA, mQW, mScales, mOut, current_stream)
+        compiled(mA, mQW, mScales, mOut, group_size_i32, current_stream)
     end.record()
     torch.cuda.synchronize()
     avg_time_us = start.elapsed_time(end) / max(iterations, 1) * 1e3

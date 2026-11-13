@@ -25,5 +25,7 @@ from .dflash_draft import DFlashCalibDraftModel  # noqa: F401
 from .dflash_draft import quantize_and_export_dflash_draft  # noqa: F401
 from .eagle3_draft import Eagle3DraftModel  # noqa: F401
 from .eagle3_draft import quantize_and_export_draft  # noqa: F401
-from .mtp_draft import MtpDraftModel  # noqa: F401
+from .eagle4_draft import Eagle4CalibDraftModel  # noqa: F401
+from .eagle4_draft import quantize_and_export_eagle4_draft  # noqa: F401
+from .mtp_draft import Qwen3_5MtpDraftModel  # noqa: F401
 from .mtp_draft import quantize_mtp_from_base  # noqa: F401

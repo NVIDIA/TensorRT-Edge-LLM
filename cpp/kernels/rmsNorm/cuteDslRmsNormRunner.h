@@ -28,7 +28,7 @@
 #include "cutedsl_rmsnorm_all.h"
 #undef CUTE_DSL_CUDA_ERROR_CHECK
 
-#include <NvInferRuntime.h>
+#include "common/dataType.h"
 
 #include <cstdint>
 #include <cuda_runtime.h>
@@ -46,7 +46,7 @@ struct CuteDslRmsNormParams
     int32_t hiddenSize{};
     float rmsNormEps{};
     int32_t weightBeforeCast{};
-    nvinfer1::DataType dataType{nvinfer1::DataType::kHALF};
+    trt_edgellm::DataType dataType{trt_edgellm::DataType::kHALF};
 };
 
 //! Dispatches the homogeneous FP16/BF16 CuTe DSL RMSNorm AOT variants.
@@ -63,7 +63,8 @@ public:
         return hiddenSize == 4096 || hiddenSize == 5120 || hiddenSize == 7168 || hiddenSize == 8192;
     }
 
-    static bool canImplement(int32_t rows, int32_t hiddenSize, int32_t smVersion, nvinfer1::DataType dataType) noexcept;
+    static bool canImplement(
+        int32_t rows, int32_t hiddenSize, int32_t smVersion, trt_edgellm::DataType dataType) noexcept;
     static int32_t run(CuteDslRmsNormParams const& params, cudaStream_t stream) noexcept;
 
 private:
@@ -88,7 +89,7 @@ private:
         kBf16H8192Wbc1,
     };
 
-    static Variant selectVariant(int32_t hiddenSize, nvinfer1::DataType dataType, int32_t weightBeforeCast) noexcept;
+    static Variant selectVariant(int32_t hiddenSize, trt_edgellm::DataType dataType, int32_t weightBeforeCast) noexcept;
     static bool ensureKernelModule(Variant variant, cudaStream_t stream) noexcept;
 
     static detail::LazyKernelModule<rmsnorm_fp16_h4096_wbc0_Kernel_Module_t> sFp16H4096Wbc0Module;

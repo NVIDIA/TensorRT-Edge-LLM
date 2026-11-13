@@ -17,103 +17,245 @@
 
 #include "runtime/preprocess/gemma4EmbeddingPreprocessor.h"
 
-#include "common/bindingNames.h"
 #include "common/checkMacros.h"
 #include "common/logger.h"
-#include "common/safetensorsUtils.h"
-#include "kernels/embeddingKernels/embeddingKernels.h"
+#include "kernels/embeddingKernels/pleGather.h"
+#include "runtime/embedding/pleRowStore.h"
 
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
 
 namespace trt_edgellm
 {
 namespace rt
 {
 
-Gemma4EmbeddingPreprocessor::Gemma4EmbeddingPreprocessor(std::filesystem::path const& engineDir,
-    LLMEngineConfig const& config, int32_t maxBatchSize, int32_t maxSeqLen, TensorMap& tensorMap, cudaStream_t stream,
-    std::optional<Tensor> checkpointTable)
-    : mConfig(config)
+struct Gemma4EmbeddingPreprocessor::PooledResources
 {
-    ELLM_CHECK(mConfig.pleEnabled, "Gemma4EmbeddingPreprocessor constructed while PLE is disabled");
+    PooledResources(PleTable table, int32_t slots, cudaStream_t stream, int32_t maxBatch, int32_t maxSeq,
+        PleResidency mode, std::shared_ptr<PleIoBudget> pleIoBudget)
+        : store(std::move(table), slots, stream, PleIoConfig{},
+              mode == PleResidency::kRESIDENT ? PleRowStore::Residency::kRESIDENT : PleRowStore::Residency::kCACHED,
+              std::move(pleIoBudget))
+        , rowMap({static_cast<int64_t>(maxBatch) * maxSeq, 1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
+              "ple_row_map")
+        , residency(mode)
+    {
+        if (mode == PleResidency::kCACHED)
+        {
+            hostMap = Tensor({maxBatch, maxSeq}, DeviceType::kCPU, trt_edgellm::DataType::kINT32);
+        }
+    }
+    PleRowStore store;
+    Tensor rowMap;
+    Tensor hostMap;
+    PleResidency residency;
+    std::vector<PleRowStore::RequestLease> leases;
+};
+
+Gemma4EmbeddingPreprocessor::Gemma4EmbeddingPreprocessor(LLMEngineConfig const& config, int32_t maxBatchSize,
+    int32_t maxSeqLen, TensorMap& tensorMap, cudaStream_t stream, PleRuntimeConfig const& pleConfig,
+    std::filesystem::path const& checkpointDir, std::shared_ptr<PleIoBudget> pleIoBudget)
+    : mConfig(config)
+    , mStream(stream)
+    , mMaxBatchSize(maxBatchSize)
+    , mMaxSeqLen(maxSeqLen)
+{
+    ELLM_CHECK(mConfig.gemmaPleEnabled, "Gemma4EmbeddingPreprocessor constructed while PLE is disabled");
     ELLM_CHECK(maxBatchSize > 0, "Gemma4EmbeddingPreprocessor requires positive max batch size");
     ELLM_CHECK(maxSeqLen > 0, "Gemma4EmbeddingPreprocessor requires positive max sequence length");
 
-    if (checkpointTable.has_value())
-    {
-        mPleTable = std::move(*checkpointTable);
-    }
-    else
-    {
-        std::filesystem::path const plePath = engineDir / binding_names::kPleEmbeddingFileName;
-        std::vector<Tensor> pleTensors;
-        ELLM_CHECK(safetensors::loadSafetensors(plePath, pleTensors, stream),
-            "Failed to load " + std::string(binding_names::kPleEmbeddingFileName)
-                + " from model directory: " + engineDir.string());
-        ELLM_CHECK(pleTensors.size() == 1, "ple_embedding.safetensors must contain exactly one tensor named weight");
-        ELLM_CHECK(pleTensors[0].getName() == "weight", "ple_embedding.safetensors tensor must be named weight");
-        mPleTable = std::move(pleTensors[0]);
-    }
-
-    auto const pleShape = mPleTable.getShape();
-    ELLM_CHECK(pleShape.getNumDims() == 2, "PLE table must be 2D [vocab, num_layers * hidden]");
-    ELLM_CHECK(pleShape[1] == static_cast<int64_t>(mConfig.numPleInputs) * mConfig.pleHiddenSize,
-        "PLE table second dimension must equal num_ple_inputs * ple_hidden_size");
+    ELLM_CHECK(stream != nullptr, "Pooled PLE requires an explicit stream");
+    auto const& poolConfig = mConfig.plePool;
+    ELLM_CHECK(!poolConfig.source.tensorKey.empty(),
+        "PLE pool requires checkpoint source metadata; re-export and rebuild the engine.");
+    auto table = PleTable::fromSource(poolConfig.source, poolConfig.rowCount, poolConfig.rowWidth,
+        checkpointDir.empty() ? std::filesystem::path(poolConfig.checkpointDir) : checkpointDir, pleConfig.filePath,
+        poolConfig.dtype, poolConfig.scale);
+    ELLM_CHECK(poolConfig.rowWidth == static_cast<int64_t>(mConfig.gemmaPleLayerCount) * mConfig.gemmaPleHiddenSize,
+        "PLE row width must equal gemma_ple_layer_count * gemma_ple_hidden_size");
+    ELLM_CHECK(table.rowCount() < std::numeric_limits<int32_t>::max(), "PLE table exceeds INT32 slot capacity");
     if (mConfig.imageTokenId >= 0 || mConfig.audioTokenId >= 0)
     {
-        ELLM_CHECK(mConfig.padTokenId >= 0 && mConfig.padTokenId < pleShape[0],
+        ELLM_CHECK(mConfig.padTokenId >= 0 && mConfig.padTokenId < table.rowCount(),
             "Gemma4 multimodal PLE pad_token_id is outside the PLE table vocabulary");
     }
-    ELLM_CHECK(
-        mPleTable.getDataType() == nvinfer1::DataType::kHALF || mPleTable.getDataType() == nvinfer1::DataType::kBF16,
-        "PLE table must be FP16 or BF16");
-
-    mPleOutputBuffer = Tensor({mConfig.numPleInputs, maxBatchSize, maxSeqLen, mConfig.pleHiddenSize}, DeviceType::kGPU,
-        mPleTable.getDataType(), "Gemma4EmbeddingPreprocessor::mPleOutputBuffer");
-
-    mPleOutputViews.reserve(mConfig.numPleInputs);
-    for (int32_t idx = 0; idx < mConfig.numPleInputs; ++idx)
+    int32_t const slots = pleConfig.residency == PleResidency::kRESIDENT ? static_cast<int32_t>(table.rowCount() + 1)
+                                                                         : pleConfig.cacheSlots;
+    ELLM_CHECK(slots >= 2 && slots <= table.rowCount() + 1, "PLE cache slots must be between 2 and row_count + 1");
+    mDistinctRowCapacity = slots - 1;
+    mPooled = std::make_unique<PooledResources>(
+        std::move(table), slots, stream, maxBatchSize, maxSeqLen, pleConfig.residency, std::move(pleIoBudget));
+    try
     {
-        mPleOutputViews.emplace_back(makeTokenMajorOutputViewForLayer(idx, maxBatchSize * maxSeqLen));
-        tensorMap.set(mPleOutputViews.back().getName(), mPleOutputViews.back());
+        tensorMap.set("ple_cache_pool", mPooled->store.pool());
+        tensorMap.set("ple_row_map", mPooled->rowMap);
+        reshapeOutputsTokenMajor(static_cast<int64_t>(maxBatchSize) * maxSeqLen);
+        CUDA_CHECK(cudaMemsetAsync(mPooled->rowMap.rawPointer(), 0, mPooled->rowMap.getMemoryCapacity(), mStream));
     }
-
-    LOG_INFO("Initialized Gemma4 PLE preprocessor: table=%s outputBuffer=%s numPleInputs=%d pleHiddenSize=%d",
-        mPleTable.getShape().formatString().c_str(), mPleOutputBuffer.getShape().formatString().c_str(),
-        mConfig.numPleInputs, mConfig.pleHiddenSize);
+    catch (...)
+    {
+        if (!drainPooled())
+        {
+            (void) mPooled.release();
+        }
+        throw;
+    }
 }
 
-Tensor Gemma4EmbeddingPreprocessor::makeTokenMajorOutputViewForLayer(int32_t layerIdx, int64_t physicalTokens)
+Gemma4EmbeddingPreprocessor::~Gemma4EmbeddingPreprocessor() noexcept
 {
-    ELLM_CHECK(layerIdx >= 0 && layerIdx < mConfig.numPleInputs, "Gemma4 PLE layer index out of range");
-    auto const outputShape = mPleOutputBuffer.getShape();
-    ELLM_CHECK(physicalTokens > 0, "Gemma4 PLE physical token count must be positive");
-    ELLM_CHECK(
-        physicalTokens <= outputShape[1] * outputShape[2], "Gemma4 PLE physical token count exceeds buffer capacity");
+    if (mPooled && !drainPooled())
+    {
+        LOG_ERROR("Gemma PLE quarantines resources because stream completion could not be established.");
+        (void) mPooled.release();
+    }
+}
 
-    int64_t const layerOutputCapacityBytes = outputShape[1] * outputShape[2] * mConfig.pleHiddenSize
-        * static_cast<int64_t>(utils::getTypeSize(mPleTable.getDataType()));
-    void* const layerOutputPtr
-        = static_cast<void*>(static_cast<char*>(mPleOutputBuffer.rawPointer()) + layerIdx * layerOutputCapacityBytes);
-    return Tensor(layerOutputPtr, Coords{physicalTokens, mConfig.pleHiddenSize}, DeviceType::kGPU,
-        mPleTable.getDataType(), binding_names::formatPleTokenEmbedsName(layerIdx));
+bool Gemma4EmbeddingPreprocessor::drainPooled() noexcept
+{
+    auto const status = cudaStreamSynchronize(mStream);
+    if (status != cudaSuccess)
+    {
+        mPoisoned = true;
+        LOG_ERROR("Gemma PLE stream drain failed: %s", cudaGetErrorString(status));
+    }
+    return status == cudaSuccess;
+}
+
+void Gemma4EmbeddingPreprocessor::releasePooledLeases()
+{
+    ELLM_CHECK(!mPoisoned, "Gemma pooled PLE is poisoned after a CUDA completion failure");
+    if (!mPooled->leases.empty())
+    {
+        ELLM_CHECK(drainPooled(), "Gemma PLE consumers did not complete before lease release");
+        mPooled->leases.clear();
+    }
 }
 
 void Gemma4EmbeddingPreprocessor::reshapeOutputsTokenMajor(int64_t physicalTokens)
 {
-    for (int32_t idx = 0; idx < mConfig.numPleInputs; ++idx)
-    {
-        mPleOutputViews[idx] = makeTokenMajorOutputViewForLayer(idx, physicalTokens);
-    }
+    ELLM_CHECK(physicalTokens > 0 && physicalTokens <= static_cast<int64_t>(mMaxBatchSize) * mMaxSeqLen,
+        "Gemma PLE shape exceeds allocated map capacity");
+    ELLM_CHECK(mPooled->rowMap.reshape({physicalTokens, 1}), "Cannot reshape Gemma PLE row map");
 }
 
-void Gemma4EmbeddingPreprocessor::embed(Tensor const& tokenIds, cudaStream_t stream)
+bool Gemma4EmbeddingPreprocessor::needsHostTokens() const noexcept
 {
-    auto const tokenShape = tokenIds.getShape();
-    ELLM_CHECK(tokenShape.getNumDims() == 2, "Gemma4 PLE token IDs must be [batch, seq_len]");
-    kernel::gemma4PleGather(tokenIds, mPleTable, mPleOutputBuffer, mConfig.numPleInputs, mConfig.pleHiddenSize,
-        mConfig.imageTokenId, mConfig.audioTokenId, mConfig.padTokenId, stream);
+    return mPooled != nullptr && mPooled->residency == PleResidency::kCACHED;
+}
+
+void Gemma4EmbeddingPreprocessor::embed(Tensor const& tokenIds, cudaStream_t stream,
+    std::vector<int32_t> const& queryLengths, Tensor const* deviceQueryLengths, Tensor const* hostTokenIds)
+{
+    auto tokenShape = tokenIds.getShape();
+    ELLM_CHECK(tokenShape.getNumDims() == 1 || tokenShape.getNumDims() == 2,
+        "Gemma4 PLE token IDs must be [physical_tokens] or [batch, seq_len]");
+    if (tokenShape.getNumDims() == 1)
+    {
+        ELLM_CHECK(deviceQueryLengths != nullptr && deviceQueryLengths->getShape().getNumDims() == 1,
+            "Flat PLE token IDs require per-request device query lengths");
+        int64_t const batchSize = deviceQueryLengths->getShape()[0];
+        ELLM_CHECK(batchSize > 0 && tokenShape[0] % batchSize == 0,
+            "Flat PLE token IDs must contain equal-width physical request rows");
+        tokenShape = Coords{batchSize, tokenShape[0] / batchSize};
+    }
+    ELLM_CHECK(stream == mStream, "Gemma pooled PLE must use its bound consumer stream");
+    ELLM_CHECK(tokenIds.getDataType() == trt_edgellm::DataType::kINT32 && tokenIds.getDeviceType() == DeviceType::kGPU,
+        "PLE token IDs must be GPU INT32");
+    ELLM_CHECK(tokenShape[0] > 0 && tokenShape[0] <= mMaxBatchSize && tokenShape[1] > 0 && tokenShape[1] <= mMaxSeqLen,
+        "Gemma PLE token shape exceeds allocated capacity");
+    ELLM_CHECK(queryLengths.empty() || deviceQueryLengths != nullptr,
+        "PLE host query lengths require matching device query lengths");
+    ELLM_CHECK(mPooled->residency == PleResidency::kRESIDENT || queryLengths.empty() == (deviceQueryLengths == nullptr),
+        "Cached PLE padding requires matching host and device query lengths");
+    if (mPooled->residency == PleResidency::kCACHED)
+    {
+        ELLM_CHECK(hostTokenIds != nullptr && hostTokenIds->getDeviceType() == DeviceType::kCPU
+                && hostTokenIds->getDataType() == trt_edgellm::DataType::kINT32
+                && hostTokenIds->getShape().volume() == tokenShape.volume(),
+            "Cached PLE requires a CPU INT32 snapshot of the physical token IDs");
+    }
+    if (deviceQueryLengths != nullptr)
+    {
+        ELLM_CHECK(deviceQueryLengths->getDeviceType() == DeviceType::kGPU
+                && deviceQueryLengths->getDataType() == trt_edgellm::DataType::kINT32
+                && deviceQueryLengths->getShape() == Coords{tokenShape[0]},
+            "PLE device query lengths must be GPU INT32 [batch]");
+    }
+    if (!queryLengths.empty())
+    {
+        ELLM_CHECK(queryLengths.size() == static_cast<size_t>(tokenShape[0]), "PLE query length count mismatch");
+        for (int32_t const length : queryLengths)
+        {
+            ELLM_CHECK(length >= 0 && length <= tokenShape[1], "PLE query length exceeds token row");
+        }
+    }
+    releasePooledLeases();
     reshapeOutputsTokenMajor(tokenShape[0] * tokenShape[1]);
+    embedPooled(tokenIds, tokenShape, queryLengths, deviceQueryLengths, hostTokenIds);
+}
+
+void Gemma4EmbeddingPreprocessor::embedPacked(Tensor const& tokenIds, cudaStream_t stream, Tensor const* hostTokenIds)
+{
+    ELLM_CHECK(stream == mStream, "Gemma pooled PLE must use its bound consumer stream");
+    ELLM_CHECK(tokenIds.getDataType() == trt_edgellm::DataType::kINT32 && tokenIds.getDeviceType() == DeviceType::kGPU,
+        "PLE token IDs must be GPU INT32");
+    int64_t const physicalTokens = tokenIds.getShape().volume();
+    ELLM_CHECK(physicalTokens > 0 && physicalTokens <= static_cast<int64_t>(mMaxBatchSize) * mMaxSeqLen,
+        "Packed Gemma PLE token count exceeds allocated capacity");
+    if (mPooled->residency == PleResidency::kCACHED)
+    {
+        ELLM_CHECK(hostTokenIds != nullptr && hostTokenIds->getDeviceType() == DeviceType::kCPU
+                && hostTokenIds->getDataType() == trt_edgellm::DataType::kINT32
+                && hostTokenIds->getShape().volume() == physicalTokens,
+            "Cached PLE requires a CPU INT32 snapshot of the physical token IDs");
+    }
+    releasePooledLeases();
+    reshapeOutputsTokenMajor(physicalTokens);
+    embedPooled(tokenIds, Coords{1, physicalTokens}, {}, nullptr, hostTokenIds);
+}
+
+void Gemma4EmbeddingPreprocessor::embedPooled(Tensor const& tokenIds, Coords const& shape,
+    std::vector<int32_t> const& queryLengths, Tensor const* deviceQueryLengths, Tensor const* hostTokenIds)
+{
+    auto& pooled = *mPooled;
+    int64_t const count = shape[0] * shape[1];
+    auto const vocabulary = mConfig.plePool.rowCount;
+    if (pooled.residency == PleResidency::kRESIDENT)
+    {
+        CUDA_CHECK(
+            kernel::launchGemmaPleResidentMap(tokenIds.dataPointer<int32_t>(), pooled.rowMap.dataPointer<int32_t>(),
+                count, vocabulary, mConfig.padTokenId, mConfig.imageTokenId, mConfig.audioTokenId, mStream,
+                deviceQueryLengths ? deviceQueryLengths->dataPointer<int32_t>() : nullptr, shape[1]));
+        return;
+    }
+    auto const* ids = hostTokenIds->dataPointer<int32_t>();
+    std::vector<std::vector<int64_t>> requests(static_cast<size_t>(shape[0]));
+    for (int64_t batch = 0; batch < shape[0]; ++batch)
+    {
+        auto& request = requests[batch];
+        request.reserve(static_cast<size_t>(shape[1]));
+        for (int64_t token = 0; token < shape[1]; ++token)
+        {
+            int32_t const id = ids[batch * shape[1] + token];
+            bool const padding = !queryLengths.empty() && token >= queryLengths[batch];
+            bool const media = (mConfig.imageTokenId >= 0 && id == mConfig.imageTokenId)
+                || (mConfig.audioTokenId >= 0 && id == mConfig.audioTokenId);
+            int32_t const lookupId = media ? mConfig.padTokenId : id;
+            request.push_back(padding || lookupId < 0 || lookupId >= vocabulary ? -1 : lookupId);
+        }
+    }
+    pooled.leases = pooled.store.prepare(requests);
+    auto* map = pooled.hostMap.dataPointer<int32_t>();
+    for (size_t batch = 0; batch < pooled.leases.size(); ++batch)
+    {
+        auto const& mapping = pooled.leases[batch].mapping();
+        std::copy(mapping.begin(), mapping.end(), map + batch * shape[1]);
+    }
+    CUDA_CHECK(cudaMemcpyAsync(pooled.rowMap.rawPointer(), pooled.hostMap.rawPointer(), count * sizeof(int32_t),
+        cudaMemcpyHostToDevice, mStream));
 }
 
 } // namespace rt

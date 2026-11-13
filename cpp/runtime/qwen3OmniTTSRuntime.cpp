@@ -245,7 +245,7 @@ Qwen3OmniTTSRuntime::Qwen3OmniTTSRuntime(std::string const& talkerEngineDir, std
         int64_t const sharedCtxSize = std::max(talkerCtxSize, cpCtxSize);
         LOG_INFO("Setup shared execution context memory: %zu bytes (talker: %zu, code_predictor: %zu)",
             static_cast<size_t>(sharedCtxSize), static_cast<size_t>(talkerCtxSize), static_cast<size_t>(cpCtxSize));
-        mSharedExecContextMemory = rt::Tensor({sharedCtxSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8,
+        mSharedExecContextMemory = rt::Tensor({sharedCtxSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8,
             "Qwen3OmniTTSRuntime::mSharedExecContextMemory");
         bool const talkerCtxSet = mTalkerExec->setContextMemory(mSharedExecContextMemory);
         ELLM_CHECK(talkerCtxSet, "Failed to set context memory for Talker LLM engine");
@@ -329,9 +329,9 @@ Qwen3OmniTTSRuntime::Qwen3OmniTTSRuntime(std::string const& talkerEngineDir, std
         int64_t const stagingBytes = maxRows * static_cast<int64_t>(sizeof(kernel::PrefillRowDesc));
         mPrefillRows.reserve(maxRows);
         mPrefillDescsHost
-            = rt::Tensor({stagingBytes}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT8, "prefillDescsHost");
+            = rt::Tensor({stagingBytes}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT8, "prefillDescsHost");
         mPrefillDescsDevice
-            = rt::Tensor({stagingBytes}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "prefillDescsDevice");
+            = rt::Tensor({stagingBytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "prefillDescsDevice");
     }
 
     // Voice clone workspace (Base checkpoints): x-vector slot, reference codes/frame sums for
@@ -339,33 +339,36 @@ Qwen3OmniTTSRuntime::Qwen3OmniTTSRuntime(std::string const& talkerEngineDir, std
     {
         constexpr int64_t kMaxRefFrames = 512; // ~40s reference audio at 12.5 Hz
         int64_t const hiddenSize = mTalkerConfig.talkerHiddenSize;
-        mVoiceCloneXVector = rt::Tensor({hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "cloneXVector");
-        mIclFrameSumBuffer
-            = rt::Tensor({kMaxRefFrames, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "iclFrameSums");
+        mVoiceCloneXVector
+            = rt::Tensor({hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "cloneXVector");
+        mIclFrameSumBuffer = rt::Tensor(
+            {kMaxRefFrames, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "iclFrameSums");
 
         int64_t const iclPtrBytes = static_cast<int64_t>(mTalkerConfig.numCodeGroups) * sizeof(void*);
         mIclTablePtrsHost
-            = rt::Tensor({iclPtrBytes}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT8, "iclTablePtrsHost");
+            = rt::Tensor({iclPtrBytes}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT8, "iclTablePtrsHost");
         auto** iclPtrs = static_cast<void const**>(mIclTablePtrsHost.rawPointer());
         iclPtrs[0] = mTalkerEmbeddingTable.rawPointer();
         for (int32_t g = 1; g < mTalkerConfig.numCodeGroups; ++g)
         {
             iclPtrs[g] = mCodePredictorEmbeddingTables[g - 1].rawPointer();
         }
-        mIclTablePtrsGpu = rt::Tensor({iclPtrBytes}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "iclTablePtrs");
+        mIclTablePtrsGpu
+            = rt::Tensor({iclPtrBytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "iclTablePtrs");
         CUDA_CHECK(
             cudaMemcpyAsync(mIclTablePtrsGpu.rawPointer(), iclPtrs, iclPtrBytes, cudaMemcpyHostToDevice, stream));
 
         // The CodePredictor verify window indexes its own tables by RVQ depth, so it needs
         // the array without the Talker table the ICL sum prepends.
         int64_t const cpPtrBytes = static_cast<int64_t>(mNumRvqLayers) * sizeof(void*);
-        mCpTablePtrsHost = rt::Tensor({cpPtrBytes}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT8, "cpTablePtrsHost");
+        mCpTablePtrsHost
+            = rt::Tensor({cpPtrBytes}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT8, "cpTablePtrsHost");
         auto** cpPtrs = static_cast<void const**>(mCpTablePtrsHost.rawPointer());
         for (int32_t i = 0; i < mNumRvqLayers; ++i)
         {
             cpPtrs[i] = mCodePredictorEmbeddingTables[i].rawPointer();
         }
-        mCpTablePtrsGpu = rt::Tensor({cpPtrBytes}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "cpTablePtrs");
+        mCpTablePtrsGpu = rt::Tensor({cpPtrBytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "cpTablePtrs");
         CUDA_CHECK(cudaMemcpyAsync(mCpTablePtrsGpu.rawPointer(), cpPtrs, cpPtrBytes, cudaMemcpyHostToDevice, stream));
     }
 
@@ -407,7 +410,10 @@ bool Qwen3OmniTTSRuntime::initializeEngineRunners(
     try
     {
         mTalkerLLMConfig = rt::parseEngineConfig(talkerConfigPath);
-        mTalkerExec = rt::EngineExecutor::createForLLM(talkerEnginePath, mTalkerLLMConfig);
+        auto talkerWeights = std::make_unique<rt::ExternalWeightManager>();
+        talkerWeights->load(talkerEngineDir, talkerConfigPath, mStream, checkpointDir);
+        mTalkerExec = rt::EngineExecutor::createForLLM(talkerEnginePath, mTalkerLLMConfig, std::nullopt, nullptr,
+            rt::EngineRefitOptions{talkerWeights->takeRefitWeights(), mStream});
         rt::validateAgainstEngine(mTalkerLLMConfig, *mTalkerExec, "qwen3_omni_talker");
 
         // Talker exports differ in what hidden_states carries: some emit the whole sequence,
@@ -424,7 +430,7 @@ bool Qwen3OmniTTSRuntime::initializeEngineRunners(
         mTalkerPipelineIO = std::make_unique<rt::PipelineIO>(rt::PipelineIO::createForLLM(mTalkerLLMConfig, mStream));
         rt::buildTensorMap(
             mTalkerTensorMap, *mTalkerPipelineIO, *mTalkerSharedRes, mTalkerLLMConfig, /*kvCacheIndex=*/0);
-        mTalkerSharedRes->externalWeightManager->load(talkerEngineDir, talkerConfigPath, mStream, checkpointDir);
+        mTalkerSharedRes->externalWeightManager = std::move(talkerWeights);
         mTalkerSharedRes->externalWeightManager->validateAgainstEngine(*mTalkerExec, "talker");
         mTalkerSharedRes->externalWeightManager->registerTensorMapEntries(mTalkerTensorMap);
 
@@ -432,8 +438,9 @@ bool Qwen3OmniTTSRuntime::initializeEngineRunners(
             mTalkerLLMConfig.hiddenSize);
         auto talkerKVType = mTalkerLLMConfig.kvCacheDtype;
         LOG_INFO("Talker KV cache dtype: %s",
-            talkerKVType == nvinfer1::DataType::kHALF ? "FP16"
-                                                      : (talkerKVType == nvinfer1::DataType::kFP8 ? "FP8" : "UNKNOWN"));
+            talkerKVType == trt_edgellm::DataType::kHALF
+                ? "FP16"
+                : (talkerKVType == trt_edgellm::DataType::kFP8 ? "FP8" : "UNKNOWN"));
     }
     catch (std::exception const& e)
     {
@@ -450,7 +457,10 @@ bool Qwen3OmniTTSRuntime::initializeEngineRunners(
     try
     {
         mCodePredictorConfig = rt::parseEngineConfig(codePredictorConfigPath);
-        mCodePredictorExec = rt::EngineExecutor::createForLLM(codePredictorEnginePath, mCodePredictorConfig);
+        auto predictorWeights = std::make_unique<rt::ExternalWeightManager>();
+        predictorWeights->load(codePredictorEngineDir, codePredictorConfigPath, mStream, checkpointDir);
+        mCodePredictorExec = rt::EngineExecutor::createForLLM(codePredictorEnginePath, mCodePredictorConfig,
+            std::nullopt, nullptr, rt::EngineRefitOptions{predictorWeights->takeRefitWeights(), mStream});
         rt::validateAgainstEngine(mCodePredictorConfig, *mCodePredictorExec, "qwen3_omni_code_predictor");
         // A 2-position prefill fits the widened generation profile, so it can run on the
         // decode kernel set rather than the much more expensive prefill one.
@@ -466,8 +476,7 @@ bool Qwen3OmniTTSRuntime::initializeEngineRunners(
             = std::make_unique<rt::PipelineIO>(rt::PipelineIO::createForLLM(mCodePredictorConfig, mStream));
         rt::buildTensorMap(mCodePredictorTensorMap, *mCodePredictorPipelineIO, *mCodePredictorSharedRes,
             mCodePredictorConfig, /*kvCacheIndex=*/0);
-        mCodePredictorSharedRes->externalWeightManager->load(
-            codePredictorEngineDir, codePredictorConfigPath, mStream, checkpointDir);
+        mCodePredictorSharedRes->externalWeightManager = std::move(predictorWeights);
         mCodePredictorSharedRes->externalWeightManager->validateAgainstEngine(*mCodePredictorExec, "code predictor");
         mCodePredictorSharedRes->externalWeightManager->registerTensorMapEntries(mCodePredictorTensorMap);
 
@@ -482,8 +491,8 @@ bool Qwen3OmniTTSRuntime::initializeEngineRunners(
             mCodePredictorConfig.vocabSize, mCodePredictorConfig.hiddenSize, mCodePredictorConfig.numDecoderLayers);
         auto cpKVType = mCodePredictorConfig.kvCacheDtype;
         LOG_INFO("CodePredictor KV cache dtype: %s",
-            cpKVType == nvinfer1::DataType::kHALF ? "FP16"
-                                                  : (cpKVType == nvinfer1::DataType::kFP8 ? "FP8" : "UNKNOWN"));
+            cpKVType == trt_edgellm::DataType::kHALF ? "FP16"
+                                                     : (cpKVType == trt_edgellm::DataType::kFP8 ? "FP8" : "UNKNOWN"));
     }
     catch (std::exception const& e)
     {
@@ -796,7 +805,7 @@ bool Qwen3OmniTTSRuntime::loadCodePredictorWeights(std::string const& codePredic
                 int64_t const hidden = it->getShape()[1];
                 mTalkerConfig.codebookSize = static_cast<int32_t>(vocab);
                 mCodePredictorLmHeads = rt::Tensor(
-                    {mNumRvqLayers, vocab, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "lm_heads");
+                    {mNumRvqLayers, vocab, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "lm_heads");
             }
             check::check(it->getShape()[0] == mCodePredictorLmHeads.getShape()[1]
                     && it->getShape()[1] == mCodePredictorLmHeads.getShape()[2],
@@ -916,58 +925,58 @@ bool Qwen3OmniTTSRuntime::allocateBuffer()
     {
         // Per-batch prefill workspace (reused sequentially per batch in buildTalkerPrefillFromSegments)
         mThinkerEmbedBuffer = rt::Tensor(
-            {maxSeqLen, thinkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mThinkerEmbedBuffer");
+            {maxSeqLen, thinkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mThinkerEmbedBuffer");
         mGpuTokenIdsBuffer
-            = rt::Tensor({1, maxSeqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mGpuTokenIdsBuffer");
+            = rt::Tensor({1, maxSeqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mGpuTokenIdsBuffer");
         mMLPWorkspace = rt::Tensor(
-            {maxSeqLen, thinkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mMLPWorkspace");
+            {maxSeqLen, thinkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mMLPWorkspace");
         mProjectedBuffer = rt::Tensor(
-            {maxSeqLen, talkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mProjectedBuffer");
+            {maxSeqLen, talkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mProjectedBuffer");
         // Talker input embeds: [maxBS, maxSeqLen, H] for batched prefill
         mTalkerInputEmbeds = rt::Tensor({maxBS * maxSeqLen, talkerHiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "mTalkerInputEmbeds");
+            trt_edgellm::DataType::kHALF, "mTalkerInputEmbeds");
 
         // Talker LLM workspace — batched
-        mTalkerLogits = rt::Tensor(
-            {maxBS, mTalkerConfig.talkerVocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "mTalkerLogits");
+        mTalkerLogits = rt::Tensor({maxBS, mTalkerConfig.talkerVocabSize}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT, "mTalkerLogits");
         mTalkerSelectedIndices
-            = rt::Tensor({maxBS, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mTalkerSelectedIndices");
+            = rt::Tensor({maxBS, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mTalkerSelectedIndices");
         mHostSelectedTokenIds
-            = rt::Tensor({maxBS}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostSelectedTokenIds");
+            = rt::Tensor({maxBS}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostSelectedTokenIds");
         mSeenSeedHostScratch
-            = rt::Tensor({maxBS}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mSeenSeedHostScratch");
+            = rt::Tensor({maxBS}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mSeenSeedHostScratch");
 
         // CodePredictor workspace — sized to maxBS so any batch in [1, maxBS] just reshapes per-call.
         // Same pattern as Talker: the executor and ragged metadata are batch-size-agnostic;
         // the per-call reshape({activeBatchSize, ...}) makes them work.
         mCodePredictorLogits = rt::Tensor({maxBS, mTalkerConfig.codebookSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kFLOAT, "mCodePredictorLogits");
+            trt_edgellm::DataType::kFLOAT, "mCodePredictorLogits");
 
         // Device-selected lm_head index; contents advance per step, bindings stay put.
-        mCpLmHeadIdx = rt::Tensor({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCpLmHeadIdx");
+        mCpLmHeadIdx = rt::Tensor({1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCpLmHeadIdx");
 
         mCodePredictorPrefillInput = rt::Tensor({maxBS, 2, mTalkerConfig.codePredictorHiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "mCodePredictorPrefillInput");
+            trt_edgellm::DataType::kHALF, "mCodePredictorPrefillInput");
         mCodePredictorCodecIds
-            = rt::Tensor({maxBS, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCodePredictorCodecIds");
+            = rt::Tensor({maxBS, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCodePredictorCodecIds");
         mCodePredictorCodecEmbed = rt::Tensor({maxBS, 1, mTalkerConfig.codePredictorHiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "mCodePredictorCodecEmbed");
+            trt_edgellm::DataType::kHALF, "mCodePredictorCodecEmbed");
         mRawCodecEmbed = rt::Tensor({maxBS, 1, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "mRawCodecEmbed");
+            trt_edgellm::DataType::kHALF, "mRawCodecEmbed");
         mSmallToMtpProjectedHidden = rt::Tensor({maxBS, mTalkerConfig.codePredictorHiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "mSmallToMtpProjectedHidden");
-        mCodePredictorSelectedIndices
-            = rt::Tensor({maxBS, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCodePredictorSelectedIndices");
+            trt_edgellm::DataType::kHALF, "mSmallToMtpProjectedHidden");
+        mCodePredictorSelectedIndices = rt::Tensor(
+            {maxBS, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCodePredictorSelectedIndices");
         mHostSelectedCodeIds
-            = rt::Tensor({maxBS}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostSelectedCodeIds");
+            = rt::Tensor({maxBS}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostSelectedCodeIds");
         // Pinned (cudaMallocHost) buffer that accumulates the deferred CP gen samples
         // across all (mNumRvqLayers - 1) steps for up to maxBS active batches, so we
         // can do a single cudaStreamSynchronize per frame instead of one per step.
         // Layout: [step_idx, batch_idx] — step k writes to row k.
         mHostGenCodeBuf = rt::Tensor({static_cast<int64_t>(mNumRvqLayers - 1), maxBS}, rt::DeviceType::kCPU,
-            nvinfer1::DataType::kINT32, "mHostGenCodeBuf");
-        mHostCodePredictorContextLength
-            = rt::Tensor({maxBS}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostCodePredictorContextLength");
+            trt_edgellm::DataType::kINT32, "mHostGenCodeBuf");
+        mHostCodePredictorContextLength = rt::Tensor(
+            {maxBS}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostCodePredictorContextLength");
 
         if (mCpSpecDecodeK > 0)
         {
@@ -975,66 +984,67 @@ bool Qwen3OmniTTSRuntime::allocateBuffer()
             int64_t const nDraft = K - 1;
             int64_t const vocab = mTalkerConfig.codebookSize;
             int64_t const cpH = mTalkerConfig.codePredictorHiddenSize;
-            mCpDraftProbs
-                = rt::Tensor({maxBS, nDraft, vocab}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "mCpDraftProbs");
+            mCpDraftProbs = rt::Tensor(
+                {maxBS, nDraft, vocab}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "mCpDraftProbs");
             mCpDraftTokenIds
-                = rt::Tensor({maxBS, nDraft}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCpDraftTokenIds");
+                = rt::Tensor({maxBS, nDraft}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCpDraftTokenIds");
             mCpTargetProbs
-                = rt::Tensor({maxBS, K, vocab}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "mCpTargetProbs");
+                = rt::Tensor({maxBS, K, vocab}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "mCpTargetProbs");
             mCpVerifyInput
-                = rt::Tensor({maxBS, K, cpH}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mCpVerifyInput");
+                = rt::Tensor({maxBS, K, cpH}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mCpVerifyInput");
             mCpVerifyHidden
-                = rt::Tensor({maxBS, K, cpH}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mCpVerifyHidden");
+                = rt::Tensor({maxBS, K, cpH}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mCpVerifyHidden");
             mCpAcceptedTokenIds
-                = rt::Tensor({maxBS, K}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCpAcceptedTokenIds");
-            mCpAcceptLength = rt::Tensor({maxBS}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCpAcceptLength");
+                = rt::Tensor({maxBS, K}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCpAcceptedTokenIds");
+            mCpAcceptLength
+                = rt::Tensor({maxBS}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCpAcceptLength");
             mCpProposalLengths
-                = rt::Tensor({maxBS}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCpProposalLengths");
-            mHostCpAcceptedTokenIds
-                = rt::Tensor({maxBS, K}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostCpAcceptedTokenIds");
+                = rt::Tensor({maxBS}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCpProposalLengths");
+            mHostCpAcceptedTokenIds = rt::Tensor(
+                {maxBS, K}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostCpAcceptedTokenIds");
             mHostCpAcceptLength
-                = rt::Tensor({maxBS}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostCpAcceptLength");
+                = rt::Tensor({maxBS}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostCpAcceptLength");
             mCpLogitsFp16
-                = rt::Tensor({maxBS * K, vocab}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mCpLogitsFp16");
-            mCpSpecCtx = rt::Tensor({maxBS, cpH}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mCpSpecCtx");
+                = rt::Tensor({maxBS * K, vocab}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mCpLogitsFp16");
+            mCpSpecCtx = rt::Tensor({maxBS, cpH}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mCpSpecCtx");
             mCpVerifyCodeIds
-                = rt::Tensor({maxBS, K}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCpVerifyCodeIds");
+                = rt::Tensor({maxBS, K}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCpVerifyCodeIds");
             mCpRowIdx = rt::Tensor(
-                {kCpRowIdxPlanes, maxBS * K}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCpRowIdx");
+                {kCpRowIdxPlanes, maxBS * K}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCpRowIdx");
             // A round draws at most B*(K-1) draft plus B*(2K-1) accept values, and commits at
             // least one code, so mNumRvqLayers rounds bound a frame.
             mCpUniformPoolSize = static_cast<int64_t>(mNumRvqLayers) * maxBS * (3 * K);
-            mCpUniformPool
-                = rt::Tensor({mCpUniformPoolSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "mCpUniformPool");
+            mCpUniformPool = rt::Tensor(
+                {mCpUniformPoolSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "mCpUniformPool");
             mHostCpRowIdx = rt::Tensor(
-                {kCpRowIdxPlanes, maxBS * K}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostCpRowIdx");
+                {kCpRowIdxPlanes, maxBS * K}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostCpRowIdx");
             mCpStoreIdx = rt::Tensor(
-                {kCpStoreIdxPlanes, maxBS * K}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCpStoreIdx");
+                {kCpStoreIdxPlanes, maxBS * K}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCpStoreIdx");
             mHostCpStoreIdx = rt::Tensor(
-                {kCpStoreIdxPlanes, maxBS * K}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostCpStoreIdx");
+                {kCpStoreIdxPlanes, maxBS * K}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostCpStoreIdx");
             // Only the projected layout reads this, but it is 82 KB and allocating it
             // unconditionally keeps the workspace independent of weight-load ordering.
             mCpRawCodecEmbedRows = rt::Tensor({maxBS * K, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU,
-                nvinfer1::DataType::kHALF, "mCpRawCodecEmbedRows");
-            mHostCpSpecM = rt::Tensor({maxBS}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostCpSpecM");
+                trt_edgellm::DataType::kHALF, "mCpRawCodecEmbedRows");
+            mHostCpSpecM = rt::Tensor({maxBS}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostCpSpecM");
             mHostCpSpecBaseLen
-                = rt::Tensor({maxBS}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostCpSpecBaseLen");
+                = rt::Tensor({maxBS}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostCpSpecBaseLen");
             mHostCpProposalLens
-                = rt::Tensor({maxBS}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostCpProposalLens");
+                = rt::Tensor({maxBS}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostCpProposalLens");
             LOG_INFO("CodePredictor speculative decoding enabled: verify window %d", mCpSpecDecodeK);
         }
 
         // Residual + decode buffers — batched for Talker engine execution
         mResidualEmbedBuffer = rt::Tensor({maxBS, 1, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "mResidualEmbedBuffer");
+            trt_edgellm::DataType::kHALF, "mResidualEmbedBuffer");
         mTalkerDecodingIds
-            = rt::Tensor({maxBS, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mTalkerDecodingIds");
+            = rt::Tensor({maxBS, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mTalkerDecodingIds");
         mTalkerDecodingEmbed = rt::Tensor({maxBS, 1, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "mTalkerDecodingEmbed");
+            trt_edgellm::DataType::kHALF, "mTalkerDecodingEmbed");
 
         // KVCache reset — batched
         mHostReuseKVCacheLengths
-            = rt::Tensor({maxBS}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "mHostReuseKVCacheLengths");
+            = rt::Tensor({maxBS}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "mHostReuseKVCacheLengths");
 
         // Sampling workspace — allocated at maxBS for batched topKtopP
         int32_t const defaultTopK{0};
@@ -1044,49 +1054,50 @@ bool Qwen3OmniTTSRuntime::allocateBuffer()
         int64_t const samplingWorkspaceSize = trt_edgellm::getTopKtopPSamplingWorkspaceSize(
             static_cast<int32_t>(maxBS), mTalkerConfig.talkerVocabSize, samplingParams);
         mSamplingWorkspace = rt::Tensor(
-            {samplingWorkspaceSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "mSamplingWorkspace");
+            {samplingWorkspaceSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "mSamplingWorkspace");
         // Per-batch seen codec tokens for repetition penalty
         mSeenCodecTokensBuf = rt::Tensor({maxBS, mTalkerLLMConfig.maxKVCacheCapacity}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kINT32, "mSeenCodecTokensBuf");
+            trt_edgellm::DataType::kINT32, "mSeenCodecTokensBuf");
 
         // Generation loop workspace — Talker batched, CodePredictor batch=1
         mTalkerHiddenStatesBuffer = rt::Tensor({maxBS, maxSeqLen, talkerHiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "mTalkerHiddenStatesBuffer");
+            trt_edgellm::DataType::kHALF, "mTalkerHiddenStatesBuffer");
         mCodePredictorHiddenStatesBuffer = rt::Tensor({maxBS, mNumCodesPerFrame, mTalkerConfig.codePredictorHiddenSize},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mCodePredictorHiddenStatesBuffer");
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mCodePredictorHiddenStatesBuffer");
         mTalkerLastHidden = rt::Tensor(
-            {maxBS, talkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mTalkerLastHidden");
+            {maxBS, talkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mTalkerLastHidden");
         mCodecHiddensBuffer = rt::Tensor({maxBS, mNumCodesPerFrame, mTalkerConfig.talkerHiddenSize},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mCodecHiddensBuffer");
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mCodecHiddensBuffer");
 
         // Trailing text hidden buffer: [maxBS * (maxSeqLen+1), H] — per-batch regions for Omni multi-batch
         mStreamingTrailingHidden = rt::Tensor({maxBS * (maxSeqLen + 1), talkerHiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "mStreamingTrailingHidden");
+            trt_edgellm::DataType::kHALF, "mStreamingTrailingHidden");
 
         // Gather/scatter index buffer for multimodal token projection
         mGatherIndicesBuffer
-            = rt::Tensor({maxSeqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mGatherIndicesBuffer");
+            = rt::Tensor({maxSeqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mGatherIndicesBuffer");
 
         // Streaming: single-token workspace for appendTrailingToken
-        mStreamingTokenId = rt::Tensor({1, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mStreamingTokenId");
+        mStreamingTokenId
+            = rt::Tensor({1, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mStreamingTokenId");
         mStreamingTokenEmbed = rt::Tensor(
-            {1, thinkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mStreamingTokenEmbed");
-        mStreamingProjOut
-            = rt::Tensor({1, talkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mStreamingProjOut");
-        mStreamingMlpWork
-            = rt::Tensor({1, thinkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mStreamingMlpWork");
+            {1, thinkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mStreamingTokenEmbed");
+        mStreamingProjOut = rt::Tensor(
+            {1, talkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mStreamingProjOut");
+        mStreamingMlpWork = rt::Tensor(
+            {1, thinkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mStreamingMlpWork");
 
         // OmniNext persistent buffers; values filled by initializeTTSEmbeddings.
         mQwen3OmniNextZeroResidualAddend = rt::Tensor(
-            {talkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "mQwen3OmniNextZeroResidualAddend");
-        mNegInfConst = rt::Tensor({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "mNegInfConst");
+            {talkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "mQwen3OmniNextZeroResidualAddend");
+        mNegInfConst = rt::Tensor({1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "mNegInfConst");
         int32_t const numCodeGroups = mTalkerConfig.numCodeGroups;
         mCodecEmbPtrTable = rt::Tensor({numCodeGroups, static_cast<int64_t>(sizeof(__half const*))},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "mCodecEmbPtrTable");
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "mCodecEmbPtrTable");
         mCodecEmbVocabSizes
-            = rt::Tensor({numCodeGroups}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "mCodecEmbVocabSizes");
+            = rt::Tensor({numCodeGroups}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "mCodecEmbVocabSizes");
         mCodecRowCodes
-            = rt::Tensor({numCodeGroups}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "mCodecRowCodes");
+            = rt::Tensor({numCodeGroups}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "mCodecRowCodes");
 
         LOG_INFO("Talker buffers allocated (maxBS=%d, maxSeqLen=%ld, talkerH=%ld, cpH=%d)", mMaxBatchSize, maxSeqLen,
             talkerHiddenSize, mTalkerConfig.codePredictorHiddenSize);
@@ -1291,11 +1302,11 @@ void Qwen3OmniTTSRuntime::initializeTTSEmbeddings(cudaStream_t stream)
     std::vector<int32_t> const hostTtsIds
         = {mTalkerConfig.ttsPadTokenId, mTalkerConfig.ttsBosTokenId, mTalkerConfig.ttsEosTokenId};
 
-    rt::Tensor ttsIds({1, kNumTtsTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor ttsRaw({1, kNumTtsTokens, thinkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor ttsIds({1, kNumTtsTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor ttsRaw({1, kNumTtsTokens, thinkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor ttsProjected(
-        {kNumTtsTokens, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor workspace({kNumTtsTokens, thinkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        {kNumTtsTokens, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor workspace({kNumTtsTokens, thinkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     CUDA_CHECK(cudaMemcpyAsync(
         ttsIds.rawPointer(), hostTtsIds.data(), kNumTtsTokens * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
@@ -1317,9 +1328,9 @@ void Qwen3OmniTTSRuntime::initializeTTSEmbeddings(cudaStream_t stream)
     }
 
     int64_t const hiddenSize = mTalkerConfig.talkerHiddenSize;
-    mTtsPadEmbed = rt::Tensor({hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    mTtsBosEmbed = rt::Tensor({hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    mTtsEosEmbed = rt::Tensor({hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    mTtsPadEmbed = rt::Tensor({hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    mTtsBosEmbed = rt::Tensor({hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    mTtsEosEmbed = rt::Tensor({hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     __half* const projectedPtr = static_cast<__half*>(ttsProjected.rawPointer());
     size_t const embedSize = hiddenSize * sizeof(__half);
@@ -1403,8 +1414,8 @@ bool Qwen3OmniTTSRuntime::executeTalkerPrefillStep(rt::Tensor const& inputEmbeds
         return false;
     }
 
-    int64_t const batchSize = inputEmbeds.getTRTDims().d[0];
-    int64_t const seqLen = inputEmbeds.getTRTDims().d[1];
+    int64_t const batchSize = inputShape[0];
+    int64_t const seqLen = inputShape[1];
 
     if (batchSize > mMaxBatchSize)
     {
@@ -1620,7 +1631,8 @@ bool Qwen3OmniTTSRuntime::captureDecodingCUDAGraph(cudaStream_t stream)
         // so the captured graph reflects realistic plugin shapes / KV-length math.
         constexpr int32_t kSimulateCacheLength{128};
         std::vector<int32_t> reuseLens(bs, kSimulateCacheLength);
-        rt::Tensor simulatedReuse(reuseLens.data(), rt::Coords{bs}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32);
+        rt::Tensor simulatedReuse(
+            reuseLens.data(), rt::Coords{bs}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32);
         talkerCacheMgr.resetForNewSequences(simulatedReuse, stream);
         std::fill_n(mTalkerPastLengths.begin(), bs, kSimulateCacheLength);
         std::fill_n(mTalkerQueryLengths.begin(), bs, 1);
@@ -1649,7 +1661,7 @@ bool Qwen3OmniTTSRuntime::captureDecodingCUDAGraph(cudaStream_t stream)
     {
         std::vector<int32_t> zeroLens(mMaxBatchSize, 0);
         rt::Tensor zeroReuse(
-            zeroLens.data(), rt::Coords{mMaxBatchSize}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32);
+            zeroLens.data(), rt::Coords{mMaxBatchSize}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32);
         talkerCacheMgr.resetForNewSequences(zeroReuse, stream);
         std::fill(mTalkerPastLengths.begin(), mTalkerPastLengths.end(), 0);
     }
@@ -1664,7 +1676,7 @@ bool Qwen3OmniTTSRuntime::captureDecodingCUDAGraph(cudaStream_t stream)
         // Simulate a mid-sequence CP decode state for capture, clamped to engine capacity.
         int32_t const simLen = std::min(128, mCodePredictorConfig.maxKVCacheCapacity - 1);
         std::vector<int32_t> simLens(bs, simLen);
-        rt::Tensor simReuse(simLens.data(), rt::Coords{bs}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32);
+        rt::Tensor simReuse(simLens.data(), rt::Coords{bs}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32);
         cpCacheMgr.resetForNewSequences(simReuse, stream);
         std::fill_n(mCodePredictorPastLengths.begin(), bs, simLen);
 
@@ -1687,7 +1699,8 @@ bool Qwen3OmniTTSRuntime::captureDecodingCUDAGraph(cudaStream_t stream)
             {
                 int32_t const simLen = std::min(128, mCodePredictorConfig.maxKVCacheCapacity - 1 - mCpSpecDecodeK);
                 std::vector<int32_t> simLens(bs, simLen);
-                rt::Tensor simReuse(simLens.data(), rt::Coords{bs}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32);
+                rt::Tensor simReuse(
+                    simLens.data(), rt::Coords{bs}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32);
                 cpCacheMgr.resetForNewSequences(simReuse, stream);
 
                 check::check(mCpVerifyInput.reshape({bs, seqLen, cpH}), "Tensor reshape failed");
@@ -1705,7 +1718,7 @@ bool Qwen3OmniTTSRuntime::captureDecodingCUDAGraph(cudaStream_t stream)
     {
         std::vector<int32_t> zeroLens(mMaxBatchSize, 0);
         rt::Tensor zeroReuse(
-            zeroLens.data(), rt::Coords{mMaxBatchSize}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32);
+            zeroLens.data(), rt::Coords{mMaxBatchSize}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32);
         cpCacheMgr.resetForNewSequences(zeroReuse, stream);
         std::fill(mCodePredictorPastLengths.begin(), mCodePredictorPastLengths.end(), 0);
     }
@@ -2068,8 +2081,8 @@ bool Qwen3OmniTTSRuntime::handleAudioGeneration(
             int64_t const trailingStride = mTalkerConfig.maxSeqLen + 1;
             __half* const trailingPtr
                 = static_cast<__half*>(mStreamingTrailingHidden.rawPointer()) + b * trailingStride * hiddenSize;
-            rt::Tensor trailingBuf(
-                trailingPtr, rt::Coords{trailingStride, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            rt::Tensor trailingBuf(trailingPtr, rt::Coords{trailingStride, hiddenSize}, rt::DeviceType::kGPU,
+                trt_edgellm::DataType::kHALF);
             CUDA_CHECK(cudaMemsetAsync(trailingPtr, 0, trailingStride * hiddenSize * sizeof(__half), stream));
 
             int32_t trailingCount = 0;
@@ -2180,9 +2193,9 @@ bool Qwen3OmniTTSRuntime::handleAudioGeneration(
     for (int32_t b = 0; b < activeBatchSize; ++b)
     {
         rt::Tensor logitsSlice(static_cast<float*>(mTalkerLogits.rawPointer()) + b * mTalkerConfig.talkerVocabSize,
-            rt::Coords{1, mTalkerConfig.talkerVocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+            rt::Coords{1, mTalkerConfig.talkerVocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
         rt::Tensor seenBufSlice(mSeenCodecTokensBuf.dataPointer<int32_t>() + b * mTalkerLLMConfig.maxKVCacheCapacity,
-            rt::Coords{mTalkerLLMConfig.maxKVCacheCapacity}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+            rt::Coords{mTalkerLLMConfig.maxKVCacheCapacity}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         kernel::invokeTalkerLogitAdjust(seenBufSlice, logitsSlice, mTalkerConfig.talkerSuppressStart,
             mTalkerConfig.talkerVocabSize, mTalkerConfig.codecEosId, 0, repetitionPenalty, stream);
 
@@ -2195,14 +2208,13 @@ bool Qwen3OmniTTSRuntime::handleAudioGeneration(
         }
     }
 
-    // Batched sampling at bs=activeBatchSize. PhiloxOffset=0 for the FIRST frame after prefill so
+    // Batched sampling at bs=activeBatchSize. Random offset 0 for the FIRST frame after prefill so
     // it aligns with the runTalkerGenerationLoop chain that uses ``globalFrame+1`` for subsequent
     // frames (frame 0 sampled here, frame 1 uses offset 1, etc.). Without an explicit offset the
     // sampler default also produces 0 here, so the chain happens to align, but we pass it
     // explicitly to make the intent clear and avoid silent breakage if defaults change.
     trt_edgellm::topKtopPSamplingFromLogits(mTalkerLogits, mTalkerSelectedIndices, talkerSamplingParams,
-        mSamplingWorkspace, stream,
-        /*philoxSeed=*/42, /*philoxOffset=*/0);
+        mSamplingWorkspace, stream, kTalkerSamplingSeed, /*randomOffset=*/0);
     check::check(mHostSelectedTokenIds.reshape({activeBatchSize}), "Tensor reshape failed");
     CUDA_CHECK(cudaMemcpyAsync(mHostSelectedTokenIds.rawPointer(), mTalkerSelectedIndices.rawPointer(),
         activeBatchSize * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
@@ -2339,8 +2351,8 @@ bool Qwen3OmniTTSRuntime::handleAudioGenerationFromThinker(
 
         __half* const batchTrailingPtr
             = static_cast<__half*>(mStreamingTrailingHidden.rawPointer()) + b * trailingStride * hiddenSize;
-        rt::Tensor batchTrailingBuf(
-            batchTrailingPtr, rt::Coords{trailingStride, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor batchTrailingBuf(batchTrailingPtr, rt::Coords{trailingStride, hiddenSize}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kHALF);
         CUDA_CHECK(cudaMemsetAsync(batchTrailingPtr, 0, trailingStride * hiddenSize * sizeof(__half), stream));
 
         int32_t trailingCount = 0;
@@ -2364,7 +2376,7 @@ bool Qwen3OmniTTSRuntime::handleAudioGenerationFromThinker(
 
         perBatchTrailingViews[b]
             = rt::Tensor(batchTrailingPtr, rt::Coords{static_cast<int64_t>(trailingCount), hiddenSize},
-                rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
         trailingPtrs[b] = &perBatchTrailingViews[b];
         states[b].rvqCodes.reserve(req.maxAudioLength);
         return true;
@@ -2428,14 +2440,14 @@ bool Qwen3OmniTTSRuntime::handleAudioGenerationFromThinker(
     for (int32_t b = 0; b < activeBatchSize; ++b)
     {
         rt::Tensor logitsSlice(static_cast<float*>(mTalkerLogits.rawPointer()) + b * mTalkerConfig.talkerVocabSize,
-            rt::Coords{1, mTalkerConfig.talkerVocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+            rt::Coords{1, mTalkerConfig.talkerVocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
 
         kernel::invokeTalkerLogitAdjust(mSeenCodecTokensBuf, logitsSlice, mTalkerConfig.talkerSuppressStart,
             mTalkerConfig.talkerVocabSize, mTalkerConfig.codecEosId, 0, repetitionPenalty, stream);
     }
 
-    trt_edgellm::topKtopPSamplingFromLogits(
-        mTalkerLogits, mTalkerSelectedIndices, talkerSamplingParams, mSamplingWorkspace, stream);
+    trt_edgellm::topKtopPSamplingFromLogits(mTalkerLogits, mTalkerSelectedIndices, talkerSamplingParams,
+        mSamplingWorkspace, stream, kTalkerSamplingSeed, /*randomOffset=*/0);
     CUDA_CHECK(cudaMemcpyAsync(mHostSelectedTokenIds.rawPointer(), mTalkerSelectedIndices.rawPointer(),
         activeBatchSize * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -2579,10 +2591,10 @@ bool Qwen3OmniTTSRuntime::runTalkerGenerationLoop(std::vector<PerBatchTalkerStat
                     = (!prefillSeqLens.empty() && paddedSeqDim > 1) ? prefillSeqLens[b] : paddedSeqDim;
                 rt::Tensor batchHiddenView(
                     static_cast<__half*>(mTalkerHiddenStatesBuffer.rawPointer()) + b * paddedSeqDim * hDim,
-                    rt::Coords{1, actualSeqDim, hDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+                    rt::Coords{1, actualSeqDim, hDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
                 rt::Tensor outSlice(
                     static_cast<__half*>(mTalkerLastHidden.rawPointer()) + b * mTalkerConfig.talkerHiddenSize,
-                    rt::Coords{1, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+                    rt::Coords{1, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
                 if (!extractTalkerLastHidden(batchHiddenView, outSlice, stream))
                 {
                     LOG_ERROR("extractTalkerLastHidden failed for batch %d frame %d", b, globalFrame);
@@ -2601,7 +2613,7 @@ bool Qwen3OmniTTSRuntime::runTalkerGenerationLoop(std::vector<PerBatchTalkerStat
             // occupy a slot (dummy work) until a future evict pass is added.
             std::vector<std::vector<int32_t>> framesPerBatch;
             if (!runCodePredictorGenerationForFrame(activeBatchSize, activeBatchCodes, mTalkerLastHidden,
-                    predictorSamplingParams, framesPerBatch, stream))
+                    predictorSamplingParams, globalFrame, framesPerBatch, stream))
             {
                 LOG_ERROR("CodePredictor failed at frame %d", globalFrame);
                 return false;
@@ -2623,13 +2635,14 @@ bool Qwen3OmniTTSRuntime::runTalkerGenerationLoop(std::vector<PerBatchTalkerStat
 
                 rt::Tensor residualSlice(
                     static_cast<__half*>(mResidualEmbedBuffer.rawPointer()) + b * mTalkerConfig.talkerHiddenSize,
-                    rt::Coords{1, 1, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+                    rt::Coords{1, 1, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU,
+                    trt_edgellm::DataType::kHALF);
 
                 // Per-batch view into mCodecHiddensBuffer[b] for this batch's residual computation.
                 rt::Tensor codecHiddensView(
                     static_cast<__half*>(mCodecHiddensBuffer.rawPointer()) + b * codecHiddensRowStride,
                     rt::Coords{1, mNumCodesPerFrame, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU,
-                    nvinfer1::DataType::kHALF);
+                    trt_edgellm::DataType::kHALF);
 
                 if (!computeResidualConnection(codecHiddensView, states[b].rvqCodes.back(), trailingTextHiddens[b],
                         globalFrame, residualSlice, stream))
@@ -2663,12 +2676,13 @@ bool Qwen3OmniTTSRuntime::runTalkerGenerationLoop(std::vector<PerBatchTalkerStat
                 // Create views into batch b's logits row
                 rt::Tensor logitsSlice(
                     static_cast<float*>(mTalkerLogits.rawPointer()) + b * mTalkerConfig.talkerVocabSize,
-                    rt::Coords{1, mTalkerConfig.talkerVocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+                    rt::Coords{1, mTalkerConfig.talkerVocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
 
                 // Per-batch seenTokens buffer
                 rt::Tensor seenBufSlice(
                     mSeenCodecTokensBuf.dataPointer<int32_t>() + b * mTalkerLLMConfig.maxKVCacheCapacity,
-                    rt::Coords{mTalkerLLMConfig.maxKVCacheCapacity}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+                    rt::Coords{mTalkerLLMConfig.maxKVCacheCapacity}, rt::DeviceType::kGPU,
+                    trt_edgellm::DataType::kINT32);
 
                 kernel::invokeTalkerLogitAdjust(seenBufSlice, logitsSlice, mTalkerConfig.talkerSuppressStart,
                     mTalkerConfig.talkerVocabSize, codecEosId, states[b].numSeenTokens, repetitionPenalty, stream);
@@ -2695,7 +2709,7 @@ bool Qwen3OmniTTSRuntime::runTalkerGenerationLoop(std::vector<PerBatchTalkerStat
                 mTalkerLogits.reshape({activeBatchSize, mTalkerConfig.talkerVocabSize}), "Tensor reshape failed");
             check::check(mTalkerSelectedIndices.reshape({activeBatchSize, 1}), "Tensor reshape failed");
             trt_edgellm::topKtopPSamplingFromLogits(mTalkerLogits, mTalkerSelectedIndices, talkerSamplingParams,
-                mSamplingWorkspace, stream, 42, static_cast<uint64_t>(globalFrame + 1));
+                mSamplingWorkspace, stream, kTalkerSamplingSeed, static_cast<uint64_t>(globalFrame + 1));
             CUDA_CHECK(cudaMemcpyAsync(mHostSelectedTokenIds.rawPointer(), mTalkerSelectedIndices.rawPointer(),
                 activeBatchSize * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
             CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -2783,10 +2797,10 @@ bool Qwen3OmniTTSRuntime::runSingleTalkerDecodeFrame(int32_t& codecToken, Sampli
 
     // Wrap mTalkerLastHidden as a [1, talkerH] batched view for the unified CP call.
     rt::Tensor talkerLastBatched(mTalkerLastHidden.rawPointer(), rt::Coords{1, mTalkerConfig.talkerHiddenSize},
-        rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     std::vector<std::vector<int32_t>> framesPerBatch;
     if (!runCodePredictorGenerationForFrame(/*activeBatchSize=*/1, std::vector<int32_t>{codecToken}, talkerLastBatched,
-            predictorSamplingParams, framesPerBatch, stream))
+            predictorSamplingParams, frameIdx, framesPerBatch, stream))
     {
         LOG_ERROR("CodePredictor generation failed at frame %d", frameIdx);
         return false;
@@ -2797,7 +2811,7 @@ bool Qwen3OmniTTSRuntime::runSingleTalkerDecodeFrame(int32_t& codecToken, Sampli
     // Per-batch view (batch 0) into mCodecHiddensBuffer for residual.
     rt::Tensor codecHiddensView(mCodecHiddensBuffer.rawPointer(),
         rt::Coords{1, mNumCodesPerFrame, mTalkerConfig.talkerHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF);
+        trt_edgellm::DataType::kHALF);
     if (!computeResidualConnection(
             codecHiddensView, rvqCodes.back(), trailingPtr, frameIdx, mResidualEmbedBuffer, stream))
     {
@@ -2817,7 +2831,7 @@ bool Qwen3OmniTTSRuntime::runSingleTalkerDecodeFrame(int32_t& codecToken, Sampli
     kernel::invokeTalkerLogitAdjust(mSeenCodecTokensBuf, mTalkerLogits, mTalkerConfig.talkerSuppressStart,
         mTalkerConfig.talkerVocabSize, codecEosId, numSeenTokens, repetitionPenalty, stream);
     trt_edgellm::topKtopPSamplingFromLogits(mTalkerLogits, mTalkerSelectedIndices, talkerSamplingParams,
-        mSamplingWorkspace, stream, 42, static_cast<uint64_t>(frameIdx + 1));
+        mSamplingWorkspace, stream, kTalkerSamplingSeed, static_cast<uint64_t>(frameIdx + 1));
     CUDA_CHECK(cudaMemcpyAsync(mHostSelectedTokenIds.rawPointer(), mTalkerSelectedIndices.rawPointer(), sizeof(int32_t),
         cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -2831,7 +2845,8 @@ bool Qwen3OmniTTSRuntime::runSingleTalkerDecodeFrame(int32_t& codecToken, Sampli
 
 bool Qwen3OmniTTSRuntime::runCodePredictorGenerationForFrame(int32_t activeBatchSize,
     std::vector<int32_t> const& codecTokensPerBatch, rt::Tensor const& talkerLastHiddenBatched,
-    SamplingParams const& samplingParams, std::vector<std::vector<int32_t>>& outputCodesPerBatch, cudaStream_t stream)
+    SamplingParams const& samplingParams, int32_t frameIdx, std::vector<std::vector<int32_t>>& outputCodesPerBatch,
+    cudaStream_t stream)
 {
     NVTX_SCOPED_RANGE(nvtx_range, "TalkerRunner::runCodePredictorGenerationForFrame", nvtx_colors::ORANGE);
 
@@ -2887,9 +2902,9 @@ bool Qwen3OmniTTSRuntime::runCodePredictorGenerationForFrame(int32_t activeBatch
 
         // 2D views into the [activeBS, 1, talkerH] sources to feed projectToCpView.
         rt::Tensor talkerInput2D(const_cast<__half*>(static_cast<__half const*>(talkerLastHiddenBatched.rawPointer())),
-            rt::Coords{activeBatchSize, talkerH}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            rt::Coords{activeBatchSize, talkerH}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
         rt::Tensor rawCodec2D(mRawCodecEmbed.rawPointer(), rt::Coords{activeBatchSize, talkerH}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF);
+            trt_edgellm::DataType::kHALF);
 
         rt::Tensor const* talkerCpView = projectToCpView(talkerInput2D, mSmallToMtpProjectedHidden);
         rt::Tensor const* codecCpView = projectToCpView(rawCodec2D, mCodePredictorCodecEmbed);
@@ -2916,8 +2931,8 @@ bool Qwen3OmniTTSRuntime::runCodePredictorGenerationForFrame(int32_t activeBatch
         check::check(mCodePredictorSelectedIndices.reshape({activeBatchSize, 1}), "Tensor reshape failed");
         SamplingParams const perCallParams(
             activeBatchSize, codebookSize, samplingParams.temperature, samplingParams.topK, samplingParams.topP);
-        trt_edgellm::topKtopPSamplingFromLogits(
-            logitsHead0, mCodePredictorSelectedIndices, perCallParams, mSamplingWorkspace, stream);
+        trt_edgellm::topKtopPSamplingFromLogits(logitsHead0, mCodePredictorSelectedIndices, perCallParams,
+            mSamplingWorkspace, stream, kCpSamplingSeed, cpSamplingOffset(frameIdx, /*codeIdx=*/1, mNumRvqLayers));
         check::check(mHostSelectedCodeIds.reshape({activeBatchSize}), "Tensor reshape failed");
         CUDA_CHECK(cudaMemcpyAsync(mHostSelectedCodeIds.rawPointer(), mCodePredictorSelectedIndices.rawPointer(),
             activeBatchSize * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
@@ -2995,7 +3010,7 @@ bool Qwen3OmniTTSRuntime::runCodePredictorGenerationForFrame(int32_t activeBatch
 
             // Project raw codec embed -> mCodePredictorCodecEmbed [activeBS, 1, cpH].
             rt::Tensor rawCodec2D(mRawCodecEmbed.rawPointer(), rt::Coords{activeBatchSize, talkerH},
-                rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
             rt::Tensor const* projectedView = projectToCpView(rawCodec2D, mSmallToMtpProjectedHidden);
             check::check(mCodePredictorCodecEmbed.reshape({activeBatchSize, 1, cpH}), "Tensor reshape failed");
             if (projectedView->rawPointer() != mCodePredictorCodecEmbed.rawPointer())
@@ -3024,8 +3039,9 @@ bool Qwen3OmniTTSRuntime::runCodePredictorGenerationForFrame(int32_t activeBatch
             check::check(mCodePredictorLogits.reshape({activeBatchSize, codebookSize}), "Tensor reshape failed");
             SamplingParams const perCallParams(
                 activeBatchSize, codebookSize, samplingParams.temperature, samplingParams.topK, samplingParams.topP);
-            trt_edgellm::topKtopPSamplingFromLogits(
-                mCodePredictorLogits, mCodePredictorSelectedIndices, perCallParams, mSamplingWorkspace, stream);
+            trt_edgellm::topKtopPSamplingFromLogits(mCodePredictorLogits, mCodePredictorSelectedIndices, perCallParams,
+                mSamplingWorkspace, stream, kCpSamplingSeed,
+                cpSamplingOffset(frameIdx, /*codeIdx=*/step, mNumRvqLayers));
 
             // Async D2H into row (step-2) of the pinned host buffer; drained after the loop.
             CUDA_CHECK(
@@ -3675,7 +3691,7 @@ bool Qwen3OmniTTSRuntime::buildTalkerPrefillFromSegments(std::vector<int32_t> co
                 genLen * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
             __half* genDst = static_cast<__half*>(mThinkerEmbedBuffer.rawPointer()) + copyLen * thinkerHiddenSize;
             rt::Tensor genEmbedView(genDst, rt::Coords{1, static_cast<int64_t>(genLen), thinkerHiddenSize},
-                rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
             kernel::embeddingLookup(mGpuTokenIdsBuffer, thinkerEmbedTable, std::nullopt, genEmbedView, stream);
         }
     }
@@ -3685,7 +3701,7 @@ bool Qwen3OmniTTSRuntime::buildTalkerPrefillFromSegments(std::vector<int32_t> co
         CUDA_CHECK(cudaMemcpyAsync(mGpuTokenIdsBuffer.rawPointer(), textTokenIds.data(), seqLen * sizeof(int32_t),
             cudaMemcpyHostToDevice, stream));
         rt::Tensor embedView(mThinkerEmbedBuffer.rawPointer(), rt::Coords{1, seqLen, thinkerHiddenSize},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
         kernel::embeddingLookup(mGpuTokenIdsBuffer, thinkerEmbedTable, std::nullopt, embedView, stream);
     }
 
@@ -3773,7 +3789,7 @@ bool Qwen3OmniTTSRuntime::buildTalkerPrefillFromSegments(std::vector<int32_t> co
 
             rt::Tensor hiddenSource(const_cast<void*>(prefillHiddenPtr->rawPointer()),
                 rt::Coords{static_cast<int64_t>(prefillLen), thinkerHiddenSize}, rt::DeviceType::kGPU,
-                nvinfer1::DataType::kHALF);
+                trt_edgellm::DataType::kHALF);
             kernel::invokeGather(hiddenSource, mGatherIndicesBuffer, mThinkerEmbedBuffer, stream);
 
             if (isOmniNext())
@@ -3845,11 +3861,11 @@ bool Qwen3OmniTTSRuntime::buildTalkerPrefillFromSegments(std::vector<int32_t> co
             "mTalkerInputEmbeds too small for preamble scratch");
         __half* const scratchPtr = static_cast<__half*>(mTalkerInputEmbeds.rawPointer()) + outSeqLen * hiddenSize;
         rt::Tensor preambleScratch(
-            scratchPtr, rt::Coords{kPreambleFullLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            scratchPtr, rt::Coords{kPreambleFullLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         int64_t const assistantInputLen = kAssistantPrefixLen + 1;
         rt::Tensor assistantSlice(const_cast<__half*>(assistantProjPtr), rt::Coords{assistantInputLen, hiddenSize},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         // Omni path stays language-free: Omni checkpoints have no codec_think_id and build
         // their prefill without language conditioning.
@@ -3942,7 +3958,7 @@ void Qwen3OmniTTSRuntime::sumSpeakerCodecRow(
     CUDA_CHECK(cudaMemcpyAsync(
         mCodecRowCodes.rawPointer(), hostCodes, numCodeGroups * sizeof(int64_t), cudaMemcpyHostToDevice, stream));
     rt::Tensor rowOut(
-        dstBase + dstRow * hiddenSize, rt::Coords{hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        dstBase + dstRow * hiddenSize, rt::Coords{hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     kernel::invokeSpeakerCodecSum(mCodecRowCodes, mCodecEmbPtrTable, mCodecEmbVocabSizes, rowOut, stream);
 }
 
@@ -3952,10 +3968,10 @@ void Qwen3OmniTTSRuntime::projectHiddenRow(
     int64_t const thinkerHiddenSize = mTalkerConfig.thinkerHiddenSize;
     int64_t const talkerHiddenSize = mTalkerConfig.talkerHiddenSize;
     __half const* hSrc = static_cast<__half const*>(prefillHidden.rawPointer()) + srcRow * thinkerHiddenSize;
-    rt::Tensor hSlice(
-        const_cast<__half*>(hSrc), rt::Coords{1, thinkerHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor hSlice(const_cast<__half*>(hSrc), rt::Coords{1, thinkerHiddenSize}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kHALF);
     rt::Tensor outSlice(dstBase + dstRow * talkerHiddenSize, rt::Coords{1, talkerHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF);
+        trt_edgellm::DataType::kHALF);
     kernel::invokeLinearLayer(hSlice, mHiddenProjLinearWeight, mHiddenProjLinearBias, outSlice, stream);
 }
 
@@ -4680,7 +4696,7 @@ bool Qwen3OmniTTSRuntime::reprefillQwen3OmniNextChunk(int32_t batchIdx,
     }
 
     // (4) Sample first codec token of the new call. Suppress EOS while more chunks are still due
-    // (PT enforces min_new_tokens=chunk_m+1 on every non-last call). Vary the philox offset per
+    // (PT enforces min_new_tokens=chunk_m+1 on every non-last call). Vary the random offset per
     // call so every talker sample sees a distinct RNG state.
     // HF reissues a fresh generate() per chunk call, so the repetition-penalty window
     // resets at every re-prefill; only the post-text final stretch accumulates.
@@ -4694,7 +4710,7 @@ bool Qwen3OmniTTSRuntime::reprefillQwen3OmniNextChunk(int32_t batchIdx,
     }
     uint64_t const reprefillOffset = static_cast<uint64_t>(mQwen3OmniNextChunkStates[batchIdx].firstFrameOfCallIdx) + 1;
     trt_edgellm::topKtopPSamplingFromLogits(mTalkerLogits, mTalkerSelectedIndices, talkerSamplingParams,
-        mSamplingWorkspace, stream, /*philoxSeed=*/42, /*philoxOffset=*/reprefillOffset);
+        mSamplingWorkspace, stream, kTalkerSamplingSeed, /*randomOffset=*/reprefillOffset);
     CUDA_CHECK(cudaMemcpyAsync(mHostSelectedTokenIds.rawPointer(), mTalkerSelectedIndices.rawPointer(), sizeof(int32_t),
         cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -4728,7 +4744,7 @@ void Qwen3OmniTTSRuntime::appendTrailingToken(int32_t tokenId, rt::Tensor const&
     // embed_tokens(tokenId) → mStreamingTokenEmbed [1, thinkerH]
     // embeddingLookup expects [1, 1, H] output; mStreamingTokenEmbed is [1, H] — same memory, just reshape for kernel
     rt::Tensor embedView(mStreamingTokenEmbed.rawPointer(), rt::Coords{1, 1, mTalkerConfig.thinkerHiddenSize},
-        rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     kernel::embeddingLookup(mStreamingTokenId, thinkerEmbedTable, std::nullopt, embedView, stream);
 
     // text_projection: mStreamingTokenEmbed [1, thinkerH] → mStreamingProjOut [1, talkerH].
@@ -4839,7 +4855,7 @@ bool Qwen3OmniTTSRuntime::handleStreamingGeneration(LLMInferenceRuntime& thinker
     auto makeTrailingView = [&]() -> rt::Tensor {
         return rt::Tensor(mStreamingTrailingHidden.rawPointer(),
             rt::Coords{static_cast<int64_t>(state.trailingIdx), hiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF);
+            trt_edgellm::DataType::kHALF);
     };
 
     // ===== Per-token callback for the Thinker decode loop =====
@@ -4936,8 +4952,8 @@ bool Qwen3OmniTTSRuntime::handleStreamingGeneration(LLMInferenceRuntime& thinker
                 mTalkerConfig.talkerVocabSize, codecEosId, numSeenTokens, repetitionPenalty, stream);
             // Streaming Talker runs at batch=1, so selectedIndices must match the sampler's {1, 1} input shape.
             check::check(mTalkerSelectedIndices.reshape({1, 1}), "Tensor reshape failed");
-            trt_edgellm::topKtopPSamplingFromLogits(
-                mTalkerLogits, mTalkerSelectedIndices, talkerSamplingParams, mSamplingWorkspace, stream);
+            trt_edgellm::topKtopPSamplingFromLogits(mTalkerLogits, mTalkerSelectedIndices, talkerSamplingParams,
+                mSamplingWorkspace, stream, kTalkerSamplingSeed, /*randomOffset=*/0);
             CUDA_CHECK(cudaMemcpyAsync(mHostSelectedTokenIds.rawPointer(), mTalkerSelectedIndices.rawPointer(),
                 sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
             CUDA_CHECK(cudaStreamSynchronize(stream));

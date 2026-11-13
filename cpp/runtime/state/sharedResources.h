@@ -86,8 +86,9 @@ struct SharedResources
     //! (KV cache, RoPE pool, LoRA manager, external weight manager, zero buffer).
     //!
     //! Recurrent / conv state dtypes for hybrid models are read from
-    //! `cfg.recurrentStateDtype` / `cfg.convStateDtype` — they are parsed
-    //! strictly from `config.json` by `parseEngineConfig`.
+    //! `cfg.recurrentStateDtype` / `cfg.convStateDtype`, and the n-gram injection's from
+    //! `cfg.ngramConvStateDtype` — all parsed strictly from `config.json` by
+    //! `parseEngineConfig`.
     //!
     //! The returned `externalWeightManager` is constructed by this factory; the
     //! runtime is responsible for loading files, validating against the base

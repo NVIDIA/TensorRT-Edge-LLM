@@ -28,6 +28,7 @@ from ...checkpoint import checkpoint_utils
 from ...config import (QUANT_INT4_AWQ, QUANT_INT4_AWQ_MODELOPT,
                        QUANT_INT4_GPTQ, QUANT_NVFP4, QUANT_NVFP4_A16,
                        ModelConfig)
+from .. import ops
 from ..default.modeling_default import (MLP, Attention, CausalLM, DecoderLayer,
                                         OnnxSpec, RMSNorm,
                                         _concat_hidden_in_provider_order)
@@ -113,8 +114,9 @@ def _gemma4_dense_moe_routing(
                                     dim=-1).gather(1, expert_ids)
     routing_weights = routing_weights / routing_weights.sum(dim=-1,
                                                             keepdim=True)
-    routing_weights = routing_weights * per_expert_scale.to(
-        dtype=routing_weights.dtype, device=routing_weights.device)[expert_ids]
+    expert_scale = per_expert_scale[expert_ids].to(
+        dtype=routing_weights.dtype, device=routing_weights.device)
+    routing_weights = routing_weights * expert_scale
     return routing_weights, expert_ids
 
 
@@ -135,21 +137,14 @@ def _gemma4_uses_swa_kv_cache(config: ModelConfig) -> bool:
                 config, "attention_layer_types", [])):
         return False
 
-    quant = getattr(config, "quant", None)
-    if getattr(quant, "kv_cache_quant", None) == "fp8":
-        return False
-
     spec_flags = (
         "eagle_base",
         "is_eagle3_draft",
         "mtp_base",
         "is_mtp_draft",
-        "mtp_tree_base",
         "dflash_base",
-        "dflash_tree_base",
         "is_dflash_draft",
         "jetspec_base",
-        "jetspec_tree_base",
         "is_jetspec_draft",
         "dspark_base",
         "is_dspark_draft",
@@ -266,91 +261,6 @@ def _select_rope_for_layer(
     return rope_rotary_cos_sin_full
 
 
-def _make_gemma4_flat_wrapper(model: nn.Module,
-                              Na: int,
-                              num_ple_inputs: int,
-                              use_dual_rope: bool = False,
-                              use_swa_kv_cache: bool = False,
-                              eagle_base: bool = False,
-                              vision_block_attention: bool = False,
-                              emit_hidden_states: bool = False) -> nn.Module:
-    """Build a Gemma4 export wrapper with explicit PLE/RoPE tensor inputs."""
-    has_hidden_output = eagle_base or emit_hidden_states
-
-    param_names: List[str] = (
-        ["inputs_embeds"] +
-        [f"ple_token_embeds_{i}" for i in range(num_ple_inputs)] +
-        [f"past_key_values_{i}" for i in range(Na)])
-    if use_dual_rope:
-        param_names += [
-            "rope_rotary_cos_sin_sliding", "rope_rotary_cos_sin_full"
-        ]
-    else:
-        param_names += ["rope_rotary_cos_sin"]
-    param_names += ["context_lengths", "kvcache_start_index", "kv_page_table"]
-    if use_swa_kv_cache:
-        param_names += ["swa_kv_page_table", "swa_kv_cache_mode"]
-    param_names += ["last_token_ids"]
-    if vision_block_attention:
-        param_names += ["vision_block_ids"]
-    if eagle_base:
-        param_names += ["attention_pos_id", "attention_mask"]
-
-    past_kv_tuple = "({},)".format(", ".join(
-        f"past_key_values_{i}" for i in range(Na))) if Na else "()"
-    ple_tuple = "({},)".format(", ".join(
-        f"ple_token_embeds_{i}"
-        for i in range(num_ple_inputs))) if num_ple_inputs else "()"
-    ple_kwarg = f", ple_token_embeds={ple_tuple}" if num_ple_inputs > 0 else ""
-    eagle_kwargs = (", attention_mask=attention_mask"
-                    ", attention_pos_id=attention_pos_id"
-                    if eagle_base else "")
-    vision_kwargs = (", vision_block_ids=vision_block_ids"
-                     if vision_block_attention else "")
-    swa_kwargs = (", swa_kv_page_table=swa_kv_page_table"
-                  ", swa_kv_cache_mode=swa_kv_cache_mode"
-                  if use_swa_kv_cache else "")
-    if use_dual_rope:
-        rope_arg = "None"
-        rope_kwargs = (
-            ", rope_rotary_cos_sin_sliding=rope_rotary_cos_sin_sliding"
-            ", rope_rotary_cos_sin_full=rope_rotary_cos_sin_full")
-    else:
-        rope_arg = "rope_rotary_cos_sin"
-        rope_kwargs = ""
-
-    if has_hidden_output:
-        body = (
-            f"    logits, hidden_states, present_key_values = self._model(\n"
-            f"        inputs_embeds, {past_kv_tuple}, {rope_arg}, "
-            f"context_lengths, kvcache_start_index, kv_page_table, "
-            f"last_token_ids"
-            f"{eagle_kwargs}{vision_kwargs}{swa_kwargs}{ple_kwarg}{rope_kwargs})\n"
-            f"    return (logits, hidden_states) + tuple(present_key_values)\n"
-        )
-    else:
-        body = (
-            f"    logits, present_key_values = self._model(\n"
-            f"        inputs_embeds, {past_kv_tuple}, {rope_arg}, "
-            f"context_lengths, kvcache_start_index, kv_page_table, "
-            f"last_token_ids"
-            f"{eagle_kwargs}{vision_kwargs}{swa_kwargs}{ple_kwarg}{rope_kwargs})\n"
-            f"    return (logits,) + tuple(present_key_values)\n")
-
-    src = "def _forward(self, {}):\n{}".format(", ".join(param_names), body)
-    globs: dict = {}
-    exec(src, globs)  # noqa: S102
-
-    class _Wrapper(nn.Module):
-
-        def __init__(self, m: nn.Module) -> None:
-            super().__init__()
-            self._model = m
-
-    _Wrapper.forward = globs["_forward"]
-    return _Wrapper(model)
-
-
 def _make_gemma4_flat_wrapper_ragged(
         model: nn.Module,
         num_layers: int,
@@ -363,7 +273,7 @@ def _make_gemma4_flat_wrapper_ragged(
     """Build the vanilla Gemma4 wrapper for the token-major runtime ABI."""
     param_names: List[str] = (
         ["inputs_embeds"] +
-        [f"ple_token_embeds_{i}" for i in range(num_ple_inputs)] +
+        (["ple_cache_pool", "ple_row_map"] if num_ple_inputs else []) +
         [f"past_key_values_{i}" for i in range(num_layers)])
     if use_dual_rope:
         param_names += [
@@ -425,8 +335,22 @@ def _make_gemma4_flat_wrapper_ragged(
         f"    if hidden_states is None:\n"
         f"        return (logits,) + tuple(present_key_values)\n"
         f"    return (logits, hidden_states) + tuple(present_key_values)\n")
+    if num_ple_inputs:
+        ple_width = model.config.hidden_size_per_layer_input
+        ple_scale = getattr(model, "_ple_pool_scale", None)
+        lookup = ("ple_pool_gather(ple_cache_pool, ple_row_map, "
+                  "self._ple_scale).half()" if ple_scale is not None else
+                  "ple_pool_lookup(ple_cache_pool, ple_row_map)")
+        body = (
+            f"    rows = {lookup}\n"
+            f"    rows = rows.reshape(ple_row_map.shape[0], {num_layers}, {ple_width})\n"
+            + "".join(f"    ple_token_embeds_{i} = rows[:, {i}, :]\n"
+                      for i in range(num_ple_inputs)) + body)
     src = "def _forward(self, {}):\n{}".format(", ".join(param_names), body)
-    globs: dict = {}
+    globs: dict = {
+        "ple_pool_lookup": ops.ple_pool_lookup,
+        "ple_pool_gather": ops.ple_pool_gather
+    }
     exec(src, globs)  # noqa: S102
 
     class _Wrapper(nn.Module):
@@ -434,6 +358,10 @@ def _make_gemma4_flat_wrapper_ragged(
         def __init__(self, wrapped_model: nn.Module) -> None:
             super().__init__()
             self._model = wrapped_model
+            scale = getattr(wrapped_model, "_ple_pool_scale", None)
+            if scale is not None:
+                self.register_buffer("_ple_scale",
+                                     torch.tensor(scale, dtype=torch.float32))
 
     _Wrapper.forward = globs["_forward"]
     return _Wrapper(model)
@@ -546,9 +474,13 @@ class Gemma4Attention(Attention):
             self.k_proj.register_buffer("k_scale", torch.ones(1))
             if self.v_proj is None:
                 # K=V values are v_norm(k_proj(x)), not K; load the calibrated
-                # v_proj.v_scale into a weightless holder.
+                # v_proj.v_scale into a weightless holder. NaN marks "not
+                # loaded" so export falls back to the K scale.
                 self.v_proj = nn.Module()
-            self.v_proj.register_buffer("v_scale", torch.ones(1))
+                self.v_proj.register_buffer("v_scale",
+                                            torch.full((1, ), float("nan")))
+            else:
+                self.v_proj.register_buffer("v_scale", torch.ones(1))
 
         self.o_proj = make_linear(config,
                                   self.num_heads * self.head_dim,
@@ -587,12 +519,11 @@ class Gemma4Attention(Attention):
                                     if self.attention_type
                                     == "sliding_attention" else -1)
         self.use_swa_pool = _gemma4_uses_swa_pool(config, layer_idx)
-        # Skip-softmax (BLASST) calibrated scale factor S (0.0 = disabled);
-        # mirrors modeling_default.py. Only meaningful on full-attention
-        # (d512 global) layers — sliding layers have no skippable tiles.
-        self.skip_softmax_scale_factor = (config.skip_softmax_scale_factor
-                                          if self.attention_type
-                                          != "sliding_attention" else 0.0)
+        # Skip-softmax (BLASST) only on full-attention (d512 global) layers:
+        # sliding layers have no skippable tiles.
+        self.skip_softmax_prefill_enabled = (
+            config.skip_softmax_prefill_enabled
+            and self.attention_type != "sliding_attention")
 
     def forward(
         self,
@@ -682,7 +613,8 @@ class Gemma4Attention(Attention):
             "attention_scale": self.attention_scale,
             "enable_context_mask_selector": context_mask_selector is not None,
             "enable_vision_block_attention": enable_vision_block,
-            "skip_softmax_scale_factor": self.skip_softmax_scale_factor,
+            "skip_softmax_prefill_input":
+            int(self.skip_softmax_prefill_enabled),
         }
         if context_mask_selector is not None:
             kwargs["context_mask_selector"] = context_mask_selector
@@ -795,7 +727,7 @@ class Gemma4Attention(Attention):
             "attention_scale": self.attention_scale,
             "enable_context_mask_selector": context_mask_selector is not None,
             "enable_vision_block_attention": vision_block_ids is not None,
-            "skip_softmax_scale_factor": 0.0,
+            "skip_softmax_prefill_input": 0,
             "qkv_scales": getattr(self, "_qkv_scales_float", [1.0, 1.0, 1.0]),
             "query_start_offsets": query_start_offsets,
             "attention_sequence_lengths": attention_sequence_lengths,
@@ -815,9 +747,10 @@ class Gemma4Attention(Attention):
                     "Bounded-capable Gemma4 SWA layers require swa_kv_cache_mode."
                 )
             kwargs["swa_kv_cache_mode"] = swa_kv_cache_mode
+        if self.is_kv_shared:
+            kwargs["enable_kv_shared"] = 1
         if key_states is None:
             qkv = query_states
-            kwargs["enable_kv_shared"] = 1
         else:
             qkv = torch.cat([query_states, key_states, value_states], dim=-1)
         attn_output, present_key_value = attention_plugin(
@@ -1717,13 +1650,6 @@ class Gemma4Transformer(nn.Module):
             if self.vocab_size_per_layer_input <= 0:
                 raise ValueError(
                     "Gemma4 PLE requires vocab_size_per_layer_input > 0.")
-            # Weight holder for the token-identity PLE table. This module is
-            # not called by the ONNX forward path; checkpoint export writes its
-            # weight to ple_embedding.safetensors for runtime-side gather.
-            self.embed_tokens_per_layer = nn.Embedding(
-                self.vocab_size_per_layer_input,
-                config.num_hidden_layers * self.hidden_size_per_layer_input,
-            )
             self.per_layer_model_projection = make_linear(
                 config,
                 config.hidden_size,
@@ -2020,8 +1946,9 @@ class Gemma4ForCausalLM(CausalLM):
         """Return Gemma4-specific ONNX export parameters."""
         config = self.config
         dflash_base = getattr(config, "dflash_base", False)
+        jetspec_base = getattr(config, "jetspec_base", False)
         dspark_base = getattr(config, "dspark_base", False)
-        target_hidden_base = dflash_base or dspark_base
+        target_hidden_base = dflash_base or jetspec_base or dspark_base
         eagle_base = config.eagle_base
         tree_attention_base = (eagle_base or config.gemma4_mtp_base
                                or target_hidden_base)
@@ -2052,12 +1979,21 @@ class Gemma4ForCausalLM(CausalLM):
                                     config.hidden_size,
                                     dtype=torch.float16,
                                     device=device)
-        ple_token_embeds = [
-            torch.zeros(physical_tokens,
-                        config.hidden_size_per_layer_input,
-                        dtype=torch.float16,
-                        device=device) for _ in range(num_ple_inputs)
-        ]
+        ple_inputs = []
+        if num_ple_inputs:
+            ple_capacity = min(config.vocab_size_per_layer_input + 1, 64)
+            ple_dtype = (torch.float8_e4m3fn if getattr(
+                self, "_ple_pool_scale", None) is not None else torch.float16)
+            ple_inputs = [
+                torch.zeros(ple_capacity,
+                            num_layers * config.hidden_size_per_layer_input,
+                            dtype=ple_dtype,
+                            device=device),
+                torch.zeros(physical_tokens,
+                            1,
+                            dtype=torch.int32,
+                            device=device),
+            ]
         past_key_values = [
             torch.zeros(2,
                         2,
@@ -2137,14 +2073,14 @@ class Gemma4ForCausalLM(CausalLM):
             [0, 2, 3], dtype=torch.int64, device=device) if tree_attention else
                           query_start_offsets[1:].to(torch.int64) - 1)
 
-        args = (inputs_embeds, *ple_token_embeds, *past_key_values,
-                *rope_inputs, positions, query_start_offsets, query_lengths,
-                past_lengths, attention_sequence_lengths, state_indices,
+        args = (inputs_embeds, *ple_inputs, *past_key_values, *rope_inputs,
+                positions, query_start_offsets, query_lengths, past_lengths,
+                attention_sequence_lengths, state_indices,
                 execution_phase_marker, context_sequence_count_carrier,
                 kv_page_table)
         input_names = (
             ["inputs_embeds"] +
-            [f"ple_token_embeds_{i}" for i in range(num_ple_inputs)] +
+            (["ple_cache_pool", "ple_row_map"] if num_ple_inputs else []) +
             [f"past_key_values_{i}"
              for i in range(num_layers)] + rope_names + [
                  "positions", "query_start_offsets", "query_lengths",
@@ -2158,7 +2094,9 @@ class Gemma4ForCausalLM(CausalLM):
                                             1,
                                             dtype=torch.int32,
                                             device=device)
-            swa_kv_cache_mode = torch.zeros(1, dtype=torch.int8, device=device)
+            swa_kv_cache_mode = torch.zeros(1,
+                                            dtype=torch.int32,
+                                            device=device)
             args = args + (swa_kv_page_table, swa_kv_cache_mode)
             input_names = input_names + [
                 "swa_kv_page_table", "swa_kv_cache_mode"
@@ -2218,7 +2156,18 @@ class Gemma4ForCausalLM(CausalLM):
                                              min=1,
                                              max=64)
         all_shapes: list = [{0: tokens}]
-        all_shapes.extend({0: tokens} for _ in range(num_ple_inputs))
+        if num_ple_inputs:
+            all_shapes.extend([
+                {
+                    0:
+                    torch.export.Dim("ple_capacity",
+                                     min=1,
+                                     max=config.vocab_size_per_layer_input + 1)
+                },
+                {
+                    0: tokens
+                },
+            ])
         for layer_idx in range(num_layers):
             pool_pages = (num_swa_pages if use_swa_kv_cache
                           and _gemma4_uses_swa_pool(config, layer_idx) else
@@ -2319,6 +2268,8 @@ class Gemma4ForCausalLM(CausalLM):
         target_layer_ids = None
         for enabled, field in ((getattr(self.config, "dspark_base",
                                         False), "dspark_target_layer_ids"),
+                               (getattr(self.config, "jetspec_base",
+                                        False), "jetspec_target_layer_ids"),
                                (getattr(self.config, "dflash_base",
                                         False), "dflash_target_layer_ids"),
                                (self.config.eagle_base,
@@ -2396,14 +2347,18 @@ class Gemma4ForCausalLM(CausalLM):
         eagle_base = self.config.eagle_base
         gemma4_mtp_base = self.config.gemma4_mtp_base
         dflash_base = getattr(self.config, "dflash_base", False)
+        jetspec_base = getattr(self.config, "jetspec_base", False)
         dspark_base = getattr(self.config, "dspark_base", False)
-        target_hidden_base = dflash_base or dspark_base
+        target_hidden_base = dflash_base or jetspec_base or dspark_base
         eagle_target_layer_ids = getattr(self.config,
                                          "eagle3_target_layer_ids", [])
         eagle_target_hidden_base = eagle_base and bool(eagle_target_layer_ids)
         target_layer_ids = None
         if dspark_base:
             target_layer_ids = getattr(self.config, "dspark_target_layer_ids",
+                                       None)
+        elif jetspec_base:
+            target_layer_ids = getattr(self.config, "jetspec_target_layer_ids",
                                        None)
         elif dflash_base:
             target_layer_ids = getattr(self.config, "dflash_target_layer_ids",
@@ -2450,7 +2405,9 @@ class Gemma4ForCausalLM(CausalLM):
 
         if eagle_base and all_hidden_states is not None:
             n_layers = len(all_hidden_states) - 1
-            idx = [2, n_layers // 2, n_layers - 3]
+            idx = self.config.eagle3_target_layer_ids or [
+                2, n_layers // 2, n_layers - 3
+            ]
             eagle_hidden = torch.cat([
                 all_hidden_states[idx[0]],
                 all_hidden_states[idx[1]],

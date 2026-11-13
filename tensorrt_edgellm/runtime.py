@@ -27,7 +27,7 @@ def load() -> ModuleType:
     """Detect, validate, and return the native runtime module.
 
     Returns:
-        The selected ``_edgellm_runtime`` pybind11 module.
+        The selected ``_edgellm_runtime`` nanobind module.
 
     Raises:
         NativeRuntimeError: If the installed wheel has no compatible payload or

@@ -55,6 +55,8 @@ enum class ResourceType : uint8_t
     kRecurrentSnapshot,
     //! One snapshot of the partial attention page paired with recurrent state.
     kPartialKvSnapshot,
+    //! One host-addressed K/V page pair produced by sliding-window attention layers.
+    kSwaKvPage,
 };
 
 //! Pool-local identity for one typed cache resource.
@@ -78,6 +80,8 @@ struct ResourceDemand
     int32_t draftKvPages{};
     int32_t recurrentSnapshotSlots{};
     int32_t partialKvSnapshotSlots{};
+    //! Appended to preserve existing four-field aggregate initializers.
+    int32_t swaKvPages{};
 
     int32_t get(ResourceType type) const noexcept
     {
@@ -87,6 +91,7 @@ struct ResourceDemand
         case ResourceType::kDraftKvPage: return draftKvPages;
         case ResourceType::kRecurrentSnapshot: return recurrentSnapshotSlots;
         case ResourceType::kPartialKvSnapshot: return partialKvSnapshotSlots;
+        case ResourceType::kSwaKvPage: return swaKvPages;
         }
         std::terminate();
     }
@@ -99,13 +104,15 @@ struct ResourceDemand
         case ResourceType::kDraftKvPage: return draftKvPages;
         case ResourceType::kRecurrentSnapshot: return recurrentSnapshotSlots;
         case ResourceType::kPartialKvSnapshot: return partialKvSnapshotSlots;
+        case ResourceType::kSwaKvPage: return swaKvPages;
         }
         std::terminate();
     }
 
     bool isNonNegative() const noexcept
     {
-        return baseKvPages >= 0 && draftKvPages >= 0 && recurrentSnapshotSlots >= 0 && partialKvSnapshotSlots >= 0;
+        return baseKvPages >= 0 && draftKvPages >= 0 && recurrentSnapshotSlots >= 0 && partialKvSnapshotSlots >= 0
+            && swaKvPages >= 0;
     }
 };
 

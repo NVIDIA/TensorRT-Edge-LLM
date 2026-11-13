@@ -32,9 +32,6 @@ from sphinx.ext.autodoc.mock import mock as _mock
 sys.path.insert(0, str(Path(__file__).parent))  # For importing helper module
 sys.path.insert(0, str(
     Path(__file__).parent.parent.parent))  # For importing tensorrt_edgellm
-sys.path.insert(
-    0, str(Path(__file__).parent.parent.parent /
-           "experimental"))  # For importing the experimental server package
 
 # Import helper functions for auto-generating API documentation
 from helper import generate_module_rst_files, generate_python_api_rst

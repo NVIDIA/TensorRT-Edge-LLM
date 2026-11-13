@@ -4,6 +4,14 @@ TensorRT Edge-LLM: NVIDIA C++/CUDA/Python inference runtime for deploying LLMs a
 
 > If an `AGENTS.local.md` file exists alongside this file, read and respect it — it contains developer-specific overrides that supplement this shared guidance.
 
+Discover public repository skills at `skills/edge-llm-*/SKILL.md` and read the
+matching skill before using it.
+
+
+For documentation authoring, editing, or review, use the
+[edge-llm-documentation skill](skills/edge-llm-documentation/SKILL.md)
+for Google's developer documentation guidance and repository checks.
+
 ## Rules (Read First)
 
 **CRITICAL (YOU MUST):**
@@ -13,8 +21,8 @@ TensorRT Edge-LLM: NVIDIA C++/CUDA/Python inference runtime for deploying LLMs a
 - Do not add co-authors to the git commit message unless explicitly instructed to do so by the user.
 - `pre-commit` hooks run on commit — if files are modified by hooks, re-stage and commit again
 - PR title format: Conventional Commits style (e.g., `feat: Add Qwen3 support`, `fix: Prevent a runtime memory leak`)
-- Set `TRT_PACKAGE_DIR` for all C++ builds; set `LLM_SDK_DIR` for all Python tests
-- Set `LD_LIBRARY_PATH` before running any built binary: `export LD_LIBRARY_PATH=$TRT_PACKAGE_DIR/lib:$LD_LIBRARY_PATH`
+- Set `TRT_PACKAGE_DIR` when TensorRT is not installed in a standard location; set `LLM_SDK_DIR` for all Python tests.
+- Built executables are in `build/bin` and Edge-LLM shared libraries are in `build/lib`.
 - Git submodules must be initialized: `git submodule update --init` (googletest, nlohmann/json, NVTX)
 - Model validation must exercise `export -> build -> inference` in that order. Export-only checks are useful smoke
   tests, but they are not sufficient evidence that a model works.
@@ -23,22 +31,36 @@ TensorRT Edge-LLM: NVIDIA C++/CUDA/Python inference runtime for deploying LLMs a
   narration that restates the code, long block comments that do not change maintainability, or repeated comments
   explaining the same local pattern. Do not add change narration that compares against previous code, such as
   "replaces X" or "now uses Y"; that belongs in the commit message or PR description.
+- New test cases need a concise docstring naming the contract they protect and must be mutation-tested — see
+  the `edge-llm-e2e-test` skill.
+- Writing or changing a C++ test under `unittests/`: use the `edge-llm-cpp-test` skill. Every test case needs a
+  Given/When/Then comment and every new assertion must be mutation-tested; changing a Given/When/Then is a human
+  decision.
+- Adding a model architecture, layer type, quantization recipe, or kernel: use the `edge-llm-few-layer-test`
+  skill. Most other changes do not need a few-layer case, and a case may only be removed by replacing it with
+  a test at least as strong, with the user's approval.
+- Before coding a change that can reach more than one precision, lm_head, KV cache, speculative decoding method,
+  engine frontend, or platform, use the `edge-llm-feature-combinations` skill; its description lists the triggers
+  and exceptions. Put its table in the merge request description.
 
 ## Common Commands
 
 | Task | Command |
 |------|---------|
-| Build (minimal) | `mkdir -p build && cd build && cmake .. -DTRT_PACKAGE_DIR=$TRT_PACKAGE_DIR && make -j$(nproc)` |
-| Build (with unit tests) | `cmake .. -DTRT_PACKAGE_DIR=$TRT_PACKAGE_DIR -DBUILD_UNIT_TESTS=ON && make -j$(nproc)` |
-| Build (cross-compile AArch64) | `cmake .. -DTRT_PACKAGE_DIR=$TRT_PACKAGE_DIR -DAARCH64_BUILD=ON && make -j$(nproc)` |
-| Build (NVTX profiling) | `cmake .. -DTRT_PACKAGE_DIR=$TRT_PACKAGE_DIR -DENABLE_NVTX_PROFILING=ON && make -j$(nproc)` |
+| Configure | `cmake -S . -B build -DTRT_PACKAGE_DIR="$TRT_PACKAGE_DIR"` |
+| Build | `cmake --build build --parallel` |
+| Configure with unit tests | `cmake -S . -B build -DTRT_PACKAGE_DIR="$TRT_PACKAGE_DIR" -DBUILD_UNIT_TESTS=ON` |
+| Configure cross-build for Jetson Thor | `cmake -S . -B build -DTRT_PACKAGE_DIR="$TRT_PACKAGE_DIR" -DEMBEDDED_TARGET=jetson-thor` |
+| Configure with NVTX | `cmake -S . -B build -DTRT_PACKAGE_DIR="$TRT_PACKAGE_DIR" -DENABLE_NVTX_PROFILING=ON` |
 | Build against TRT-RTX | Same as above, but point `TRT_PACKAGE_DIR` at a TRT-RTX package (`libtensorrt_rtx.so` + `tensorrt_onnxparser_rtx`). `FindTensorRT.cmake` selects the correct lib automatically. |
 | C++ unit tests (all) | `cd build && ctest --output-on-failure --parallel $(nproc)` (drop `--parallel` on an embedded board — limited device memory) |
-| C++ unit tests (one group) | `./build/unittests/unitTestRuntime` (see `unittests/CMakeLists.txt` for the group list) |
-| C++ unit tests (filter) | `./build/unittests/unitTestCommon --gtest_filter="LoggerTest.*"` |
+| C++ unit tests (one group) | `./build/bin/unitTests/unitTestRuntime` (see `unittests/CMakeLists.txt` for the group list) |
+| C++ unit tests (filter) | `./build/bin/unitTests/unitTestCommon --gtest_filter="LoggerTest.*"` |
 | C++ unit tests (build all) | `cmake --build build --target unitTests -j$(nproc)` |
-| Python package (install) | `pip install -r requirements.txt && python -m build --wheel --outdir dist . && pip install dist/*.whl` |
-| Python tool extras | `pip install ".[tools]"` |
+| Python checkpoint quantization | `pip install ".[quantize]"` |
+| Python checkpoint exporter | `pip install ".[onnx]"` |
+| Python checkpoint-direct builder | `pip install ".[builder]"` |
+| Python server/runtime tools | `pip install ".[runtime]"` |
 | Python test suite | `pytest --priority=l0_e2e_a30 -v` |
 | Single Python test | `pytest tests/defs/test_model_export.py -v` |
 | Python unit tests | `pytest tests/python-unittests/ -v` |
@@ -47,7 +69,7 @@ TensorRT Edge-LLM: NVIDIA C++/CUDA/Python inference runtime for deploying LLMs a
 | Format C++ manually | `git-clang-format --style file` |
 | Code coverage | `./scripts/run_coverage.sh --trt-package-dir $TRT_PACKAGE_DIR` |
 
-For the full end-to-end pipeline (quantize → ONNX export → engine build → inference), installation instructions, and build options, see `docs/source/developer_guide/getting-started/`.
+For the full end-to-end pipeline (quantize → ONNX export → engine build → inference), installation instructions, and build options, see `docs/source/user_guide/getting_started/`.
 
 ## Architecture
 
@@ -59,23 +81,27 @@ The pipeline is: `HuggingFace Model → Python Export (quantize + ONNX) → C++ 
 
 **C++ sub-packages:** `common/` (tensor, logging, utils), `kernels/` (FMHA/RoPE/MoE/Mamba/EAGLE), `plugins/` (TRT custom plugins), `builder/` (ONNX→TRT), `tokenizer/`, `multimodal/`, `profiling/`, `sampler/`.
 
-**Python package (`tensorrt_edgellm/`)** is the checkpoint-based export frontend. It implements LLM architectures from scratch using ONNX builtin + custom ops (the only format EdgeLLM's compiler accepts). Instead of tracing HuggingFace FX graphs (which are unstable), it reads the stable HF checkpoint weights directly.
+**Python package (`tensorrt_edgellm/`)** has separate checkpoint-to-ONNX (`onnx/`) and checkpoint-direct TensorRT (`builder/`) frontends. Both read Hugging Face checkpoint weights. `quantization/` produces checkpoints independently of either frontend.
 - `model.py` — `AutoModel.from_pretrained()` factory with registry-based dispatch
 - `config.py` — `ModelConfig`/`QuantConfig` for parsing HF `config.json`
 - `checkpoint/loader.py` — Safetensors weight loading; `repacking.py` — weight repacking
-- `onnx/export.py` — Export via `torch.onnx.export(dynamo=True)`; `onnx_custom_schemas.py` — custom op definitions; `dynamo_translations.py` — custom translation rules
-- `models/` — Per-architecture implementations: `default/` (standard decoder + Mamba hybrid), `nemotron_h/` (hybrid Mamba2), `qwen3_moe/` (sparse MoE)
+- `onnx/cli.py` — ONNX export command; `onnx/export.py` — export via `torch.onnx.export(dynamo=True)`; `onnx_custom_schemas.py` — custom op definitions; `dynamo_translations.py` — custom translation rules
+- `builder/` — Checkpoint-direct TensorRT component definitions, builder, and ops
+- `models/` — ONNX per-architecture implementations: `default/` (standard decoder + Mamba hybrid), `nemotron_h/` (hybrid Mamba2), `qwen3_moe/` (sparse MoE)
 - `models/ops.py` — Shared custom operations; `models/linear.py` — Shared linear layer implementations
 - `quantization/` — ModelOpt-based checkpoint quantization implementation
-- `scripts/` — All user-facing Python command entry points
+- `scripts/` — Quantization and checkpoint preprocessing command entry points
 - Supported quant formats: `fp16`, `fp8`, `nvfp4`, `int4_awq`, `int4_awq_modelopt`, `int4_gptq`, `int8_sq`, `mixed_precision`
 
 ### CLI Entry Points (from `pyproject.toml`)
 
 | Command | Script |
 |---------|--------|
+| `trtedge` | `tensorrt_edgellm.cli:main` |
 | `tensorrt-edgellm-quantize` | `tensorrt_edgellm.scripts.quantize:main` |
-| `tensorrt-edgellm-export` | `tensorrt_edgellm.scripts.export:main` |
+| `tensorrt-edgellm-export` | `tensorrt_edgellm.onnx.cli:main` |
+| `tensorrt-edgellm-build` | `tensorrt_edgellm.builder.cli:main` |
+| `tensorrt-edgellm-serve` | `tensorrt_edgellm.server.cli:main` |
 | `tensorrt-edgellm-insert-lora` | `tensorrt_edgellm.scripts.insert_lora:main` |
 | `tensorrt-edgellm-process-lora` | `tensorrt_edgellm.scripts.process_lora_weights:main` |
 | `tensorrt-edgellm-merge-lora` | `tensorrt_edgellm.scripts.merge_lora:main` |
@@ -93,7 +119,7 @@ The pipeline is: `HuggingFace Model → Python Export (quantize + ONNX) → C++ 
 | `tensorrt_edgellm/model.py` | Checkpoint model factory |
 | `tensorrt_edgellm/models/default/modeling_default.py` | Base LLM model (Llama, Qwen, etc.) |
 | `tensorrt_edgellm/quantization/quantize.py` | Quantization orchestration |
-| `tensorrt_edgellm/scripts/export.py` | ONNX export orchestration |
+| `tensorrt_edgellm/onnx/cli.py` | ONNX export orchestration |
 | `tests/conftest.py` | Pytest configuration, YAML-driven test selection |
 
 ## Anti-Patterns / Gotchas
@@ -102,9 +128,10 @@ The pipeline is: `HuggingFace Model → Python Export (quantize + ONNX) → C++ 
 - **`east-const` style enforced** — `.clang-format` uses `QualifierAlignment: Right`, so write `int const x` not `const int x`.
 - **Integration tests need GPUs + models** — always set `LLM_SDK_DIR`, `ONNX_DIR`, `ENGINE_DIR`, and `LLM_MODELS_DIR`. C++ unit tests don't need models.
 - **CUDA code coverage limitation** — `*.cu` files are excluded from gcov coverage; only `.cpp` files are instrumented.
-- **FMHA kernels are SM-specific** — built per SM arch. When adding new SM support, update `cpp/CMakeLists.txt` FMHA build lists and optionally `cmake/CuteDslFMHA.cmake` for Blackwell+.
+- **FMHA kernels are SM-specific** — built per SM arch. When adding new SM support, update `cpp/CMakeLists.txt` FMHA build lists and optionally `cmake/CuteDsl.cmake` for Blackwell+.
 - **Plugin shared library** — `NvInfer_edgellm_plugin` is shared (not static) because TRT loads plugins dynamically.
 - **One concern per PR** — avoid scope creep. If a PR touches unrelated areas, split it.
+- **Speculative draft models emit log-probabilities** — every draft `modeling_*.py` ends in `F.log_softmax`, so a draft engine's `logits` binding holds log-probabilities while a base engine's holds raw logits.
 - **HF checkpoint consistency** — Python model classes in `models/` must stay compatible with HuggingFace checkpoint tensor names when adding new models.
 - **Pinned dependencies** — `transformers`, `nvidia-modelopt`, `onnx`, and `torch` versions are pinned in `pyproject.toml`. Changing them can break export/quantization. Check compatibility before bumping.
 - **No noisy source comments** — remove or avoid comments that merely narrate statements, repeat names/types, or
@@ -162,11 +189,21 @@ CI tests are YAML-driven and parametrized by `--priority`.
 | Python unit tests | `tests/python-unittests/` | Attention plugin/native/utils tests |
 | Integration tests | `tests/defs/` | Export, LLM/VLM pipeline, package sanity |
 | Test lists (YAML) | `tests/test_lists/` | Per-GPU/platform test parametrization |
+| Model cases (YAML) | `tests/model_configs/` | One deployment per case; expanded into pipeline tests by `tests/defs/model_test_config.py` |
 | Code coverage | `scripts/run_coverage.sh` | gcov + SonarQube report |
 
 For model-facing changes, the expected test shape is `tensorrt-edgellm-export`
 followed by engine build and runtime inference. Use export-only priorities only
 as producer/smoke coverage for downstream pipeline jobs.
+
+### Selecting and Writing Tests
+
+Use the `edge-llm-e2e-test` skill to write and preflight end-to-end model cases,
+route other changes to the smallest sufficient test, extend coverage,
+mutation-test new assertions, and record complete evidence. For a C++ test under
+`unittests/`, use the `edge-llm-cpp-test` skill instead. For a few-layer numeric
+validation case, use the `edge-llm-few-layer-test` skill instead.
+
 
 ### CI Stages
 
@@ -188,9 +225,9 @@ Export tests omit sequence length, batch, and input length parameters. See `test
 
 | Topic | Path |
 |-------|------|
-| Installation & quick start | `docs/source/developer_guide/getting-started/` |
+| Installation & quick start | `docs/source/user_guide/getting_started/` |
 | Software design (runtime, export, builder) | `docs/source/developer_guide/software-design/` |
-| Features (LoRA, FP8KV, system prompt cache, vocab reduction) | `docs/source/developer_guide/features/` |
+| Features (LoRA, FP8KV, system prompt cache, vocab reduction) | `docs/source/user_guide/features/` |
 | Customization & plugins | `docs/source/developer_guide/customization/` |
 | C++ / Python API reference | `docs/source/cpp_api/`, `docs/source/python_api.rst` |
 | Design principles | `design/general/design_principles.adoc` |

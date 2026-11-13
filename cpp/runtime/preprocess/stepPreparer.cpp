@@ -31,7 +31,7 @@ StepPreparer::StepPreparer(LLMEngineConfig const& config)
     // Pre-allocate host scratch for selectTokenIndices (pinned memory avoids
     // repeated allocation on the hot path).
     mHostSelectTokenIndices = Tensor(
-        {mConfig.maxSupportedBatchSize, 1}, DeviceType::kCPU, nvinfer1::DataType::kINT64, "hostSelectTokenIndices");
+        {mConfig.maxSupportedBatchSize, 1}, DeviceType::kCPU, trt_edgellm::DataType::kINT64, "hostSelectTokenIndices");
 }
 
 void StepPreparer::prepare(

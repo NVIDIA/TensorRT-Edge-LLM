@@ -21,6 +21,7 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "kernels/contextAttentionKernels/attentionScaleUtils.h"
 #include "kernels/contextAttentionKernels/utilKernels.h"
 #include "plugins/utils/pluginUtils.h"
@@ -44,6 +45,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -78,7 +80,7 @@ ViTFMHAKernelSelection selectViTFMHAKernels(int32_t headSize, int32_t smVersion,
     }
 #endif
 
-    if (CuteDslFMHAV2Runner::canImplementViT(headSize, smVersion, dataType))
+    if (CuteDslFMHAV2Runner::canImplementViT(headSize, smVersion, fromTrt(dataType)))
     {
         return {ViTFMHABackend::kCUTE_DSL_FMHA_V2, true};
     }
@@ -381,18 +383,21 @@ int32_t ViTAttentionPlugin::enqueue(PluginTensorDesc const* inputDesc,
     // Construct non-owned tensor objects from I/O data pointers and shapes.
     // Q, K, V inputs in the graph will be in same shape [total_S, H, D].
     PluginTensorDesc const& qInputDesc = inputDesc[kIN_Q_IDX];
-    rt::Coords const qkvCoords{qInputDesc.dims};
-    rt::Tensor qInputTensor(const_cast<void*>(inputs[kIN_Q_IDX]), qkvCoords, rt::DeviceType::kGPU, qInputDesc.type);
-    rt::Tensor kInputTensor(const_cast<void*>(inputs[kIN_K_IDX]), qkvCoords, rt::DeviceType::kGPU, qInputDesc.type);
-    rt::Tensor vInputTensor(const_cast<void*>(inputs[kIN_V_IDX]), qkvCoords, rt::DeviceType::kGPU, qInputDesc.type);
+    rt::Coords const qkvCoords = rt::toCoords(qInputDesc.dims);
+    rt::Tensor qInputTensor(
+        const_cast<void*>(inputs[kIN_Q_IDX]), qkvCoords, rt::DeviceType::kGPU, fromTrt(qInputDesc.type));
+    rt::Tensor kInputTensor(
+        const_cast<void*>(inputs[kIN_K_IDX]), qkvCoords, rt::DeviceType::kGPU, fromTrt(qInputDesc.type));
+    rt::Tensor vInputTensor(
+        const_cast<void*>(inputs[kIN_V_IDX]), qkvCoords, rt::DeviceType::kGPU, fromTrt(qInputDesc.type));
 
     PluginTensorDesc const& cuSeqLensInputDesc = inputDesc[kIN_CU_SEQLENS_IDX];
-    rt::Tensor cuSeqLensTensor(const_cast<void*>(inputs[kIN_CU_SEQLENS_IDX]), rt::Coords{cuSeqLensInputDesc.dims},
-        rt::DeviceType::kGPU, cuSeqLensInputDesc.type);
+    rt::Tensor cuSeqLensTensor(const_cast<void*>(inputs[kIN_CU_SEQLENS_IDX]), rt::toCoords(cuSeqLensInputDesc.dims),
+        rt::DeviceType::kGPU, fromTrt(cuSeqLensInputDesc.type));
 
     PluginTensorDesc const& attentionOutputDesc = outputDesc[kOUT_ATTENTION_IDX];
-    rt::Tensor attentionOutputTensor(outputs[kOUT_ATTENTION_IDX], rt::Coords{attentionOutputDesc.dims},
-        rt::DeviceType::kGPU, attentionOutputDesc.type);
+    rt::Tensor attentionOutputTensor(outputs[kOUT_ATTENTION_IDX], rt::toCoords(attentionOutputDesc.dims),
+        rt::DeviceType::kGPU, fromTrt(attentionOutputDesc.type));
 
     PluginTensorDesc const& maxSeqLenCarrierDesc = inputDesc[kIN_MAX_SEQLEN_CARRIER_IDX];
     int32_t runtimeMaxSeqLen = static_cast<int32_t>(maxSeqLenCarrierDesc.dims.d[0]);

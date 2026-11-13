@@ -239,13 +239,13 @@ TEST_F(TalkerMLPTest, MLPAccuracy)
         rt::Coords outputShape{numTokens, outputDim};
         rt::Coords workspaceShape{numTokens, hiddenDim};
 
-        rt::Tensor gpuInput(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-        rt::Tensor gpuFc1W(fc1WShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-        rt::Tensor gpuFc1B(fc1BShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-        rt::Tensor gpuFc2W(fc2WShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-        rt::Tensor gpuFc2B(fc2BShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-        rt::Tensor gpuOutput(outputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-        rt::Tensor gpuWorkspace(workspaceShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor gpuInput(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        rt::Tensor gpuFc1W(fc1WShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        rt::Tensor gpuFc1B(fc1BShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        rt::Tensor gpuFc2W(fc2WShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        rt::Tensor gpuFc2B(fc2BShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        rt::Tensor gpuOutput(outputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        rt::Tensor gpuWorkspace(workspaceShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         copyHostToDevice(gpuInput, hostInput);
         copyHostToDevice(gpuFc1W, hostFc1W);
@@ -290,10 +290,10 @@ TEST_F(TalkerKernelTest, GatherScatterRoundTrip)
     rt::Coords gatherShape{numIndices, hiddenDim};
     rt::Coords scatterShape{srcTokens, hiddenDim};
 
-    rt::Tensor gpuSource(srcShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor gpuIndices(idxShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor gpuGatherOut(gatherShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor gpuScatterOut(scatterShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor gpuSource(srcShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor gpuIndices(idxShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor gpuGatherOut(gatherShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor gpuScatterOut(scatterShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     copyHostToDevice(gpuSource, hostSource);
     copyHostToDevice(gpuIndices, hostIndices);
@@ -375,12 +375,12 @@ std::vector<half> runPreambleKernel(
     int64_t const projRows = 3 + in.textLen;
     int64_t const hd = in.hiddenDim;
 
-    rt::Tensor gpuProjected({projRows, hd}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor gpuTtsPad({hd}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor gpuTtsBos({hd}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor gpuTtsEos({hd}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor gpuEmbTable({in.vocabSize, hd}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor gpuOutput({totalRows, hd}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor gpuProjected({projRows, hd}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor gpuTtsPad({hd}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor gpuTtsBos({hd}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor gpuTtsEos({hd}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor gpuEmbTable({in.vocabSize, hd}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor gpuOutput({totalRows, hd}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     copyHostToDevice(gpuProjected, in.projected);
     copyHostToDevice(gpuTtsPad, in.ttsPad);
@@ -512,11 +512,11 @@ struct BuilderHarness
     std::vector<trt_edgellm::kernel::PrefillRowDesc> rows;
 
     BuilderHarness(PreambleInputs const& in, int64_t projRows)
-        : gpuProjected({projRows, in.hiddenDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF)
-        , gpuTtsPad({static_cast<int64_t>(in.hiddenDim)}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF)
-        , gpuTtsBos({static_cast<int64_t>(in.hiddenDim)}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF)
-        , gpuTtsEos({static_cast<int64_t>(in.hiddenDim)}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF)
-        , gpuEmbTable({in.vocabSize, in.hiddenDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF)
+        : gpuProjected({projRows, in.hiddenDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF)
+        , gpuTtsPad({static_cast<int64_t>(in.hiddenDim)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF)
+        , gpuTtsBos({static_cast<int64_t>(in.hiddenDim)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF)
+        , gpuTtsEos({static_cast<int64_t>(in.hiddenDim)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF)
+        , gpuEmbTable({in.vocabSize, in.hiddenDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF)
         , hiddenDim(in.hiddenDim)
     {
         copyHostToDevice(gpuProjected, in.projected);
@@ -596,7 +596,7 @@ struct BuilderHarness
     void build(rt::Tensor& output, cudaStream_t stream)
     {
         int64_t const bytes = numRows() * static_cast<int64_t>(sizeof(trt_edgellm::kernel::PrefillRowDesc));
-        rt::Tensor descs({bytes}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        rt::Tensor descs({bytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
         CUDA_CHECK(cudaMemcpyAsync(descs.rawPointer(), rows.data(), bytes, cudaMemcpyHostToDevice, stream));
         trt_edgellm::kernel::invokePrefillRowAssemble(
             reinterpret_cast<trt_edgellm::kernel::PrefillRowDesc const*>(descs.rawPointer()),
@@ -638,7 +638,7 @@ TEST_F(TalkerKernelTest, PrefillBuilderMatchesFusedKernel)
             ASSERT_EQ(h.numRows(), totalRows);
 
             rt::Tensor gpuOut(
-                {totalRows, static_cast<int64_t>(hiddenDim)}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+                {totalRows, static_cast<int64_t>(hiddenDim)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
             h.build(gpuOut, stream);
             auto const built = copyDeviceToHost<half>(gpuOut);
             CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -675,7 +675,7 @@ TEST_F(TalkerKernelTest, PrefillBuilderInstructSegment)
 
     int64_t const totalRows = instructRows + 8 + textLen + 2;
     ASSERT_EQ(h.numRows(), totalRows);
-    rt::Tensor gpuOut({totalRows, static_cast<int64_t>(hiddenDim)}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor gpuOut({totalRows, static_cast<int64_t>(hiddenDim)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     h.build(gpuOut, stream);
     auto const built = copyDeviceToHost<half>(gpuOut);
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -722,7 +722,7 @@ TEST_F(TalkerKernelTest, PrefillBuilderNoSpeakerRecipe)
 
     int64_t const totalRows = 7 + textLen + 2;
     ASSERT_EQ(h.numRows(), totalRows);
-    rt::Tensor gpuOut({totalRows, static_cast<int64_t>(hiddenDim)}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor gpuOut({totalRows, static_cast<int64_t>(hiddenDim)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     h.build(gpuOut, stream);
     auto const built = copyDeviceToHost<half>(gpuOut);
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -755,12 +755,12 @@ static std::vector<float> runTalkerLogitAdjust(std::vector<float> const& hostLog
 {
     int32_t const vocabSize = static_cast<int32_t>(hostLogits.size());
 
-    rt::Tensor gpuLogits({1, static_cast<int64_t>(vocabSize)}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor gpuLogits({1, static_cast<int64_t>(vocabSize)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     CUDA_CHECK(
         cudaMemcpy(gpuLogits.rawPointer(), hostLogits.data(), vocabSize * sizeof(float), cudaMemcpyHostToDevice));
 
     int32_t const maxSeen = std::max(static_cast<int32_t>(hostSeenTokens.size()), 1);
-    rt::Tensor gpuSeen({static_cast<int64_t>(maxSeen)}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor gpuSeen({static_cast<int64_t>(maxSeen)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     if (!hostSeenTokens.empty())
     {
         CUDA_CHECK(cudaMemcpy(gpuSeen.rawPointer(), hostSeenTokens.data(), hostSeenTokens.size() * sizeof(int32_t),

@@ -28,7 +28,6 @@
 #include <vector>
 
 using namespace trt_edgellm;
-using namespace nvinfer1;
 
 TEST(DFlashRuntimeKernels, TargetKVCacheUpdateRoutesNonIdentityPages)
 {
@@ -318,16 +317,18 @@ TEST(DFlashRuntimeKernels, PrepareProposalInputsPreservesResidentMappingAndSuppo
 
 TEST(DFlashRuntimeKernels, BuildLinearVerifyInputsUsesDraftStrideForBatchRows)
 {
+    // Given two draft rows with a wider stride than the selected proposals, when verify IDs are assembled,
+    // then each root and continuation stays in its request without an unpacked attention-mask output.
     cudaStream_t stream = nullptr;
+    CUDA_CHECK(cudaStreamCreate(&stream));
     constexpr int32_t batchSize = 2;
-    constexpr int32_t dflashBlockSize = 4;
-    constexpr int32_t proposalLen = dflashBlockSize - 1;
-    constexpr int32_t verifySize = proposalLen + 1;
+    constexpr int32_t draftBlockSize = 4;
+    constexpr int32_t proposalLen = 2;
+    constexpr int32_t verifyTokenCount = proposalLen + 1;
 
     auto lastAcceptedTokens = rt::Tensor({batchSize}, rt::DeviceType::kGPU, DataType::kINT32);
-    auto draftTokenIds = rt::Tensor({batchSize, dflashBlockSize}, rt::DeviceType::kGPU, DataType::kINT32);
-    auto verifyTokenIds = rt::Tensor({batchSize, verifySize}, rt::DeviceType::kGPU, DataType::kINT32);
-    auto verifyTreeMask = rt::Tensor({batchSize, verifySize, verifySize}, rt::DeviceType::kGPU, DataType::kINT8);
+    auto draftTokenIds = rt::Tensor({batchSize, draftBlockSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    auto verifyTokenIds = rt::Tensor({batchSize, verifyTokenCount}, rt::DeviceType::kGPU, DataType::kINT32);
 
     copyHostToDevice<int32_t>(lastAcceptedTokens, {10, 20});
     // DFlash draft output at position 0 predicts the current token (t_last), not the next token.
@@ -336,37 +337,25 @@ TEST(DFlashRuntimeKernels, BuildLinearVerifyInputsUsesDraftStrideForBatchRows)
     copyHostToDevice<int32_t>(draftTokenIds, {999, 101, 102, 103, 999, 201, 202, 203});
 
     kernel::launchDFlashBuildLinearVerifyInputs(lastAcceptedTokens.dataPointer<int32_t>(),
-        draftTokenIds.dataPointer<int32_t>(), verifyTokenIds.dataPointer<int32_t>(),
-        verifyTreeMask.dataPointer<int8_t>(), batchSize, proposalLen, dflashBlockSize, verifySize, stream);
+        draftTokenIds.dataPointer<int32_t>(), verifyTokenIds.dataPointer<int32_t>(), batchSize, proposalLen,
+        draftBlockSize, verifyTokenCount, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    EXPECT_EQ(copyDeviceToHost<int32_t>(verifyTokenIds), (std::vector<int32_t>{10, 101, 102, 103, 20, 201, 202, 203}));
+    EXPECT_EQ(copyDeviceToHost<int32_t>(verifyTokenIds), (std::vector<int32_t>{10, 101, 102, 20, 201, 202}));
 
-    std::vector<int8_t> expectedMask;
-    expectedMask.reserve(static_cast<size_t>(batchSize) * verifySize * verifySize);
-    for (int32_t batchIdx = 0; batchIdx < batchSize; ++batchIdx)
-    {
-        for (int32_t rowIdx = 0; rowIdx < verifySize; ++rowIdx)
-        {
-            for (int32_t colIdx = 0; colIdx < verifySize; ++colIdx)
-            {
-                expectedMask.push_back(colIdx <= rowIdx ? int8_t{1} : int8_t{0});
-            }
-        }
-    }
-    EXPECT_EQ(copyDeviceToHost<int8_t>(verifyTreeMask), expectedMask);
+    CUDA_CHECK(cudaStreamDestroy(stream));
 }
 
 TEST(DFlashRuntimeKernels, BuildLinearTreeMetadataUsesChainParentsAndDepths)
 {
     cudaStream_t stream = nullptr;
     constexpr int32_t batchSize = 2;
-    constexpr int32_t verifySize = 4;
-    auto parentIds = rt::Tensor({batchSize, verifySize}, rt::DeviceType::kGPU, DataType::kINT32);
-    auto depths = rt::Tensor({batchSize, verifySize}, rt::DeviceType::kGPU, DataType::kINT32);
+    constexpr int32_t verifyTokenCount = 4;
+    auto parentIds = rt::Tensor({batchSize, verifyTokenCount}, rt::DeviceType::kGPU, DataType::kINT32);
+    auto depths = rt::Tensor({batchSize, verifyTokenCount}, rt::DeviceType::kGPU, DataType::kINT32);
 
     kernel::launchDFlashBuildLinearTreeMetadata(
-        parentIds.dataPointer<int32_t>(), depths.dataPointer<int32_t>(), batchSize, verifySize, stream);
+        parentIds.dataPointer<int32_t>(), depths.dataPointer<int32_t>(), batchSize, verifyTokenCount, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     std::vector<int32_t> const expectedParents{-1, 0, 1, 2, -1, 0, 1, 2};

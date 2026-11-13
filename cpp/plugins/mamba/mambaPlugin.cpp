@@ -20,6 +20,8 @@
 #include "common/cudaUtils.h"
 #include "common/executionPhase.h"
 #include "common/logger.h"
+#include "common/trtInterop.h"
+#include "kernels/compactPhase/compactPhaseSupport.h"
 #ifdef CUTE_DSL_SSD_ENABLED
 #include "kernels/mamba/cuteDslSSDRunner.h"
 #endif
@@ -42,12 +44,12 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
 constexpr char const* kMAMBA_PLUGIN_VERSION{"1"};
 constexpr char const* kMAMBA_PLUGIN_NAME{"update_ssm_state"};
-constexpr int32_t kMAMBA_REPLAY_FORMAT_VERSION{2};
 
 // Input indices – matches the trt_edgellm::update_ssm_state ONNX op.
 constexpr int32_t kIN_X_IDX{0};                       // [T_exec, nheads, dim]
@@ -66,7 +68,8 @@ constexpr int32_t kIN_CONTEXT_SEQUENCE_COUNT_IDX{12}; // [N_context] shape-only 
 
 constexpr int32_t kIN_TREE_PARENT_IDS_IDX{13};
 constexpr int32_t kIN_TREE_DEPTHS_IDX{14};
-constexpr int32_t kNUM_DDTREE_OPTIONAL_INPUTS{2};
+constexpr int32_t kIN_SPEC_VERIFY_LAYOUT_IDX{15};
+constexpr int32_t kNUM_SPEC_VERIFY_OPTIONAL_INPUTS{3};
 
 // Output indices
 constexpr int32_t kOUT_OUTPUT_IDX{0}; // [T_exec, nheads, dim]
@@ -103,16 +106,14 @@ std::vector<PluginField> MambaPluginCreator::mPluginAttributes;
 REGISTER_TENSORRT_PLUGIN(MambaPluginCreator);
 
 MambaPlugin::MambaPlugin(std::string const& name, int32_t dim, int32_t dstate, int32_t nheads, int32_t ngroups,
-    int32_t dtSoftplus, int32_t useSpecVerifyState, int32_t useDDTree, int32_t replayFormatVersion)
+    int32_t dtSoftplus, int32_t useSpecVerifyState)
     : mLayerName(name)
     , mDim(dim)
     , mDstate(dstate)
     , mNheads(nheads)
     , mNgroups(ngroups)
     , mDtSoftplus(dtSoftplus)
-    , mUseSpecVerifyState(useSpecVerifyState || useDDTree)
-    , mUseDDTree(useDDTree)
-    , mReplayFormatVersion(replayFormatVersion)
+    , mUseSpecVerifyState(useSpecVerifyState)
 {
 }
 
@@ -120,12 +121,28 @@ MambaPlugin::~MambaPlugin() {}
 
 int32_t MambaPlugin::numInputs() const noexcept
 {
-    return kNUM_REQUIRED_INPUTS + (mUseDDTree ? kNUM_DDTREE_OPTIONAL_INPUTS : 0);
+    return kNUM_REQUIRED_INPUTS + (mUseSpecVerifyState ? kNUM_SPEC_VERIFY_OPTIONAL_INPUTS : 0);
 }
 
 int32_t MambaPlugin::numOutputs() const noexcept
 {
     return kNUM_REQUIRED_OUTPUTS + (mUseSpecVerifyState ? kNUM_SPEC_VERIFY_OPTIONAL_OUTPUTS : 0);
+}
+
+bool MambaPlugin::supportsCompactPhase(int32_t headDim, int32_t stateDim) const noexcept
+{
+    return trt_edgellm::mamba2SsdCompactSupport(headDim, stateDim, getSMVersion(), mUseSpecVerifyState != 0).supported;
+}
+
+std::string MambaPlugin::describeLayer() const
+{
+    std::string shape = std::to_string(mNheads) + " heads, head dim " + std::to_string(mDim) + ", state size "
+        + std::to_string(mDstate);
+    if (mUseSpecVerifyState != 0)
+    {
+        shape += ", spec-verify state";
+    }
+    return describePluginLayer("update_ssm_state", mLayerName, shape);
 }
 
 IPluginCapability* MambaPlugin::getCapabilityInterface(PluginCapabilityType type) noexcept
@@ -143,8 +160,8 @@ IPluginCapability* MambaPlugin::getCapabilityInterface(PluginCapabilityType type
 
 IPluginV3* MambaPlugin::clone() noexcept
 {
-    MambaPlugin* plugin = new MambaPlugin(mLayerName, mDim, mDstate, mNheads, mNgroups, mDtSoftplus,
-        mUseSpecVerifyState, mUseDDTree, mReplayFormatVersion);
+    MambaPlugin* plugin
+        = new MambaPlugin(mLayerName, mDim, mDstate, mNheads, mNgroups, mDtSoftplus, mUseSpecVerifyState);
     plugin->setPluginNamespace(mNamespace.c_str());
     return plugin;
 }
@@ -256,7 +273,8 @@ bool MambaPlugin::supportsFormatCombination(
     {
         return desc.type == DataType::kINT32;
     }
-    if (mUseDDTree && (pos == kIN_TREE_PARENT_IDS_IDX || pos == kIN_TREE_DEPTHS_IDX))
+    if (mUseSpecVerifyState
+        && (pos == kIN_TREE_PARENT_IDS_IDX || pos == kIN_TREE_DEPTHS_IDX || pos == kIN_SPEC_VERIFY_LAYOUT_IDX))
     {
         return desc.type == DataType::kINT32;
     }
@@ -338,12 +356,14 @@ int32_t MambaPlugin::configurePlugin(DynamicPluginTensorDesc const* in, int32_t 
             static_cast<int32_t>(in[kIN_X_IDX].desc.type));
         return -1;
     }
-    if (mUseDDTree
+    if (mUseSpecVerifyState
         && (in[kIN_TREE_PARENT_IDS_IDX].desc.type != DataType::kINT32
             || in[kIN_TREE_DEPTHS_IDX].desc.type != DataType::kINT32
-            || in[kIN_TREE_PARENT_IDS_IDX].desc.dims.nbDims != 1 || in[kIN_TREE_DEPTHS_IDX].desc.dims.nbDims != 1))
+            || in[kIN_TREE_PARENT_IDS_IDX].desc.dims.nbDims != 1 || in[kIN_TREE_DEPTHS_IDX].desc.dims.nbDims != 1
+            || in[kIN_SPEC_VERIFY_LAYOUT_IDX].desc.type != DataType::kINT32
+            || in[kIN_SPEC_VERIFY_LAYOUT_IDX].desc.dims.nbDims != 1))
     {
-        LOG_ERROR("update_ssm_state: DDTree tree_parent_ids/tree_depths must be token-major 1D INT32");
+        LOG_ERROR("update_ssm_state: tree_parent_ids, tree_depths and spec_verify_layout must be 1D INT32");
         return -1;
     }
     return 0;
@@ -361,17 +381,29 @@ size_t MambaPlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inputs, int3
     size_t const activeStateBytes
         = alignTensorSize(static_cast<size_t>(maxBatch) * mNheads * mDim * mDstate * sizeof(half));
     size_t total = activeStateBytes;
+    int32_t const headDim = static_cast<int32_t>(inputs[kIN_X_IDX].max.d[inputs[kIN_X_IDX].max.nbDims - 1]);
+    int32_t const stateDim = static_cast<int32_t>(inputs[kIN_B_IDX].max.d[inputs[kIN_B_IDX].max.nbDims - 1]);
+    bool const reservesCompact = supportsCompactPhase(headDim, stateDim);
+    reportCompactWorkspace("update_ssm_state", mLayerName, reservesCompact);
 #ifdef CUTE_DSL_SSD_ENABLED
     int32_t const maxTokens = static_cast<int32_t>(inputs[kIN_X_IDX].max.d[0]);
     if (maxBatch > 0 && maxTokens >= 128)
     {
-        int32_t const maxSeqLen = (maxTokens + maxBatch - 1) / maxBatch;
-        size_t const runnerBytes
-            = trt_edgellm::CuteDslSSDRunner::getWorkspaceSize(maxBatch, maxSeqLen, mNheads, mDim, mDstate, mNgroups);
+        size_t const runnerBytes = trt_edgellm::CuteDslSSDRunner::getWorkspaceSizeForTokenBudget(
+            maxBatch, maxTokens, mNheads, mDim, mDstate, mNgroups);
         if (runnerBytes > 0)
         {
             total = std::max(total, activeStateBytes + runnerBytes);
         }
+    }
+    if (reservesCompact)
+    {
+        size_t const packedBytes
+            = trt_edgellm::CuteDslSSDRunner::canImplementPackedStatePool(headDim, stateDim, getSMVersion())
+            ? trt_edgellm::CuteDslSSDRunner::getPackedWorkspaceSize(maxTokens, mNheads)
+            : activeStateBytes
+                + trt_edgellm::CuteDslSSDRunner::getPackedWorkspaceSize(maxBatch, maxTokens, mNheads, mDim);
+        total = std::max(total, packedBytes);
     }
 #endif
     return total;
@@ -380,6 +412,12 @@ size_t MambaPlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inputs, int3
 int32_t MambaPlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfer1::PluginTensorDesc const* outputDesc,
     void const* const* inputs, void* const* outputs, [[maybe_unused]] void* workspace, cudaStream_t stream) noexcept
 {
+    PluginTensorDesc const& phaseMarkerDesc = inputDesc[kIN_EXECUTION_PHASE_MARKER_IDX];
+    if (phaseMarkerDesc.dims.nbDims == 1
+        && phaseMarkerDesc.dims.d[0] == static_cast<int64_t>(rt::ExecutionPhase::kMixedPrefillDecode))
+    {
+        return enqueueCompact(inputDesc, outputDesc, inputs, outputs, workspace, stream);
+    }
     auto const& xDesc = inputDesc[kIN_X_IDX];
     RaggedPluginMetadata ragged{};
     try
@@ -424,31 +462,44 @@ int32_t MambaPlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfe
         return -1;
     }
 
-    bool const treeActive = mUseDDTree && captureIntermediates;
+    std::optional<rt::SpecVerifyLayout> layout;
+    try
+    {
+        if (mUseSpecVerifyState)
+        {
+            layout = decodeSpecVerifyLayout("update_ssm_state", inputDesc[kIN_SPEC_VERIFY_LAYOUT_IDX], phase);
+        }
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("%s", e.what());
+        return -1;
+    }
+    bool const treeActive = layout == rt::SpecVerifyLayout::kTree;
     namespace rt = trt_edgellm::rt;
     int32_t const seqLen = tokenCount / batch;
     auto xTensor = rt::Tensor{const_cast<void*>(inputs[kIN_X_IDX]), rt::Coords{batch, seqLen, mNheads, mDim},
-        rt::DeviceType::kGPU, xDesc.type};
-    auto aTensor = rt::Tensor{const_cast<void*>(inputs[kIN_A_IDX]), inputDesc[kIN_A_IDX].dims, rt::DeviceType::kGPU,
-        inputDesc[kIN_A_IDX].type};
+        rt::DeviceType::kGPU, fromTrt(xDesc.type)};
+    auto aTensor = rt::Tensor{const_cast<void*>(inputs[kIN_A_IDX]), rt::toCoords(inputDesc[kIN_A_IDX].dims),
+        rt::DeviceType::kGPU, fromTrt(inputDesc[kIN_A_IDX].type)};
     auto bTensor = rt::Tensor{const_cast<void*>(inputs[kIN_B_IDX]), rt::Coords{batch, seqLen, mNgroups, mDstate},
-        rt::DeviceType::kGPU, xDesc.type};
+        rt::DeviceType::kGPU, fromTrt(xDesc.type)};
     auto cTensor = rt::Tensor{const_cast<void*>(inputs[kIN_C_IDX]), rt::Coords{batch, seqLen, mNgroups, mDstate},
-        rt::DeviceType::kGPU, xDesc.type};
-    auto dtTensor = rt::Tensor{
-        const_cast<void*>(inputs[kIN_DT_IDX]), rt::Coords{batch, seqLen, mNheads}, rt::DeviceType::kGPU, xDesc.type};
-    auto dtBiasTensor = rt::Tensor{
-        const_cast<void*>(inputs[kIN_DT_BIAS_IDX]), inputDesc[kIN_DT_BIAS_IDX].dims, rt::DeviceType::kGPU, xDesc.type};
-    auto dTensor
-        = rt::Tensor{const_cast<void*>(inputs[kIN_D_IDX]), inputDesc[kIN_D_IDX].dims, rt::DeviceType::kGPU, xDesc.type};
-    auto residentStateTensor
-        = rt::Tensor{outputs[kOUT_STATE_IDX], inputDesc[kIN_STATE_IDX].dims, rt::DeviceType::kGPU, xDesc.type};
+        rt::DeviceType::kGPU, fromTrt(xDesc.type)};
+    auto dtTensor = rt::Tensor{const_cast<void*>(inputs[kIN_DT_IDX]), rt::Coords{batch, seqLen, mNheads},
+        rt::DeviceType::kGPU, fromTrt(xDesc.type)};
+    auto dtBiasTensor = rt::Tensor{const_cast<void*>(inputs[kIN_DT_BIAS_IDX]),
+        rt::toCoords(inputDesc[kIN_DT_BIAS_IDX].dims), rt::DeviceType::kGPU, fromTrt(xDesc.type)};
+    auto dTensor = rt::Tensor{const_cast<void*>(inputs[kIN_D_IDX]), rt::toCoords(inputDesc[kIN_D_IDX].dims),
+        rt::DeviceType::kGPU, fromTrt(xDesc.type)};
+    auto residentStateTensor = rt::Tensor{outputs[kOUT_STATE_IDX], rt::toCoords(inputDesc[kIN_STATE_IDX].dims),
+        rt::DeviceType::kGPU, fromTrt(xDesc.type)};
     auto outTensor = rt::Tensor{
-        outputs[kOUT_OUTPUT_IDX], rt::Coords{batch, seqLen, mNheads, mDim}, rt::DeviceType::kGPU, xDesc.type};
-    auto queryLengthsTensor = rt::Tensor{
-        const_cast<void*>(inputs[kIN_QUERY_LENGTHS_IDX]), rt::Coords{batch}, rt::DeviceType::kGPU, DataType::kINT32};
-    auto stateIndicesTensor = rt::Tensor{
-        const_cast<void*>(inputs[kIN_STATE_INDICES_IDX]), rt::Coords{batch}, rt::DeviceType::kGPU, DataType::kINT32};
+        outputs[kOUT_OUTPUT_IDX], rt::Coords{batch, seqLen, mNheads, mDim}, rt::DeviceType::kGPU, fromTrt(xDesc.type)};
+    auto queryLengthsTensor = rt::Tensor{const_cast<void*>(inputs[kIN_QUERY_LENGTHS_IDX]), rt::Coords{batch},
+        rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32};
+    auto stateIndicesTensor = rt::Tensor{const_cast<void*>(inputs[kIN_STATE_INDICES_IDX]), rt::Coords{batch},
+        rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32};
     rt::OptionalInputTensor dtBiasOpt = std::optional(std::cref(dtBiasTensor));
     rt::OptionalInputTensor dOpt = std::optional(std::cref(dTensor));
     rt::OptionalInputTensor queryLengthsOpt
@@ -464,7 +515,7 @@ int32_t MambaPlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfe
             return -1;
         }
         denoiseStateTensor.emplace(
-            workspace, rt::Coords{batch, mNheads, mDim, mDstate}, rt::DeviceType::kGPU, xDesc.type);
+            workspace, rt::Coords{batch, mNheads, mDim, mDstate}, rt::DeviceType::kGPU, fromTrt(xDesc.type));
         mamba_ssm::invokeMambaStateGather(residentStateTensor, denoiseStateTensor.value(), stateIndicesTensor, stream);
         stateTensor = &denoiseStateTensor.value();
         stateIndicesOpt = std::nullopt;
@@ -480,14 +531,14 @@ int32_t MambaPlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfe
     std::optional<rt::Tensor> replayDtTensor;
     if (captureIntermediates)
     {
-        replayDaTensor.emplace(
-            outputs[kOUT_REPLAY_DA_IDX], rt::Coords{batch, seqLen, mNheads}, rt::DeviceType::kGPU, DataType::kFLOAT);
+        replayDaTensor.emplace(outputs[kOUT_REPLAY_DA_IDX], rt::Coords{batch, seqLen, mNheads}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT);
         replayUTensor.emplace(outputs[kOUT_REPLAY_U_IDX], rt::Coords{batch, seqLen, mNheads, mDim},
-            rt::DeviceType::kGPU, DataType::kFLOAT);
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
         replayBTensor.emplace(outputs[kOUT_REPLAY_B_IDX], rt::Coords{batch, seqLen, mNgroups, mDstate},
-            rt::DeviceType::kGPU, DataType::kFLOAT);
-        replayDtTensor.emplace(
-            outputs[kOUT_REPLAY_DT_IDX], rt::Coords{batch, seqLen, mNheads}, rt::DeviceType::kGPU, DataType::kFLOAT);
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        replayDtTensor.emplace(outputs[kOUT_REPLAY_DT_IDX], rt::Coords{batch, seqLen, mNheads}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT);
         replayDaOpt = std::optional(std::ref(replayDaTensor.value()));
         replayUOpt = std::optional(std::ref(replayUTensor.value()));
         replayBOpt = std::optional(std::ref(replayBTensor.value()));
@@ -504,9 +555,9 @@ int32_t MambaPlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfe
             return -1;
         }
         auto treeParentIds = rt::Tensor{const_cast<void*>(inputs[kIN_TREE_PARENT_IDS_IDX]), rt::Coords{batch, seqLen},
-            rt::DeviceType::kGPU, DataType::kINT32};
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32};
         auto treeDepths = rt::Tensor{const_cast<void*>(inputs[kIN_TREE_DEPTHS_IDX]), rt::Coords{batch, seqLen},
-            rt::DeviceType::kGPU, DataType::kINT32};
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32};
         mamba_ssm::invokeSelectiveStateUpdateDDTree(xTensor, aTensor, bTensor, cTensor, dtTensor, dtBiasOpt, dOpt,
             *stateTensor, outTensor, treeParentIds, treeDepths, static_cast<bool>(mDtSoftplus), stateIndicesOpt,
             replayDaTensor.value(), replayUTensor.value(), replayBTensor.value(), replayDtTensor.value(), stream);
@@ -527,8 +578,8 @@ int32_t MambaPlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfe
             LOG_ERROR("update_ssm_state: optimized prefill requires workspace");
             return -1;
         }
-        auto activeStateTensor
-            = rt::Tensor{workspace, rt::Coords{batch, mNheads, mDim, mDstate}, rt::DeviceType::kGPU, xDesc.type};
+        auto activeStateTensor = rt::Tensor{
+            workspace, rt::Coords{batch, mNheads, mDim, mDstate}, rt::DeviceType::kGPU, fromTrt(xDesc.type)};
 
         trt_edgellm::SSDParams params{};
         params.x = const_cast<void*>(inputs[kIN_X_IDX]);
@@ -550,7 +601,8 @@ int32_t MambaPlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfe
         params.smVersion = smVersion;
         params.dt_softplus = static_cast<bool>(mDtSoftplus);
         params.has_D = true;
-        params.has_init_states = true;
+        params.has_init_states = phase != rt::ExecutionPhase::kContextPrefill
+            || !trt_edgellm::CuteDslSSDRunner::supportsZeroInitialState(mDim, mDstate, smVersion);
         params.workspace = static_cast<char*>(workspace) + activeStateBytes;
 
         if (!trt_edgellm::CuteDslSSDRunner::ensureKernelModules(params, stream))
@@ -558,7 +610,10 @@ int32_t MambaPlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfe
             LOG_ERROR("update_ssm_state: failed to load the selected CuTe DSL SSD kernel module");
             return -1;
         }
-        mamba_ssm::invokeMambaStateGather(residentStateTensor, activeStateTensor, stateIndicesTensor, stream);
+        if (params.has_init_states)
+        {
+            mamba_ssm::invokeMambaStateGather(residentStateTensor, activeStateTensor, stateIndicesTensor, stream);
+        }
         trt_edgellm::CuteDslSSDRunner runner;
         int32_t const status = runner.run(params, stream);
         if (status != 0)
@@ -570,11 +625,174 @@ int32_t MambaPlugin::enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfe
     }
 #endif
 
+    if (phase == rt::ExecutionPhase::kAutoregressiveDecode)
+    {
+        enqueueDecodeRows(inputDesc, inputs, outputs, 0, 0, batch, seqLen, stream);
+        return 0;
+    }
     mamba_ssm::invokeSelectiveStateUpdatePrefill(xTensor, aTensor, bTensor, cTensor, dtTensor, dtBiasOpt, dOpt,
         std::nullopt, *stateTensor, outTensor, static_cast<bool>(mDtSoftplus), queryLengthsOpt, stateIndicesOpt,
         replayDaOpt, replayUOpt, replayBOpt, replayDtOpt, stream);
 
     return 0;
+}
+
+void MambaPlugin::enqueueDecodeRows(PluginTensorDesc const* inputDesc, void const* const* inputs, void* const* outputs,
+    int32_t firstRow, int32_t firstSequence, int32_t numSequences, int32_t rowsPerSequence, cudaStream_t stream) const
+{
+    DataType const type = inputDesc[kIN_X_IDX].type;
+    int64_t const xRowElems = static_cast<int64_t>(mNheads) * mDim;
+    int64_t const bcRowElems = static_cast<int64_t>(mNgroups) * mDstate;
+    auto const rows = [&](int32_t inputIdx, int64_t rowElems) {
+        return static_cast<half*>(const_cast<void*>(inputs[inputIdx])) + firstRow * rowElems;
+    };
+    auto xTensor = rt::Tensor{rows(kIN_X_IDX, xRowElems), rt::Coords{numSequences, rowsPerSequence, mNheads, mDim},
+        rt::DeviceType::kGPU, fromTrt(type)};
+    auto aTensor = rt::Tensor{const_cast<void*>(inputs[kIN_A_IDX]), rt::toCoords(inputDesc[kIN_A_IDX].dims),
+        rt::DeviceType::kGPU, fromTrt(inputDesc[kIN_A_IDX].type)};
+    auto bTensor = rt::Tensor{rows(kIN_B_IDX, bcRowElems), rt::Coords{numSequences, rowsPerSequence, mNgroups, mDstate},
+        rt::DeviceType::kGPU, fromTrt(type)};
+    auto cTensor = rt::Tensor{rows(kIN_C_IDX, bcRowElems), rt::Coords{numSequences, rowsPerSequence, mNgroups, mDstate},
+        rt::DeviceType::kGPU, fromTrt(type)};
+    auto dtTensor = rt::Tensor{rows(kIN_DT_IDX, mNheads), rt::Coords{numSequences, rowsPerSequence, mNheads},
+        rt::DeviceType::kGPU, fromTrt(type)};
+    auto dtBiasTensor = rt::Tensor{const_cast<void*>(inputs[kIN_DT_BIAS_IDX]),
+        rt::toCoords(inputDesc[kIN_DT_BIAS_IDX].dims), rt::DeviceType::kGPU, fromTrt(type)};
+    auto dTensor = rt::Tensor{const_cast<void*>(inputs[kIN_D_IDX]), rt::toCoords(inputDesc[kIN_D_IDX].dims),
+        rt::DeviceType::kGPU, fromTrt(type)};
+    auto residentStateTensor = rt::Tensor{
+        outputs[kOUT_STATE_IDX], rt::toCoords(inputDesc[kIN_STATE_IDX].dims), rt::DeviceType::kGPU, fromTrt(type)};
+    auto outTensor = rt::Tensor{static_cast<half*>(outputs[kOUT_OUTPUT_IDX]) + firstRow * xRowElems,
+        rt::Coords{numSequences, rowsPerSequence, mNheads, mDim}, rt::DeviceType::kGPU, fromTrt(type)};
+    auto stateIndicesTensor
+        = rt::Tensor{static_cast<int32_t*>(const_cast<void*>(inputs[kIN_STATE_INDICES_IDX])) + firstSequence,
+            rt::Coords{numSequences}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32};
+    mamba_ssm::invokeSelectiveStateUpdatePrefill(xTensor, aTensor, bTensor, cTensor, dtTensor,
+        std::optional(std::cref(dtBiasTensor)), std::optional(std::cref(dTensor)), std::nullopt, residentStateTensor,
+        outTensor, static_cast<bool>(mDtSoftplus), std::nullopt, std::optional(std::cref(stateIndicesTensor)),
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt, stream);
+}
+
+int32_t MambaPlugin::enqueueCompact(PluginTensorDesc const* inputDesc, PluginTensorDesc const* outputDesc,
+    void const* const* inputs, void* const* outputs, [[maybe_unused]] void* workspace, cudaStream_t stream) noexcept
+{
+    auto const& xDesc = inputDesc[kIN_X_IDX];
+    auto const& bDesc = inputDesc[kIN_B_IDX];
+    if (!supportsCompactPhase(static_cast<int32_t>(xDesc.dims.d[xDesc.dims.nbDims - 1]),
+            static_cast<int32_t>(bDesc.dims.d[bDesc.dims.nbDims - 1])))
+    {
+        LOG_ERROR("%s: compact execution is not supported for this layer on this GPU.", describeLayer().c_str());
+        return -1;
+    }
+    try
+    {
+        RaggedPluginMetadata const ragged
+            = decodeRaggedPluginMetadata("update_ssm_state", xDesc, inputDesc[kIN_QUERY_LENGTHS_IDX],
+                inputDesc[kIN_QUERY_START_OFFSETS_IDX], inputDesc[kIN_EXECUTION_PHASE_MARKER_IDX],
+                inputDesc[kIN_CONTEXT_SEQUENCE_COUNT_IDX], RaggedLayoutSupport::kPaddedAndCompact);
+        validateIndexedResidentStateDescriptors("update_ssm_state", ragged.numSequences,
+            inputDesc[kIN_STATE_INDICES_IDX], inputDesc[kIN_STATE_IDX], outputDesc[kOUT_STATE_IDX], xDesc.type,
+            {mNheads, mDim, mDstate});
+        check::check(outputs[kOUT_STATE_IDX] == inputs[kIN_STATE_IDX],
+            "update_ssm_state: resident state input and output must alias");
+        int32_t const numPrefill = ragged.numContextSequences;
+        int32_t const numPrefillTokens = ragged.contextExecutionRows;
+        if (numPrefill > 0)
+        {
+#ifdef CUTE_DSL_SSD_ENABLED
+            int32_t const smVersion = getSMVersion();
+            check::check(workspace != nullptr, "update_ssm_state: compact prefill rows require workspace.");
+            trt_edgellm::CuteDslSSDRunner runner;
+            if (trt_edgellm::CuteDslSSDRunner::canImplementPackedStatePool(mDim, mDstate, smVersion))
+            {
+                trt_edgellm::PackedSSDParams params{};
+                params.x = const_cast<void*>(inputs[kIN_X_IDX]);
+                params.dt = const_cast<void*>(inputs[kIN_DT_IDX]);
+                params.A = const_cast<void*>(inputs[kIN_A_IDX]);
+                params.B = const_cast<void*>(inputs[kIN_B_IDX]);
+                params.C = const_cast<void*>(inputs[kIN_C_IDX]);
+                params.D = const_cast<void*>(inputs[kIN_D_IDX]);
+                params.dtBias = const_cast<void*>(inputs[kIN_DT_BIAS_IDX]);
+                params.cuSeqlens = const_cast<void*>(inputs[kIN_QUERY_START_OFFSETS_IDX]);
+                params.stateIndices = const_cast<void*>(inputs[kIN_STATE_INDICES_IDX]);
+                params.state = outputs[kOUT_STATE_IDX];
+                params.output = outputs[kOUT_OUTPUT_IDX];
+                params.totalTokens = numPrefillTokens;
+                params.batch = numPrefill;
+                params.stateSlots = static_cast<int32_t>(inputDesc[kIN_STATE_IDX].dims.d[0]);
+                params.nheads = mNheads;
+                params.dim = mDim;
+                params.dstate = mDstate;
+                params.ngroups = mNgroups;
+                params.smVersion = smVersion;
+                params.workspace = workspace;
+                params.workspaceSize = trt_edgellm::CuteDslSSDRunner::getPackedWorkspaceSize(numPrefillTokens, mNheads);
+                int32_t const status = runner.runPacked(params, stream);
+                if (status != 0)
+                {
+                    return status;
+                }
+            }
+            else
+            {
+                // SM100/110 packed kernels use dense states; gather/scatter the resident rows around them.
+                size_t const activeStateBytes
+                    = alignTensorSize(static_cast<size_t>(numPrefill) * mNheads * mDim * mDstate * sizeof(half));
+                auto activeStateTensor = rt::Tensor{workspace, rt::Coords{numPrefill, mNheads, mDim, mDstate},
+                    rt::DeviceType::kGPU, fromTrt(xDesc.type)};
+                auto residentStateTensor = rt::Tensor{outputs[kOUT_STATE_IDX],
+                    rt::toCoords(inputDesc[kIN_STATE_IDX].dims), rt::DeviceType::kGPU, fromTrt(xDesc.type)};
+                auto prefillStateIndices = rt::Tensor{const_cast<void*>(inputs[kIN_STATE_INDICES_IDX]),
+                    rt::Coords{numPrefill}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32};
+
+                trt_edgellm::SSDParams params{};
+                params.x = const_cast<void*>(inputs[kIN_X_IDX]);
+                params.dt = const_cast<void*>(inputs[kIN_DT_IDX]);
+                params.A = const_cast<void*>(inputs[kIN_A_IDX]);
+                params.B = const_cast<void*>(inputs[kIN_B_IDX]);
+                params.C = const_cast<void*>(inputs[kIN_C_IDX]);
+                params.D = const_cast<void*>(inputs[kIN_D_IDX]);
+                params.dt_bias = const_cast<void*>(inputs[kIN_DT_BIAS_IDX]);
+                params.state = activeStateTensor.rawPointer();
+                params.output = outputs[kOUT_OUTPUT_IDX];
+                params.cu_seqlens = inputs[kIN_QUERY_START_OFFSETS_IDX];
+                params.total_tokens = numPrefillTokens;
+                params.batch = numPrefill;
+                params.nheads = mNheads;
+                params.dim = mDim;
+                params.dstate = mDstate;
+                params.ngroups = mNgroups;
+                params.smVersion = smVersion;
+                params.dt_softplus = static_cast<bool>(mDtSoftplus);
+                params.has_D = true;
+                params.has_init_states = true;
+                params.workspace = static_cast<char*>(workspace) + activeStateBytes;
+                check::check(trt_edgellm::CuteDslSSDRunner::ensureKernelModules(params, stream),
+                    "update_ssm_state: failed to load the selected CuTe DSL SSD kernel module");
+                mamba_ssm::invokeMambaStateGather(residentStateTensor, activeStateTensor, prefillStateIndices, stream);
+                int32_t const status = runner.run(params, stream);
+                if (status != 0)
+                {
+                    return status;
+                }
+                mamba_ssm::invokeMambaStateScatter(activeStateTensor, residentStateTensor, prefillStateIndices, stream);
+            }
+#else
+            check::check(false, "update_ssm_state: compact execution is not supported for this layer on this GPU.");
+#endif
+        }
+        if (ragged.numDecodeSequences > 0)
+        {
+            enqueueDecodeRows(
+                inputDesc, inputs, outputs, numPrefillTokens, numPrefill, ragged.numDecodeSequences, 1, stream);
+        }
+        return 0;
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("%s", e.what());
+        return -1;
+    }
 }
 
 int32_t MambaPlugin::onShapeChange(
@@ -597,8 +815,7 @@ PluginFieldCollection const* MambaPlugin::getFieldsToSerialize() noexcept
     mDataToSerialize.emplace_back("ngroups", &mNgroups, PluginFieldType::kINT32, 1);
     mDataToSerialize.emplace_back("dt_softplus", &mDtSoftplus, PluginFieldType::kINT32, 1);
     mDataToSerialize.emplace_back("use_spec_verify_state", &mUseSpecVerifyState, PluginFieldType::kINT32, 1);
-    mDataToSerialize.emplace_back("use_ddtree", &mUseDDTree, PluginFieldType::kINT32, 1);
-    mDataToSerialize.emplace_back("replay_format_version", &mReplayFormatVersion, PluginFieldType::kINT32, 1);
+    mDataToSerialize.emplace_back(layerNameField(mLayerName));
     mFCToSerialize.nbFields = static_cast<int32_t>(mDataToSerialize.size());
     mFCToSerialize.fields = mDataToSerialize.data();
     return &mFCToSerialize;
@@ -618,7 +835,6 @@ MambaPluginCreator::MambaPluginCreator()
     mPluginAttributes.emplace_back(PluginField("chunk_size", nullptr, PluginFieldType::kINT32, 0));
     mPluginAttributes.emplace_back(PluginField("time_step_limit", nullptr, PluginFieldType::kFLOAT32, 0));
     mPluginAttributes.emplace_back(PluginField("use_spec_verify_state", nullptr, PluginFieldType::kINT32, 1));
-    mPluginAttributes.emplace_back(PluginField("use_ddtree", nullptr, PluginFieldType::kINT32, 1));
     mFieldCollection.nbFields = mPluginAttributes.size();
     mFieldCollection.fields = mPluginAttributes.data();
 }
@@ -665,14 +881,8 @@ IPluginV3* MambaPluginCreator::createPlugin(
         std::optional<int32_t> dtSoftplus = parsePluginScalarField<int32_t>("dt_softplus", fc);
         // use_spec_verify_state: emit per-token intermediate recurrent states for MTP verification (0=off).
         std::optional<int32_t> useSpecVerifyState = parsePluginScalarField<int32_t>("use_spec_verify_state", fc);
-        std::optional<int32_t> useDDTree = parsePluginScalarField<int32_t>("use_ddtree", fc);
-        std::optional<int32_t> replayFormatVersion = parsePluginScalarField<int32_t>("replay_format_version", fc);
-        int32_t const effectiveUseSpecVerifyState = useSpecVerifyState.value_or(0) || useDDTree.value_or(0);
-        int32_t const effectiveReplayFormatVersion
-            = replayFormatVersion.value_or(phase == TensorRTPhase::kBUILD ? kMAMBA_REPLAY_FORMAT_VERSION : 0);
-        ELLM_CHECK(!effectiveUseSpecVerifyState || effectiveReplayFormatVersion == kMAMBA_REPLAY_FORMAT_VERSION,
-            "update_ssm_state: incompatible serialized spec-replay format; rebuild the engine with the current "
-            "TensorRT Edge-LLM plugin.");
+        ELLM_CHECK(useSpecVerifyState.has_value(),
+            "update_ssm_state: missing verify capability; re-export and rebuild artifacts");
 
         if (phase == TensorRTPhase::kBUILD)
         {
@@ -697,9 +907,8 @@ IPluginV3* MambaPluginCreator::createPlugin(
             }
         }
 
-        auto* plugin = new MambaPlugin(std::string(name), dim.value_or(0), dstate.value_or(0), nheads.value_or(0),
-            ngroups.value_or(0), dtSoftplus.value_or(1), useSpecVerifyState.value_or(0), useDDTree.value_or(0),
-            effectiveReplayFormatVersion);
+        auto* plugin = new MambaPlugin(resolvePluginLayerName(name, fc), dim.value_or(0), dstate.value_or(0),
+            nheads.value_or(0), ngroups.value_or(0), dtSoftplus.value_or(1), useSpecVerifyState.value());
         plugin->setPluginNamespace(mNamespace.c_str());
         return plugin;
     }

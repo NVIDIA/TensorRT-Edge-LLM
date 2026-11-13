@@ -27,14 +27,15 @@ using namespace trt_edgellm::rt;
 TEST(TensorRegistryTest, ResolveShapeAllFixed)
 {
     TensorRegistry reg;
-    reg.addTensor({"logits", TensorIO::kOutput, nvinfer1::DataType::kFLOAT, {fixed(4), fixed(32000)}});
+    reg.addTensor({"logits", TensorIO::kOutput, trt_edgellm::DataType::kFLOAT, {fixed(4), fixed(32000)}});
     auto specs = reg.allExpandedSpecs();
     ASSERT_EQ(specs.size(), 1u);
     EXPECT_EQ(specs[0].name, "logits");
 
     InferenceDims const dims{/*.batch=*/0, /*.seqLen=*/0, /*.kvLen=*/0, /*.selectLen=*/0, /*.attnMaskSeqLen=*/0,
         /*.ropeBatch=*/0, /*.packedMaskLen=*/0, /*.contextMaskSelectorLen=*/0, /*.startIndexLen=*/0,
-        /*.executionPhaseLen=*/0, /*.skipSoftmaxScaleLen=*/0, /*.swaKVCacheModeLen=*/0, /*.queryOffsetLen=*/0,
+        /*.executionPhaseLen=*/0, /*.specVerifyLayoutLen=*/0, /*.skipSoftmaxPrefillScaleLen=*/0,
+        /*.skipSoftmaxDecodeScaleLen=*/0, /*.swaKVCacheModeLen=*/0, /*.queryOffsetLen=*/0,
         /*.contextSequenceCount=*/0};
     auto resolved = reg.resolveShape(specs[0].shape, dims);
     EXPECT_EQ(resolved.nbDims, 2);
@@ -45,12 +46,13 @@ TEST(TensorRegistryTest, ResolveShapeAllFixed)
 TEST(TensorRegistryTest, ResolveShapeWithSymbolicDims)
 {
     TensorRegistry reg;
-    reg.addTensor({"inputs_embeds", TensorIO::kInput, nvinfer1::DataType::kHALF,
+    reg.addTensor({"inputs_embeds", TensorIO::kInput, trt_edgellm::DataType::kHALF,
         {sym(&InferenceDims::batch), sym(&InferenceDims::seqLen), fixed(4096)}});
 
     InferenceDims const dims{/*.batch=*/4, /*.seqLen=*/128, /*.kvLen=*/1, /*.selectLen=*/1, /*.attnMaskSeqLen=*/1,
         /*.ropeBatch=*/1, /*.packedMaskLen=*/1, /*.contextMaskSelectorLen=*/0, /*.startIndexLen=*/4,
-        /*.executionPhaseLen=*/0, /*.skipSoftmaxScaleLen=*/0, /*.swaKVCacheModeLen=*/0, /*.queryOffsetLen=*/5,
+        /*.executionPhaseLen=*/0, /*.specVerifyLayoutLen=*/0, /*.skipSoftmaxPrefillScaleLen=*/0,
+        /*.skipSoftmaxDecodeScaleLen=*/0, /*.swaKVCacheModeLen=*/0, /*.queryOffsetLen=*/5,
         /*.contextSequenceCount=*/0};
     auto specs = reg.allExpandedSpecs();
     auto resolved = reg.resolveShape(specs[0].shape, dims);
@@ -63,7 +65,7 @@ TEST(TensorRegistryTest, ResolveShapeWithSymbolicDims)
 TEST(TensorRegistryTest, PerLayerExpansion)
 {
     TensorRegistry reg;
-    reg.addTensor({"past_key_values_%d", TensorIO::kInput, nvinfer1::DataType::kHALF,
+    reg.addTensor({"past_key_values_%d", TensorIO::kInput, trt_edgellm::DataType::kHALF,
         {fixed(4), fixed(2), fixed(8), fixed(2048), fixed(128)},
         /*perLayer=*/3});
     auto specs = reg.allExpandedSpecs();
@@ -76,8 +78,9 @@ TEST(TensorRegistryTest, PerLayerExpansion)
 TEST(TensorRegistryTest, AllTensorNames)
 {
     TensorRegistry reg;
-    reg.addTensor({"inputs_embeds", TensorIO::kInput, nvinfer1::DataType::kHALF, {fixed(4), fixed(128), fixed(4096)}});
-    reg.addTensor({"kv_%d", TensorIO::kInput, nvinfer1::DataType::kHALF, {fixed(4)}, /*perLayer=*/2});
+    reg.addTensor(
+        {"inputs_embeds", TensorIO::kInput, trt_edgellm::DataType::kHALF, {fixed(4), fixed(128), fixed(4096)}});
+    reg.addTensor({"kv_%d", TensorIO::kInput, trt_edgellm::DataType::kHALF, {fixed(4)}, /*perLayer=*/2});
     auto names = reg.allTensorNames();
     ASSERT_EQ(names.size(), 3u); // inputs_embeds, kv_0, kv_1
 }
@@ -86,10 +89,10 @@ TEST(TensorRegistryTest, ReferencedMembersDedupedAcrossTensors)
 {
     TensorRegistry reg;
     // Two tensors that both reference batch; batch should appear once in the set.
-    reg.addTensor(
-        {"a", TensorIO::kInput, nvinfer1::DataType::kHALF, {sym(&InferenceDims::batch), sym(&InferenceDims::seqLen)}});
-    reg.addTensor(
-        {"b", TensorIO::kInput, nvinfer1::DataType::kHALF, {sym(&InferenceDims::batch), sym(&InferenceDims::kvLen)}});
+    reg.addTensor({"a", TensorIO::kInput, trt_edgellm::DataType::kHALF,
+        {sym(&InferenceDims::batch), sym(&InferenceDims::seqLen)}});
+    reg.addTensor({"b", TensorIO::kInput, trt_edgellm::DataType::kHALF,
+        {sym(&InferenceDims::batch), sym(&InferenceDims::kvLen)}});
 
     auto const& refs = reg.referencedMembers();
     ASSERT_EQ(refs.size(), 3u);
@@ -101,6 +104,6 @@ TEST(TensorRegistryTest, ReferencedMembersDedupedAcrossTensors)
 TEST(TensorRegistryTest, ReferencedMembersAllFixedIsEmpty)
 {
     TensorRegistry reg;
-    reg.addTensor({"logits", TensorIO::kOutput, nvinfer1::DataType::kFLOAT, {fixed(4), fixed(32000)}});
+    reg.addTensor({"logits", TensorIO::kOutput, trt_edgellm::DataType::kFLOAT, {fixed(4), fixed(32000)}});
     EXPECT_TRUE(reg.referencedMembers().empty());
 }

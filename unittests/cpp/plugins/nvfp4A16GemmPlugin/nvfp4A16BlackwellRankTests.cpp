@@ -33,6 +33,8 @@ namespace trt_edgellm::plugins
 namespace
 {
 using namespace nvinfer1;
+// Plugin descriptors take TensorRT types, not trt_edgellm::DataType.
+using nvinfer1::DataType;
 class Nvfp4A16BlackwellRankTest : public ::testing::TestWithParam<std::tuple<int32_t, DataType>>
 {
 };

@@ -59,7 +59,7 @@ public:
     //! transform kernels.
     struct View
     {
-        nvinfer1::DataType dtype{};
+        trt_edgellm::DataType dtype{};
         Coords shape;
         uint8_t const* data{nullptr};
         uint8_t const* deviceData{nullptr};
@@ -67,8 +67,8 @@ public:
     };
 
     explicit CheckpointReader(std::filesystem::path const& directory);
-    CheckpointReader(
-        std::filesystem::path const& directory, std::vector<TensorLocation> const& explicitTensorLocations);
+    CheckpointReader(std::filesystem::path const& directory, std::vector<TensorLocation> const& explicitTensorLocations,
+        std::filesystem::path const& singleFile = {});
     ~CheckpointReader() noexcept;
 
     //! CUDA-map the page ranges containing the requested tensors. Ranges are
@@ -112,12 +112,15 @@ public:
     //! view has a host pointer and a null device pointer.
     bool findHost(std::string const& name, View& view) const;
 
+    //! Locate the payload for bounded file reads without registering it with CUDA.
+    TensorLocation locate(std::string const& name) const;
+
     bool find(std::string const& name, View& view) const;
 
 private:
     struct TensorInfo
     {
-        nvinfer1::DataType dtype{};
+        trt_edgellm::DataType dtype{};
         Coords shape;
         size_t offset{0};
         size_t bytes{0};

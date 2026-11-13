@@ -87,7 +87,7 @@ private:
     Slot const& slot(ResourceId const& resource) const;
     void releaseIfUnused(ResourceId const& resource, Slot& resourceSlot) noexcept;
 
-    std::array<Pool, 4> mPools;
+    std::array<Pool, 5> mPools;
 };
 
 } // namespace rt

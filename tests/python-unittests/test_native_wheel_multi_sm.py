@@ -100,6 +100,31 @@ def test_multi_sm_cutedsl_evidence_uses_canonical_variant_names():
     verify._audit_cutedsl_evidence(metadata, evidence)
 
 
+def test_cutedsl_evidence_accepts_unused_archive_symbol():
+    metadata = {"variants": ["gemm_ampere_splitk2_fp16"]}
+    evidence = {
+        "archive_members": ["gemm_ampere_splitk2_fp16.o"],
+        "generated_symbols": ["_mlir_gemm_ampere_splitk2_fp16_cuda_init"],
+        "linked_symbols": [],
+        "defined_symbols": [],
+        "archive_defined_symbols":
+        ["_mlir_gemm_ampere_splitk2_fp16_cuda_init"],
+        "unresolved_symbols": [],
+        "header_sha256": {
+            "cutedsl_all.h": "digest"
+        },
+        "link_map_sha256": {
+            "extension.map": "digest"
+        },
+        "debug_sha256": {
+            "plugin.debug": "digest"
+        },
+        "archive_sha256": "0" * 64,
+    }
+
+    verify._audit_cutedsl_evidence(metadata, evidence)
+
+
 def test_multi_sm_device_image_audit_filters_each_architecture(monkeypatch):
     commands = []
 
@@ -142,3 +167,25 @@ def test_cuobjdump_audit_uses_cuda_toolkit_before_path(monkeypatch, tmp_path):
                         lambda name: f"/usr/bin/{name}")
 
     assert verify._audit_tool("cuobjdump") == str(cuobjdump)
+
+
+def test_runtime_extension_exports_only_python_initializer(monkeypatch):
+    symbols = """
+Symbol table '.dynsym' contains 3 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND
+     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND PyLong_FromLong
+     2: 0000000000012340    84 FUNC    GLOBAL DEFAULT   12 PyInit__edgellm_runtime
+"""
+    monkeypatch.setattr(verify, "_tool_output", lambda _argv: symbols)
+    verify._audit_extension_exports(pathlib.Path("runtime.so"))
+
+    symbols += ("     3: 0000000000012400    16 FUNC    GLOBAL DEFAULT   12 "
+                "__cudaRegisterLinkedBinary_runtime\n")
+    monkeypatch.setattr(verify, "_tool_output", lambda _argv: symbols)
+    try:
+        verify._audit_extension_exports(pathlib.Path("runtime.so"))
+    except RuntimeError as error:
+        assert "__cudaRegisterLinkedBinary_runtime" in str(error)
+    else:
+        raise AssertionError("unexpected CUDA export was accepted")

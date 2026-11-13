@@ -23,6 +23,7 @@ in-place on ``module._buffers`` or return new tensors; they are called by
 """
 
 import logging
+import math
 from typing import Iterable, NamedTuple, Optional, Tuple
 
 import numpy as np
@@ -38,6 +39,7 @@ __all__ = [
     "NVFP4_MOE_INTERMEDIATE_SIZE_ALIGNMENT",
     "repack_awq_to_plugin",
     "repack_gptq_to_plugin",
+    "unpack_gptq_int8",
     "decode_modelopt_nvfp4",
     "unpack_nvfp4_codes",
     "repack_nvfp4_a16_blackwell_linear",
@@ -49,6 +51,7 @@ __all__ = [
     "repack_nvfp4_a16_marlin_linear",
     "repack_nvfp4_a16_marlin_moe_experts",
     "repack_nvfp4_a16_marlin_gated_moe_experts",
+    "nvfp4_a16_from_dense",
     "repack_nvfp4_gated_moe_experts",
     "repack_nvfp4_moe_experts",
     "repack_fp16_moe_experts",
@@ -359,6 +362,70 @@ def repack_gptq_to_plugin(
     return qw_out, perm
 
 
+def unpack_gptq_int8(
+    qweight: torch.Tensor,
+    qzeros: torch.Tensor,
+    scales: torch.Tensor,
+    g_idx: Optional[torch.Tensor] = None,
+    zero_point_offset: int = 1,
+) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], int]:
+    """Unpack GPTQ W8 into signed weights and exact zero correction."""
+    in_div4, out_features = qweight.shape
+    in_features = in_div4 * 4
+    num_groups = int(scales.shape[0])
+    if num_groups <= 0 or in_features % num_groups:
+        raise ValueError(
+            f"GPTQ INT8 K={in_features} is incompatible with {num_groups} groups"
+        )
+    group_size = in_features // num_groups
+
+    packed = qweight.cpu().to(torch.int64) & 0xFFFFFFFF
+    values = torch.empty(in_features, out_features, dtype=torch.int16)
+    for byte in range(4):
+        values[byte::4] = ((packed >> (8 * byte)) & 0xFF).to(torch.int16)
+
+    if g_idx is None or g_idx.numel() == 0:
+        groups = torch.arange(in_features, dtype=torch.int64) // group_size
+    else:
+        groups = g_idx.cpu().to(torch.int64).reshape(-1)
+        if groups.numel() != in_features:
+            raise ValueError(
+                f"GPTQ INT8 g_idx has {groups.numel()} entries; expected {in_features}"
+            )
+        counts = torch.bincount(groups, minlength=num_groups)
+        if torch.any(groups < 0) or torch.any(
+                groups >= num_groups) or torch.any(counts != group_size):
+            raise ValueError("GPTQ INT8 g_idx has invalid or uneven groups")
+
+    permutation = torch.cat([
+        torch.nonzero(groups == group).flatten() for group in range(num_groups)
+    ])
+    weight = (values[permutation] - 128).clamp(-128, 127).t().contiguous()
+    weight = weight.to(torch.int8).to(qweight.device)
+
+    correction = None
+    if qzeros is not None and qzeros.numel():
+        expected_columns = (out_features + 3) // 4
+        if tuple(qzeros.shape) != (num_groups, expected_columns):
+            raise ValueError(
+                "GPTQ INT8 qzeros must have shape "
+                f"{(num_groups, expected_columns)}, got {tuple(qzeros.shape)}")
+        zeros = torch.empty(num_groups, out_features, dtype=torch.int16)
+        packed_zeros = qzeros.cpu().to(torch.int64) & 0xFFFFFFFF
+        for byte in range(4):
+            target = zeros[:, byte::4]
+            target[:] = ((packed_zeros >>
+                          (8 * byte)) & 0xFF)[:, :target.shape[1]]
+        offset = 128 - zeros - int(zero_point_offset)
+        correction = (offset.to(torch.float32) *
+                      scales.cpu().to(torch.float32)).t().contiguous()
+        correction = correction.to(torch.float16).to(qweight.device)
+        if not torch.any(correction):
+            correction = None
+
+    return weight, permutation.to(torch.int64), correction, group_size
+
+
 # ---------------------------------------------------------------------------
 # Post-load cast / format fixups (called by load_weights)
 # ---------------------------------------------------------------------------
@@ -375,6 +442,7 @@ def apply_all_repacking(model: nn.Module) -> None:
     _stack_moe_experts(model)
     _repack_awq_weights(model)
     _repack_gptq_weights(model)
+    _repack_gptq8_weights(model)
     _cast_modelopt_awq_prepacked(model)
     _cast_fp8_linear_scales(model)
     _cast_nvfp4_weights(model)
@@ -569,6 +637,41 @@ def _repack_gptq_weights(model: nn.Module) -> None:
             if sc is not None and sc.dtype != torch.float16:
                 module._buffers["scales"] = sc.to(torch.float16)
     logger.info("Repacked GPTQ weights")
+
+
+def _repack_gptq8_weights(model: nn.Module) -> None:
+    """Unpack weight-only GPTQ INT8 tensors for TensorRT Q/DQ lowering."""
+    from ..models.linear import GPTQ8Linear
+    count = 0
+    for module in model.modules():
+        if not isinstance(module, GPTQ8Linear):
+            continue
+        qweight = module._buffers.get("qweight")
+        scales = module._buffers.get("scales")
+        if qweight is None or scales is None:
+            continue
+        weight, permutation, correction, group_size = unpack_gptq_int8(
+            qweight,
+            module._buffers.get("qzeros"),
+            scales,
+            module._buffers.get("g_idx"),
+            getattr(module, "zero_point_offset", 1),
+        )
+        module._buffers["weight"] = weight
+        module._buffers["weight_scale"] = scales.t().to(
+            torch.float32).contiguous()
+        module._buffers["activation_permutation"] = permutation.to(
+            qweight.device)
+        module._buffers["zero_correction"] = (correction if correction
+                                              is not None else torch.empty(
+                                                  module.out_features,
+                                                  0,
+                                                  dtype=torch.float16,
+                                                  device=qweight.device))
+        module.group_size = group_size
+        count += 1
+    if count:
+        logger.info("Unpacked GPTQ INT8 weights for %d linear(s)", count)
 
 
 def _stack_moe_experts(model: nn.Module) -> None:
@@ -1480,6 +1583,24 @@ def _nvfp4_gated_projection(proj: nn.Module) -> _Nvfp4GatedProjection:
     return _Nvfp4GatedProjection(None, None, dense, weight_scale_2)
 
 
+def nvfp4_a16_from_dense(
+        weight: torch.Tensor,
+        group_size: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Quantize a dense ``[N, K]`` weight into the NVFP4 (W4A16) checkpoint form.
+
+    Returns ``(packed codes uint8 [N, K//2], E4M3 block scales as int8 view
+    [N, K//group_size], per-tensor multiplier fp32)``.
+    """
+    dense = weight.detach().to(torch.float32).cpu().numpy()
+    amax = float(np.abs(dense).max()) if dense.size else 0.0
+    global_scale = amax / (6.0 * _FP8_MAX) if amax > 0.0 else 1.0
+    qweight, sf_bytes = _quantize_nvfp4_moe_weight(dense, group_size,
+                                                   global_scale)
+    return (torch.from_numpy(qweight),
+            torch.from_numpy(sf_bytes.view(np.int8)),
+            torch.tensor(global_scale, dtype=torch.float32))
+
+
 def _quantize_nvfp4_moe_weight(
         dense_w_mk: np.ndarray, group_size: int,
         global_scale: float) -> Tuple[np.ndarray, np.ndarray]:
@@ -1591,7 +1712,7 @@ def _interleave_gated_moe_fc1(
     """Build FC1 dense weight as 64-row interleaved up/gate chunks.
 
     Layout: ``[up_chunk(64), gate_chunk(64), up_chunk(64), gate_chunk(64), ...]``
-    along the M axis. Consumed natively by the SM100/101/110 ``Nvfp4MoePlugin`` split
+    along the M axis. Consumed natively by the SM100/101/103/110 ``Nvfp4MoePlugin`` split
     FC1 kernel.
     ``hidden_size`` is the row width: H for dense weights, H/2 for packed FP4
     bytes, H/16 for block scales.
@@ -1675,7 +1796,7 @@ def repack_nvfp4_gated_moe_experts(
         moe_inter_size: per-expert intermediate size ``I``.
         group_size: NVFP4 K-axis group size (must be ``16``).
         fc1_layout: gated FC1 row layout.
-            * ``"interleave"`` (default) -- ``Nvfp4MoePlugin`` (SM100/101/110): 64-row
+            * ``"interleave"`` (default) -- ``Nvfp4MoePlugin`` (SM100/101/103/110): 64-row
               up/gate interleaved chunks along the M axis.
             * ``"concat"`` -- ``NvFP4MoEPluginGeforce`` (SM12x): plain
               ``[up_all, gate_all]`` concat along the M axis.
@@ -1705,7 +1826,7 @@ def repack_nvfp4_gated_moe_experts(
     else:
         raise ValueError(
             f"fc1_layout={fc1_layout!r} not recognized; use "
-            "'interleave' (SM100/101/110 Nvfp4MoePlugin) or 'concat' (SM12x "
+            "'interleave' (SM100/101/103/110 Nvfp4MoePlugin) or 'concat' (SM12x "
             "NvFP4MoEPluginGeforce)")
 
     if moe_inter_size_alignment <= 0:
@@ -2038,3 +2159,157 @@ def _sf_bytes_from_checkpoint(raw_sf: torch.Tensor) -> np.ndarray:
         return raw_sf.detach().to(torch.float8_e4m3fn).cpu().view(
             torch.uint8).numpy()
     raise TypeError(f"unsupported weight_scale dtype {raw_sf.dtype}")
+
+
+def _nvfp4_moe_expert_codes(expert_idx: int, expert: nn.Module, proj_name: str,
+                            arm: str) -> torch.Tensor:
+    """Check one NVFP4 expert projection for a TRT-native arm; return its codes."""
+    from ..models.linear import is_nvfp4_linear
+
+    m = getattr(expert, proj_name)
+    if not is_nvfp4_linear(m):
+        raise TypeError(f"TRT-native {arm} MoE requires NVFP4 experts; "
+                        f"expert {expert_idx} {proj_name} is "
+                        f"{type(m).__name__}")
+    q = m.weight.detach()
+    if q.dtype not in (torch.int8, torch.uint8):
+        raise TypeError(f"TRT-native {arm} MoE expects packed FP4 expert "
+                        f"weights (int8/uint8), got {q.dtype}")
+    q = q.view(torch.int8)
+    # A mixed-precision checkpoint shows up in the stored scale shape; the
+    # fake kernel does not validate it, so a wrong block size would
+    # otherwise surface only at build.
+    expected_sf = (q.shape[0], q.shape[1] * 2 // 16)
+    if tuple(m.weight_scale.shape) != expected_sf:
+        raise ValueError(
+            f"TRT-native {arm} MoE: expert {expert_idx} {proj_name} block "
+            f"scale shape {tuple(m.weight_scale.shape)} != {expected_sf}; "
+            "NVFP4 experts need per-16 block scales")
+    return q
+
+
+def stack_nvfp4_moe_projection(
+        experts: Iterable[nn.Module],
+        proj_name: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Stack one NVFP4 expert projection for the W4A8 TRT-native ``TRT_MoE`` arm.
+
+    Returns ``(weight, block_scale)``: the packed FP4 codes ``[E, out, in // 2]``
+    (int8, the checkpoint bytes as stored) and ONE fp16 block scale
+    ``[E, out, in // 16]`` that folds the raw E4M3 per-16 block scale with the
+    per-expert ``weight_scale_2``. ``TRT_MoE`` has no per-expert alpha and
+    ``TRT_BlockDequantize`` takes only an fp16 scale for FP4 weights, so the
+    fold happens here; the plugin repacks keep the two factors apart, and so
+    does :func:`stack_nvfp4_moe_projection_with_global_scale` for the W4A4
+    arm. Used by the gated (Qwen3) and the non-gated (Nemotron-H) native arms
+    alike.
+    """
+    qs, ss = [], []
+    device = None
+    for expert_idx, expert in enumerate(experts):
+        q = _nvfp4_moe_expert_codes(expert_idx, expert, proj_name, "W4A8")
+        m = getattr(expert, proj_name)
+        # Raw E4M3 block scales -> fp32, times the per-expert global scale.
+        sf = torch.from_numpy(
+            _e4m3_decode(_sf_bytes_from_checkpoint(m.weight_scale))).reshape(
+                m.weight_scale.shape)
+        s2 = float(m.weight_scale_2.detach().reshape(-1)[0])
+        qs.append(q)
+        ss.append(sf * s2)
+        device = q.device
+    block_scale = torch.stack(ss)
+    # The folded scale must be fp16: the compiler's block dequantize has no
+    # fp32-scale form for FP4 weights. Values below fp16's normal range would
+    # lose precision, so say so if a checkpoint gets there.
+    tiny = float(block_scale[block_scale > 0].min()) if (block_scale
+                                                         > 0).any() else 0.0
+    if 0.0 < tiny < 6.1e-5:
+        logger.warning(
+            "TRT-native W4A8 MoE (%s): smallest folded block scale %.3g is "
+            "below fp16's normal range", proj_name, tiny)
+    return (torch.stack(qs).contiguous(),
+            block_scale.to(device=device, dtype=torch.float16).contiguous())
+
+
+# fp16's smallest normal value. A per-expert global below it would export as a
+# subnormal fp16 initializer, so such experts are rebalanced by a power of two
+# (global * 2**k, E4M3 block scales / 2**k) instead.
+_FP16_MIN_NORMAL = 2.0**-14
+# E4M3's smallest normal value. A rebalanced block scale must stay above it:
+# dividing a normal E4M3 value by 2**k only moves its exponent, so the
+# re-encoded byte is exact as long as the result is still normal.
+_E4M3_MIN_NORMAL = 2.0**-6
+
+
+def stack_nvfp4_moe_projection_with_global_scale(
+        experts: Iterable[nn.Module],
+        proj_name: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Stack one NVFP4 expert projection, keeping the global scale separate.
+
+    Returns ``(weight, block_scale, global_scale)``: the packed FP4 codes
+    ``[E, out, in // 2]`` (int8, the checkpoint bytes as stored), the
+    checkpoint's E4M3 block scales as a ``torch.float8_e4m3fn`` tensor
+    ``[E, out, in // 16]`` (exported as FLOAT8E4M3FN) and the per-expert
+    ``weight_scale_2`` as an fp16 vector ``[E]``. This is the W4A4 form
+    (``TRT_MoE`` quantization_mode 2): the lowering scales the block scales
+    by the global (``DequantizeLinear(axis=0)``), then block-dequantizes the
+    weights (``TRT_BlockDequantize``). :func:`stack_nvfp4_moe_projection`
+    instead folds the two scales into one fp16 block scale for W4A8.
+
+    The global has to be fp16 (the DQ output type follows its scale type and
+    the FP4 block dequantize only type-infers fp16 output from fp16 scales),
+    and ModelOpt's ``weight_scale_2 = amax / (6 * 448)`` can sit below fp16's
+    normal range (Qwen3-30B-A3B: 10-20% of the FC1 experts per layer). Such
+    an expert is rebalanced by a power of two, ``global * 2**k`` with every
+    E4M3 block scale re-encoded as ``sf / 2**k``, which keeps every
+    ``sf * global`` product and is exact as long as every nonzero block scale
+    stays a normal E4M3 value; otherwise this raises rather than ship a lossy
+    scale.
+    """
+    qs, sfs, globals_ = [], [], []
+    rebalanced = 0
+    device = None
+    for expert_idx, expert in enumerate(experts):
+        q = _nvfp4_moe_expert_codes(expert_idx, expert, proj_name, "W4A4")
+        m = getattr(expert, proj_name)
+        sf_bytes = torch.from_numpy(
+            _sf_bytes_from_checkpoint(m.weight_scale).copy()).reshape(
+                m.weight_scale.shape)
+        s2 = float(m.weight_scale_2.detach().float().reshape(-1)[0])
+        if not (math.isfinite(s2) and s2 > 0.0):
+            raise ValueError(
+                f"TRT-native W4A4 MoE: expert {expert_idx} {proj_name} "
+                f"weight_scale_2 = {s2!r} is not a positive finite scale")
+        if s2 < _FP16_MIN_NORMAL:
+            k = math.ceil(math.log2(_FP16_MIN_NORMAL / s2))
+            sf = sf_bytes.view(torch.float8_e4m3fn).to(torch.float32)
+            sf_new = sf / float(2**k)  # exact in fp32
+            nonzero = sf_new[sf_new != 0]
+            sf_reenc = sf_new.to(torch.float8_e4m3fn)
+            exact = torch.equal(sf_reenc.to(torch.float32), sf_new)
+            normal = (nonzero.numel() == 0
+                      or float(nonzero.abs().min()) >= _E4M3_MIN_NORMAL)
+            if not (exact and normal):
+                raise ValueError(
+                    f"TRT-native W4A4 MoE: expert {expert_idx} {proj_name} "
+                    f"weight_scale_2 = {s2:.3g} is below fp16's normal range "
+                    f"(2**-14) and its E4M3 block scales cannot absorb the "
+                    f"2**{k} rebalancing exactly (a block scale would leave "
+                    "the E4M3 normal range)")
+            sf_bytes = sf_reenc.view(torch.uint8)
+            s2 = s2 * 2**k
+            rebalanced += 1
+        qs.append(q)
+        sfs.append(sf_bytes)
+        globals_.append(s2)
+        device = q.device
+    if rebalanced:
+        logger.info(
+            "TRT-native W4A4 MoE (%s): rebalanced %d of %d experts whose "
+            "weight_scale_2 was below fp16's normal range (global * 2**k, "
+            "E4M3 block scales / 2**k)", proj_name, rebalanced, len(qs))
+    block_scale = torch.stack(sfs).view(torch.float8_e4m3fn)
+    global_scale = torch.tensor(globals_,
+                                dtype=torch.float32).to(torch.float16)
+    return (torch.stack(qs).contiguous(),
+            block_scale.to(device=device).contiguous(),
+            global_scale.to(device=device).contiguous())

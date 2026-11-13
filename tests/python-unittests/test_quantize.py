@@ -66,6 +66,152 @@ build_quant_config = _load_build_quant_config()
 _DIM = 16
 
 
+def test_fp8_embedding_selection_keeps_tied_head_unquantized():
+    """Token and PLE selection leave an independent FP16 head."""
+    from tensorrt_edgellm.quantization.quantize import _embedding_quant_cfg
+
+    class TiedModel(nn.Module):
+
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(
+                tie_word_embeddings=True,
+                text_config=SimpleNamespace(tie_word_embeddings=True))
+            self.embed_tokens = nn.Embedding(128, 128)
+            self.embed_tokens_per_layer = nn.Embedding(128, 128)
+            self.lm_head = nn.Linear(128, 128, bias=False)
+            self.lm_head.weight = self.embed_tokens.weight
+
+        def get_input_embeddings(self):
+            return self.embed_tokens
+
+        def get_output_embeddings(self):
+            return self.lm_head
+
+        def get_per_layer_input_embeddings(self):
+            return self.embed_tokens_per_layer
+
+    model = TiedModel()
+    name, ple_names, entries = _embedding_quant_cfg(model, "fp8", "fp8")
+
+    assert name == "embed_tokens"
+    assert ple_names == ["embed_tokens_per_layer"]
+    assert not model.config.tie_word_embeddings
+    assert not model.config.text_config.tie_word_embeddings
+    assert model.lm_head.weight is not model.embed_tokens.weight
+    assert torch.equal(model.lm_head.weight, model.embed_tokens.weight)
+    assert {entry["quantizer_name"]
+            for entry in entries if entry["enable"]} == {
+                "embed_tokens.weight_quantizer",
+                "embed_tokens_per_layer.weight_quantizer"
+            }
+
+
+class _NGramPle(nn.Module):
+    """Qwen4-Exp PLE layer: one table plus the three hash-constant buffers."""
+
+    def __init__(self, rows, width, heads):
+        super().__init__()
+        self.ngram_embedding = nn.Embedding(rows, width)
+        self.register_buffer("layer_multipliers",
+                             torch.ones(3, dtype=torch.long))
+        self.register_buffer("ngram_heads_vocab_sizes",
+                             torch.ones(heads, dtype=torch.long))
+        self.register_buffer("ngram_heads_offsets",
+                             torch.zeros(heads, dtype=torch.long))
+
+
+def test_ple_fp8_selects_every_ngram_table_only():
+    """Without a Gemma4 getter the n-gram tables are the PLE selection."""
+    from tensorrt_edgellm.quantization.quantize import _embedding_quant_cfg
+
+    model = nn.Module()
+    model.embed_tokens = nn.Embedding(8, 4)
+    model.layers = nn.ModuleList([nn.Module(), nn.Module()])
+    model.layers[1].ple = nn.Module()
+    model.layers[1].ple.ple_embedding = _NGramPle(6, 4, 2)
+
+    token_name, ple_names, entries = _embedding_quant_cfg(model, None, "fp8")
+
+    assert token_name is None
+    assert ple_names == ["layers.1.ple.ple_embedding.ngram_embedding"]
+    assert {entry["quantizer_name"]
+            for entry in entries if entry["enable"]} == {
+                "layers.1.ple.ple_embedding.ngram_embedding.weight_quantizer"
+            }
+    with pytest.raises(ValueError, match="no per-layer input embedding"):
+        _embedding_quant_cfg(nn.Module(), None, "fp8")
+
+
+def test_ngram_table_exports_as_fp8_shards_under_one_scale(tmp_path):
+    """The exported state dict is the released layout and the pool accepts it."""
+    from safetensors.torch import save_file
+
+    from tensorrt_edgellm.checkpoint.ple_source import make_ngram_pool_metadata
+    from tensorrt_edgellm.quantization.quantize import _export_ngram_table
+
+    torch.manual_seed(0)
+    model = nn.Module()
+    model.ple = nn.Module()
+    model.ple.ple_embedding = _NGramPle(6, 4, 2).bfloat16()
+    table = model.ple.ple_embedding.ngram_embedding
+    source = table.weight.detach().float()
+    prefix = "ple.ple_embedding.ngram_embedding."
+
+    _export_ngram_table(table, 2)
+    state = model.state_dict()
+
+    assert prefix + "weight" not in state
+    scale = state[prefix + "weight_scale"]
+    assert scale.dtype == torch.float32 and scale.shape == (1, )
+    shards = [state[f"{prefix}shard_{index}.weight"] for index in range(2)]
+    assert all(shard.dtype == torch.float8_e4m3fn and shard.shape == (3, 4)
+               for shard in shards)
+    restored = torch.cat(shards).float() * scale.float()
+    assert torch.allclose(restored,
+                          source,
+                          rtol=2**-4,
+                          atol=scale.item() * 2**-8)
+
+    save_file(state, str(tmp_path / "model.safetensors"))
+    pool = make_ngram_pool_metadata(str(tmp_path), embed_dim=8, heads=2)
+    assert pool["row_count"] == 6
+    assert pool["scale"] == scale.item()
+
+
+def test_gemma4_export_preserves_untied_text_config(tmp_path):
+    """An explicit head must not be re-tied by the nested exported config."""
+    from tensorrt_edgellm.quantization.quantize import \
+        _restore_gemma4_attention_geometry
+
+    source = tmp_path / "source"
+    exported = tmp_path / "exported"
+    source.mkdir()
+    exported.mkdir()
+    (source / "config.json").write_text(
+        json.dumps({
+            "model_type": "gemma4",
+            "text_config": {
+                "global_head_dim": 512,
+                "tie_word_embeddings": True,
+            },
+        }))
+    (exported / "config.json").write_text(
+        json.dumps({
+            "model_type": "gemma4",
+            "tie_word_embeddings": False,
+            "text_config": {
+                "tie_word_embeddings": True,
+            },
+        }))
+
+    _restore_gemma4_attention_geometry(str(source), str(exported))
+
+    result = json.loads((exported / "config.json").read_text())
+    assert result["text_config"]["global_head_dim"] == 512
+    assert result["text_config"]["tie_word_embeddings"] is False
+
+
 # --------------------------------------------------------------------------- #
 # Introspection helpers
 # --------------------------------------------------------------------------- #
@@ -177,12 +323,14 @@ class _CodePredictor(nn.Module):
 class _MultiModalModel(nn.Module):
     """Body Linears + optional towers named exactly as the builder targets:
     a visual tower under ``visual_prefix``, an ``audio_tower``, and an Omni
-    ``talker`` with ``code_predictor`` + ``code2wav``."""
+    ``talker`` with ``code_predictor`` + ``code2wav``, or a VLA action
+    policy using the official Alpamayo module names."""
 
     def __init__(self,
                  visual_prefix=None,
                  with_audio=False,
-                 with_talker=False):
+                 with_talker=False,
+                 with_action=False):
         super().__init__()
         self._visual_prefix = visual_prefix
         if visual_prefix:
@@ -196,6 +344,11 @@ class _MultiModalModel(nn.Module):
             self.talker = nn.Module()
             self.talker.add_module("code_predictor", _CodePredictor())
             self.talker.add_module("code2wav", _Tower())
+        if with_action:
+            self.expert = _Tower()
+            self.action_in_proj = _Tower()
+            self.action_out_proj = _Tower()
+            self.action_expert = _Tower()
 
     def forward(self, x):
         if self._visual_prefix:
@@ -206,6 +359,11 @@ class _MultiModalModel(nn.Module):
         if hasattr(self, "talker"):
             x = self.talker.code_predictor(x)
             x = self.talker.code2wav(x)
+        if hasattr(self, "action_expert"):
+            x = self.expert(x)
+            x = self.action_in_proj(x)
+            x = self.action_out_proj(x)
+            x = self.action_expert(x)
         return self.lm_head(x)
 
 
@@ -359,6 +517,115 @@ def test_visual_off_unless_requested():
     model = _MultiModalModel(visual_prefix="visual")
     mtq.quantize(model, build_quant_config("fp8"), forward_loop=_calib_hidden)
     assert _wq(model.q_proj)[0] and not _wq(model.visual.fc1)[0]
+
+
+def test_action_expert_stays_unquantized():
+    """Keep Alpamayo action modules in FP16 under LLM NVFP4 quantization."""
+    model = _MultiModalModel(with_action=True)
+
+    mtq.quantize(model,
+                 build_quant_config("nvfp4", exclude_action=True),
+                 forward_loop=_calib_hidden)
+
+    assert _wq(model.q_proj)[0]
+    assert not _wq(model.expert.fc1)[0]
+    assert not _wq(model.action_in_proj.fc1)[0]
+    assert not _wq(model.action_out_proj.fc1)[0]
+    assert not _wq(model.action_expert.fc1)[0]
+
+
+def test_alpamayo_tokenizer_is_built_from_base_vlm(monkeypatch):
+    """Extend the base VLM tokenizer with Alpamayo trajectory tokens and drop
+    its chat template, so the exported checkpoint selects the native renderer."""
+    quantize_mod = importlib.import_module(
+        "tensorrt_edgellm.quantization.quantize")
+    loaded = {}
+
+    class _Tokenizer:
+
+        def __init__(self):
+            self.tokens = {f"base-{index}": index for index in range(10)}
+
+        def __len__(self):
+            return len(self.tokens)
+
+        def add_tokens(self, tokens, special_tokens=False):
+            del special_tokens
+            for token in tokens:
+                self.tokens.setdefault(token, len(self.tokens))
+
+        def convert_tokens_to_ids(self, token):
+            return self.tokens[token]
+
+    tokenizer = _Tokenizer()
+    tokenizer.chat_template = "base chat template"
+
+    def _from_pretrained(reference, **kwargs):
+        loaded["reference"] = reference
+        loaded["kwargs"] = kwargs
+        return tokenizer
+
+    monkeypatch.setattr(quantize_mod, "AutoTokenizer",
+                        SimpleNamespace(from_pretrained=_from_pretrained))
+    config = {
+        "model_type": "alpamayo_r1",
+        "vlm_name_or_path": "base-vlm",
+        "traj_token_start_idx": 10,
+        "traj_vocab_size": 2,
+        "vocab_size": 41,
+    }
+
+    assert quantize_mod._load_alpamayo_tokenizer(config) is tokenizer
+
+    assert loaded == {
+        "reference": "base-vlm",
+        "kwargs": {
+            "trust_remote_code": True
+        },
+    }
+    assert tokenizer.chat_template is None
+    assert len(tokenizer) == 41
+    assert tokenizer.convert_tokens_to_ids("<i0>") == 10
+    assert tokenizer.convert_tokens_to_ids("<|traj_history_start|>") == 17
+
+
+def test_alpamayo_forward_bridge_delegates_to_vlm():
+    """Calibrate Alpamayo through its VLM forward path."""
+    quantize_mod = importlib.import_module(
+        "tensorrt_edgellm.quantization.quantize")
+
+    class _VLM:
+
+        def __call__(self, *args, **kwargs):
+            return args, kwargs
+
+    class _Alpamayo:
+        vlm = _VLM()
+
+    output = quantize_mod._forward_alpamayo_vlm(_Alpamayo(),
+                                                "tokens",
+                                                use_cache=False)
+
+    assert output == (("tokens", ), {"use_cache": False})
+
+
+def test_alpamayo_calibration_images_load_from_pil_and_path(tmp_path):
+    """Return the same uint8 CHW tensor for a PIL image and an image path."""
+    from PIL import Image
+
+    quantize_mod = importlib.import_module(
+        "tensorrt_edgellm.quantization.quantize")
+    image = Image.new("RGB", (4, 2), (10, 20, 30))
+    path = tmp_path / "frame.png"
+    image.save(path)
+
+    from_pil = quantize_mod._image_to_chw_tensor(image)
+    from_path = quantize_mod._image_to_chw_tensor(str(path))
+
+    assert from_pil.dtype == torch.uint8
+    assert from_pil.shape == (3, 2, 4)
+    assert torch.equal(from_pil, from_path)
+    assert from_pil[:, 0, 0].tolist() == [10, 20, 30]
 
 
 # --------------------------------------------------------------------------- #
@@ -615,7 +882,7 @@ def test_base_and_mtp_quantized_together(monkeypatch):
                                 **_):
         assert not hasattr(base_model.proj, "weight_quantizer"), \
             "MTP must calibrate before base quantization mutates the model"
-        draft = mtp_mod.MtpDraftModel(_tiny_draft_config()).eval().to(
+        draft = mtp_mod.Qwen3_5MtpDraftModel(_tiny_draft_config()).eval().to(
             base_model.device)
         mtp_mod._share_embed_tokens(base_model, draft)
 
@@ -663,6 +930,78 @@ def test_base_and_mtp_quantized_together(monkeypatch):
     assert seen["mtp_quantized"], "MTP draft was quantized"
     assert _wq(base.proj)[0], "base model was quantized"
     assert any(key.startswith("mtp.") for key in seen["extra_keys"])
+
+
+def test_quantized_mtp_modules_are_listed_under_mixed_precision():
+    """A mixed-precision export lists the quantized draft modules; a uniform one is untouched."""
+    mtp_mod = importlib.import_module(
+        "tensorrt_edgellm.quantization.models.mtp_draft")
+    nvfp4 = {
+        "weight": torch.zeros(4, 8, dtype=torch.uint8),
+        "weight_scale": torch.zeros(4, 1, dtype=torch.float8_e4m3fn),
+        "weight_scale_2": torch.ones(()),
+    }
+    tensors = {f"mtp.fc.{k}": v for k, v in nvfp4.items()}
+    for expert in range(2):
+        tensors.update({
+            f"mtp.layers.0.mlp.experts.{expert}.up_proj.{k}": v
+            for k, v in nvfp4.items()
+        })
+    tensors["mtp.lm_head.weight"] = torch.zeros(4, 16).to(torch.float8_e4m3fn)
+    tensors["mtp.lm_head.weight_scale"] = torch.ones(())
+    tensors["mtp.layers.0.mlp.down_proj.weight"] = torch.zeros(
+        2, 256, dtype=torch.uint8)
+    tensors["mtp.layers.0.mlp.down_proj.weight_scale"] = torch.ones(
+        4, 2, dtype=torch.float32)
+    tensors["mtp.layers.0.mlp.down_proj.pre_quant_scale"] = torch.ones(
+        256, dtype=torch.float16)
+    tensors["mtp.norm.weight"] = torch.ones(16)
+    tensors["mtp.layers.0.mlp.gate.weight"] = torch.ones(2, 16)
+    mixed = {
+        "quantization": {
+            "quant_algo": "MIXED_PRECISION",
+            "quantized_layers": {
+                "model.a": {
+                    "quant_algo": "FP8"
+                }
+            }
+        }
+    }
+    uniform = {"quantization": {"quant_algo": "NVFP4"}}
+    with tempfile.TemporaryDirectory() as output_dir:
+        with open(os.path.join(output_dir, "hf_quant_config.json"), "w") as f:
+            json.dump(mixed, f)
+        with open(os.path.join(output_dir, "config.json"), "w") as f:
+            json.dump({"quantization_config": dict(uniform["quantization"])},
+                      f)
+        mtp_mod.list_quantized_mtp_layers(output_dir, tensors)
+        with open(os.path.join(output_dir, "hf_quant_config.json")) as f:
+            layers = json.load(f)["quantization"]["quantized_layers"]
+        with open(os.path.join(output_dir, "config.json")) as f:
+            config = json.load(f)
+    assert layers == {
+        "model.a": {
+            "quant_algo": "FP8"
+        },
+        "mtp.fc": {
+            "quant_algo": "NVFP4",
+            "group_size": 16
+        },
+        "mtp.layers.0.mlp.experts": {
+            "quant_algo": "NVFP4",
+            "group_size": 16
+        },
+        "mtp.layers.0.mlp.down_proj": {
+            "quant_algo": "W4A16_AWQ",
+            "group_size": 128,
+            "has_zero_point": False,
+            "pre_quant_scale": True
+        },
+        "mtp.lm_head": {
+            "quant_algo": "FP8"
+        },
+    }
+    assert config == {"quantization_config": uniform["quantization"]}
 
 
 def _write_index(model_dir, keys):
@@ -725,10 +1064,10 @@ def test_mtp_moe_detected_under_either_expert_key():
                 max_position_embeddings=128)
     for key in ("num_experts", "num_local_experts"):
         cfg = SimpleNamespace(**{**base, key: 4})
-        mlp = mtp_mod.MtpDraftModel(cfg).layers[0].mlp
+        mlp = mtp_mod.Qwen3_5MtpDraftModel(cfg).layers[0].mlp
         assert isinstance(mlp, mtp_mod.MtpSparseMoeBlock), key
         assert mlp.num_experts == 4, key
-    dense = mtp_mod.MtpDraftModel(SimpleNamespace(**base)).layers[0].mlp
+    dense = mtp_mod.Qwen3_5MtpDraftModel(SimpleNamespace(**base)).layers[0].mlp
     assert not isinstance(dense, mtp_mod.MtpSparseMoeBlock)
 
 
@@ -738,7 +1077,7 @@ def test_sub_llm_quantized_detection_covers_awq_gptq():
     Keying only on ``weight_scale`` reads those sub-LLMs as fully FP16 and
     silently drops their quantization on export.
     """
-    export_mod = importlib.import_module("tensorrt_edgellm.scripts.export")
+    export_mod = importlib.import_module("tensorrt_edgellm.onnx.cli")
     cases = {
         "nvfp4": (["talker.mlp.down_proj.weight_scale"], True),
         "awq": (["talker.mlp.down_proj.qweight"], True),
@@ -874,7 +1213,7 @@ def test_vocoder_dir_copied_into_quantized_root():
     """
     omni_mod = importlib.import_module(
         "tensorrt_edgellm.quantization.qwen3_omni")
-    export_mod = importlib.import_module("tensorrt_edgellm.scripts.export")
+    export_mod = importlib.import_module("tensorrt_edgellm.onnx.cli")
 
     # An aliased source is normalized to the release name.
     with tempfile.TemporaryDirectory() as src, \
@@ -919,3 +1258,80 @@ def test_vocoder_dir_copied_into_quantized_root():
         omni_mod._copy_vocoder_dir(same, same)
         assert os.path.isfile(
             os.path.join(same, "codec_decode_online", "model_weights.pt"))
+
+
+# --------------------------------------------------------------------------- #
+# Weight-only NVFP4 with the GPTQ calibrator
+# --------------------------------------------------------------------------- #
+
+
+def _quantizes_activations(cfg):
+    """True if the resolved config quantizes activations.
+
+    A recipe may omit ``*input_quantizer`` entirely or carry it disabled; both
+    mean weight-only. Entries are last-match-wins.
+    """
+    state = False
+    for entry in cfg["quant_cfg"]:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("quantizer_name") == "*input_quantizer":
+            state = entry.get("enable", True) and "cfg" in entry
+    return state
+
+
+def test_nvfp4_a16_gptq_is_weight_only():
+    """Given the nvfp4_a16_gptq recipe, when its config is built, then the
+    weights are NVFP4 and no activation quantizer is configured."""
+    cfg = build_quant_config("nvfp4_a16_gptq")
+    assert cfg["algorithm"] == "gptq"
+    entries = cfg["quant_cfg"]
+    weight = [
+        e for e in entries if isinstance(e, dict)
+        and e.get("quantizer_name") == "*weight_quantizer"
+    ]
+    assert weight and weight[-1]["cfg"]["num_bits"] == (2, 1)
+    # Activations stay FP16: an input quantizer here would make this W4A4.
+    assert not [
+        e for e in entries if isinstance(e, dict)
+        and e.get("quantizer_name") == "*input_quantizer"
+    ]
+
+
+def test_nvfp4_a16_gptq_leaves_other_recipes_untouched():
+    """Given the shared backbone recipe map, when nvfp4_a16_gptq is added, then
+    every pre-existing recipe still resolves to the same algorithm and the same
+    activation-quantization decision."""
+    # GPTQ derives from a deep copy, so the stock ModelOpt config it is built
+    # from must keep its own calibrator.
+    assert mtq.W4A16_NVFP4_CFG["algorithm"] == "max"
+    expected_quantizes_activations = {
+        "fp8": True,
+        "int4_awq": False,
+        "nvfp4": True,
+        "mxfp8": True,
+        "int8_sq": True,
+    }
+    for method, quantizes in expected_quantizes_activations.items():
+        cfg = build_quant_config(method)
+        assert cfg["algorithm"] != "gptq", method
+        assert _quantizes_activations(cfg) is quantizes, method
+
+
+def test_nvfp4_a16_gptq_quantizes_weights_only():
+    """Given a dense LLM, when quantized with nvfp4_a16_gptq, then the backbone
+    weight quantizers are calibrated NVFP4 and the input quantizers stay off."""
+    model = _tiny_llama().cuda()
+
+    def calib(m):
+        for _ in range(2):
+            m(torch.randint(0, 64, (2, 8)).cuda())
+
+    mtq.quantize(model,
+                 build_quant_config("nvfp4_a16_gptq"),
+                 forward_loop=calib)
+    proj = model.model.layers[0].self_attn.q_proj
+    enabled, bits, calibrated = _wq(proj)
+    assert enabled and calibrated and bits == (2, 1)
+    assert not proj.input_quantizer.is_enabled
+    assert not _wq(model.lm_head)[0], "lm_head stays high precision by default"

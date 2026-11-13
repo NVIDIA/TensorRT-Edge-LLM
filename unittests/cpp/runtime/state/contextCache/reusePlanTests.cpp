@@ -42,12 +42,12 @@ constexpr int32_t kPAGE_SIZE = 128;
 constexpr BlockHash kHASH_A{0x1111111111111111ULL, 0xAAAAAAAAAAAAAAAAULL};
 constexpr BlockHash kHASH_B{0x2222222222222222ULL, 0xBBBBBBBBBBBBBBBBULL};
 constexpr BlockHash kHASH_C{0x3333333333333333ULL, 0xCCCCCCCCCCCCCCCCULL};
-constexpr std::array<ResourceType, 4> kRESOURCE_TYPES{ResourceType::kBaseKvPage, ResourceType::kDraftKvPage,
-    ResourceType::kRecurrentSnapshot, ResourceType::kPartialKvSnapshot};
+constexpr std::array<ResourceType, 5> kRESOURCE_TYPES{ResourceType::kBaseKvPage, ResourceType::kDraftKvPage,
+    ResourceType::kRecurrentSnapshot, ResourceType::kPartialKvSnapshot, ResourceType::kSwaKvPage};
 
 struct PoolState
 {
-    std::array<int32_t, 4> freeCounts{};
+    std::array<int32_t, 5> freeCounts{};
     std::vector<std::tuple<ResourceId, int32_t, int32_t>> referenceCounts;
     std::vector<ResourceId> freeAllocationOrder;
 };
@@ -120,6 +120,7 @@ void expectDemand(ResourceDemand const& actual, ResourceDemand const& expected)
     EXPECT_EQ(actual.draftKvPages, expected.draftKvPages);
     EXPECT_EQ(actual.recurrentSnapshotSlots, expected.recurrentSnapshotSlots);
     EXPECT_EQ(actual.partialKvSnapshotSlots, expected.partialKvSnapshotSlots);
+    EXPECT_EQ(actual.swaKvPages, expected.swaKvPages);
 }
 
 void expectRecordEqual(CacheRecord const& actual, CacheRecord const& expected)
@@ -132,6 +133,7 @@ void expectRecordEqual(CacheRecord const& actual, CacheRecord const& expected)
     EXPECT_EQ(actual.recurrentSnapshotSlot, expected.recurrentSnapshotSlot);
     EXPECT_EQ(actual.partialKvSnapshotSlot, expected.partialKvSnapshotSlot);
     EXPECT_EQ(actual.exactCheckpointLength, expected.exactCheckpointLength);
+    EXPECT_EQ(actual.swaWindowState, expected.swaWindowState);
 }
 
 ReusePlan makeEagleReusePlan(std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount,

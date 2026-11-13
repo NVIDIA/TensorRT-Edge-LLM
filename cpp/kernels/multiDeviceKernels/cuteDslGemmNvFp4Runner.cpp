@@ -32,6 +32,17 @@ namespace trt_edgellm
 namespace kernels
 {
 
+namespace
+{
+constexpr int32_t kSm12xAlwaysTn128K = 4096;
+constexpr int32_t kSm12xShortK = 5120;
+constexpr int32_t kSm12xMidK = 9216;
+constexpr int32_t kSm12xLongK = 12800;
+constexpr int32_t kSm12xTn128MaxN = 8192;
+constexpr int32_t kSm12xMidKLongPrefillM = 96;
+constexpr int32_t kSm12xLongKLongPrefillM = 576;
+} // namespace
+
 #ifdef CUTE_DSL_GEMM_NVFP4_ENABLED
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP16_TN64_ENABLED
 gemm_blackwell_nvfp4_fp16_tn64_Kernel_Module_t CuteDslGemmNvFp4Runner::sModFp16Tn64{};
@@ -57,12 +68,35 @@ gemm_blackwell_nvfp4_ws_fp8_tn64_Kernel_Module_t CuteDslGemmNvFp4Runner::sModWsF
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN128_ENABLED
 gemm_blackwell_nvfp4_ws_fp8_tn128_Kernel_Module_t CuteDslGemmNvFp4Runner::sModWsFp8Tn128{};
 #endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_ENABLED
+gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_Kernel_Module_t CuteDslGemmNvFp4Runner::sModGeForceFp16Tm64Tn64{};
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_ENABLED
+gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_Kernel_Module_t CuteDslGemmNvFp4Runner::sModGeForceFp16Tm64Tn128{};
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_ENABLED
+gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_Kernel_Module_t
+    CuteDslGemmNvFp4Runner::sModGeForceFp16Tm64Tn128Tk256{};
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_RAW_SFA_M1_ENABLED
+gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1_Kernel_Module_t
+    CuteDslGemmNvFp4Runner::sModGeForceFp16Tm64Tn64RawSfaM1{};
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_RAW_SFA_M1_ENABLED
+gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1_Kernel_Module_t
+    CuteDslGemmNvFp4Runner::sModGeForceFp16Tm64Tn128RawSfaM1{};
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_RAW_SFA_M1_ENABLED
+gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1_Kernel_Module_t
+    CuteDslGemmNvFp4Runner::sModGeForceFp16Tm64Tn128Tk256RawSfaM1{};
+#endif
 #endif // CUTE_DSL_GEMM_NVFP4_ENABLED
 std::mutex CuteDslGemmNvFp4Runner::sMutex{};
 bool CuteDslGemmNvFp4Runner::sLoaded = false;
 
-CuteDslGemmNvFp4Runner::CuteDslGemmNvFp4Runner(int32_t mmaTilerN)
-    : mMmaTilerN(mmaTilerN)
+CuteDslGemmNvFp4Runner::CuteDslGemmNvFp4Runner(int32_t smVersion, int32_t mmaTilerN)
+    : mSmVersion(smVersion)
+    , mMmaTilerN(mmaTilerN)
 {
     if (mmaTilerN != 64 && mmaTilerN != 128)
     {
@@ -106,6 +140,25 @@ bool CuteDslGemmNvFp4Runner::loadKernelModules()
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN128_ENABLED
     gemm_blackwell_nvfp4_ws_fp8_tn128_Kernel_Module_Load(&sModWsFp8Tn128);
 #endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_Kernel_Module_Load(&sModGeForceFp16Tm64Tn64);
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_Kernel_Module_Load(&sModGeForceFp16Tm64Tn128);
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_Kernel_Module_Load(&sModGeForceFp16Tm64Tn128Tk256);
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_RAW_SFA_M1_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1_Kernel_Module_Load(&sModGeForceFp16Tm64Tn64RawSfaM1);
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_RAW_SFA_M1_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1_Kernel_Module_Load(&sModGeForceFp16Tm64Tn128RawSfaM1);
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_RAW_SFA_M1_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1_Kernel_Module_Load(
+        &sModGeForceFp16Tm64Tn128Tk256RawSfaM1);
+#endif
     sLoaded = true;
     return true;
 #else
@@ -145,29 +198,59 @@ void CuteDslGemmNvFp4Runner::unloadKernelModules()
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN128_ENABLED
     gemm_blackwell_nvfp4_ws_fp8_tn128_Kernel_Module_Unload(&sModWsFp8Tn128);
 #endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_Kernel_Module_Unload(&sModGeForceFp16Tm64Tn64);
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_Kernel_Module_Unload(&sModGeForceFp16Tm64Tn128);
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_Kernel_Module_Unload(&sModGeForceFp16Tm64Tn128Tk256);
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_RAW_SFA_M1_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1_Kernel_Module_Unload(&sModGeForceFp16Tm64Tn64RawSfaM1);
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_RAW_SFA_M1_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1_Kernel_Module_Unload(&sModGeForceFp16Tm64Tn128RawSfaM1);
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_RAW_SFA_M1_ENABLED
+    gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1_Kernel_Module_Unload(
+        &sModGeForceFp16Tm64Tn128Tk256RawSfaM1);
+#endif
     sLoaded = false;
 #endif
 }
 
 bool CuteDslGemmNvFp4Runner::canImplement(int32_t smVersion, int32_t mmaTilerN)
 {
-    // AOT variants were registered for SM 100/101/103/110 (see
+    // AOT variants were registered for SM 100/101/103/110/120/121 (see
     // kernelSrcs/build_cutedsl.py::KERNEL_VARIANTS). canImplement is currently
     // a coarse FP16-or-FP8 check — both output dtypes share the same AOT
     // shape registration so the answer is the same for either path. If the
     // FP16 / FP8 AOT artifact sets diverge, split this into two methods.
+    if (smVersion == 120 || smVersion == 121)
+    {
+#if defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_ENABLED)                                              \
+    && defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_ENABLED)                                          \
+    && defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_ENABLED)
+        return mmaTilerN == 64 || mmaTilerN == 128;
+#else
+        return false;
+#endif
+    }
     if (smVersion != 100 && smVersion != 101 && smVersion != 103 && smVersion != 110)
     {
         return false;
     }
-#if defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP16_TN64_ENABLED) || defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP8_TN64_ENABLED)
+#if defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP16_TN64_ENABLED)                                                        \
+    || defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN64_ENABLED)
     if (mmaTilerN == 64)
     {
         return true;
     }
 #endif
-#if defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP16_TN128_ENABLED)                                                          \
-    || defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP8_TN128_ENABLED)
+#if defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP16_TN128_ENABLED)                                                       \
+    || defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN128_ENABLED)
     if (mmaTilerN == 128)
     {
         return true;
@@ -175,6 +258,21 @@ bool CuteDslGemmNvFp4Runner::canImplement(int32_t smVersion, int32_t mmaTilerN)
 #endif
     (void) mmaTilerN;
     return false;
+}
+
+bool CuteDslGemmNvFp4Runner::canImplementRawSfaM1(int32_t smVersion)
+{
+    if (smVersion != 120 && smVersion != 121)
+    {
+        return false;
+    }
+#if defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_RAW_SFA_M1_ENABLED)                                   \
+    && defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_RAW_SFA_M1_ENABLED)                               \
+    && defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_RAW_SFA_M1_ENABLED)
+    return true;
+#else
+    return false;
+#endif
 }
 
 #ifdef CUTE_DSL_GEMM_NVFP4_ENABLED
@@ -229,30 +327,68 @@ cudaError_t CuteDslGemmNvFp4Runner::run(void const* a, void const* b, void const
     int64_t const n64 = static_cast<int64_t>(N);
     int64_t const k64 = static_cast<int64_t>(K);
 #if defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP16_TN64_ENABLED)                                                        \
-    || defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP16_TN128_ENABLED)
+    || defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP16_TN128_ENABLED)                                                    \
+    || defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_ENABLED)                                           \
+    || defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_ENABLED)                                          \
+    || defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_ENABLED)
     int32_t const maxActiveClusters = trt_edgellm::getDeviceMultiProcessorCount();
 #endif
 
     int32_t launchRet = 0;
-    switch (mMmaTilerN)
+    bool const useBlackwellGeForce = mSmVersion == 120 || mSmVersion == 121;
+    if (useBlackwellGeForce)
     {
-    case 64:
+#if defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_ENABLED)                                              \
+    && defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_ENABLED)                                          \
+    && defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_ENABLED)
+        // Select SM12x row-projection tiles by shape and token count. TK256
+        // improves short-prefill and decode shapes, while TK128 is faster once
+        // the token count is large enough to expose more parallelism.
+        bool const useTn128Tk128 = K <= kSm12xAlwaysTn128K || (K <= kSm12xShortK && N <= kSm12xTn128MaxN)
+            || (M >= kSm12xMidKLongPrefillM && K <= kSm12xMidK && N <= kSm12xTn128MaxN)
+            || (M >= kSm12xLongKLongPrefillM && K <= kSm12xLongK && N <= kSm12xTn128MaxN);
+        if (useTn128Tk128)
+        {
+            launchRet = cute_dsl_gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_wrapper(&sModGeForceFp16Tm64Tn128, aMut,
+                bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
+        }
+        else if (K <= kSm12xLongK && N <= kSm12xTn128MaxN)
+        {
+            launchRet
+                = cute_dsl_gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_wrapper(&sModGeForceFp16Tm64Tn128Tk256,
+                    aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
+        }
+        else
+        {
+            launchRet = cute_dsl_gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_wrapper(&sModGeForceFp16Tm64Tn64, aMut,
+                bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
+        }
+#else
+        return cudaErrorNotSupported;
+#endif
+    }
+    else
+    {
+        switch (mMmaTilerN)
+        {
+        case 64:
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP16_TN64_ENABLED
-        launchRet = cute_dsl_gemm_blackwell_nvfp4_ws_fp16_tn64_wrapper(
-            &sModWsFp16Tn64, aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
-        break;
+            launchRet = cute_dsl_gemm_blackwell_nvfp4_ws_fp16_tn64_wrapper(
+                &sModWsFp16Tn64, aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
+            break;
 #else
-        return cudaErrorNotSupported;
+            return cudaErrorNotSupported;
 #endif
-    case 128:
+        case 128:
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP16_TN128_ENABLED
-        launchRet = cute_dsl_gemm_blackwell_nvfp4_ws_fp16_tn128_wrapper(
-            &sModWsFp16Tn128, aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
-        break;
+            launchRet = cute_dsl_gemm_blackwell_nvfp4_ws_fp16_tn128_wrapper(
+                &sModWsFp16Tn128, aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
+            break;
 #else
-        return cudaErrorNotSupported;
+            return cudaErrorNotSupported;
 #endif
-    default: return cudaErrorNotSupported;
+        default: return cudaErrorNotSupported;
+        }
     }
     if (launchRet != 0)
     {
@@ -275,10 +411,93 @@ cudaError_t CuteDslGemmNvFp4Runner::run(void const* a, void const* b, void const
 #endif
 }
 
+cudaError_t CuteDslGemmNvFp4Runner::runRawSfaM1(void const* a, void const* b, void const* aSFRaw, void const* bSF,
+    void* d, void const* alpha, int32_t M, int32_t N, int32_t K, cudaStream_t stream)
+{
+#if defined(CUTE_DSL_GEMM_NVFP4_ENABLED)                                                                               \
+    && defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_RAW_SFA_M1_ENABLED)                                \
+    && defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_RAW_SFA_M1_ENABLED)                               \
+    && defined(CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_RAW_SFA_M1_ENABLED)
+    if (mSmVersion != 120 && mSmVersion != 121)
+    {
+        return cudaErrorNotSupported;
+    }
+    if (!sLoaded)
+    {
+        NVFP4_LOG("runRawSfaM1: modules not loaded");
+        return cudaErrorNotReady;
+    }
+    if (M != 1)
+    {
+        NVFP4_LOG("runRawSfaM1: requires M=1 (M=%d)", M);
+        return cudaErrorInvalidValue;
+    }
+
+    void* dPtr = nullptr;
+    cudaError_t const prepErr = prepareLaunch("runRawSfaM1", M, N, K, alpha, d, dPtr);
+    if (prepErr != cudaSuccess)
+    {
+        return prepErr;
+    }
+
+    void* aMut = const_cast<void*>(a);
+    void* bMut = const_cast<void*>(b);
+    void* sfaMut = const_cast<void*>(aSFRaw);
+    void* sfbMut = const_cast<void*>(bSF);
+    void* alphaMut = const_cast<void*>(alpha);
+    int64_t const m64 = static_cast<int64_t>(M);
+    int64_t const n64 = static_cast<int64_t>(N);
+    int64_t const k64 = static_cast<int64_t>(K);
+    int32_t const maxActiveClusters = trt_edgellm::getDeviceMultiProcessorCount();
+
+    int32_t launchRet = 0;
+    if (K <= kSm12xShortK && N <= kSm12xTn128MaxN)
+    {
+        launchRet = cute_dsl_gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1_wrapper(
+            &sModGeForceFp16Tm64Tn128RawSfaM1, aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64,
+            maxActiveClusters, stream);
+    }
+    else if (K <= kSm12xLongK && N <= kSm12xTn128MaxN)
+    {
+        launchRet = cute_dsl_gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1_wrapper(
+            &sModGeForceFp16Tm64Tn128Tk256RawSfaM1, aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64,
+            maxActiveClusters, stream);
+    }
+    else
+    {
+        launchRet
+            = cute_dsl_gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1_wrapper(&sModGeForceFp16Tm64Tn64RawSfaM1,
+                aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
+    }
+    if (launchRet != 0)
+    {
+        NVFP4_LOG("raw-SFA FP16 launch returned %d (M=%d N=%d K=%d)", launchRet, M, N, K);
+        return cudaErrorUnknown;
+    }
+    return cudaSuccess;
+#else
+    (void) a;
+    (void) b;
+    (void) aSFRaw;
+    (void) bSF;
+    (void) d;
+    (void) alpha;
+    (void) M;
+    (void) N;
+    (void) K;
+    (void) stream;
+    return cudaErrorNotSupported;
+#endif
+}
+
 cudaError_t CuteDslGemmNvFp4Runner::runFp8(void const* a, void const* b, void const* aSF, void const* bSF, void* d,
     void const* alpha, int32_t M, int32_t N, int32_t K, cudaStream_t stream)
 {
 #ifdef CUTE_DSL_GEMM_NVFP4_ENABLED
+    if (mSmVersion == 120 || mSmVersion == 121)
+    {
+        return cudaErrorNotSupported;
+    }
     if (!sLoaded)
     {
         NVFP4_LOG("runFp8: modules not loaded");
@@ -292,12 +511,24 @@ cudaError_t CuteDslGemmNvFp4Runner::runFp8(void const* a, void const* b, void co
         return prepErr;
     }
 
+#if !defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP8_TN64_ENABLED)                                                           \
+    && !defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP8_TN128_ENABLED)                                                       \
+    && !defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN64_ENABLED)                                                     \
+    && !defined(CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN128_ENABLED)
+    (void) a;
+    (void) b;
+    (void) aSF;
+    (void) bSF;
+    (void) dPtr;
+    (void) alpha;
+    (void) stream;
+    return cudaErrorNotSupported;
+#else
     void* aMut = const_cast<void*>(a);
     void* bMut = const_cast<void*>(b);
     void* sfaMut = const_cast<void*>(aSF);
     void* sfbMut = const_cast<void*>(bSF);
     void* alphaMut = const_cast<void*>(alpha);
-
     int64_t const m64 = static_cast<int64_t>(M);
     int64_t const n64 = static_cast<int64_t>(N);
     int64_t const k64 = static_cast<int64_t>(K);
@@ -333,6 +564,7 @@ cudaError_t CuteDslGemmNvFp4Runner::runFp8(void const* a, void const* b, void co
         return cudaErrorUnknown;
     }
     return cudaSuccess;
+#endif
 #else
     (void) a;
     (void) b;

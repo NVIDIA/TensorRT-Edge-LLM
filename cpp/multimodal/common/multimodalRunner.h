@@ -66,9 +66,10 @@ public:
      * @brief Construct multimodal runner
      * @param engineDir Directory containing engine files
      * @param stream CUDA stream for operations
+     * @param checkpointDir HF checkpoint directory used by runtime weight loading
      * @throws std::runtime_error If engine loading or initialization fails
      */
-    MultimodalRunner(std::string const& engineDir, cudaStream_t stream);
+    MultimodalRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
 
     //! @brief Virtual destructor
     virtual ~MultimodalRunner() noexcept = default;
@@ -127,6 +128,17 @@ public:
         cudaStream_t stream, bool imageOnly = false, bool skipEncoderWork = false) = 0;
 
     /*!
+     * @brief Whether @p request's media-token layout is known only once its encoder has run
+     *
+     * When true, preprocess() with @p skipEncoderWork cannot lay out the request's prompt, so a caller must run the
+     * full preprocess (encoder included) before it uses the prompt tokens.
+     */
+    virtual bool tokenLayoutNeedsEncoder([[maybe_unused]] rt::LLMGenerationRequest const& request) const noexcept
+    {
+        return false;
+    }
+
+    /*!
      * @brief Used for KVCache saving where we need to conduct the tokenization of the system prompt and generate
      * ND-Rope parameters for the system prompt.
      * @details This function may be a no-op for some multimodal runners and only performs nontrivial work for some
@@ -141,6 +153,14 @@ public:
     virtual bool preprocessSystemPrompt([[maybe_unused]] std::string const& systemPrompt,
         [[maybe_unused]] tokenizer::Tokenizer const* tokenizer,
         [[maybe_unused]] rt::OptionalOutputTensor mropeCosSinOut, [[maybe_unused]] cudaStream_t stream);
+
+    /*!
+     * @brief Use YaRN-scaled frequencies for the MRope cos/sin this runner writes
+     * @param invFreq Device tensor of rotaryDim/2 inverse frequencies; the caller keeps it alive
+     * @param mscale Scale applied to cos/sin
+     * @throws std::runtime_error if the runner does not support YaRN
+     */
+    virtual void setMropeYarnFrequencies(rt::Tensor const& invFreq, float mscale);
 
     /*!
      * @brief Run multimodal inference
@@ -206,6 +226,9 @@ public:
     void loadExternalWeights(std::string const& engineDir, std::string const& checkpointDir, cudaStream_t stream);
 
 protected:
+    void prepareEngineWeights(std::string const& engineDir, std::string const& checkpointDir, cudaStream_t stream,
+        nvinfer1::ICudaEngine& engine);
+
     multimodal::ModelType mModelType; //!< Model type identifier
     AuxStreamSet mAuxStreams{};
     std::unique_ptr<nvinfer1::IRuntime> mRuntime;         //!< TensorRT runtime

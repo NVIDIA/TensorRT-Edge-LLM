@@ -51,7 +51,7 @@ protected:
 
     Tensor makeGpuTensor(int64_t numTokens = kNUM_TOKENS, int64_t hiddenSize = kHIDDEN_SIZE)
     {
-        return Tensor({numTokens, hiddenSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF, "testEmbedding");
+        return Tensor({numTokens, hiddenSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF, "testEmbedding");
     }
 
     cudaStream_t mStream{};
@@ -111,7 +111,7 @@ TEST_F(EncoderEmbeddingCacheTests, RestoresAllFeaturesAfterInterveningEncoderOut
     ASSERT_EQ(first->get().features.size(), kFEATURES);
     first->get().restore(embedding, featureRefs, 0, mStream);
     second->get().restore(embedding, featureRefs, kNUM_TOKENS, mStream);
-    Tensor host({kENTRY_BYTES * 2}, DeviceType::kCPU, nvinfer1::DataType::kUINT8);
+    Tensor host({kENTRY_BYTES * 2}, DeviceType::kCPU, trt_edgellm::DataType::kUINT8);
     for (size_t i = 0; i < outputs.size(); ++i)
     {
         Tensor const& output = outputs[i].get();
@@ -185,7 +185,7 @@ TEST_F(EncoderEmbeddingCacheTests, RejectsIncompatibleRestoreBuffers)
     Tensor wrongWidth = makeGpuTensor();
     ASSERT_TRUE(wrongWidth.reshape({kNUM_TOKENS, kHIDDEN_SIZE / 2}));
     EXPECT_THROW(hit->get().restore(embedding, {std::ref(wrongWidth)}, 0, mStream), std::runtime_error);
-    Tensor wrongType({kNUM_TOKENS, kHIDDEN_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    Tensor wrongType({kNUM_TOKENS, kHIDDEN_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     EXPECT_THROW(hit->get().restore(embedding, {std::ref(wrongType)}, 0, mStream), std::runtime_error);
     ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
 }
@@ -203,7 +203,7 @@ TEST_F(EncoderEmbeddingCacheTests, RestoresEmbeddingWithoutAuxiliaryFeatures)
     ASSERT_TRUE(hit);
     EXPECT_TRUE(hit->get().features.empty());
     hit->get().restore(embedding, {}, 0, mStream);
-    Tensor host({kENTRY_BYTES}, DeviceType::kCPU, nvinfer1::DataType::kUINT8);
+    Tensor host({kENTRY_BYTES}, DeviceType::kCPU, trt_edgellm::DataType::kUINT8);
     ASSERT_EQ(cudaMemcpyAsync(host.rawPointer(), embedding.rawPointer(), kENTRY_BYTES, cudaMemcpyDeviceToHost, mStream),
         cudaSuccess);
     ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
@@ -248,7 +248,7 @@ TEST_F(EncoderEmbeddingCacheTests, LayoutMismatchInvalidatesEntryBeforeRestoring
     EXPECT_EQ(feature.getShape(), Coords({kNUM_TOKENS, kHIDDEN_SIZE}));
     EXPECT_FALSE(cache.lookup(makeKey(2)));
     EXPECT_EQ(cache.usedBytes(), kENTRY_BYTES * 2);
-    Tensor host({kENTRY_BYTES * 3}, DeviceType::kCPU, nvinfer1::DataType::kUINT8);
+    Tensor host({kENTRY_BYTES * 3}, DeviceType::kCPU, trt_edgellm::DataType::kUINT8);
     for (auto const& ref : outputs)
     {
         ASSERT_EQ(cudaMemcpyAsync(

@@ -30,10 +30,10 @@ cudaError_t launchModelOptInt4PluginV1Repack(
 
 cudaError_t launchGptqInt4PluginV1Repack(int32_t const* qweightK8N, int32_t const* qzerosGN8,
     int32_t const* activationPermutation, int8_t* packedNhalfK, int32_t N, int32_t K, int32_t numGroups,
-    int32_t groupSize, int32_t zeroPointOffset, cudaStream_t stream);
+    int32_t groupSize, int32_t zeroPointOffset, bool outputMajor, cudaStream_t stream);
 
-cudaError_t launchAwqInt4PluginV1Repack(int32_t const* qweightKN8, int32_t const* qzerosGN8, int8_t* packedNhalfK,
-    int32_t N, int32_t K, int32_t numGroups, int32_t groupSize, cudaStream_t stream);
+cudaError_t launchAwqInt4PluginV1Repack(
+    int32_t const* qweightKN8, int8_t* packedNhalfK, int32_t N, int32_t K, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

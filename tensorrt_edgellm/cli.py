@@ -22,11 +22,11 @@ from . import cli_version
 
 COMMANDS = {
     "chat": ("experimental.frontend.cli", "Chat with a local checkpoint"),
-    "serve": ("experimental.server.cli", "Launch an OpenAI-compatible server"),
-    "build":
-    ("experimental.builder.cli", "Build engines directly from a checkpoint"),
-    "export":
-    ("tensorrt_edgellm.scripts.export", "Export a checkpoint to ONNX"),
+    "serve":
+    ("tensorrt_edgellm.server.cli", "Launch an OpenAI-compatible server"),
+    "build": ("tensorrt_edgellm.builder.cli",
+              "Build engines directly from a checkpoint"),
+    "export": ("tensorrt_edgellm.onnx.cli", "Export a checkpoint to ONNX"),
     "quantize": ("tensorrt_edgellm.scripts.quantize",
                  "Quantize a checkpoint or draft model"),
     "insert-lora":

@@ -18,11 +18,13 @@
 #include "runtime/imageUtils.h"
 #include "common/checkMacros.h"
 #include "kernels/preprocessKernels/imageUtilKernels.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <cuda_runtime.h>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
@@ -194,6 +196,94 @@ int64_t planeFrameBytes(ImageLayout const& layout, int64_t const width, int64_t 
     return (extent.rows - 1) * layout.pitchBytes[plane] + extent.validRowBytes;
 }
 
+//! Little-endian byte sink, so the metadata is hashed one field at a time. Hashing the bytes of
+//! ImageData itself would fold in its padding, whose value is indeterminate.
+class FieldStream
+{
+public:
+    void u8(uint8_t const value)
+    {
+        mBytes.push_back(static_cast<char>(value));
+    }
+
+    void u64(uint64_t const value)
+    {
+        constexpr uint32_t kBITS_PER_BYTE = 8U;
+        for (size_t index = 0; index < sizeof(value); ++index)
+        {
+            u8(static_cast<uint8_t>(value >> (kBITS_PER_BYTE * index)));
+        }
+    }
+
+    void i64(int64_t const value)
+    {
+        u64(static_cast<uint64_t>(value));
+    }
+
+    //! The IEEE-754 pattern, so the value reaches the hash without a decimal rounding of its own.
+    void f64(double const value)
+    {
+        uint64_t bits{};
+        std::memcpy(&bits, &value, sizeof(bits));
+        u64(bits);
+    }
+
+    void hash(Hash128 const& value)
+    {
+        u64(value.hi);
+        u64(value.lo);
+    }
+
+    std::string_view view() const noexcept
+    {
+        return {mBytes.data(), mBytes.size()};
+    }
+
+private:
+    std::vector<char> mBytes;
+};
+
+//! What a format samples, with its memory order left out: a block-linear NV12 frame and its
+//! pitch-linear twin carry one picture and have to reach one value.
+uint8_t samplingStructure(ImageFormat const format)
+{
+    switch (format)
+    {
+    case ImageFormat::kRGB8: return 0;
+    case ImageFormat::kNV12PL:
+    case ImageFormat::kNV12BL: return 1;
+    }
+    ELLM_CHECK(false, "samplingStructure: unknown ImageFormat.");
+    return 0;
+}
+
+//! Everything but the pixels that decides what picture they are. Plane offsets, pitches and frame
+//! strides say only where the bytes sit, and the row walk has already taken them out.
+Hash128 metadataDigest(ImageData const& image)
+{
+    // A field added to ImageData may belong in this stream. The assert catches the addition; whether
+    // the new field describes the picture or only its placement is still a judgement.
+    static_assert(sizeof(ImageData) == 168, "ImageData changed shape; revisit what metadataDigest covers.");
+
+    FieldStream fields;
+    fields.u8(samplingStructure(image.layout.format));
+    fields.i64(static_cast<int64_t>(image.layout.colorStandard));
+    fields.i64(static_cast<int64_t>(image.layout.colorRange));
+    fields.i64(image.width);
+    fields.i64(image.height);
+    fields.i64(image.channels);
+    fields.i64(image.frames);
+    fields.u8(image.isVideo ? 1U : 0U);
+    fields.u8(image.doResize ? 1U : 0U);
+    fields.f64(image.fps);
+    fields.u64(image.timestamps.size());
+    for (double const timestamp : image.timestamps)
+    {
+        fields.f64(timestamp);
+    }
+    return hashOpaqueIdentity(fields.view());
+}
+
 //! Last byte the layout addresses. A single frame ignores the frame stride, which wrapImageBuffer
 //! leaves unchecked for it.
 int64_t layoutAddressedBytes(ImageLayout const& layout, int64_t const width, int64_t const height, int64_t const frames)
@@ -216,6 +306,51 @@ int64_t layoutAddressedBytes(ImageLayout const& layout, int64_t const width, int
     return last;
 }
 
+//! The planes of `image` as the digest kernel walks them: luma or packed RGB first, then the chroma
+//! plane of an NV12 frame. `base` is the device-visible start of the buffer, unused when the frame is
+//! block-linear and sampled instead.
+std::array<kernel::ImageDigestPlane, 2> digestPlanes(ImageData const& image, unsigned char* const base)
+{
+    bool const isBlockLinear = image.layout.format == ImageFormat::kNV12BL;
+    std::array<cudaTextureObject_t, 2> const textures{image.textures.plane0, image.textures.plane1};
+
+    std::array<kernel::ImageDigestPlane, 2> planes{};
+    for (int32_t p = 0; p < 2; ++p)
+    {
+        PlaneExtent const extent = planeExtent(image.layout.format, image.width, image.height, p);
+        planes[p].bytes = isBlockLinear ? nullptr : base;
+        planes[p].texture = isBlockLinear ? textures[p] : cudaTextureObject_t{};
+        planes[p].access = !isBlockLinear ? kernel::DigestAccess::kPITCH_LINEAR
+            : p == 0                      ? kernel::DigestAccess::kTEXTURE_LUMA
+                                          : kernel::DigestAccess::kTEXTURE_CHROMA;
+        planes[p].offsetBytes = image.layout.planeOffsetBytes[p];
+        planes[p].pitchBytes = image.layout.pitchBytes[p];
+        planes[p].frameStrideBytes = image.layout.frameStrideBytes[p];
+        planes[p].validRowBytes = static_cast<int32_t>(extent.validRowBytes);
+        planes[p].rows = static_cast<int32_t>(extent.rows);
+    }
+    return planes;
+}
+
+//! Whether `image` holds the pixels its format keeps content in, with positive extents: both texture
+//! planes for kNV12BL, a non-empty buffer for kRGB8 and kNV12PL. A format this does not enumerate is
+//! refused.
+bool canComputeContentDigest(ImageData const& image) noexcept
+{
+    if (image.width <= 0 || image.height <= 0 || image.frames <= 0)
+    {
+        return false;
+    }
+    // No default case, so a format added later fails to build here.
+    switch (image.layout.format)
+    {
+    case ImageFormat::kRGB8:
+    case ImageFormat::kNV12PL: return image.buffer != nullptr && !image.buffer->isEmpty();
+    case ImageFormat::kNV12BL: return image.textures.plane0 != 0 && image.textures.plane1 != 0;
+    }
+    return false;
+}
+
 } // namespace
 
 int64_t ImageData::frameBytes() const noexcept
@@ -230,7 +365,7 @@ int64_t ImageData::addressedBytes() const noexcept
 
 ImageData::ImageData(rt::Tensor&& data)
 {
-    check::check(data.getDataType() == nvinfer1::DataType::kUINT8, "Image data must be UINT8");
+    check::check(data.getDataType() == trt_edgellm::DataType::kUINT8, "Image data must be UINT8");
     check::check(data.getShape().getNumDims() == 4, "Image data must be 4D [T, H, W, C]");
     check::check(data.getShape()[3] == 3, "Image data must have 3 channels");
 
@@ -283,7 +418,7 @@ ImageData loadRgbImageFromFile(std::string const& path)
     // throw an exception.
     try
     {
-        imgTensor = rt::Tensor({1, height, width, desiredChannels}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8,
+        imgTensor = rt::Tensor({1, height, width, desiredChannels}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8,
             "imageUtils::loadRgbImageFromFile::imgTensor");
     }
     catch (std::exception const& e)
@@ -308,7 +443,7 @@ ImageData loadRgbImageFromEncodedBytes(unsigned char const* data, size_t size)
     // throw an exception.
     try
     {
-        imgTensor = rt::Tensor({1, height, width, desiredChannels}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8,
+        imgTensor = rt::Tensor({1, height, width, desiredChannels}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8,
             "imageUtils::loadRgbImageFromEncodedBytes::imgTensor");
     }
     catch (std::exception const& e)
@@ -338,7 +473,7 @@ ImageData loadRgbVideoFromFrames(std::vector<std::string> const& framePaths, dou
     rt::Tensor stacked{};
     try
     {
-        stacked = rt::Tensor({T, H, W, C}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8,
+        stacked = rt::Tensor({T, H, W, C}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8,
             "imageUtils::loadRgbVideoFromFrames::stacked");
     }
     catch (std::exception const& e)
@@ -419,7 +554,7 @@ ImageData wrapImageBuffer(
     std::shared_ptr<rt::Tensor> buffer, ImageLayout layout, int64_t width, int64_t height, int64_t frames, bool isVideo)
 {
     ELLM_CHECK(buffer != nullptr, "wrapImageBuffer: buffer is null.");
-    ELLM_CHECK(buffer->getDataType() == nvinfer1::DataType::kUINT8, "wrapImageBuffer: buffer shall be UINT8.");
+    ELLM_CHECK(buffer->getDataType() == trt_edgellm::DataType::kUINT8, "wrapImageBuffer: buffer shall be UINT8.");
     ELLM_CHECK(width > 0 && height > 0 && frames > 0, "wrapImageBuffer: dimensions shall be positive.");
     ELLM_CHECK(layout.format != ImageFormat::kNV12BL,
         "wrapImageBuffer: kNV12BL addresses no buffer; wrap its texture planes with wrapImageTexture.");
@@ -496,6 +631,107 @@ ImageData wrapImageTexture(cudaTextureObject_t const luma, cudaTextureObject_t c
     return image;
 }
 
+ImageDigestLaunch launchImageContentDigest(
+    ImageData const& image, rt::Tensor& rowDigests, int64_t const rowOffset, cudaStream_t stream)
+{
+    // As in resizeAndNormalizeToRgb, validation sits inside the try so that an exception drains the
+    // stream before it leaves and the caller may release the source frames from its catch.
+    try
+    {
+        ELLM_CHECK(canComputeContentDigest(image),
+            "launchImageContentDigest: the image carries no pixels in the form its format calls for.");
+
+        bool const isBlockLinear = image.layout.format == ImageFormat::kNV12BL;
+        bool const isYuv = image.layout.format != ImageFormat::kRGB8;
+        ELLM_CHECK(!isYuv
+                || (image.layout.colorStandard != ColorStandard::kUnspecified
+                    && image.layout.colorRange != ColorRange::kUnspecified),
+            "launchImageContentDigest: a YUV source shall name a colour standard and range.");
+
+        int32_t const numPlanes = isYuv ? 2 : 1;
+        if (isBlockLinear)
+        {
+            // A texture stands for one frame, so a wider frame count would digest it repeatedly and
+            // leave every frame after the first out of the identity.
+            ELLM_CHECK(image.frames == 1,
+                "launchImageContentDigest: a kNV12BL image claims " + std::to_string(image.frames)
+                    + " frames but its texture planes hold one.");
+        }
+        else
+        {
+            for (int32_t p = 0; p < numPlanes; ++p)
+            {
+                int64_t const validRowBytes
+                    = planeExtent(image.layout.format, image.width, image.height, p).validRowBytes;
+                ELLM_CHECK(image.layout.pitchBytes[p] >= validRowBytes,
+                    "launchImageContentDigest: plane " + std::to_string(p) + " pitch "
+                        + std::to_string(image.layout.pitchBytes[p]) + " is below its valid row width "
+                        + std::to_string(validRowBytes) + ".");
+            }
+            int64_t const lastByte = layoutAddressedBytes(image.layout, image.width, image.height, image.frames);
+            ELLM_CHECK(lastByte <= image.buffer->getMemoryCapacity(),
+                "launchImageContentDigest: the layout reaches " + std::to_string(lastByte)
+                    + " bytes but the buffer holds " + std::to_string(image.buffer->getMemoryCapacity()) + ".");
+        }
+
+        unsigned char* const base = isBlockLinear ? nullptr : deviceAddress(*image.buffer);
+        std::array<kernel::ImageDigestPlane, 2> const planes = digestPlanes(image, base);
+
+        int64_t rowsPerFrame = 0;
+        int64_t streamBytes = 0;
+        for (int32_t p = 0; p < numPlanes; ++p)
+        {
+            rowsPerFrame += planes[p].rows;
+            streamBytes += static_cast<int64_t>(planes[p].rows) * planes[p].validRowBytes;
+        }
+        int64_t const rowCount = image.frames * rowsPerFrame;
+        streamBytes *= image.frames;
+
+        constexpr int64_t kCOMPONENT_BYTES = static_cast<int64_t>(sizeof(kernel::ImageRowDigest));
+        ELLM_CHECK(rowDigests.getDeviceType() == rt::DeviceType::kCPU
+                && rowDigests.getDataType() == trt_edgellm::DataType::kUINT8,
+            "launchImageContentDigest: the row scratch shall be page-locked host UINT8.");
+        ELLM_CHECK(rowOffset >= 0 && (rowOffset + rowCount) * kCOMPONENT_BYTES <= rowDigests.getMemoryCapacity(),
+            "launchImageContentDigest: the row scratch holds " + std::to_string(rowDigests.getMemoryCapacity())
+                + " bytes but rows [" + std::to_string(rowOffset) + ", " + std::to_string(rowOffset + rowCount)
+                + ") need " + std::to_string((rowOffset + rowCount) * kCOMPONENT_BYTES) + ".");
+
+        // Page-locked host memory the kernels write through its device mapping, so after the stream
+        // drains the fold below reads the components where they already are. combineImageRowDigests
+        // folds the row range in place, so the host only ever reads back groupCount components.
+        auto* const components = reinterpret_cast<kernel::ImageRowDigest*>(deviceAddress(rowDigests)) + rowOffset;
+        kernel::hashImageRows(planes.data(), numPlanes, static_cast<int32_t>(image.frames), components, stream);
+        int64_t const groupCount = std::min<int64_t>(kernel::kImageDigestGroups, rowCount);
+        kernel::combineImageRowDigests(
+            components, static_cast<int32_t>(rowCount), static_cast<int32_t>(groupCount), stream);
+
+        return ImageDigestLaunch{rowOffset, rowCount, groupCount, streamBytes, metadataDigest(image)};
+    }
+    catch (...)
+    {
+        (void) cudaStreamSynchronize(stream);
+        throw;
+    }
+}
+
+Hash128 finishImageContentDigest(ImageDigestLaunch const& launch, rt::Tensor& rowDigests)
+{
+    // The caller has already drained the stream, so the components sit at rowDigests's host address.
+    auto const* const components
+        = reinterpret_cast<kernel::ImageRowDigest const*>(rowDigests.rawPointer()) + launch.rowOffset;
+
+    // The stream length shuts out a construction where a shorter stream is a prefix of a longer one.
+    FieldStream identity;
+    identity.i64(launch.streamBytes);
+    for (int64_t group = 0; group < launch.groupCount; ++group)
+    {
+        identity.u64(components[group].hi);
+        identity.u64(components[group].lo);
+    }
+    identity.hash(launch.metadata);
+    return hashOpaqueIdentity(identity.view());
+}
+
 void resizeAndNormalizeToRgb(ImageData const& image, int64_t const firstFrame, int64_t const numFrames,
     std::array<float, 3> const& mean, std::array<float, 3> const& std, rt::Tensor& dstImage, int64_t const outHeight,
     int64_t const outWidth, cudaStream_t stream)
@@ -545,8 +781,8 @@ void resizeAndNormalizeToRgb(ImageData const& image, int64_t const firstFrame, i
             "resizeAndNormalizeToRgb: every std component shall be non-zero.");
         ELLM_CHECK(dstImage.getDeviceType() == rt::DeviceType::kGPU,
             "resizeAndNormalizeToRgb: destination shall be on the GPU.");
-        ELLM_CHECK(
-            dstImage.getDataType() == nvinfer1::DataType::kHALF, "resizeAndNormalizeToRgb: destination shall be HALF.");
+        ELLM_CHECK(dstImage.getDataType() == trt_edgellm::DataType::kHALF,
+            "resizeAndNormalizeToRgb: destination shall be HALF.");
         ELLM_CHECK(dstImage.reshape({numFrames, outHeight, outWidth, 3}),
             "resizeAndNormalizeToRgb: destination too small for " + std::to_string(numFrames) + " frames of "
                 + std::to_string(outHeight) + "x" + std::to_string(outWidth) + " RGB.");

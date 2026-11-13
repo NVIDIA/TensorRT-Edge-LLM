@@ -44,7 +44,7 @@ LLMEngineConfig makeAttentionConfig(int32_t attentionLayers = 4)
         = computeMinimumKvPoolPages(config.maxSupportedBatchSize, config.maxKVCacheCapacity);
     ELLM_CHECK(minimumActivePages <= kMAX_KV_POOL_PAGES, "Test KV pool page count must fit int32.");
     config.kvPoolPages = static_cast<int32_t>(minimumActivePages);
-    config.kvCacheDtype = nvinfer1::DataType::kHALF;
+    config.kvCacheDtype = trt_edgellm::DataType::kHALF;
     config.layerTypes.assign(attentionLayers, HybridCacheManager::LayerType::kAttention);
     config.kvLayerConfigs.assign(attentionLayers, KVLayerConfig{config.numKVHeads, config.headDim});
     return config;
@@ -61,8 +61,8 @@ LLMEngineConfig makeHybridConfig(int32_t attentionLayers = 2, int32_t recurrentL
     config.recurrentStateSize = 64;
     config.convDim = 256;
     config.convKernel = 4;
-    config.recurrentStateDtype = nvinfer1::DataType::kHALF;
-    config.convStateDtype = nvinfer1::DataType::kHALF;
+    config.recurrentStateDtype = trt_edgellm::DataType::kHALF;
+    config.convStateDtype = trt_edgellm::DataType::kHALF;
     return config;
 }
 
@@ -77,9 +77,9 @@ DeploymentConfig makeEagleDeployment()
     deployment.draft->specDecodeType = SpecDecodeMode::kEAGLE;
     deployment.draft->baseModelHiddenSize = deployment.base.hiddenSize * 3;
     SpecDecodeConfig specConfig;
-    specConfig.draftingTopK = 1;
-    specConfig.draftingStep = 2;
-    specConfig.verifySize = 4;
+    specConfig.draftTopK = 1;
+    specConfig.draftSteps = 2;
+    specConfig.verifyTokenCount = 4;
     deployment.specConfig = specConfig;
     return deployment;
 }
@@ -95,9 +95,9 @@ DeploymentConfig makeGemma4MTPDeployment()
     deployment.draft->hasOwnKVCache = false;
     deployment.draft->sharesTargetKV = true;
     SpecDecodeConfig specConfig;
-    specConfig.draftingTopK = 1;
-    specConfig.draftingStep = 4;
-    specConfig.verifySize = 5;
+    specConfig.draftTopK = 1;
+    specConfig.draftSteps = 4;
+    specConfig.verifyTokenCount = 5;
     deployment.specConfig = specConfig;
     return deployment;
 }
@@ -114,9 +114,9 @@ DeploymentConfig makeHybridMtpDeployment()
     deployment.draft->sharesTargetKV = false;
     deployment.draft->baseModelHiddenSize = deployment.base.hiddenSize;
     SpecDecodeConfig specConfig;
-    specConfig.draftingTopK = 2;
-    specConfig.draftingStep = 3;
-    specConfig.verifySize = 5;
+    specConfig.draftTopK = 2;
+    specConfig.draftSteps = 3;
+    specConfig.verifyTokenCount = 5;
     deployment.specConfig = specConfig;
     return deployment;
 }
@@ -172,16 +172,46 @@ TEST(ContextCacheDeploymentTests, SupportsFp8AndRejectsUnsupportedDtypeAndVision
 {
     DeploymentConfig deployment{makeAttentionConfig(), std::nullopt, std::nullopt};
 
-    deployment.base.kvCacheDtype = nvinfer1::DataType::kFP8;
+    deployment.base.kvCacheDtype = trt_edgellm::DataType::kFP8;
     EXPECT_NO_THROW(validateContextCacheDeployment(deployment));
 
     deployment.base = makeAttentionConfig();
-    deployment.base.kvCacheDtype = nvinfer1::DataType::kBF16;
+    deployment.base.kvCacheDtype = trt_edgellm::DataType::kBF16;
     EXPECT_THROW(validateContextCacheDeployment(deployment), std::runtime_error);
 
     deployment.base = makeAttentionConfig();
     deployment.base.useVisionBidirectionalAttention = true;
     EXPECT_THROW(validateContextCacheDeployment(deployment), std::runtime_error);
+}
+
+TEST(ContextCacheDeploymentTests, BoundedSwaRequiresVanillaFp16AndOneWindow)
+{
+    constexpr int32_t kWINDOW_SIZE{256};
+    DeploymentConfig deployment{makeAttentionConfig(), std::nullopt, std::nullopt};
+    deployment.base.kvLayerConfigs[1].kvCacheCapacity = kWINDOW_SIZE;
+    deployment.base.numSwaPages
+        = static_cast<int32_t>(computeMinimumSwaPoolPages(deployment.base.maxSupportedBatchSize, kWINDOW_SIZE));
+
+    ContextCacheDeploymentProfile const profile = validateContextCacheDeployment(deployment);
+    ASSERT_TRUE(profile.swaConfig.has_value());
+    EXPECT_EQ(profile.swaConfig->windowSizeTokens, kWINDOW_SIZE);
+
+    deployment.base.kvCacheDtype = trt_edgellm::DataType::kFP8;
+    EXPECT_THROW(validateContextCacheDeployment(deployment), std::runtime_error);
+
+    deployment.base = makeAttentionConfig();
+    deployment.base.kvLayerConfigs[1].kvCacheCapacity = kWINDOW_SIZE;
+    deployment.base.kvLayerConfigs[2].kvCacheCapacity = kWINDOW_SIZE / 2;
+    EXPECT_THROW(validateContextCacheDeployment(deployment), std::runtime_error);
+
+    deployment.base = makeHybridConfig();
+    deployment.base.kvLayerConfigs[1].kvCacheCapacity = kWINDOW_SIZE;
+    EXPECT_THROW(validateContextCacheDeployment(deployment), std::runtime_error);
+
+    deployment.base = makeAttentionConfig();
+    deployment.base.kvLayerConfigs[1].kvCacheCapacity = kWINDOW_SIZE;
+    deployment.base.setSwaKVCacheMode(SwaKVCacheMode::kFull);
+    EXPECT_FALSE(validateContextCacheDeployment(deployment).usesBoundedSwa());
 }
 
 TEST(ContextCacheDeploymentTests, AllowsNonStatefulDecoderLayers)
@@ -234,7 +264,7 @@ TEST(ContextCacheDeploymentTests, AdmitsPageTableAwareSpecModesAndRejectsHybridE
         }
         else
         {
-            deployment.specConfig->dflashBlockSize = 4;
+            deployment.specConfig->draftBlockSize = 4;
         }
         ContextCacheDeploymentProfile const profile = validateContextCacheDeployment(deployment);
         ASSERT_TRUE(profile.specReuseContract.has_value());
@@ -244,10 +274,11 @@ TEST(ContextCacheDeploymentTests, AdmitsPageTableAwareSpecModesAndRejectsHybridE
     hybridEagle.base = makeHybridConfig();
     hybridEagle.base.specDecodeType = SpecDecodeMode::kEAGLE;
     hybridEagle.base.isSpecDecodeBase = true;
-    EXPECT_THROW(validateContextCacheDeployment(hybridEagle), std::runtime_error);
+    ContextCacheDeploymentProfile const hybridEagleProfile = validateContextCacheDeployment(hybridEagle);
+    EXPECT_EQ(hybridEagleProfile.baseStateKind, ContextCacheModelStateKind::kHybrid);
 }
 
-TEST(ContextCacheDeploymentTests, AdmitsHybridMtpAndRejectsAttentionOnlyOrSharedKvMtp)
+TEST(ContextCacheDeploymentTests, AdmitsHybridSpecAndRejectsAttentionOnlyOrSharedKvMtp)
 {
     ContextCacheDeploymentProfile const profile = validateContextCacheDeployment(makeHybridMtpDeployment());
     EXPECT_EQ(profile.baseStateKind, ContextCacheModelStateKind::kHybrid);
@@ -279,7 +310,7 @@ TEST(ContextCacheDeploymentTests, ResolvesPerMethodReuseContract)
         DeploymentConfig blockDraft = makeEagleDeployment();
         blockDraft.base.specDecodeType = mode;
         blockDraft.draft->specDecodeType = mode;
-        blockDraft.specConfig->dflashBlockSize = 7;
+        blockDraft.specConfig->draftBlockSize = 7;
         SpecReuseContract const contract = *validateContextCacheDeployment(blockDraft).specReuseContract;
         EXPECT_TRUE(contract.ownsPagedSpecState);
         EXPECT_EQ(contract.futureDependencyTokens, 0);
@@ -312,7 +343,7 @@ TEST(ContextCacheDeploymentTests, ClassifiesSupportedEagle)
 TEST(ContextCacheDeploymentTests, AdmitsEagleTreeConfiguration)
 {
     DeploymentConfig deployment = makeEagleDeployment();
-    deployment.specConfig->draftingTopK = 2;
+    deployment.specConfig->draftTopK = 2;
 
     EXPECT_NO_THROW(validateContextCacheDeployment(deployment));
 }

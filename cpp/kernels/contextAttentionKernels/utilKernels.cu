@@ -22,6 +22,9 @@
 #include "kernels/common/slidingWindowUtils.cuh"
 
 #include <algorithm>
+#if SUPPORTS_FP8
+#include <cuda_fp8.h>
+#endif
 
 namespace trt_edgellm
 {
@@ -157,12 +160,26 @@ __global__ void calSWAChunkedPrefillMetadataKernel(int32_t const* inputSeqLen, i
     }
 }
 
-__global__ void assemblePagedSWAChunkedPrefillFMHAKVKernel(half const* __restrict__ pool,
+__device__ __forceinline__ half loadSWAResidentValue(
+    half const* pool, int64_t elementOffset, [[maybe_unused]] float scale)
+{
+    return pool[elementOffset];
+}
+
+#if SUPPORTS_FP8
+__device__ __forceinline__ half loadSWAResidentValue(__nv_fp8_e4m3 const* pool, int64_t elementOffset, float scale)
+{
+    return __float2half(static_cast<float>(pool[elementOffset]) * scale);
+}
+#endif
+
+template <typename TPool>
+__global__ void assemblePagedSWAChunkedPrefillFMHAKVKernel(TPool const* __restrict__ pool,
     int32_t const* __restrict__ pageTable, half const* __restrict__ k, half const* __restrict__ v,
     int32_t const* __restrict__ inputSeqLen, int32_t const* __restrict__ kvCacheStartIndices,
     half* __restrict__ kWorkspace, half* __restrict__ vWorkspace, int64_t totalElements, int32_t qSeqLen,
     int32_t workspaceSeqLen, int32_t maxPagesPerSeq, int32_t numPages, int32_t numKVHeads, int32_t headDim,
-    int32_t slidingWindowSize)
+    int32_t slidingWindowSize, float kScale, float vScale)
 {
     int64_t const linearIdx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (linearIdx >= totalElements)
@@ -195,11 +212,11 @@ __global__ void assemblePagedSWAChunkedPrefillFMHAKVKernel(half const* __restric
             int64_t const pageStride = static_cast<int64_t>(rt::kTOKENS_PER_PAGE) * numKVHeads * headDim;
             if (kPage >= 0 && kPage < numPages)
             {
-                kValue = pool[static_cast<int64_t>(kPage) * pageStride + elementInPage];
+                kValue = loadSWAResidentValue(pool, static_cast<int64_t>(kPage) * pageStride + elementInPage, kScale);
             }
             if (vPage >= numPages && vPage < 2 * numPages)
             {
-                vValue = pool[static_cast<int64_t>(vPage) * pageStride + elementInPage];
+                vValue = loadSWAResidentValue(pool, static_cast<int64_t>(vPage) * pageStride + elementInPage, vScale);
             }
         }
     }
@@ -220,6 +237,99 @@ __global__ void assemblePagedSWAChunkedPrefillFMHAKVKernel(half const* __restric
     vWorkspace[linearIdx] = vValue;
 }
 
+struct SWACompactSpan
+{
+    int32_t firstPage; //!< First logical page holding an in-window token
+    int32_t numPages;  //!< Pages up to the one holding the last token
+    int32_t past;      //!< KV tokens before this step
+    int32_t end;       //!< KV tokens after this step
+    int32_t firstRow;  //!< First query row of the sequence
+};
+
+__device__ __forceinline__ SWACompactSpan swaCompactSpan(
+    int32_t const* queryStartOffsets, int32_t const* kvEndLengths, int32_t sequence, int32_t slidingWindowSize)
+{
+    int32_t const firstRow = queryStartOffsets[sequence];
+    int32_t const end = kvEndLengths[sequence];
+    int32_t const past = end - (queryStartOffsets[sequence + 1] - firstRow);
+    int32_t const firstPage = max(0, past - slidingWindowSize) / rt::kTOKENS_PER_PAGE;
+    int32_t const lastPage = (end + rt::kTOKENS_PER_PAGE - 1) / rt::kTOKENS_PER_PAGE;
+    return {firstPage, lastPage - firstPage, past, end, firstRow};
+}
+
+//! Grid: (sequence, page of the sequence's span). Each block copies one K page and one V page; the blocks of page 0
+//! also fill the sequence's page-table rows.
+template <typename TPool>
+__global__ void assemblePagedSWACompactPrefillFMHAKVKernel(TPool const* __restrict__ pool,
+    int32_t const* __restrict__ pageTable, half const* __restrict__ k, half const* __restrict__ v,
+    int32_t const* __restrict__ queryStartOffsets, int32_t const* __restrict__ kvEndLengths,
+    half* __restrict__ assembled, int32_t* __restrict__ assembledPageTable, int32_t numAssembledPages,
+    int32_t maxPagesPerSeq, int32_t numPages, int32_t numKVHeads, int32_t headDim, int32_t slidingWindowSize,
+    float kScale, float vScale)
+{
+    int32_t const sequence = static_cast<int32_t>(blockIdx.x);
+    int32_t const spanPage = static_cast<int32_t>(blockIdx.y);
+    SWACompactSpan const span = swaCompactSpan(queryStartOffsets, kvEndLengths, sequence, slidingWindowSize);
+    int32_t const logicalPage = span.firstPage + spanPage;
+    bool const copiesPage = spanPage < span.numPages && logicalPage < maxPagesPerSeq;
+    if (spanPage != 0 && !copiesPage)
+    {
+        return;
+    }
+    int32_t firstAssembledPage = 0;
+    for (int32_t earlier = 0; earlier < sequence; ++earlier)
+    {
+        firstAssembledPage += swaCompactSpan(queryStartOffsets, kvEndLengths, earlier, slidingWindowSize).numPages;
+    }
+    if (spanPage == 0)
+    {
+        for (int32_t page = static_cast<int32_t>(threadIdx.x); page < maxPagesPerSeq; page += blockDim.x)
+        {
+            int32_t const assembledPage = firstAssembledPage + min(max(page - span.firstPage, 0), span.numPages - 1);
+            assembledPageTable[(sequence * 2) * maxPagesPerSeq + page] = assembledPage;
+            assembledPageTable[(sequence * 2 + 1) * maxPagesPerSeq + page] = numAssembledPages + assembledPage;
+        }
+    }
+    if (!copiesPage)
+    {
+        return;
+    }
+
+    int32_t const kPage = pageTable[(sequence * 2) * maxPagesPerSeq + logicalPage];
+    int32_t const vPage = pageTable[(sequence * 2 + 1) * maxPagesPerSeq + logicalPage];
+    int64_t const tokenElems = static_cast<int64_t>(numKVHeads) * headDim;
+    int64_t const pageElems = rt::kTOKENS_PER_PAGE * tokenElems;
+    half* const kOut = assembled + static_cast<int64_t>(firstAssembledPage + spanPage) * pageElems;
+    half* const vOut = assembled + static_cast<int64_t>(numAssembledPages + firstAssembledPage + spanPage) * pageElems;
+    int32_t const windowStart = max(0, span.past - slidingWindowSize);
+    for (int64_t element = threadIdx.x; element < pageElems; element += blockDim.x)
+    {
+        int32_t const token = logicalPage * rt::kTOKENS_PER_PAGE + static_cast<int32_t>(element / tokenElems);
+        half kValue = __float2half(0.0F);
+        half vValue = __float2half(0.0F);
+        if (token >= windowStart && token < span.past)
+        {
+            if (kPage >= 0 && kPage < numPages)
+            {
+                kValue = loadSWAResidentValue(pool, static_cast<int64_t>(kPage) * pageElems + element, kScale);
+            }
+            if (vPage >= numPages && vPage < 2 * numPages)
+            {
+                vValue = loadSWAResidentValue(pool, static_cast<int64_t>(vPage) * pageElems + element, vScale);
+            }
+        }
+        else if (token >= span.past && token < span.end)
+        {
+            int64_t const scratchOffset
+                = static_cast<int64_t>(span.firstRow + token - span.past) * tokenElems + element % tokenElems;
+            kValue = k[scratchOffset];
+            vValue = v[scratchOffset];
+        }
+        kOut[element] = kValue;
+        vOut[element] = vValue;
+    }
+}
+
 } // namespace
 
 void calSWAChunkedPrefillMetadata(rt::Tensor const& inputSeqLen, rt::Tensor const& kvCacheStartIndices,
@@ -229,13 +339,13 @@ void calSWAChunkedPrefillMetadata(rt::Tensor const& inputSeqLen, rt::Tensor cons
     int32_t const runtimeBatchSize = static_cast<int32_t>(inputSeqLen.getShape()[0]);
     check::check(runtimeSeqLen > 1, "SWA chunked prefill requires runtimeSeqLen > 1.");
     check::check(slidingWindowSize > 0, "Sliding window size must be positive.");
-    check::check(inputSeqLen.getDataType() == nvinfer1::DataType::kINT32, "inputSeqLen must be INT32.");
-    check::check(kvCacheStartIndices.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(inputSeqLen.getDataType() == trt_edgellm::DataType::kINT32, "inputSeqLen must be INT32.");
+    check::check(kvCacheStartIndices.getDataType() == trt_edgellm::DataType::kINT32,
         "kvCacheStartIndices must be INT32 for SWA chunked prefill.");
-    check::check(cuQSeqLens.getDataType() == nvinfer1::DataType::kINT32, "cuQSeqLens must be INT32.");
-    check::check(cuKVSeqLens.getDataType() == nvinfer1::DataType::kINT32, "cuKVSeqLens must be INT32.");
-    check::check(kvCacheEndIdxs.getDataType() == nvinfer1::DataType::kINT32, "kvCacheEndIdxs must be INT32.");
-    check::check(paddedCuKVSeqLens.getDataType() == nvinfer1::DataType::kINT32, "paddedCuKVSeqLens must be INT32.");
+    check::check(cuQSeqLens.getDataType() == trt_edgellm::DataType::kINT32, "cuQSeqLens must be INT32.");
+    check::check(cuKVSeqLens.getDataType() == trt_edgellm::DataType::kINT32, "cuKVSeqLens must be INT32.");
+    check::check(kvCacheEndIdxs.getDataType() == trt_edgellm::DataType::kINT32, "kvCacheEndIdxs must be INT32.");
+    check::check(paddedCuKVSeqLens.getDataType() == trt_edgellm::DataType::kINT32, "paddedCuKVSeqLens must be INT32.");
     check::check(inputSeqLen.getShape().getNumDims() == 1, "inputSeqLen shall have shape [B].");
     check::check(
         kvCacheStartIndices.getShape().getNumDims() == 1 && kvCacheStartIndices.getShape()[0] == runtimeBatchSize,
@@ -253,14 +363,19 @@ void calSWAChunkedPrefillMetadata(rt::Tensor const& inputSeqLen, rt::Tensor cons
 
 void assemblePagedSWAChunkedPrefillFMHAKV(rt::Tensor const& swaPool, rt::Tensor const& swaPageTable,
     rt::Tensor const& k, rt::Tensor const& v, rt::Tensor const& inputSeqLen, rt::Tensor const& kvCacheStartIndices,
-    rt::Tensor& kWorkspace, rt::Tensor& vWorkspace, int32_t slidingWindowSize, cudaStream_t stream)
+    rt::Tensor& kWorkspace, rt::Tensor& vWorkspace, int32_t slidingWindowSize, float kScale, float vScale,
+    cudaStream_t stream)
 {
-    check::check(swaPool.getDataType() == nvinfer1::DataType::kHALF, "SWA pool must be FP16.");
-    check::check(swaPageTable.getDataType() == nvinfer1::DataType::kINT32, "SWA page table must be INT32.");
-    check::check(k.getDataType() == nvinfer1::DataType::kHALF && v.getDataType() == nvinfer1::DataType::kHALF,
+    trt_edgellm::DataType const poolDataType = swaPool.getDataType();
+    bool const isFp8Storage
+        = poolDataType == trt_edgellm::DataType::kFP8 || poolDataType == trt_edgellm::DataType::kINT8;
+    check::check(poolDataType == trt_edgellm::DataType::kHALF || isFp8Storage,
+        "SWA pool must be FP16 or FP8 storage (native FP8 or INT8 E4M3 bytes).");
+    check::check(swaPageTable.getDataType() == trt_edgellm::DataType::kINT32, "SWA page table must be INT32.");
+    check::check(k.getDataType() == trt_edgellm::DataType::kHALF && v.getDataType() == trt_edgellm::DataType::kHALF,
         "SWA chunked-prefill K/V inputs must be FP16.");
-    check::check(
-        kWorkspace.getDataType() == nvinfer1::DataType::kHALF && vWorkspace.getDataType() == nvinfer1::DataType::kHALF,
+    check::check(kWorkspace.getDataType() == trt_edgellm::DataType::kHALF
+            && vWorkspace.getDataType() == trt_edgellm::DataType::kHALF,
         "SWA chunked-prefill workspaces must be FP16.");
     check::check(slidingWindowSize > 0, "Sliding window size must be positive.");
 
@@ -305,11 +420,85 @@ void assemblePagedSWAChunkedPrefillFMHAKV(rt::Tensor const& swaPool, rt::Tensor 
         = static_cast<int64_t>(batchSize) * workspaceSeqLen * numKVHeads * static_cast<int64_t>(headDim);
     constexpr int32_t kBLOCK_SIZE = 256;
     int32_t const gridSize = static_cast<int32_t>((totalElements + kBLOCK_SIZE - 1) / kBLOCK_SIZE);
-    assemblePagedSWAChunkedPrefillFMHAKVKernel<<<gridSize, kBLOCK_SIZE, 0, stream>>>(swaPool.dataPointer<half>(),
-        swaPageTable.dataPointer<int32_t>(), k.dataPointer<half>(), v.dataPointer<half>(),
-        inputSeqLen.dataPointer<int32_t>(), kvCacheStartIndices.dataPointer<int32_t>(), kWorkspace.dataPointer<half>(),
-        vWorkspace.dataPointer<half>(), totalElements, qSeqLen, workspaceSeqLen, maxPagesPerSeq, numPages, numKVHeads,
-        headDim, slidingWindowSize);
+    if (poolDataType == trt_edgellm::DataType::kHALF)
+    {
+        assemblePagedSWAChunkedPrefillFMHAKVKernel<<<gridSize, kBLOCK_SIZE, 0, stream>>>(swaPool.dataPointer<half>(),
+            swaPageTable.dataPointer<int32_t>(), k.dataPointer<half>(), v.dataPointer<half>(),
+            inputSeqLen.dataPointer<int32_t>(), kvCacheStartIndices.dataPointer<int32_t>(),
+            kWorkspace.dataPointer<half>(), vWorkspace.dataPointer<half>(), totalElements, qSeqLen, workspaceSeqLen,
+            maxPagesPerSeq, numPages, numKVHeads, headDim, slidingWindowSize, kScale, vScale);
+    }
+    else
+    {
+#if SUPPORTS_FP8
+        assemblePagedSWAChunkedPrefillFMHAKVKernel<<<gridSize, kBLOCK_SIZE, 0, stream>>>(
+            swaPool.dataPointer<__nv_fp8_e4m3>(), swaPageTable.dataPointer<int32_t>(), k.dataPointer<half>(),
+            v.dataPointer<half>(), inputSeqLen.dataPointer<int32_t>(), kvCacheStartIndices.dataPointer<int32_t>(),
+            kWorkspace.dataPointer<half>(), vWorkspace.dataPointer<half>(), totalElements, qSeqLen, workspaceSeqLen,
+            maxPagesPerSeq, numPages, numKVHeads, headDim, slidingWindowSize, kScale, vScale);
+#else
+        check::check(false, "FP8 SWA pool requested but this build does not support FP8.");
+#endif
+    }
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void assemblePagedSWACompactPrefillFMHAKV(rt::Tensor const& swaPool, int32_t const* swaPageTable,
+    int32_t maxPagesPerSeq, rt::Tensor const& k, rt::Tensor const& v, int32_t const* queryStartOffsets,
+    int32_t const* kvEndLengths, int32_t numSequences, int32_t slidingWindowSize, float kScale, float vScale,
+    rt::Tensor& assembledPool, int32_t* assembledPageTable, cudaStream_t stream)
+{
+    trt_edgellm::DataType const poolDataType = swaPool.getDataType();
+    bool const isFp8Storage
+        = poolDataType == trt_edgellm::DataType::kFP8 || poolDataType == trt_edgellm::DataType::kINT8;
+    check::check(poolDataType == trt_edgellm::DataType::kHALF || isFp8Storage,
+        "SWA pool must be FP16 or FP8 storage (native FP8 or INT8 E4M3 bytes).");
+    check::check(k.getDataType() == trt_edgellm::DataType::kHALF && v.getDataType() == trt_edgellm::DataType::kHALF
+            && assembledPool.getDataType() == trt_edgellm::DataType::kHALF,
+        "Compact SWA assembly K/V scratch and workspace must be FP16.");
+    check::check(swaPageTable != nullptr && queryStartOffsets != nullptr && kvEndLengths != nullptr
+            && assembledPageTable != nullptr && numSequences > 0 && maxPagesPerSeq > 0 && slidingWindowSize > 0,
+        "Compact SWA assembly received invalid arguments.");
+    rt::Coords const poolShape = swaPool.getShape();
+    rt::Coords const assembledShape = assembledPool.getShape();
+    check::check(poolShape.getNumDims() == 5 && poolShape[0] == 2 && poolShape[2] == rt::kTOKENS_PER_PAGE,
+        "SWA pool shall have shape [2, numPages, 128, Hkv, D].");
+    check::check(assembledShape.getNumDims() == 5 && assembledShape[0] == 2 && assembledShape[2] == rt::kTOKENS_PER_PAGE
+            && assembledShape[3] == poolShape[3] && assembledShape[4] == poolShape[4],
+        "Compact SWA assembly workspace shall have shape [2, P, 128, Hkv, D].");
+    int32_t const numKVHeads = static_cast<int32_t>(poolShape[3]);
+    int32_t const headDim = static_cast<int32_t>(poolShape[4]);
+    check::check(k.getShape().getNumDims() == 3 && k.getShape()[1] == numKVHeads && k.getShape()[2] == headDim
+            && v.getShape() == k.getShape(),
+        "Compact SWA assembly K/V scratch shall have shape [T_p, Hkv, D].");
+
+    // A span covers at most (W + q_b + 254) / 128 pages.
+    int64_t const numQueryRows = k.getShape()[0];
+    int32_t const maxSpanPages = static_cast<int32_t>(std::min<int64_t>(
+        maxPagesPerSeq, (slidingWindowSize + numQueryRows + 2 * rt::kTOKENS_PER_PAGE - 2) / rt::kTOKENS_PER_PAGE));
+    dim3 const grid(numSequences, maxSpanPages);
+    constexpr int32_t kBLOCK_SIZE = 256;
+    int32_t const numPages = static_cast<int32_t>(poolShape[1]);
+    int32_t const numAssembledPages = static_cast<int32_t>(assembledShape[1]);
+    if (poolDataType == trt_edgellm::DataType::kHALF)
+    {
+        assemblePagedSWACompactPrefillFMHAKVKernel<<<grid, kBLOCK_SIZE, 0, stream>>>(swaPool.dataPointer<half>(),
+            swaPageTable, k.dataPointer<half>(), v.dataPointer<half>(), queryStartOffsets, kvEndLengths,
+            assembledPool.dataPointer<half>(), assembledPageTable, numAssembledPages, maxPagesPerSeq, numPages,
+            numKVHeads, headDim, slidingWindowSize, kScale, vScale);
+    }
+    else
+    {
+#if SUPPORTS_FP8
+        assemblePagedSWACompactPrefillFMHAKVKernel<<<grid, kBLOCK_SIZE, 0, stream>>>(
+            swaPool.dataPointer<__nv_fp8_e4m3>(), swaPageTable, k.dataPointer<half>(), v.dataPointer<half>(),
+            queryStartOffsets, kvEndLengths, assembledPool.dataPointer<half>(), assembledPageTable, numAssembledPages,
+            maxPagesPerSeq, numPages, numKVHeads, headDim, slidingWindowSize, kScale, vScale);
+#else
+        check::check(false, "FP8 SWA pool requested but this build does not support FP8.");
+#endif
+    }
+    CUDA_CHECK(cudaGetLastError());
 }
 
 namespace
@@ -345,8 +534,9 @@ __global__ void buildVisionBlockRangesKernel(int32_t const* visionBlockIds, int3
     int64_t const base = static_cast<int64_t>(batch) * seqLen;
     int32_t const contextLen = min(contextLengths[batch], seqLen);
 
+    // Empty ranges must have negative endpoints and begin > end.
     int32_t begin = -1;
-    int32_t end = -1;
+    int32_t end = -2;
     if (pos < contextLen)
     {
         int32_t const blockId = visionBlockIds[base + pos];
@@ -451,6 +641,33 @@ void launchBuildVisionBlockRanges(int32_t const* visionBlockIds, int32_t const* 
         static_cast<uint32_t>((seqLen + kRANGE_THREADS - 1) / kRANGE_THREADS), static_cast<uint32_t>(batchSize));
     buildVisionBlockRangesKernel<<<grid, kRANGE_THREADS, 0, stream>>>(
         visionBlockIds, contextLengths, blockBegin, blockEnd, seqLen);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void buildDensePageTableKernel(
+    int32_t* pageTable, int32_t numSequences, int32_t maxPagesPerSeq, int32_t vPageOffset)
+{
+    int32_t const entry = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
+    int32_t const entriesPerHalf = numSequences * maxPagesPerSeq;
+    if (entry >= 2 * entriesPerHalf)
+    {
+        return;
+    }
+    int32_t const sequence = entry / (2 * maxPagesPerSeq);
+    int32_t const isV = (entry / maxPagesPerSeq) % 2;
+    int32_t const page = entry % maxPagesPerSeq;
+    pageTable[entry] = (isV ? vPageOffset : 0) + sequence * maxPagesPerSeq + page;
+}
+
+void launchBuildDensePageTable(
+    int32_t* pageTable, int32_t numSequences, int32_t maxPagesPerSeq, int32_t vPageOffset, cudaStream_t stream)
+{
+    check::check(pageTable != nullptr && numSequences > 0 && maxPagesPerSeq > 0,
+        "Dense page table build received invalid arguments");
+    int32_t constexpr kThreads{256};
+    int32_t const entries = 2 * numSequences * maxPagesPerSeq;
+    buildDensePageTableKernel<<<(entries + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
+        pageTable, numSequences, maxPagesPerSeq, vPageOffset);
     CUDA_CHECK(cudaGetLastError());
 }
 

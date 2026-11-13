@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include "common/executionPhase.h"
 #include "runtime/config/llmEngineConfig.h"
 
 #include <cstdint>
@@ -27,6 +28,19 @@ namespace trt_edgellm
 {
 namespace rt
 {
+
+enum class DSparkW2Backend : int32_t
+{
+    kAuto = 0,
+    kFp16 = 1,
+    kFp8 = 2,
+    kW4A16 = 3,
+};
+
+char const* dsparkW2BackendName(DSparkW2Backend backend);
+DSparkW2Backend parseDSparkW2Backend(std::string const& name);
+//! Resolve storage and device capability without quantizing FP16 weights to NVFP4.
+DSparkW2Backend resolveDSparkW2Backend(DSparkW2Backend requested, bool hasPackedW2, bool supportsW4A16);
 
 enum class DSparkSchedulerMode : int32_t
 {
@@ -44,34 +58,31 @@ enum class DSparkSchedulerMode : int32_t
  */
 struct SpecDecodeDraftingConfig
 {
-    //! Tokens to select from one predecessor during draft expansion:
-    //! draftingTopK = 1 selects chain mode, draftingTopK > 1 selects tree
-    //! drafting with this candidate fanout. DSpark tree mode drafts the full
-    //! block and verifySize becomes the DDTree node budget.
-    int32_t draftingTopK{0};
-    int32_t draftingStep{0}; //!< Number of drafting steps with draft model
-    int32_t verifySize{0};   //!< Number of tokens in the base verification input
-
-    //! Optional DFlash/JetSpec draft-forward horizon. 0 means infer from the
-    //! base/draft engine config. Linear DFlash/JetSpec treats this as the base
-    //! verify window length and normalizes verifySize to this value.
-    int32_t dflashBlockSize{0};
+    std::optional<int32_t> draftTopK;
+    std::optional<int32_t> draftingStep;
+    std::optional<int32_t> proposalTokens;
+    std::optional<int32_t> verifyTokens;
 
     DSparkSchedulerMode dsparkSchedulerMode{DSparkSchedulerMode::kOff};
     float dsparkConfidenceThreshold{0.0F};
     int32_t dsparkMinProposalLen{1};
     int32_t dsparkMaxProposalLen{0}; //!< 0 means use the DSpark block proposal length.
+    DSparkW2Backend dsparkW2Backend{DSparkW2Backend::kAuto};
 };
+
+//! Resolve public S/P/Q/K defaults consistently for loaded and injected model artifacts.
+SpecDecodeDraftingConfig resolveSpecDecodeDraftingConfig(
+    LLMEngineConfig const& base, LLMEngineConfig const& draft, SpecDecodeDraftingConfig const& requested);
 
 /*!
  * @brief Consolidated speculative decoding deployment configuration.
  *
  * Holds every draft/verify speculative decoding value the runtime needs in one place, sourced
  * from three inputs:
- *   - the base engine's parsed config (`baseOutputHiddenDim`, `maxVerifySize`),
- *   - the draft engine's parsed config (`draftHiddenSize`, `maxDraftProposalSize`),
+ *   - the base engine's parsed config (`baseOutputHiddenDim`, `maxVerifyTokens`),
+ *   - the draft engine's parsed config (`draftHiddenSize`, `maxDraftTokens`),
  *   - the caller-supplied `SpecDecodeDraftingConfig` drafting parameters
- *     (`draftingTopK`, `draftingStep`, `verifySize`).
+ *     (`draftTopK`, `draftingStep`, `proposalTokens`, `verifyTokens`).
  *
  * `createDeploymentConfig` populates this struct after both engine configs
  * are parsed and validates the requested drafting shape against the engine capacities.
@@ -88,27 +99,36 @@ struct SpecDecodeConfig
     //! spec-decode strategies; the actual value differs per strategy (EAGLE-3
     //! draft has its own independent hidden size; MTP draft equals base hidden size).
     int32_t draftHiddenSize{};
-    int32_t maxVerifySize{};        //!< Max seq_len the base engine accepts for proposal verification
-    int32_t maxDraftProposalSize{}; //!< Max seq_len the draft engine accepts for proposal generation
+    int32_t maxVerifyTokens{}; //!< Max seq_len the base engine accepts for proposal verification
+    int32_t maxDraftTokens{};  //!< Max seq_len the draft engine accepts for proposal generation
 
     // --- User-supplied drafting parameters ---
     //! Tokens to select from one predecessor during draft expansion:
-    //! draftingTopK = 1 selects chain mode, draftingTopK > 1 selects tree
+    //! draftTopK = 1 selects chain mode, draftTopK > 1 selects tree
     //! drafting with this candidate fanout.
-    int32_t draftingTopK{};
-    int32_t draftingStep{}; //!< Number of drafting steps with draft model
-    int32_t verifySize{};   //!< Number of tokens in the base verification input
+    int32_t draftTopK{};
+    int32_t draftSteps{};         //!< Number of drafting steps with draft model
+    int32_t verifyTokenCount{};   //!< Number of tokens in the base verification input
+    int32_t proposalTokenCount{}; //!< Maximum usable continuation depth, excluding the verification root
+    int32_t maxPathLength{};      //!< Maximum root-inclusive accepted path length
+    SpecVerifyLayout verifyLayout{SpecVerifyLayout::kChain};
 
-    //! DFlash/JetSpec draft-forward horizon. This is independent from draftingStep:
+    // --- Jump-forward limits (a mode that cannot jump keeps the plain round's values) ---
+    int32_t jumpVerifyTokenCount{}; //!< Verify width of a grafting round, at least verifyTokenCount
+    int32_t maxJumpTokens{};        //!< Forced tokens one jump may add; 0 when the deployment cannot jump
+    int32_t jumpMaxPathLength{};    //!< Accepted path capacity of a grafting round, at most 32
+
+    //! DFlash/JetSpec draft-forward horizon. This is independent from draftSteps:
     //! these modes run one draft forward per iteration and that forward emits a full block.
     //! For linear DFlash/JetSpec, this is the base verify window length. DSpark uses
     //! its own block size as proposal length and therefore verifies block + 1 tokens.
-    int32_t dflashBlockSize{};
+    int32_t draftBlockSize{};
 
     DSparkSchedulerMode dsparkSchedulerMode{DSparkSchedulerMode::kOff};
     float dsparkConfidenceThreshold{0.0F};
     int32_t dsparkMinProposalLen{1};
     int32_t dsparkMaxProposalLen{0}; //!< 0 means use the DSpark block proposal length.
+    DSparkW2Backend dsparkW2Backend{DSparkW2Backend::kAuto};
 };
 
 //! Complete deployment configuration: the base engine's config, optional draft
@@ -126,27 +146,30 @@ struct DeploymentConfig
     //! File path for the TRT-RTX runtime cache. No effect on non-RTX builds.
     std::optional<std::filesystem::path> runtimeCachePath;
 
+    //! Caller-shaped drafting values resolved for this deployment; absent for vanilla execution.
+    std::optional<SpecDecodeDraftingConfig> draftingConfig() const;
+
     //! Maximum runtime batch size across the bundle. Returns the base engine's
     //! `maxSupportedBatchSize` when there is no draft; otherwise returns the
     //! `min` of base and draft. Logs a warning if base and draft disagree.
     int32_t maxRuntimeBatchSize() const;
 
     //! Effective maximum proposal size across drafting and verification.
-    //! Returns `max(specConfig->maxDraftProposalSize, specConfig->verifySize)`.
+    //! Returns `max(specConfig->maxDraftTokens, specConfig->verifyTokenCount)`.
     //! Speculative decode only — throws `std::runtime_error` if `specConfig` is not set.
     int32_t effectiveMaxDraftProposalSize() const;
 
-    //! Maximum tokens a single decode round can accept per slot: 1 (vanilla, no specConfig),
-    //! draftingStep + 1 (chain/tree verify: EAGLE / MTP / Gemma4 MTP), verifySize
-    //! for DSpark, or min(dflashBlockSize, verifySize) for DFlash/JetSpec block verify.
-    //! New speculative modes must add a case to the switch in the implementation.
+    //! Maximum tokens a single decode round can accept per slot: 1 for vanilla, the diffusion canvas length for a
+    //! diffusion backbone, or the validated root-inclusive maximum path length for speculative decoding, which is the
+    //! capacity of a jump-forward grafting round when the deployment can jump.
     int32_t maxAcceptedTokensPerRound() const;
 
     //! Return the concrete speculative decoding mode declared by the engine bundle.
     SpecDecodeMode specDecodeMode() const noexcept;
 
-    //! Select bounded SWA storage only when context reuse is off and its page budget is smaller than full storage.
-    //! Exported SWA capability metadata remains unchanged; full storage wins on equal page counts.
+    //! Select bounded SWA storage when its page budget is smaller than full storage. Context reuse selects full
+    //! storage, because bounded storage can resume only from exact cached endpoints. Exported capability metadata
+    //! remains unchanged.
     void selectSwaKVCacheMode(bool contextReuseEnabled) noexcept;
 };
 
@@ -158,20 +181,25 @@ struct DeploymentConfig
 //! - If `draftingConfig` is set, builds `specConfig` by combining the engines'
 //!   capacities with the user-supplied drafting parameters, and validates them
 //!   against the engines' capacities:
-//!     - `specConfig->verifySize <= specConfig->maxVerifySize`
-//!     - non-DFlash/JetSpec: `specConfig->draftingStep * specConfig->draftingTopK <= specConfig->maxDraftProposalSize`
-//!     - MTP: `draftingStep + 1 <= 16` (EAGLE utility kernel depth limit);
-//!       `draftingTopK == 1` selects the linear chain and requires the active
-//!       `verifySize == draftingStep + 1` (the engine's `maxVerifySize` profile may be larger),
-//!       while `draftingTopK > 1` selects tree drafting and requires
-//!       `draftingTopK < verifySize`, `draftingTopK <= 8`, and `verifySize <= 128`
-//!       (MTP tree utility limit; unfillable verify nodes become padding)
-//!     - DFlash/JetSpec: `draftingStep == 1`, `dflashBlockSize <= maxDraftProposalSize`, and
-//!       `draftingTopK` is candidateTopK: 1 uses the linear-tree fast path while >1 uses branching DDTree.
-//!       Branching DDTree supports `verifySize <= 128` and accepted path length <= 32; linear DFlash/JetSpec
-//!       normalizes `verifySize` to `dflashBlockSize` for compatibility with the historical API.
+//!     - `specConfig->verifyTokenCount <= specConfig->maxVerifyTokens`
+//!     - non-DFlash/JetSpec: the resolved draft input width is at most `specConfig->maxDraftTokens`
+//!     - MTP: `draftSteps + 1 <= 16` (EAGLE utility kernel depth limit);
+//!       `draftTopK == 1` selects the linear chain and requires the active
+//!       `verifyTokenCount == draftSteps + 1` (the engine's `maxVerifyTokens` profile may be larger),
+//!       while `draftTopK > 1` selects tree drafting and requires
+//!       `draftTopK < verifyTokenCount`, `draftTopK <= 8`, and `verifyTokenCount <= 128`
+//!       (`kMAX_SPEC_VERIFY_TREE_TOKENS`, the tree budget shared by every tree verifier and the decode
+//!       attention kernels; unfillable verify nodes become padding)
+//!     - DFlash/JetSpec: `draftSteps == 1`, `draftBlockSize <= maxDraftTokens`, and
+//!       `draftTopK` is candidateTopK: 1 uses the linear-tree fast path while >1 uses branching DDTree.
+//!       Branching DDTree supports `verifyTokenCount <= 128` and accepted path length <= 32;
+//!       chain verification requires `verifyTokenCount == proposalTokenCount + 1`.
 //!     - DSpark chain mode verifies the anchor plus the selected proposal length; tree mode uses the configured
 //!       verification-node budget. The DSpark block size/gamma denotes the maximum proposal depth.
+//!     - Every speculative mode derives the jump-forward limits (`jumpVerifyTokenCount`, `maxJumpTokens`,
+//!       `jumpMaxPathLength`) per drafting geometry from the engines' verify and proposal capacities, the draft block
+//!       size and the node and accepted-path limits of the plain round's kernels. A tree widens only into the base's
+//!       verify headroom; a chain needs none.
 //!   Throws with named-fields message on violation.
 //!
 //! @throws std::runtime_error on any validation failure or parse failure.

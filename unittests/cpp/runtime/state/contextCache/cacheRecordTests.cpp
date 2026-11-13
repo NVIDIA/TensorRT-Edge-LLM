@@ -66,7 +66,51 @@ std::vector<PageId> specPagePath(CacheRecord const& record)
     return record.specState->pagePath;
 }
 
+SwaWindowState makeSwaState()
+{
+    SwaWindowState state;
+    state.pageSizeTokens = 4;
+    state.windowSizeTokens = 6;
+    state.exactResidentTokenCount = 12;
+    state.retainedLogicalPageBegin = 0;
+    state.retainedLogicalPageEnd = 3;
+    state.pageBindings = {{0, 30}, {1, 31}, {2, 32}};
+    return state;
+}
+
 } // namespace
+
+TEST(ContextCacheRecordStoreTests, SwaStateIsStoredAndValidatedWithItsExactEndpoint)
+{
+    CacheRecordStore store(2);
+    CacheRecord record = makeRecord({kHASH_A, kHASH_B, kHASH_C}, {10, 11, 12});
+    record.swaWindowState = makeSwaState();
+
+    RecordInsertResult const inserted = store.insert(record);
+
+    ASSERT_TRUE(inserted.inserted);
+    EXPECT_EQ(store.get(inserted.id).swaWindowState, std::optional<SwaWindowState>{makeSwaState()});
+    EXPECT_EQ(store.get(inserted.id).resources(),
+        (std::vector<ResourceId>{{ResourceType::kBaseKvPage, 10}, {ResourceType::kBaseKvPage, 11},
+            {ResourceType::kBaseKvPage, 12}, {ResourceType::kSwaKvPage, 30}, {ResourceType::kSwaKvPage, 31},
+            {ResourceType::kSwaKvPage, 32}}));
+
+    CacheRecord invalid = record;
+    invalid.swaWindowState->exactResidentTokenCount = 8;
+    EXPECT_THROW((void) store.insert(std::move(invalid)), std::runtime_error);
+
+    invalid = record;
+    invalid.swaWindowState->pageBindings[1].page = invalid.swaWindowState->pageBindings[0].page;
+    EXPECT_THROW((void) store.insert(std::move(invalid)), std::runtime_error);
+
+    invalid = record;
+    invalid.swaWindowState->retentionMode = SwaRetentionMode::kFullInputRewind;
+    EXPECT_THROW((void) store.insert(std::move(invalid)), std::runtime_error);
+
+    invalid = record;
+    invalid.specState = makePagedSpecState({20, 21, 22});
+    EXPECT_THROW((void) store.insert(std::move(invalid)), std::runtime_error);
+}
 
 TEST(ContextCacheRecordStoreTests, RecordOwnsItsCompleteBasePath)
 {

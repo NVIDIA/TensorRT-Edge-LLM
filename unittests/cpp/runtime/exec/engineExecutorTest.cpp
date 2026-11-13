@@ -147,7 +147,8 @@ TEST(EngineExecutorTest, RaggedDimensionRelations)
 {
     InferenceDims dims{/*batch=*/3, /*seqLen=*/15, /*kvLen=*/128, /*selectLen=*/3, /*attnMaskSeqLen=*/15,
         /*ropeBatch=*/1, /*packedMaskLen=*/1, /*contextMaskSelectorLen=*/0, /*startIndexLen=*/0,
-        /*executionPhaseLen=*/static_cast<int64_t>(ExecutionPhase::kContextPrefill), /*skipSoftmaxScaleLen=*/0,
+        /*executionPhaseLen=*/static_cast<int64_t>(ExecutionPhase::kContextPrefill), /*specVerifyLayoutLen=*/0,
+        /*skipSoftmaxPrefillScaleLen=*/0, /*skipSoftmaxDecodeScaleLen=*/0,
         /*swaKVCacheModeLen=*/0, /*queryOffsetLen=*/4, /*contextSequenceCount=*/3};
     EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/0));
     EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
@@ -173,9 +174,11 @@ TEST(EngineExecutorTest, RaggedDimensionRelations)
     dims.contextSequenceCount = 0;
     EXPECT_FALSE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
     dims.executionPhaseLen = static_cast<int64_t>(ExecutionPhase::kSpecTargetVerify);
+    dims.specVerifyLayoutLen = 1;
     dims.selectLen = 15;
     EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
     dims.executionPhaseLen = static_cast<int64_t>(ExecutionPhase::kDiffusionDenoise);
+    dims.specVerifyLayoutLen = 0;
     EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/0));
     dims.executionPhaseLen = static_cast<int64_t>(ExecutionPhase::kAutoregressiveDecode);
     dims.selectLen = 3;
@@ -187,4 +190,45 @@ TEST(EngineExecutorTest, RaggedDimensionRelations)
     EXPECT_FALSE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
     dims.executionPhaseLen = static_cast<int64_t>(ExecutionPhase::kMixedPrefillDecode);
     EXPECT_FALSE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
+}
+
+// Given an executor whose profile 0 has a dedicated compact context
+// When a step's profile and execution phase are routed
+// Then only a phase-8 step on profile 0 runs on the dedicated context; phase-1/2 prefills on profile 0, phase-3 or
+//      phase-8 steps on profile 1, and every step of an executor without a dedicated context keep the original one
+TEST(EngineExecutorTest, OnlyCompactStepsOfTheDedicatedProfileLeaveTheOriginalContext)
+{
+    auto const dims = [](ExecutionPhase phase) {
+        InferenceDims result{};
+        result.executionPhaseLen = static_cast<int64_t>(phase);
+        return result;
+    };
+    InferenceDims const compact = dims(ExecutionPhase::kMixedPrefillDecode);
+    EXPECT_TRUE(runsOnCompactContext(/*profileIndex=*/0, compact, /*dedicatedProfileIndex=*/0));
+    EXPECT_FALSE(runsOnCompactContext(0, dims(ExecutionPhase::kContextPrefill), 0));
+    EXPECT_FALSE(runsOnCompactContext(0, dims(ExecutionPhase::kContextChunk), 0));
+    EXPECT_FALSE(runsOnCompactContext(1, dims(ExecutionPhase::kAutoregressiveDecode), 0));
+    EXPECT_FALSE(runsOnCompactContext(1, compact, 0));
+    EXPECT_FALSE(runsOnCompactContext(0, compact, -1));
+}
+
+// Given an executor whose profile 0 has a dedicated context and was asked to route context chunks to it
+// When a step's profile and execution phase are routed
+// Then only a phase-2 context-chunk step on profile 0 is routed there; a phase-1 prefill, a decode step, a chunk on
+//      another profile, and every step of an executor without the routing or the context keep the original one
+TEST(EngineExecutorTest, OnlyContextChunksOfTheDedicatedProfileAreRoutedWhenAsked)
+{
+    auto const dims = [](ExecutionPhase phase) {
+        InferenceDims result{};
+        result.executionPhaseLen = static_cast<int64_t>(phase);
+        return result;
+    };
+    InferenceDims const chunk = dims(ExecutionPhase::kContextChunk);
+    EXPECT_TRUE(runsOnContextChunkContext(/*profileIndex=*/0, chunk, /*dedicatedProfileIndex=*/0, true));
+    EXPECT_FALSE(runsOnContextChunkContext(0, dims(ExecutionPhase::kContextPrefill), 0, true));
+    EXPECT_FALSE(runsOnContextChunkContext(0, dims(ExecutionPhase::kMixedPrefillDecode), 0, true));
+    EXPECT_FALSE(runsOnContextChunkContext(1, dims(ExecutionPhase::kAutoregressiveDecode), 0, true));
+    EXPECT_FALSE(runsOnContextChunkContext(1, chunk, 0, true));
+    EXPECT_FALSE(runsOnContextChunkContext(0, chunk, 0, false));
+    EXPECT_FALSE(runsOnContextChunkContext(0, chunk, -1, true));
 }

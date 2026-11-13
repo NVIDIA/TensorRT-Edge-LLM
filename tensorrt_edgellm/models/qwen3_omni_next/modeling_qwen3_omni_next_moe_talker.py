@@ -39,7 +39,7 @@ The TTS runtime only needs three extras vs a plain Qwen3.5 MoE causal LM:
    with ``module_name='codec_head'`` so the FP16 disable-glob matches.
 3. Sidecar tables (``hidden_projection`` Linear, ``speaker_codec_embeddings``)
    are NOT part of the ONNX Talker graph - they live as separate safetensors
-   the C++ runtime loads (see scripts/export.py sidecar handling). The model
+   the C++ runtime loads (see tensorrt_edgellm.onnx.cli sidecar handling). The model
    class therefore does not own them, mirroring the dense Talker.
 """
 

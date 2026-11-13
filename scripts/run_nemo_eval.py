@@ -23,11 +23,11 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-_DEFAULT_CONFIG = "tests/nemo_eval/cases.yml"
 _DEFAULT_MODEL_URL = "http://127.0.0.1:8000/v1/chat/completions"
 
 
@@ -241,102 +241,6 @@ def _parse_optional_int(value: Optional[str]) -> Optional[int]:
     return int(value)
 
 
-def _deep_merge(base: Dict[str, Any], override: Dict[str,
-                                                     Any]) -> Dict[str, Any]:
-    result = dict(base)
-    for key, value in override.items():
-        base_value = result.get(key)
-        if isinstance(base_value, dict) and isinstance(value, dict):
-            result[key] = _deep_merge(base_value, value)
-        else:
-            result[key] = value
-    return result
-
-
-def _load_case_config(config_path: str, case_id: str) -> Dict[str, Any]:
-    try:
-        import yaml
-    except ImportError as exc:
-        raise RuntimeError(
-            "PyYAML is required when using --config/--case") from exc
-
-    path = Path(config_path)
-    try:
-        with path.open("r") as f:
-            data = yaml.safe_load(f) or {}
-    except OSError as exc:
-        raise RuntimeError(
-            f"Could not read NeMo eval config {path}: {exc}") from exc
-
-    defaults = data.get("defaults", {})
-    cases = data.get("cases", {})
-    if not isinstance(defaults, dict) or not isinstance(cases, dict):
-        raise ValueError("NeMo eval config must contain mapping keys "
-                         "'defaults' and 'cases'")
-    if case_id not in cases:
-        raise ValueError(f"NeMo eval case not found: {case_id}")
-    case_config = cases[case_id]
-    if not isinstance(case_config, dict):
-        raise ValueError(f"NeMo eval case must be a mapping: {case_id}")
-    return _deep_merge(defaults, case_config)
-
-
-def _get_section(config: Dict[str, Any], name: str) -> Dict[str, Any]:
-    section = config.get(name, {})
-    if section is None:
-        return {}
-    if not isinstance(section, dict):
-        raise ValueError(f"NeMo eval config section must be a mapping: {name}")
-    return section
-
-
-def _set_attrs_from_section(args: argparse.Namespace, section: Dict[str, Any],
-                            fields: Dict[str, str]) -> None:
-    for key, attr in fields.items():
-        if key in section:
-            setattr(args, attr, section[key])
-
-
-def _apply_case_config(args: argparse.Namespace, config: Dict[str,
-                                                              Any]) -> None:
-    server_fields = {
-        "host": "host",
-        "startup_timeout": "startup_timeout",
-        "max_input_len": "max_input_len",
-        "max_batch_size": "max_batch_size",
-        "max_kv_cache_capacity": "max_kv_cache_capacity",
-        "speculative_config": "speculative_config",
-    }
-    evaluator_fields = {
-        "eval_type": "eval_type",
-        "model_id": "model_id",
-        "limit_samples": "limit_samples",
-        "parallelism": "parallelism",
-        "max_new_tokens": "max_new_tokens",
-        "request_timeout": "request_timeout",
-        "temperature": "temperature",
-        "top_p": "top_p",
-    }
-    score_fields = {
-        "key": "score_key",
-        "min": "min_score",
-    }
-
-    server = _get_section(config, "server")
-    evaluator = _get_section(config, "evaluator")
-    score = _get_section(config, "score")
-    _set_attrs_from_section(args, server, server_fields)
-    _set_attrs_from_section(args, evaluator, evaluator_fields)
-    _set_attrs_from_section(args, score, score_fields)
-
-    overrides = evaluator.get("overrides", {})
-    if overrides is None:
-        overrides = {}
-    if not isinstance(overrides, dict):
-        raise ValueError("NeMo eval evaluator.overrides must be a mapping")
-    args.evaluator_overrides = overrides
-
-
 def _override_value_to_string(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -347,25 +251,21 @@ def _override_value_to_string(value: Any) -> Optional[str]:
 
 def _build_overrides(args: argparse.Namespace) -> str:
     override_map = {
+        "config.params.limit_samples": args.limit_samples,
         "config.params.parallelism": args.parallelism,
         "config.params.max_new_tokens": args.max_new_tokens,
         "config.params.request_timeout": args.request_timeout,
         "config.params.temperature": args.temperature,
         "config.params.top_p": args.top_p,
     }
-    if args.limit_samples is not None:
-        override_map["config.params.limit_samples"] = args.limit_samples
-    override_map.update(getattr(args, "evaluator_overrides", {}))
 
     overrides = []
     for key, value in override_map.items():
         value_str = _override_value_to_string(value)
         if value_str is not None:
             overrides.append(f"{key}={value_str}")
-    if args.extra_overrides:
-        overrides.extend(part.strip()
-                         for part in args.extra_overrides.split(",")
-                         if part.strip())
+    if args.extra_overrides.strip():
+        overrides.append(args.extra_overrides.strip())
     return ",".join(overrides)
 
 
@@ -374,19 +274,48 @@ def _default_model_id(args: argparse.Namespace) -> str:
         return args.model_id
     if args.model:
         return Path(args.model).name
-    return "tensorrt-edgellm"
+    raise ValueError("model ID is unavailable")
+
+
+def _discover_model_id(model_url: str) -> str:
+    parsed = urllib.parse.urlsplit(model_url)
+    path = parsed.path.rstrip("/")
+    marker = "/v1/"
+    if marker not in path:
+        raise ValueError(
+            f"--model-url {model_url!r} must point to an OpenAI-compatible "
+            "/v1 endpoint")
+    models_path = path.split(marker, maxsplit=1)[0] + "/v1/models"
+    models_url = urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, models_path, "", ""))
+    try:
+        with urllib.request.urlopen(models_url, timeout=30) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Could not discover the served model from {models_url}: {exc}") \
+            from exc
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if (not isinstance(models, list) or not models
+            or not isinstance(models[0], dict)
+            or not isinstance(models[0].get("id"), str)
+            or not models[0]["id"]):
+        raise RuntimeError(f"No served model found at {models_url}")
+    return models[0]["id"]
 
 
 def _make_server_cmd(args: argparse.Namespace, port: int) -> List[str]:
     cmd = [
         sys.executable,
         "-m",
-        "experimental.server",
+        "tensorrt_edgellm.server",
         args.model,
         "--host",
         args.host,
         "--port",
         str(port),
+        "--served-model-name",
+        _default_model_id(args),
     ]
     if args.speculative_config:
         cmd.extend(["--speculative-config", args.speculative_config])
@@ -427,12 +356,6 @@ def parse_args() -> argparse.Namespace:
         description="Run NeMo Evaluator against TensorRT Edge-LLM",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--config",
-                        default="",
-                        help="Optional YAML file with named evaluation cases")
-    parser.add_argument("--case",
-                        default="",
-                        help="Case name to load from --config")
     source_group = parser.add_mutually_exclusive_group()
     source_group.add_argument(
         "--model-url",
@@ -461,30 +384,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8192,
     )
-    parser.add_argument("--eval-type", default="mmlu")
+    parser.add_argument("--eval-type", required=True)
     parser.add_argument("--model-id", default="")
     parser.add_argument("--output-dir", default="nemo-results")
     parser.add_argument("--limit-samples",
                         type=_parse_optional_int,
                         default=None)
-    parser.add_argument("--parallelism", type=int, default=1)
-    parser.add_argument("--max-new-tokens", type=int, default=6144)
-    parser.add_argument("--request-timeout", type=int, default=600)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--parallelism", type=int)
+    parser.add_argument("--max-new-tokens", type=int)
+    parser.add_argument("--request-timeout", type=int)
+    parser.add_argument("--temperature", type=float)
+    parser.add_argument("--top-p", type=float)
     parser.add_argument("--extra-overrides", default="")
     parser.add_argument("--min-score", type=float, default=None)
     parser.add_argument("--score-key", default="score")
     args = parser.parse_args()
-    args.evaluator_overrides = {}
-    if args.case:
-        config_path = args.config or _DEFAULT_CONFIG
-        try:
-            _apply_case_config(args, _load_case_config(config_path, args.case))
-        except (RuntimeError, ValueError) as exc:
-            parser.error(str(exc))
-    elif args.config:
-        parser.error("--case is required when --config is provided")
     if not args.model_url and not args.model:
         args.model_url = _DEFAULT_MODEL_URL
     return args
@@ -526,6 +440,9 @@ def main() -> int:
                 _terminate_server(server_proc)
     else:
         print(f"Using existing Edge-LLM server: {model_url}")
+        if not args.model_id:
+            args.model_id = _discover_model_id(model_url)
+            print(f"Discovered served model: {args.model_id}")
         eval_cmd = _make_eval_cmd(args, model_url)
         print("Running NeMo Evaluator:")
         print(" ".join(eval_cmd))
@@ -553,11 +470,9 @@ def main() -> int:
         for metric_name, metric_value in metric_summary:
             print(f"  {metric_name}: {_format_metric_value(metric_value)}")
 
-    if args.min_score is not None:
-        if score < args.min_score:
-            print(f"Score below threshold: {score} < {args.min_score}")
-            return 1
-
+    if args.min_score is not None and score < args.min_score:
+        print(f"Score below threshold: {score} < {args.min_score}")
+        return 1
     print(f"NeMo Evaluator output written to {output_dir}")
     return 0
 

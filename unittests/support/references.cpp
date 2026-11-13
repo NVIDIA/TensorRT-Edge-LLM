@@ -148,15 +148,17 @@ std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> 
                 }
             }
 
-            for (int32_t valIdx = 0; valIdx < headSize; ++valIdx)
+            // kvIdx is the outer loop so K/V rows are read contiguously; each output element accumulates over kvIdx in
+            // increasing order.
+            std::vector<float> outVals(headSize, 0.0F);
+            for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
             {
-                float outVal = 0.0F;
-                for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
+                if (attnScores[kvIdx] == negativeInfinity)
                 {
-                    if (attnScores[kvIdx] == negativeInfinity)
-                    {
-                        continue;
-                    }
+                    continue;
+                }
+                for (int32_t valIdx = 0; valIdx < headSize; ++valIdx)
+                {
                     float vVal;
 #if SUPPORTS_FP8
                     if constexpr (std::is_same_v<T, __nv_fp8_e4m3>)
@@ -170,9 +172,12 @@ std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> 
                     {
                         vVal = __half2float(v[kvIndexer(kvIdx, kvHeadIdx, valIdx)]); // half -> FP32
                     }
-                    outVal += attnScores[kvIdx] * vVal;
+                    outVals[valIdx] += attnScores[kvIdx] * vVal;
                 }
-                result[qoIndexer(tokenIdx, qHeadIdx, valIdx)] = __float2half(outVal);
+            }
+            for (int32_t valIdx = 0; valIdx < headSize; ++valIdx)
+            {
+                result[qoIndexer(tokenIdx, qHeadIdx, valIdx)] = __float2half(outVals[valIdx]);
             }
         }
     }
@@ -716,7 +721,7 @@ void assembleDraftTreeDescReference(std::vector<int8_t> const& draftTreeMask,
     }
 }
 
-void prepareEagleDraftProposalMiscInputReference(std::vector<int32_t> const& draftTreeLength,
+void prepareSpecDraftProposalMiscInputReference(std::vector<int32_t> const& draftTreeLength,
     std::vector<int32_t> const& sequenceStartIndex, std::vector<int32_t>& sequenceContextLengths,
     std::vector<int64_t>& selectTokenIndices, int32_t selectTokenLength, int32_t paddedDraftTreeSize)
 {
@@ -734,7 +739,7 @@ void prepareEagleDraftProposalMiscInputReference(std::vector<int32_t> const& dra
     }
 }
 
-void prepareEaglePrefillInputReference(
+void prepareSpecPrefillInputReference(
     std::vector<int32_t>& sequenceContextLengths, std::vector<int64_t>& selectTokenIndices, int32_t sequenceLength)
 {
     size_t const batchSize = sequenceContextLengths.size();
@@ -832,11 +837,13 @@ int32_t computeTokenDepthRef(int32_t tokenIdx, std::vector<int8_t> const& attent
 
 EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<int32_t> const& tokenIds,
     std::vector<int8_t> const& attentionMask, int32_t batchSize, int32_t numTokens, int32_t vocabSize, int32_t maxDepth,
-    std::vector<int32_t> const& vocabMappingTable)
+    std::vector<int32_t> const& vocabMappingTable, std::vector<int8_t> const& forcedFlags,
+    std::vector<int32_t> const& validCounts)
 {
     EagleAcceptResult result;
     result.acceptedTokenIds.resize(batchSize * maxDepth, -1);
     result.acceptedLogitsIndices.resize(batchSize * maxDepth, -1);
+    result.acceptedForced.resize(batchSize * maxDepth, 0);
     result.acceptLengths.resize(batchSize, 0);
 
     int32_t maxAcceptLength = 0;
@@ -864,12 +871,13 @@ EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<i
         int32_t currentDepth = 0;
         int32_t currentTokenIdx = 0;                    // Start with token[0], use logits[0] to predict next
         int32_t expectedNextDepth = tokenDepths[0] + 1; // Next depth should be current token's depth + 1
+        int32_t const valid = validCounts.empty() ? numTokens : std::min(numTokens, validCounts[b]);
 
         // Start with accept length 0, will be set to at least 1 in the loop
         result.acceptLengths[b] = 0;
 
         // Process tokens - always accept at least one
-        for (int32_t step = 0; step < maxDepth && currentTokenIdx < numTokens; ++step)
+        for (int32_t step = 0; step < maxDepth && currentTokenIdx < valid; ++step)
         {
             // Step 1: Find top-1 token from logits[b][currentTokenIdx]
             int32_t const logitsOffset = b * numTokens * vocabSize + currentTokenIdx * vocabSize;
@@ -893,30 +901,43 @@ EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<i
                 selectedTokenId = vocabMappingTable[selectedTokenId];
             }
 
-            // Step 2: Always accept the selected token
-            result.acceptedTokenIds[b * maxDepth + currentDepth] = selectedTokenId;
-            result.acceptedLogitsIndices[b * maxDepth + currentDepth] = currentTokenIdx;
-            result.acceptLengths[b] = currentDepth + 1;
-            currentDepth++;
-
-            // Step 3: Check if the selected token exists in the tree to continue
+            // Step 2: Find the next node: the first forced child, else the first child carrying the selected token
             int32_t nextTokenIdx = -1;
+            int32_t forcedTokenIdx = -1;
 
-            for (int32_t checkIdx = 1; checkIdx < numTokens; ++checkIdx)
+            for (int32_t checkIdx = 1; checkIdx < valid; ++checkIdx)
             {
-                if (tokenIds[batchTokenOffset + checkIdx] == selectedTokenId
+                bool const forced = !forcedFlags.empty() && forcedFlags[batchTokenOffset + checkIdx] != 0;
+                if ((tokenIds[batchTokenOffset + checkIdx] == selectedTokenId || forced)
                     && tokenDepths[checkIdx] == expectedNextDepth)
                 {
                     // Check attention mask: does checkIdx attend to currentTokenIdx?
                     int32_t maskOffset = batchMaskOffset + checkIdx * numTokens + currentTokenIdx;
                     if (attentionMask[maskOffset] == 1)
                     {
-                        // Found a valid next token in tree
-                        nextTokenIdx = checkIdx;
-                        break; // Take the first match
+                        if (nextTokenIdx == -1)
+                        {
+                            nextTokenIdx = checkIdx;
+                        }
+                        if (forced && forcedTokenIdx == -1)
+                        {
+                            forcedTokenIdx = checkIdx;
+                        }
                     }
                 }
             }
+            if (forcedTokenIdx != -1)
+            {
+                nextTokenIdx = forcedTokenIdx;
+                selectedTokenId = tokenIds[batchTokenOffset + forcedTokenIdx];
+            }
+
+            // Step 3: Always accept the selected token; the logits index is the node that produced it
+            result.acceptedTokenIds[b * maxDepth + currentDepth] = selectedTokenId;
+            result.acceptedLogitsIndices[b * maxDepth + currentDepth] = currentTokenIdx;
+            result.acceptedForced[b * maxDepth + currentDepth] = forcedTokenIdx != -1 ? 1 : 0;
+            result.acceptLengths[b] = currentDepth + 1;
+            currentDepth++;
 
             // Step 4: Update for next iteration
             if (nextTokenIdx != -1)
@@ -963,6 +984,7 @@ EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<i
     // Reshape the result vectors to [batchSize, maxAcceptLength]
     std::vector<int32_t> reshapedTokenIds(batchSize * maxAcceptLength, -1);
     std::vector<int32_t> reshapedLogitsIndices(batchSize * maxAcceptLength, -1);
+    std::vector<int8_t> reshapedForced(batchSize * maxAcceptLength, 0);
 
     for (int32_t b = 0; b < batchSize; ++b)
     {
@@ -970,11 +992,13 @@ EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<i
         {
             reshapedTokenIds[b * maxAcceptLength + i] = result.acceptedTokenIds[b * maxDepth + i];
             reshapedLogitsIndices[b * maxAcceptLength + i] = result.acceptedLogitsIndices[b * maxDepth + i];
+            reshapedForced[b * maxAcceptLength + i] = result.acceptedForced[b * maxDepth + i];
         }
     }
 
     result.acceptedTokenIds = std::move(reshapedTokenIds);
     result.acceptedLogitsIndices = std::move(reshapedLogitsIndices);
+    result.acceptedForced = std::move(reshapedForced);
 
     return result;
 }
@@ -1418,8 +1442,9 @@ void referenceMoeTopK(std::vector<float> const& softmaxOutput, std::vector<float
         }
 
         // Partial sort to get top-k
-        std::partial_sort(pairs.begin(), pairs.begin() + topk, pairs.end(),
-            [](auto const& a, auto const& b) { return a.first > b.first; });
+        std::partial_sort(pairs.begin(), pairs.begin() + topk, pairs.end(), [](auto const& a, auto const& b) {
+            return a.first > b.first || (a.first == b.first && a.second < b.second);
+        });
 
         // Extract top-k
         float sum = 0.0f;

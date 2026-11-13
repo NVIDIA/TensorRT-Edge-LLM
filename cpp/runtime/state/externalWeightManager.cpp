@@ -20,6 +20,7 @@
 #include "common/checkMacros.h"
 #include "common/logger.h"
 #include "common/safetensorsUtils.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 #include "profiling/nvtx_wrapper.h"
 #include "runtime/exec/engineExecutor.h"
@@ -184,7 +185,7 @@ void validateCheckpointIdentity(
         ELLM_CHECK(checkpoint.findHost(name, actual),
             "Runtime " + source + " checkpoint does not match build provider " + buildSource + ": missing tensor "
                 + name);
-        nvinfer1::DataType const expectedType
+        trt_edgellm::DataType const expectedType
             = safetensors::dataTypeFromString(expected["dtype"].get_ref<std::string const&>());
         Coords const expectedShape(expected["shape"].get<std::vector<int64_t>>());
         size_t const expectedBytes = nonnegativeSize(expected["bytes"], "checkpoint identity byte count");
@@ -449,14 +450,14 @@ void validateTensor(nvinfer1::ICudaEngine const& engine, Tensor const& tensor)
     std::string const& name = tensor.getName();
     ELLM_CHECK(isEngineInput(engine, name), "External weight " + name + " is not an engine input");
 
-    nvinfer1::DataType const expectedType = engine.getTensorDataType(name.c_str());
+    trt_edgellm::DataType const expectedType = fromTrt(engine.getTensorDataType(name.c_str()));
     ELLM_CHECK(tensor.getDataType() == expectedType,
         "External weight " + name + " has dtype " + std::to_string(static_cast<int32_t>(tensor.getDataType()))
             + "; engine expects " + std::to_string(static_cast<int32_t>(expectedType)));
 
     nvinfer1::Dims const expectedShape = engine.getTensorShape(name.c_str());
     ELLM_CHECK(!hasDynamicDims(expectedShape), "External weight input " + name + " must have a static shape");
-    ELLM_CHECK(dimsEqual(expectedShape, tensor.getShape().getTRTDims()),
+    ELLM_CHECK(dimsEqual(expectedShape, toTrtDims(tensor.getShape())),
         "External weight " + name + " has shape " + tensor.getShape().formatString() + "; engine expects "
             + dimsToString(expectedShape));
 }
@@ -476,14 +477,15 @@ ExternalWeightManager& ExternalWeightManager::operator=(ExternalWeightManager&& 
     }
     releasePluginResources();
     mWeightStorage = std::move(other.mWeightStorage);
+    mRefitWeights = std::move(other.mRefitWeights);
     mWeights = std::move(other.mWeights);
     mPluginResourceTensors = std::move(other.mPluginResourceTensors);
     mPluginResourceRegistrations = std::move(other.mPluginResourceRegistrations);
     mEmbedding = std::move(other.mEmbedding);
-    mPleEmbedding = std::move(other.mPleEmbedding);
     mLoaded = std::exchange(other.mLoaded, false);
     mValidated = std::exchange(other.mValidated, false);
     mRegistered = std::exchange(other.mRegistered, false);
+    mRefitTaken = std::exchange(other.mRefitTaken, false);
     other.mPluginResourceRegistrations.clear();
     return *this;
 }
@@ -518,8 +520,19 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
     NVTX_SCOPED_RANGE(nvtx_model_weight_preparation, "MODEL_WEIGHT_PREPARATION", nvtx_colors::YELLOW);
     ELLM_CHECK(!mLoaded, "ExternalWeightManager::load called more than once");
     Json const config = readConfig(configPath);
+    if (validateWeightlessConfig(config))
+    {
+        mRefitWeights = std::make_unique<RefitWeightSet>();
+    }
     Json bindings = config.value("checkpoint_weight_bindings", Json::array());
     ELLM_CHECK(bindings.is_array(), "checkpoint_weight_bindings must be an array in " + configPath.string());
+    ELLM_CHECK(config.contains("ple_pool") || std::none_of(bindings.begin(), bindings.end(), isPleEmbeddingBinding),
+        "PLE checkpoint bindings require a pool artifact; re-export and rebuild legacy PLE engines.");
+    if (config.contains("ple_pool"))
+    {
+        ELLM_CHECK(config.at("ple_pool").is_object(), "ple_pool must be an object");
+        bindings.erase(std::remove_if(bindings.begin(), bindings.end(), isPleEmbeddingBinding), bindings.end());
+    }
     ELLM_CHECK(
         tpRank.has_value() == tpSize.has_value(), "External weight TP rank and TP size must be provided together");
     ELLM_CHECK(!tpRank.has_value() || *tpRank >= 0, "External weight TP rank must be nonnegative");
@@ -658,13 +671,15 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
         struct BindingLayout
         {
             Coords shape;
-            nvinfer1::DataType dtype{nvinfer1::DataType::kFLOAT};
+            trt_edgellm::DataType dtype{trt_edgellm::DataType::kFLOAT};
             size_t offset{0};
             bool materialize{true};
+            bool refit{false};
         };
         std::vector<BindingLayout> layouts(bindings.size());
         std::unordered_map<std::string, size_t> bindingIndices;
         size_t storageBytes = 0;
+        size_t refitStorageBytes = 0;
         for (size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex)
         {
             Json const& binding = bindings[bindingIndex];
@@ -677,10 +692,11 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
             Coords const shape = bindingShape(binding);
             ELLM_CHECK(binding.contains("dtype") && binding["dtype"].is_string(),
                 "Checkpoint binding is missing its destination dtype: " + binding.value("engine_name", ""));
-            nvinfer1::DataType const dtype
+            trt_edgellm::DataType const dtype
                 = safetensors::dataTypeFromString(binding["dtype"].get_ref<std::string const&>());
             layouts[bindingIndex].shape = shape;
             layouts[bindingIndex].dtype = dtype;
+            layouts[bindingIndex].refit = binding.value("destination", "input") == "refit";
         }
         bool const hasPackedNvfp4Weights = std::any_of(bindings.begin(), bindings.end(),
             [](Json const& binding) { return !binding.contains(kStorageAliasField) && isPackedNvfp4Binding(binding); });
@@ -695,10 +711,11 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
                 BindingLayout& layout = layouts[bindingIndex];
                 size_t const bytes = static_cast<size_t>(layout.shape.volume()) * utils::getTypeSize(layout.dtype);
                 ELLM_CHECK(bytes > 0, "Checkpoint binding has an empty tensor: " + binding.value("engine_name", ""));
-                storageBytes = alignWeightBytes(storageBytes);
-                layout.offset = storageBytes;
-                ELLM_CHECK(bytes <= std::numeric_limits<size_t>::max() - storageBytes, "Weight arena size overflow");
-                storageBytes += bytes;
+                size_t& arenaBytes = layout.refit ? refitStorageBytes : storageBytes;
+                arenaBytes = alignWeightBytes(arenaBytes);
+                layout.offset = arenaBytes;
+                ELLM_CHECK(bytes <= std::numeric_limits<size_t>::max() - arenaBytes, "Weight arena size overflow");
+                arenaBytes += bytes;
             }
         };
         allocateBindings(/*packedNvfp4=*/true);
@@ -720,6 +737,7 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
 
             BindingLayout& layout = layouts[bindingIndex];
             BindingLayout const& targetLayout = layouts[target->second];
+            ELLM_CHECK(layout.refit == targetLayout.refit, "Checkpoint storage aliases cannot cross refit lifetimes");
             ELLM_CHECK(layout.shape == targetLayout.shape && layout.dtype == targetLayout.dtype,
                 "Checkpoint storage alias shape or dtype differs from target: "
                     + binding["engine_name"].get<std::string>());
@@ -741,9 +759,28 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
             checkCancelled();
         }
         size_t const allocationBytes = storageBytes + arenaAlignmentPadding;
-        mWeightStorage = Tensor(Coords{static_cast<int64_t>(allocationBytes)}, DeviceType::kGPU,
-            nvinfer1::DataType::kUINT8, "ExternalWeightManager::weightArena");
-        weightArenaBytes = allocationBytes;
+        if (allocationBytes > 0)
+        {
+            // With refit enabled, the shared embedding/LM head is allocated and loaded before
+            // engine refit, but is not consumed until inference. Its storage overlaps both
+            // the temporary refit source buffer and TRT's final engine weights during refit.
+            // An optimization we could apply is Deferring its allocation and loading until
+            // the refit source buffer is released, which would lower peak
+            // runtime-initialization memory without changing inference, but it would mean we
+            // have to separate our load phase into two stages, before and after refit. This
+            // is a complication that does not seem to be worth the temporary memory savings.
+            mWeightStorage = Tensor(Coords{static_cast<int64_t>(allocationBytes)}, DeviceType::kGPU,
+                trt_edgellm::DataType::kUINT8, "ExternalWeightManager::weightArena");
+        }
+        if (refitStorageBytes > 0)
+        {
+            ELLM_CHECK(mRefitWeights != nullptr, "Refit storage requires weightless engine metadata");
+            ELLM_CHECK(refitStorageBytes <= static_cast<size_t>(std::numeric_limits<int64_t>::max()),
+                "Refit weight arena is too large");
+            mRefitWeights->storage = Tensor(Coords{static_cast<int64_t>(refitStorageBytes)}, DeviceType::kGPU,
+                trt_edgellm::DataType::kUINT8, "ExternalWeightManager::refitArena");
+        }
+        weightArenaBytes = allocationBytes + refitStorageBytes;
         arenaAllocationTime = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - phaseStart);
 
         phaseStart = Clock::now();
@@ -761,7 +798,8 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
         {
             Json const& binding = bindings[bindingIndex];
             BindingLayout const& layout = layouts[bindingIndex];
-            preparedWeights.emplace_back(storage + layout.offset, layout.shape, DeviceType::kGPU, layout.dtype,
+            auto* bindingStorage = layout.refit ? static_cast<uint8_t*>(mRefitWeights->storage.rawPointer()) : storage;
+            preparedWeights.emplace_back(bindingStorage + layout.offset, layout.shape, DeviceType::kGPU, layout.dtype,
                 binding.at("engine_name").get<std::string>());
         }
         auto materializePhase = [&](CheckpointWeightPhase phase) {
@@ -871,9 +909,9 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
                 "Fused NVFP4 plugin resource is missing its weight or scale");
             Coords const weightShape = parts.weight->getShape();
             Coords const scaleShape = parts.scale->getShape();
-            ELLM_CHECK(parts.weight->getDataType() == nvinfer1::DataType::kUINT8,
+            ELLM_CHECK(parts.weight->getDataType() == trt_edgellm::DataType::kUINT8,
                 "Fused NVFP4 plugin weights must use packed UINT8 storage");
-            ELLM_CHECK(parts.scale->getDataType() == nvinfer1::DataType::kFP8,
+            ELLM_CHECK(parts.scale->getDataType() == trt_edgellm::DataType::kFP8,
                 "Fused NVFP4 plugin block scales must use FP8 storage");
             ELLM_CHECK(weightShape.getNumDims() == 2 && scaleShape.getNumDims() == 2 && weightShape[0] == scaleShape[0],
                 "Fused NVFP4 plugin resource shapes are inconsistent");
@@ -897,7 +935,11 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
             Json const& binding = bindings[bindingIndex];
             BindingLayout const& layout = layouts[bindingIndex];
             Tensor tensor = std::move(preparedWeights[bindingIndex]);
-            if (isPluginResourceBinding(binding))
+            if (layout.refit)
+            {
+                mRefitWeights->weights.push_back(std::move(tensor));
+            }
+            else if (isPluginResourceBinding(binding))
             {
                 mPluginResourceTensors.push_back(std::move(tensor));
             }
@@ -911,11 +953,6 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
                 }
                 mEmbedding = std::move(tensor);
             }
-            else if (isPleEmbeddingBinding(binding))
-            {
-                ELLM_CHECK(!mPleEmbedding.has_value(), "Runtime config has multiple PLE embedding bindings");
-                mPleEmbedding = std::move(tensor);
-            }
             else
             {
                 mWeights.push_back(std::move(tensor));
@@ -928,29 +965,25 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
         checkCancelled();
     }
 
-    // This is the startup/inference boundary. Source-layout tensors and
-    // checkpoint mappings are gone; only immutable engine inputs and plugin
-    // resources remain.
+    // Checkpoint mappings are gone. Refit storage must still survive engine initialization.
     mLoaded = true;
-    if (!mWeights.empty() || !mPluginResourceTensors.empty() || mEmbedding.has_value() || mPleEmbedding.has_value())
+    if (!mWeights.empty() || !mPluginResourceTensors.empty() || mEmbedding.has_value())
     {
         int32_t const modelWeightTensorCount = static_cast<int32_t>(mWeights.size() + mPluginResourceTensors.size());
         auto const elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start);
         if (bindings.empty())
         {
-            LOG_INFO("Loaded %d transformed model weight tensor(s)%s%s in %lld ms", modelWeightTensorCount,
-                mEmbedding.has_value() ? " and the embedding table" : "",
-                mPleEmbedding.has_value() ? " and the PLE table" : "", static_cast<long long>(elapsed.count()));
+            LOG_INFO("Loaded %d transformed model weight tensor(s)%s in %lld ms", modelWeightTensorCount,
+                mEmbedding.has_value() ? " and the embedding table" : "", static_cast<long long>(elapsed.count()));
         }
         else
         {
             LOG_INFO(
-                "Prepared %d model weight tensor(s)%s%s from checkpoint in %lld ms "
+                "Prepared %d model weight tensor(s)%s from checkpoint in %lld ms "
                 "(index %lld ms, validate %lld ms, map/register %lld ms, peak mapped source %zu bytes, "
                 "arena %zu bytes, aliases saved %zu bytes in %lld ms, transform %lld ms)",
                 modelWeightTensorCount, mEmbedding.has_value() ? " and the embedding table" : "",
-                mPleEmbedding.has_value() ? " and the PLE table" : "", static_cast<long long>(elapsed.count()),
-                static_cast<long long>(checkpointIndexTime.count()),
+                static_cast<long long>(elapsed.count()), static_cast<long long>(checkpointIndexTime.count()),
                 static_cast<long long>(checkpointValidationTime.count()),
                 static_cast<long long>(checkpointRegistrationTime.count()), peakRegisteredSourceBytes, weightArenaBytes,
                 aliasedWeightBytes, static_cast<long long>(arenaAllocationTime.count()),
@@ -967,12 +1000,12 @@ std::optional<Tensor> ExternalWeightManager::takeEmbedding()
     return embedding;
 }
 
-std::optional<Tensor> ExternalWeightManager::takePleEmbedding()
+std::unique_ptr<RefitWeightSet> ExternalWeightManager::takeRefitWeights()
 {
-    ELLM_CHECK(mLoaded, "takePleEmbedding called before load");
-    std::optional<Tensor> embedding = std::move(mPleEmbedding);
-    mPleEmbedding.reset();
-    return embedding;
+    ELLM_CHECK(mLoaded, "takeRefitWeights called before load");
+    ELLM_CHECK(!mRefitTaken, "takeRefitWeights called more than once");
+    mRefitTaken = true;
+    return std::move(mRefitWeights);
 }
 
 void ExternalWeightManager::validateAgainstEngine(EngineExecutor const& executor, std::string_view engineLabel)

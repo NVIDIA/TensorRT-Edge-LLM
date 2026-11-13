@@ -17,14 +17,27 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <cstdint>
 #include <cuda_runtime.h>
 #include <exception>
+#include <initializer_list>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <type_traits>
+#include <utility>
 
 namespace trt_edgellm::detail
 {
+
+//! Check whether the linked artifact contains kernels for the requested SM.
+inline bool isArtifactSm(int32_t smVersion, std::initializer_list<int32_t> artifactSms) noexcept
+{
+    return std::find(artifactSms.begin(), artifactSms.end(), smVersion) != artifactSms.end();
+}
 
 //! Record the first CUDA error reported by a generated CuTe DSL loader or unloader.
 void recordCuteDslCudaError(cudaError_t error) noexcept;
@@ -40,7 +53,7 @@ enum class LazyKernelModuleStatus : unsigned char
     kPoisoned,
 };
 
-//! Process-lifetime state for one generated CuTe DSL kernel module variant.
+//! Initialization state for one generated CuTe DSL kernel module variant.
 template <typename Module>
 struct LazyKernelModule
 {
@@ -60,10 +73,26 @@ class RetryableFailure
 {
 };
 
-std::mutex& getGlobalMutex() noexcept;
+std::mutex& getGlobalMutex();
+std::shared_ptr<std::mutex> getGlobalMutexOwner();
 void logLoaded(char const* moduleName) noexcept;
+void logUnloaded(char const* moduleName) noexcept;
 void logFailure(char const* moduleName, char const* reason) noexcept;
 void logCudaFailure(char const* moduleName, char const* operation, cudaError_t error) noexcept;
+
+struct SharedModuleEntry
+{
+    std::weak_ptr<void> module;
+    std::mutex mutex;
+    std::condition_variable released;
+    bool resident{false};
+    bool poisoned{false};
+};
+
+using SharedModuleFactory
+    = std::shared_ptr<void> (*)(std::shared_ptr<SharedModuleEntry> const&, char const*, cudaStream_t);
+std::shared_ptr<void> acquireSharedModule(
+    SharedModuleFactory factory, char const* moduleName, cudaStream_t stream) noexcept;
 
 #if defined(ENABLE_CUTEDSL_MODULE_TEST_HOOK)
 bool shouldInjectFailure(char const* moduleName) noexcept;
@@ -77,7 +106,7 @@ bool shouldInjectFailure(char const* moduleName) noexcept;
 //! `*_Kernel_Module_Unload` functions. A clean failure throws through
 //! std::call_once so a later dispatch can retry. If partial-module cleanup
 //! fails, the state is poisoned and all later dispatches fail without retry.
-//! Successfully loaded modules remain resident for the lifetime of the process.
+//! This function only initializes the module; its owner controls unloading.
 template <auto Loader, auto Unloader, typename Module>
 bool ensureModuleLoaded(LazyKernelModule<Module>& state, char const* moduleName, cudaStream_t stream) noexcept
 {
@@ -221,6 +250,77 @@ bool ensureModuleLoaded(LazyKernelModule<Module>& state, char const* moduleName,
     }
 
     return state.status.load(std::memory_order_acquire) == LazyKernelModuleStatus::kLoaded;
+}
+
+namespace module_loader
+{
+
+template <auto Loader, auto Unloader, typename Module>
+std::shared_ptr<void> createSharedModule(
+    std::shared_ptr<SharedModuleEntry> const& entry, char const* moduleName, cudaStream_t stream)
+{
+    auto deleter = [entry, mutex = getGlobalMutexOwner(), name = std::string(moduleName)](
+                       LazyKernelModule<Module>* state) noexcept {
+        std::unique_ptr<LazyKernelModule<Module>> const owned{state};
+        if (state->status.load(std::memory_order_acquire) != LazyKernelModuleStatus::kLoaded)
+        {
+            return;
+        }
+        // The last owner must outlive all launches and graph executions using this module.
+        std::unique_lock<std::mutex> entryLock(entry->mutex);
+        std::lock_guard<std::mutex> const lock(*mutex);
+        clearCuteDslCudaError();
+        bool failed{false};
+        try
+        {
+            Unloader(&state->module);
+        }
+        catch (...)
+        {
+            failed = true;
+            logFailure(name.c_str(), "generated unloader threw an exception");
+        }
+        auto const error = takeCuteDslCudaError();
+        if (error != cudaSuccess)
+        {
+            failed = true;
+            logCudaFailure(name.c_str(), "unload generated module", error);
+        }
+        if (failed)
+        {
+            entry->poisoned = true;
+        }
+        else
+        {
+            logUnloaded(name.c_str());
+        }
+        // The deleter owns the entry; drop its weak control-block reference to break that cycle.
+        entry->module.reset();
+        entry->resident = false;
+        entryLock.unlock();
+        entry->released.notify_all();
+    };
+    auto state = std::shared_ptr<LazyKernelModule<Module>>(new LazyKernelModule<Module>(), std::move(deleter));
+    if (!ensureModuleLoaded<Loader, Unloader>(*state, moduleName, stream))
+    {
+        if (state->status.load(std::memory_order_acquire) == LazyKernelModuleStatus::kPoisoned)
+        {
+            entry->poisoned = true;
+        }
+        return {};
+    }
+    return state;
+}
+
+} // namespace module_loader
+
+//! Share a module until the last execution owner releases it. Acquire outside graph capture;
+//! retain the handle until GPU work and captured graph use have finished. The cache holds only weak references.
+template <auto Loader, auto Unloader, typename Module>
+std::shared_ptr<LazyKernelModule<Module>> acquireKernelModule(char const* moduleName, cudaStream_t stream) noexcept
+{
+    return std::static_pointer_cast<LazyKernelModule<Module>>(module_loader::acquireSharedModule(
+        module_loader::createSharedModule<Loader, Unloader, Module>, moduleName, stream));
 }
 
 } // namespace trt_edgellm::detail

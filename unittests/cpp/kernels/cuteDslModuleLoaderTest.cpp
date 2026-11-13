@@ -304,5 +304,202 @@ TEST_F(CuteDslModuleLoaderTest, TestHookMatchesExactVariantAndFailureCanRetry)
 }
 #endif
 
+struct OwnedFakeModule
+{
+    void* module{};
+};
+
+std::vector<std::weak_ptr<int>> sResources;
+int sSharedLoadCalls{};
+int sSharedUnloadCalls{};
+bool sOverlappingGenerations{};
+
+// The generated module owns an external resource, which only its unloader frees.
+template <int FailureMode = 0>
+void ownedLoader(OwnedFakeModule* module)
+{
+    for (auto const& resource : sResources)
+    {
+        sOverlappingGenerations |= !resource.expired();
+    }
+    auto resource = std::make_shared<int>(++sSharedLoadCalls);
+    sResources.emplace_back(resource);
+    module->module = new std::shared_ptr<int>(std::move(resource));
+    if (FailureMode != 0 && sSharedLoadCalls == 1)
+    {
+        detail::recordCuteDslCudaError(cudaErrorInvalidValue);
+    }
+}
+
+template <bool Fail = false>
+void ownedUnloader(OwnedFakeModule* module)
+{
+    delete static_cast<std::shared_ptr<int>*>(module->module);
+    module->module = nullptr;
+    ++sSharedUnloadCalls;
+    if (Fail)
+    {
+        detail::recordCuteDslCudaError(cudaErrorUnknown);
+    }
+}
+
+int readResource(detail::LazyKernelModule<OwnedFakeModule> const& module)
+{
+    return **static_cast<std::shared_ptr<int>*>(module.module.module);
+}
+
+class CuteDslSharedModuleTest : public CuteDslModuleLoaderTest
+{
+protected:
+    void SetUp() override
+    {
+        sResources.clear();
+        sSharedLoadCalls = 0;
+        sSharedUnloadCalls = 0;
+        sOverlappingGenerations = false;
+        CuteDslModuleLoaderTest::SetUp();
+    }
+
+    auto acquire()
+    {
+        return detail::acquireKernelModule<ownedLoader<>, ownedUnloader<>, OwnedFakeModule>("owned", mStream);
+    }
+};
+
+TEST_F(CuteDslSharedModuleTest, SharesUntilLastReleaseThenReloads)
+{
+    // Given two users of one module, when each releases it and a new user arrives,
+    // then its resource remains usable until the last release and is loaded afresh afterward.
+    auto first = acquire();
+    auto second = acquire();
+    ASSERT_TRUE(first && second);
+    EXPECT_EQ(first.get(), second.get());
+    EXPECT_EQ(sSharedLoadCalls, 1);
+    first.reset();
+    EXPECT_EQ(readResource(*second), 1);
+    EXPECT_EQ(sSharedUnloadCalls, 0);
+    second.reset();
+    EXPECT_TRUE(sResources.at(0).expired());
+    EXPECT_EQ(sSharedUnloadCalls, 1);
+
+    auto reloaded = acquire();
+    ASSERT_TRUE(reloaded);
+    EXPECT_EQ(readResource(*reloaded), 2);
+    reloaded.reset();
+    EXPECT_TRUE(sResources.at(1).expired());
+    EXPECT_EQ(sSharedUnloadCalls, 2);
+}
+
+TEST_F(CuteDslSharedModuleTest, ConcurrentUsersShareOneLiveResource)
+{
+    // Given concurrent users of one module, when they acquire and release references,
+    // then one load serves them all and the remaining user can still use the resource.
+    constexpr int32_t kUSERS = 16;
+    std::vector<std::shared_ptr<detail::LazyKernelModule<OwnedFakeModule>>> owners(kUSERS);
+    std::vector<std::thread> threads;
+    for (int32_t i = 0; i < kUSERS; ++i)
+    {
+        threads.emplace_back([&, i] { owners[i] = acquire(); });
+    }
+    for (auto& thread : threads)
+    {
+        thread.join();
+    }
+    for (auto const& owner : owners)
+    {
+        ASSERT_TRUE(owner);
+        EXPECT_EQ(owner.get(), owners.front().get());
+    }
+    EXPECT_EQ(sSharedLoadCalls, 1);
+    owners.resize(1);
+    EXPECT_EQ(readResource(*owners.front()), 1);
+    EXPECT_EQ(sSharedUnloadCalls, 0);
+    owners.clear();
+    EXPECT_TRUE(sResources.at(0).expired());
+    EXPECT_EQ(sSharedUnloadCalls, 1);
+}
+
+TEST_F(CuteDslSharedModuleTest, ConcurrentReleaseAndReacquirePreservesResources)
+{
+    // Given users repeatedly joining and leaving, when the last release races a new acquire,
+    // then every acquired resource is usable and each generation is unloaded before the next load.
+    constexpr int32_t kUSERS = 8;
+    constexpr int32_t kITERATIONS = 64;
+    std::atomic<int32_t> successes{};
+    std::vector<std::thread> threads;
+    for (int32_t i = 0; i < kUSERS; ++i)
+    {
+        threads.emplace_back([&] {
+            for (int32_t iteration = 0; iteration < kITERATIONS; ++iteration)
+            {
+                auto owner = acquire();
+                if (owner && readResource(*owner) > 0)
+                {
+                    ++successes;
+                }
+                std::this_thread::yield();
+            }
+        });
+    }
+    for (auto& thread : threads)
+    {
+        thread.join();
+    }
+    EXPECT_EQ(successes, kUSERS * kITERATIONS);
+    EXPECT_FALSE(sOverlappingGenerations);
+    EXPECT_EQ(sSharedUnloadCalls, sSharedLoadCalls);
+    for (auto const& resource : sResources)
+    {
+        EXPECT_TRUE(resource.expired());
+    }
+}
+
+TEST_F(CuteDslSharedModuleTest, FailedLoadCleansResourceAndCanRetry)
+{
+    // Given a load that fails after allocating a resource, when acquisition is retried,
+    // then failure exposes no handle, its allocation is freed, and the retry produces a usable module.
+    auto acquireFailing = [&] {
+        return detail::acquireKernelModule<ownedLoader<1>, ownedUnloader<>, OwnedFakeModule>("retry_owned", mStream);
+    };
+    EXPECT_FALSE(acquireFailing());
+    EXPECT_TRUE(sResources.at(0).expired());
+    auto retried = acquireFailing();
+    ASSERT_TRUE(retried);
+    EXPECT_EQ(readResource(*retried), 2);
+    retried.reset();
+    EXPECT_TRUE(sResources.at(1).expired());
+    EXPECT_EQ(sSharedUnloadCalls, 2);
+}
+
+TEST_F(CuteDslSharedModuleTest, FailedCleanupRejectsFurtherAcquisition)
+{
+    // Given a failed load whose cleanup also fails, when another user requests the module,
+    // then no unusable handle is exposed and the poisoned module is not loaded again.
+    auto acquirePoisoned = [&] {
+        return detail::acquireKernelModule<ownedLoader<2>, ownedUnloader<true>, OwnedFakeModule>(
+            "poison_owned", mStream);
+    };
+    EXPECT_FALSE(acquirePoisoned());
+    EXPECT_FALSE(acquirePoisoned());
+    EXPECT_EQ(sSharedLoadCalls, 1);
+    EXPECT_EQ(sSharedUnloadCalls, 1);
+}
+
+TEST_F(CuteDslSharedModuleTest, FailedFinalUnloadRejectsFurtherAcquisition)
+{
+    // Given a loaded module whose final unload fails, when a new user requests it,
+    // then the poisoned resource is not reloaded or exposed as a usable handle.
+    auto acquirePoisoned = [&] {
+        return detail::acquireKernelModule<ownedLoader<>, ownedUnloader<true>, OwnedFakeModule>(
+            "poison_unload", mStream);
+    };
+    auto owner = acquirePoisoned();
+    ASSERT_TRUE(owner);
+    owner.reset();
+    EXPECT_FALSE(acquirePoisoned());
+    EXPECT_EQ(sSharedLoadCalls, 1);
+    EXPECT_EQ(sSharedUnloadCalls, 1);
+}
+
 } // namespace
 } // namespace trt_edgellm

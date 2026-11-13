@@ -21,7 +21,7 @@
 #include "common/cudaMacros.h"
 #include "speculativeKernelsUtils.h"
 
-#include <NvInferRuntime.h>
+#include "common/dataType.h"
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -42,41 +42,10 @@ constexpr int32_t kMaskBitsPerWord{32};
 constexpr int32_t kRootParent{-1};
 constexpr int32_t kPaddingParent{-1};
 
-size_t getCandidateTokenWorkspaceBytes(int32_t batchSize, int32_t dflashBlockSize, int32_t candidateTopK)
+//! Bytes of one aligned [batch, depthRows, 1, candidateTopK] candidate list (INT32 and FP32 are both 4 bytes).
+size_t getCandidateListWorkspaceBytes(int32_t batchSize, int32_t depthRows, int32_t candidateTopK)
 {
-    return alignSpeculativeWorkspaceSize(
-        static_cast<size_t>(batchSize) * dflashBlockSize * candidateTopK * sizeof(int32_t));
-}
-
-struct DDTreeBuildWorkspace
-{
-    int32_t* candidateTokenIds{nullptr};
-    float* candidateLogProbs{nullptr};
-
-    void setup(void* workspace, size_t workspaceSize, int32_t batchSize, int32_t dflashBlockSize, int32_t candidateTopK)
-    {
-        ELLM_CHECK(reinterpret_cast<uintptr_t>(workspace) % kSpeculativeWorkspaceAlignment == 0,
-            "DDTree workspace must be 256-byte aligned.");
-
-        size_t offset{0};
-        size_t const candidateTokenBytes = getCandidateTokenWorkspaceBytes(batchSize, dflashBlockSize, candidateTopK);
-        candidateTokenIds = reinterpret_cast<int32_t*>(static_cast<char*>(workspace) + offset);
-        offset += candidateTokenBytes;
-
-        size_t const candidateLogProbBytes = alignSpeculativeWorkspaceSize(
-            static_cast<size_t>(batchSize) * dflashBlockSize * candidateTopK * sizeof(float));
-        candidateLogProbs = reinterpret_cast<float*>(static_cast<char*>(workspace) + offset);
-        offset += candidateLogProbBytes;
-
-        ELLM_CHECK(offset <= workspaceSize,
-            "DDTree build workspace too small. Required: " + std::to_string(offset)
-                + ", provided: " + std::to_string(workspaceSize));
-    }
-};
-
-__device__ __forceinline__ bool isBetterCandidate(float lhsScore, int32_t lhsToken, float rhsScore, int32_t rhsToken)
-{
-    return lhsScore > rhsScore || (lhsScore == rhsScore && lhsToken < rhsToken);
+    return alignSpeculativeWorkspaceSize(static_cast<size_t>(batchSize) * depthRows * candidateTopK * sizeof(int32_t));
 }
 
 __device__ void insertCandidate(float score, int32_t tokenId, float (&topScores)[kDDTreeMaxCandidateTopK],
@@ -124,30 +93,21 @@ __device__ __forceinline__ void mergeLogSumExp(float& m, float& s, float om, flo
     }
 }
 
-// One CTA per (batch, proposal-depth): top-K token candidates + logsumexp over
-// the draft vocab. Optimized single pass: fused online logsumexp (was two full
-// vocab sweeps), float4 loads, guarded top-K insertion, warp-shuffle logsumexp
-// reduction and a parallel tree merge of per-thread top-K lists (was serial
-// tid==0 scans over all 256 threads).
+// One CTA per (batch, proposal row): top-K token candidates + logsumexp over the
+// draft vocab in a single pass (online logsumexp, float4 loads, guarded top-K
+// insertion, warp-shuffle reduction, parallel tree merge of per-thread lists).
 __global__ void selectDDTreeCandidatesKernel(float const* __restrict__ draftLogits,
-    int32_t* __restrict__ candidateTokenIds, float* __restrict__ candidateLogProbs, int32_t dflashBlockSize,
-    int32_t vocabSize, int32_t candidateTopK, int32_t firstCandidateLogitsRow)
+    int32_t const* __restrict__ draftVocabMappingTable, int32_t* __restrict__ candidateTokenIds,
+    float* __restrict__ candidateLogProbs, int32_t draftBlockSize, int32_t vocabSize, int32_t candidateTopK,
+    int32_t firstCandidateLogitsRow)
 {
-    int32_t const batchIdx = blockIdx.x / dflashBlockSize;
-    int32_t const depthIdx = blockIdx.x % dflashBlockSize;
+    int32_t const depthRows = draftBlockSize - 1;
+    int32_t const batchIdx = blockIdx.x / depthRows;
+    int32_t const rowIdx = blockIdx.x % depthRows;
+    int32_t const depthIdx = firstCandidateLogitsRow + rowIdx;
     int32_t const tid = threadIdx.x;
 
-    int32_t const candidateOffset = (batchIdx * dflashBlockSize + depthIdx) * candidateTopK;
-    int32_t const firstUnusedDepth = firstCandidateLogitsRow + dflashBlockSize - 1;
-    if (depthIdx < firstCandidateLogitsRow || depthIdx >= firstUnusedDepth)
-    {
-        for (int32_t slot = tid; slot < candidateTopK; slot += blockDim.x)
-        {
-            candidateTokenIds[candidateOffset + slot] = 0;
-            candidateLogProbs[candidateOffset + slot] = -INFINITY;
-        }
-        return;
-    }
+    int32_t const candidateOffset = (batchIdx * depthRows + rowIdx) * candidateTopK;
 
     __shared__ float sTopScores[kCandidateBlockSize * kDDTreeMaxCandidateTopK];
     __shared__ int32_t sTopTokenIds[kCandidateBlockSize * kDDTreeMaxCandidateTopK];
@@ -164,7 +124,7 @@ __global__ void selectDDTreeCandidatesKernel(float const* __restrict__ draftLogi
     }
 
     int64_t const logitsOffset
-        = static_cast<int64_t>(batchIdx) * dflashBlockSize * vocabSize + static_cast<int64_t>(depthIdx) * vocabSize;
+        = static_cast<int64_t>(batchIdx) * draftBlockSize * vocabSize + static_cast<int64_t>(depthIdx) * vocabSize;
     float const* logits = draftLogits + logitsOffset;
 
     // ---- Single fused pass: online logsumexp + guarded top-K, float4 loads --
@@ -276,7 +236,9 @@ __global__ void selectDDTreeCandidatesKernel(float const* __restrict__ draftLogi
     {
         for (int32_t slot = 0; slot < candidateTopK; ++slot)
         {
-            candidateTokenIds[candidateOffset + slot] = sTopTokenIds[slot];
+            int32_t const tokenId = sTopTokenIds[slot];
+            candidateTokenIds[candidateOffset + slot]
+                = draftVocabMappingTable == nullptr ? tokenId : draftVocabMappingTable[tokenId];
             // A fully masked row (all logits -inf) yields score == lse == -inf;
             // keep the slot at -inf instead of the NaN that (-inf) - (-inf)
             // would produce (NaN would poison downstream score comparisons).
@@ -309,24 +271,33 @@ __device__ __forceinline__ bool isBetterTreeExpansion(float lhsScore, int32_t lh
     return lhsToken < rhsToken;
 }
 
-__global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int32_t const* __restrict__ baseLengths,
+__device__ __forceinline__ int32_t candidateListOffset(
+    int32_t batchIdx, int32_t row, int32_t state, int32_t depthRows, int32_t stateCount, int32_t candidateTopK)
+{
+    return ((batchIdx * depthRows + row) * stateCount + state) * candidateTopK;
+}
+
+// One CTA per batch. Dynamic shared memory holds nextCandidateSlot[verifyTokenCount] then
+// nodeState[verifyTokenCount].
+__global__ void assembleDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int32_t const* __restrict__ baseLengths,
     int32_t const* __restrict__ candidateTokenIds, float const* __restrict__ candidateLogProbs,
-    float const* __restrict__ depthConfidence, float confSurvivalFloorLog,
-    int32_t const* __restrict__ draftVocabMappingTable, int32_t* __restrict__ nodeTokenIds,
-    int32_t* __restrict__ nodeDepths, int32_t* __restrict__ parentIds, float* __restrict__ nodeScores,
-    int32_t* __restrict__ validCounts, int32_t* __restrict__ verifyTokenIds, int32_t* __restrict__ verifyPositionIds,
-    int32_t* __restrict__ packedAncestorMask, int8_t* __restrict__ ancestorMask, int32_t* __restrict__ contextLengths,
-    int64_t* __restrict__ selectTokenIndices, int32_t dflashBlockSize, int32_t verifySize, int32_t candidateTopK,
-    int32_t firstCandidateLogitsRow)
+    int32_t const* __restrict__ candidateChildStates, float const* __restrict__ depthConfidence,
+    float confSurvivalFloorLog, int32_t* __restrict__ nodeTokenIds, int32_t* __restrict__ nodeDepths,
+    int32_t* __restrict__ parentIds, float* __restrict__ nodeScores, int32_t* __restrict__ validCounts,
+    int32_t* __restrict__ verifyTokenIds, int32_t* __restrict__ verifyPositionIds,
+    int32_t* __restrict__ packedAncestorMask, int32_t* __restrict__ contextLengths,
+    int64_t* __restrict__ selectTokenIndices, int32_t depthRows, int32_t stateCount, int32_t verifyTokenCount,
+    int32_t candidateTopK)
 {
     int32_t const batchIdx = blockIdx.x;
     int32_t const tid = threadIdx.x;
-    int32_t const packedMaskLen = (verifySize + kMaskBitsPerWord - 1) / kMaskBitsPerWord;
-    int32_t const treeOffset = batchIdx * verifySize;
-    int32_t const packedMaskOffset = batchIdx * verifySize * packedMaskLen;
-    int32_t const ancestorMaskOffset = batchIdx * verifySize * verifySize;
+    int32_t const packedMaskLen = (verifyTokenCount + kMaskBitsPerWord - 1) / kMaskBitsPerWord;
+    int32_t const treeOffset = batchIdx * verifyTokenCount;
+    int32_t const packedMaskOffset = batchIdx * verifyTokenCount * packedMaskLen;
 
-    extern __shared__ int32_t nextCandidateSlot[];
+    extern __shared__ int32_t sDynamic[];
+    int32_t* nextCandidateSlot = sDynamic;
+    int32_t* nodeState = sDynamic + verifyTokenCount;
     __shared__ int32_t sValidCount;
     __shared__ int32_t sStopBuild;
     __shared__ float sBestScores[kBuildBlockSize];
@@ -335,14 +306,14 @@ __global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int3
     __shared__ int32_t sBestTokens[kBuildBlockSize];
 
     // Per-depth confidence means the threshold reduces to a per-batch max growth depth.
-    int32_t confMaxDepth = dflashBlockSize - 1;
+    int32_t confMaxDepth = depthRows;
     if (depthConfidence != nullptr && confSurvivalFloorLog > -INFINITY)
     {
         float survivalLog = 0.0F;
         confMaxDepth = 0;
-        for (int32_t depth = 1; depth < dflashBlockSize; ++depth)
+        for (int32_t depth = 1; depth <= depthRows; ++depth)
         {
-            survivalLog += logf(fmaxf(depthConfidence[batchIdx * (dflashBlockSize - 1) + depth - 1], 1e-20F));
+            survivalLog += logf(fmaxf(depthConfidence[batchIdx * depthRows + depth - 1], 1e-20F));
             if (survivalLog < confSurvivalFloorLog)
             {
                 break;
@@ -353,7 +324,7 @@ __global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int3
         confMaxDepth = max(confMaxDepth, 1);
     }
 
-    for (int32_t nodeIdx = tid; nodeIdx < verifySize; nodeIdx += blockDim.x)
+    for (int32_t nodeIdx = tid; nodeIdx < verifyTokenCount; nodeIdx += blockDim.x)
     {
         nodeTokenIds[treeOffset + nodeIdx] = 0;
         nodeDepths[treeOffset + nodeIdx] = 0;
@@ -363,14 +334,11 @@ __global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int3
         verifyPositionIds[treeOffset + nodeIdx] = 0;
         selectTokenIndices[treeOffset + nodeIdx] = treeOffset + nodeIdx;
         nextCandidateSlot[nodeIdx] = 0;
+        nodeState[nodeIdx] = 0;
     }
-    for (int32_t maskIdx = tid; maskIdx < verifySize * packedMaskLen; maskIdx += blockDim.x)
+    for (int32_t maskIdx = tid; maskIdx < verifyTokenCount * packedMaskLen; maskIdx += blockDim.x)
     {
         packedAncestorMask[packedMaskOffset + maskIdx] = 0;
-    }
-    for (int32_t maskIdx = tid; maskIdx < verifySize * verifySize; maskIdx += blockDim.x)
-    {
-        ancestorMask[ancestorMaskOffset + maskIdx] = 0;
     }
 
     if (tid == 0)
@@ -384,8 +352,8 @@ __global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int3
     }
     __syncthreads();
 
-    int32_t const maxProposalDepth = min(dflashBlockSize - 1, confMaxDepth);
-    for (int32_t outNodeIdx = 1; outNodeIdx < verifySize; ++outNodeIdx)
+    int32_t const maxProposalDepth = min(depthRows, confMaxDepth);
+    for (int32_t outNodeIdx = 1; outNodeIdx < verifyTokenCount; ++outNodeIdx)
     {
         if (sStopBuild != 0)
         {
@@ -406,15 +374,15 @@ __global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int3
                 continue;
             }
 
-            int32_t const childDepth = parentDepth + 1;
             int32_t const slot = nextCandidateSlot[parentIdx];
             if (slot >= candidateTopK)
             {
                 continue;
             }
 
-            int32_t const candidateDepthIdx = firstCandidateLogitsRow + parentDepth;
-            int32_t const candidateOffset = (batchIdx * dflashBlockSize + candidateDepthIdx) * candidateTopK + slot;
+            int32_t const candidateOffset
+                = candidateListOffset(batchIdx, parentDepth, nodeState[parentIdx], depthRows, stateCount, candidateTopK)
+                + slot;
             float const candidateScore = candidateLogProbs[candidateOffset];
             if (!isFiniteScore(candidateScore))
             {
@@ -426,7 +394,7 @@ __global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int3
             // log(conf) accumulates along the path via the parent score.
             if (depthConfidence != nullptr)
             {
-                float const conf = depthConfidence[batchIdx * (dflashBlockSize - 1) + childDepth - 1];
+                float const conf = depthConfidence[batchIdx * depthRows + parentDepth];
                 prefixScore += logf(fmaxf(conf, 1e-20F));
             }
             if (bestParent < 0
@@ -476,14 +444,16 @@ __global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int3
             else
             {
                 bestSlot = sBestSlots[0];
-                bestToken = sBestTokens[0];
-                bestScore = sBestScores[0];
+                int32_t const parentDepth = nodeDepths[treeOffset + bestParent];
+                int32_t const candidateOffset = candidateListOffset(batchIdx, parentDepth, nodeState[bestParent],
+                                                    depthRows, stateCount, candidateTopK)
+                    + bestSlot;
                 nextCandidateSlot[bestParent] += 1;
-                nodeTokenIds[treeOffset + outNodeIdx]
-                    = draftVocabMappingTable == nullptr ? bestToken : draftVocabMappingTable[bestToken];
-                nodeDepths[treeOffset + outNodeIdx] = nodeDepths[treeOffset + bestParent] + 1;
+                nodeState[outNodeIdx] = candidateChildStates == nullptr ? 0 : candidateChildStates[candidateOffset];
+                nodeTokenIds[treeOffset + outNodeIdx] = sBestTokens[0];
+                nodeDepths[treeOffset + outNodeIdx] = parentDepth + 1;
                 parentIds[treeOffset + outNodeIdx] = bestParent;
-                nodeScores[treeOffset + outNodeIdx] = bestScore;
+                nodeScores[treeOffset + outNodeIdx] = sBestScores[0];
                 sValidCount += 1;
             }
         }
@@ -495,7 +465,7 @@ __global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int3
     if (tid == 0)
     {
         validCounts[batchIdx] = validCount;
-        contextLengths[batchIdx] = baseLength + verifySize;
+        contextLengths[batchIdx] = baseLength + verifyTokenCount;
     }
 
     for (int32_t nodeIdx = tid; nodeIdx < validCount; nodeIdx += blockDim.x)
@@ -510,43 +480,103 @@ __global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int3
             int32_t const bitIdx = ancestorIdx % kMaskBitsPerWord;
             packedAncestorMask[packedMaskOffset + nodeIdx * packedMaskLen + wordIdx]
                 |= static_cast<int32_t>(1U << bitIdx);
-            ancestorMask[ancestorMaskOffset + nodeIdx * verifySize + ancestorIdx] = 1;
             ancestorIdx = parentIds[treeOffset + ancestorIdx];
         }
     }
 }
 
 void validateGpuTensor(
-    rt::Tensor const& tensor, char const* tensorName, nvinfer1::DataType dataType, char const* dataTypeName)
+    rt::Tensor const& tensor, char const* tensorName, trt_edgellm::DataType dataType, char const* dataTypeName)
 {
     check::check(tensor.getDeviceType() == rt::DeviceType::kGPU, std::string(tensorName) + " must be on GPU.");
     check::check(tensor.getDataType() == dataType, std::string(tensorName) + " must be " + dataTypeName + ".");
 }
 
+//! Batch, block, and vocab extents of a token-major or rectangular draft-logits tensor.
+struct DraftLogitsExtent
+{
+    int32_t batchSize;
+    int32_t draftBlockSize;
+    int32_t vocabSize;
+};
+
+DraftLogitsExtent draftLogitsExtent(rt::Tensor const& draftLogits, int32_t batchSize)
+{
+    auto const logitsShape = draftLogits.getShape();
+    if (logitsShape.getNumDims() == 2)
+    {
+        check::check(logitsShape[0] % batchSize == 0,
+            "Token-major draftLogits row count must be divisible by the active batch size.");
+        return {batchSize, static_cast<int32_t>(logitsShape[0] / batchSize), static_cast<int32_t>(logitsShape[1])};
+    }
+    check::check(logitsShape.getNumDims() == 3 && logitsShape[0] == batchSize,
+        "draftLogits must be token-major [batch * draftBlockSize, vocabSize] or an internal "
+        "[batch, draftBlockSize, vocabSize] view.");
+    return {batchSize, static_cast<int32_t>(logitsShape[1]), static_cast<int32_t>(logitsShape[2])};
+}
+
 } // anonymous namespace
 
 size_t getDDTreeBuildWorkspaceSize(
-    int32_t batchSize, int32_t dflashBlockSize, int32_t verifySize, int32_t vocabSize, int32_t candidateTopK)
+    int32_t batchSize, int32_t draftBlockSize, int32_t verifyTokenCount, int32_t vocabSize, int32_t candidateTopK)
 {
-    if (batchSize <= 0 || dflashBlockSize <= 0 || verifySize <= 0 || vocabSize <= 0 || candidateTopK <= 0
+    if (batchSize <= 0 || draftBlockSize <= 1 || verifyTokenCount <= 0 || vocabSize <= 0 || candidateTopK <= 0
         || candidateTopK > kDDTreeMaxCandidateTopK || candidateTopK > vocabSize)
     {
         return 0;
     }
-
-    size_t const candidateTokenBytes = getCandidateTokenWorkspaceBytes(batchSize, dflashBlockSize, candidateTopK);
-    size_t const candidateLogProbBytes = alignSpeculativeWorkspaceSize(
-        static_cast<size_t>(batchSize) * dflashBlockSize * candidateTopK * sizeof(float));
-    return candidateTokenBytes + candidateLogProbBytes;
+    return 2 * getCandidateListWorkspaceBytes(batchSize, draftBlockSize - 1, candidateTopK);
 }
 
-void ddtreeBuild(DDTreeBuildParams const& params)
+void ddtreeSelectLogitCandidates(DDTreeLogitCandidateParams const& params)
 {
-    rt::Tensor const& draftLogits = params.inputs.draftLogits;
-    rt::Tensor const& rootTokenIds = params.inputs.rootTokenIds;
-    rt::Tensor const& baseLengths = params.inputs.baseLengths;
-    rt::Tensor const* draftVocabMappingTable = params.inputs.draftVocabMappingTable;
-    rt::Tensor const* depthConfidence = params.inputs.depthConfidence;
+    rt::Tensor const& draftLogits = params.draftLogits;
+    rt::Tensor& tokenIds = params.tokenIds;
+    rt::Tensor& logProbs = params.logProbs;
+    validateGpuTensor(draftLogits, "draftLogits", trt_edgellm::DataType::kFLOAT, "FLOAT");
+    validateGpuTensor(tokenIds, "candidate tokenIds", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(logProbs, "candidate logProbs", trt_edgellm::DataType::kFLOAT, "FLOAT");
+    auto const tableShape = tokenIds.getShape();
+    check::check(tableShape.getNumDims() == 4 && tableShape[0] > 0 && tableShape[2] == 1,
+        "Logit candidate table must be [batch, draftBlockSize - 1, 1, candidateTopK].");
+    check::check(logProbs.getShape() == tableShape, "Candidate logProbs must match the tokenIds shape.");
+    int32_t const batchSize = static_cast<int32_t>(tableShape[0]);
+    int32_t const candidateTopK = static_cast<int32_t>(tableShape[3]);
+    DraftLogitsExtent const extent = draftLogitsExtent(draftLogits, batchSize);
+    check::check(extent.draftBlockSize > 1 && extent.vocabSize > 0, "Invalid DDTree logits shape.");
+    check::check(tableShape[1] == extent.draftBlockSize - 1,
+        "Logit candidate table rows must equal draftBlockSize - 1 proposal depths.");
+    check::check(params.firstCandidateLogitsRow == 0 || params.firstCandidateLogitsRow == 1,
+        "DDTree firstCandidateLogitsRow must be 0 or 1.");
+    check::check(candidateTopK > 0 && candidateTopK <= kDDTreeMaxCandidateTopK,
+        "DDTree candidateTopK must be in [1, " + std::to_string(kDDTreeMaxCandidateTopK) + "].");
+    check::check(candidateTopK <= extent.vocabSize, "DDTree candidateTopK must not exceed vocabSize.");
+
+    int32_t const* draftVocabMappingTablePtr{nullptr};
+    if (params.draftVocabMappingTable != nullptr)
+    {
+        rt::Tensor const& map = *params.draftVocabMappingTable;
+        validateGpuTensor(map, "draftVocabMappingTable", trt_edgellm::DataType::kINT32, "INT32");
+        check::check(map.getShape().getNumDims() == 1, "draftVocabMappingTable must be 1D.");
+        check::check(map.getShape()[0] == extent.vocabSize,
+            "draftVocabMappingTable length must match draft logits vocabulary size.");
+        draftVocabMappingTablePtr = map.dataPointer<int32_t>();
+    }
+
+    dim3 const candidateGrid(batchSize * (extent.draftBlockSize - 1));
+    selectDDTreeCandidatesKernel<<<candidateGrid, kCandidateBlockSize, 0, params.stream>>>(
+        draftLogits.dataPointer<float>(), draftVocabMappingTablePtr, tokenIds.dataPointer<int32_t>(),
+        logProbs.dataPointer<float>(), extent.draftBlockSize, extent.vocabSize, candidateTopK,
+        params.firstCandidateLogitsRow);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void ddtreeAssemble(DDTreeAssembleParams const& params)
+{
+    DDTreeCandidateTable const& table = params.candidates;
+    rt::Tensor const& rootTokenIds = params.rootTokenIds;
+    rt::Tensor const& baseLengths = params.baseLengths;
+    rt::Tensor const* depthConfidence = params.depthConfidence;
     rt::Tensor& nodeTokenIds = params.outputs.nodeTokenIds;
     rt::Tensor& nodeDepths = params.outputs.nodeDepths;
     rt::Tensor& parentIds = params.outputs.parentIds;
@@ -555,137 +585,120 @@ void ddtreeBuild(DDTreeBuildParams const& params)
     rt::Tensor& verifyTokenIds = params.outputs.verifyTokenIds;
     rt::Tensor& verifyPositionIds = params.outputs.verifyPositionIds;
     rt::Tensor& packedAncestorMask = params.outputs.packedAncestorMask;
-    rt::Tensor& ancestorMask = params.outputs.ancestorMask;
     rt::Tensor& contextLengths = params.outputs.contextLengths;
     rt::Tensor& selectTokenIndices = params.outputs.selectTokenIndices;
-    int32_t const candidateTopK = params.candidateTopK;
 
-    validateGpuTensor(draftLogits, "draftLogits", nvinfer1::DataType::kFLOAT, "FLOAT");
-    validateGpuTensor(rootTokenIds, "rootTokenIds", nvinfer1::DataType::kINT32, "INT32");
-    validateGpuTensor(baseLengths, "baseLengths", nvinfer1::DataType::kINT32, "INT32");
-    validateGpuTensor(nodeTokenIds, "nodeTokenIds", nvinfer1::DataType::kINT32, "INT32");
-    validateGpuTensor(nodeDepths, "nodeDepths", nvinfer1::DataType::kINT32, "INT32");
-    validateGpuTensor(parentIds, "parentIds", nvinfer1::DataType::kINT32, "INT32");
-    validateGpuTensor(nodeScores, "nodeScores", nvinfer1::DataType::kFLOAT, "FLOAT");
-    validateGpuTensor(validCounts, "validCounts", nvinfer1::DataType::kINT32, "INT32");
-    validateGpuTensor(verifyTokenIds, "verifyTokenIds", nvinfer1::DataType::kINT32, "INT32");
-    validateGpuTensor(verifyPositionIds, "verifyPositionIds", nvinfer1::DataType::kINT32, "INT32");
-    validateGpuTensor(packedAncestorMask, "packedAncestorMask", nvinfer1::DataType::kINT32, "INT32");
-    validateGpuTensor(ancestorMask, "ancestorMask", nvinfer1::DataType::kINT8, "INT8");
-    validateGpuTensor(contextLengths, "contextLengths", nvinfer1::DataType::kINT32, "INT32");
-    validateGpuTensor(selectTokenIndices, "selectTokenIndices", nvinfer1::DataType::kINT64, "INT64");
+    validateGpuTensor(table.tokenIds, "candidate tokenIds", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(table.logProbs, "candidate logProbs", trt_edgellm::DataType::kFLOAT, "FLOAT");
+    validateGpuTensor(rootTokenIds, "rootTokenIds", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(baseLengths, "baseLengths", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(nodeTokenIds, "nodeTokenIds", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(nodeDepths, "nodeDepths", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(parentIds, "parentIds", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(nodeScores, "nodeScores", trt_edgellm::DataType::kFLOAT, "FLOAT");
+    validateGpuTensor(validCounts, "validCounts", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(verifyTokenIds, "verifyTokenIds", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(verifyPositionIds, "verifyPositionIds", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(packedAncestorMask, "packedAncestorMask", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(contextLengths, "contextLengths", trt_edgellm::DataType::kINT32, "INT32");
+    validateGpuTensor(selectTokenIndices, "selectTokenIndices", trt_edgellm::DataType::kINT64, "INT64");
 
-    auto const logitsShape = draftLogits.getShape();
+    auto const tableShape = table.tokenIds.getShape();
     auto const nodeShape = nodeTokenIds.getShape();
-    auto const ancestorMaskShape = ancestorMask.getShape();
-    auto const contextLengthsShape = contextLengths.getShape();
-    auto const selectTokenIndicesShape = selectTokenIndices.getShape();
     auto const rootTokenShape = rootTokenIds.getShape();
     check::check(rootTokenShape.getNumDims() == 1 && rootTokenShape[0] > 0, "rootTokenIds must be [batch].");
-    check::check(nodeShape.getNumDims() == 2, "nodeTokenIds must be [batch, verifySize].");
-
     int32_t const batchSize = static_cast<int32_t>(rootTokenShape[0]);
-    int32_t dflashBlockSize{0};
-    int32_t vocabSize{0};
-    if (logitsShape.getNumDims() == 2)
+    check::check(tableShape.getNumDims() == 4 && tableShape[0] == batchSize && tableShape[1] > 0 && tableShape[2] > 0
+            && tableShape[3] > 0,
+        "DDTree candidate table must be [batch, depthRows, stateCount, candidateTopK].");
+    check::check(table.logProbs.getShape() == tableShape, "Candidate logProbs must match the tokenIds shape.");
+    int32_t const depthRows = static_cast<int32_t>(tableShape[1]);
+    int32_t const stateCount = static_cast<int32_t>(tableShape[2]);
+    int32_t const candidateTopK = static_cast<int32_t>(tableShape[3]);
+    int32_t const* childStatesPtr{nullptr};
+    if (table.childStates != nullptr)
     {
-        check::check(logitsShape[0] % batchSize == 0,
-            "Token-major draftLogits row count must be divisible by the active batch size.");
-        dflashBlockSize = static_cast<int32_t>(logitsShape[0] / batchSize);
-        vocabSize = static_cast<int32_t>(logitsShape[1]);
-    }
-    else
-    {
-        check::check(logitsShape.getNumDims() == 3 && logitsShape[0] == batchSize,
-            "draftLogits must be token-major [batch * dflashBlockSize, vocabSize] or an internal "
-            "[batch, dflashBlockSize, vocabSize] view.");
-        dflashBlockSize = static_cast<int32_t>(logitsShape[1]);
-        vocabSize = static_cast<int32_t>(logitsShape[2]);
-    }
-    int32_t const verifySize = static_cast<int32_t>(nodeShape[1]);
-    int32_t const packedMaskLen = (verifySize + kMaskBitsPerWord - 1) / kMaskBitsPerWord;
-    int32_t const firstCandidateLogitsRow = params.firstCandidateLogitsRow;
-
-    int32_t const* draftVocabMappingTablePtr{nullptr};
-    if (draftVocabMappingTable != nullptr)
-    {
-        validateGpuTensor(*draftVocabMappingTable, "draftVocabMappingTable", nvinfer1::DataType::kINT32, "INT32");
-        check::check(draftVocabMappingTable->getShape().getNumDims() == 1, "draftVocabMappingTable must be 1D.");
-        check::check(draftVocabMappingTable->getShape()[0] == vocabSize,
-            "draftVocabMappingTable length must match draft logits vocabulary size.");
-        draftVocabMappingTablePtr = draftVocabMappingTable->dataPointer<int32_t>();
+        validateGpuTensor(*table.childStates, "candidate childStates", trt_edgellm::DataType::kINT32, "INT32");
+        check::check(table.childStates->getShape() == tableShape, "Candidate childStates must match the table.");
+        childStatesPtr = table.childStates->dataPointer<int32_t>();
     }
 
-    float const* depthConfidencePtr{nullptr};
-    if (depthConfidence != nullptr)
-    {
-        validateGpuTensor(*depthConfidence, "depthConfidence", nvinfer1::DataType::kFLOAT, "FLOAT");
-        check::check(depthConfidence->getShape().getNumDims() == 2 && depthConfidence->getShape()[0] == batchSize
-                && depthConfidence->getShape()[1] == dflashBlockSize - 1,
-            "depthConfidence must be [batch, dflashBlockSize - 1].");
-        depthConfidencePtr = depthConfidence->dataPointer<float>();
-        check::check(
-            params.inputs.confidenceSurvivalThreshold >= 0.0F && params.inputs.confidenceSurvivalThreshold < 1.0F,
-            "confidenceSurvivalThreshold must be in [0, 1).");
-    }
-
-    check::check(batchSize > 0 && dflashBlockSize > 1 && vocabSize > 0, "Invalid DDTree logits shape.");
     check::check(
-        firstCandidateLogitsRow == 0 || firstCandidateLogitsRow == 1, "DDTree firstCandidateLogitsRow must be 0 or 1.");
-    check::check(verifySize > 0 && verifySize <= kDDTreeMaxVerifySize,
-        "DDTree supports verifySize <= " + std::to_string(kDDTreeMaxVerifySize) + ".");
-    check::check(candidateTopK > 0 && candidateTopK <= kDDTreeMaxCandidateTopK,
-        "DDTree candidateTopK must be in [1, " + std::to_string(kDDTreeMaxCandidateTopK) + "].");
-    check::check(candidateTopK <= vocabSize, "DDTree candidateTopK must not exceed vocabSize.");
+        nodeShape.getNumDims() == 2 && nodeShape[0] == batchSize, "nodeTokenIds must be [batch, verifyTokenCount].");
+    int32_t const verifyTokenCount = static_cast<int32_t>(nodeShape[1]);
+    int32_t const packedMaskLen = (verifyTokenCount + kMaskBitsPerWord - 1) / kMaskBitsPerWord;
+    check::check(verifyTokenCount > 0 && verifyTokenCount <= kDDTreeMaxVerifySize,
+        "DDTree supports verifyTokenCount <= " + std::to_string(kDDTreeMaxVerifySize) + ".");
     check::check(baseLengths.getShape().getNumDims() == 1 && baseLengths.getShape()[0] == batchSize,
         "baseLengths must be [batch].");
     check::check(nodeDepths.getShape() == nodeShape && parentIds.getShape() == nodeShape
             && nodeScores.getShape() == nodeShape && verifyTokenIds.getShape() == nodeShape
             && verifyPositionIds.getShape() == nodeShape,
-        "DDTree node and verify tensors must share [batch, verifySize].");
+        "DDTree node and verify tensors must share [batch, verifyTokenCount].");
     check::check(validCounts.getShape().getNumDims() == 1 && validCounts.getShape()[0] == batchSize,
         "validCounts must be [batch].");
     check::check(packedAncestorMask.getShape().getNumDims() == 3 && packedAncestorMask.getShape()[0] == batchSize
-            && packedAncestorMask.getShape()[1] == verifySize && packedAncestorMask.getShape()[2] == packedMaskLen,
-        "packedAncestorMask must be [batch, verifySize, ceil(verifySize / 32)].");
-    check::check(ancestorMaskShape.getNumDims() == 3 && ancestorMaskShape[0] == batchSize
-            && ancestorMaskShape[1] == verifySize && ancestorMaskShape[2] == verifySize,
-        "ancestorMask must be [batch, verifySize, verifySize].");
-    check::check(contextLengthsShape.getNumDims() == 1 && contextLengthsShape[0] == batchSize,
+            && packedAncestorMask.getShape()[1] == verifyTokenCount
+            && packedAncestorMask.getShape()[2] == packedMaskLen,
+        "packedAncestorMask must be [batch, verifyTokenCount, ceil(verifyTokenCount / 32)].");
+    check::check(contextLengths.getShape().getNumDims() == 1 && contextLengths.getShape()[0] == batchSize,
         "contextLengths must be [batch].");
-    check::check(selectTokenIndicesShape.getNumDims() == 2 && selectTokenIndicesShape[0] == batchSize
-            && selectTokenIndicesShape[1] == verifySize,
-        "selectTokenIndices must be [batch, verifySize].");
+    check::check(selectTokenIndices.getShape().getNumDims() == 2 && selectTokenIndices.getShape()[0] == batchSize
+            && selectTokenIndices.getShape()[1] == verifyTokenCount,
+        "selectTokenIndices must be [batch, verifyTokenCount].");
 
-    size_t const requiredWorkspaceSize
-        = getDDTreeBuildWorkspaceSize(batchSize, dflashBlockSize, verifySize, vocabSize, candidateTopK);
-    ELLM_CHECK(params.workspaceSize >= requiredWorkspaceSize,
-        "DDTree build workspace too small. Required: " + std::to_string(requiredWorkspaceSize)
-            + ", provided: " + std::to_string(params.workspaceSize));
+    float const* depthConfidencePtr{nullptr};
+    if (depthConfidence != nullptr)
+    {
+        validateGpuTensor(*depthConfidence, "depthConfidence", trt_edgellm::DataType::kFLOAT, "FLOAT");
+        check::check(depthConfidence->getShape().getNumDims() == 2 && depthConfidence->getShape()[0] == batchSize
+                && depthConfidence->getShape()[1] == depthRows,
+            "depthConfidence must be [batch, depthRows].");
+        depthConfidencePtr = depthConfidence->dataPointer<float>();
+        check::check(params.confidenceSurvivalThreshold >= 0.0F && params.confidenceSurvivalThreshold < 1.0F,
+            "confidenceSurvivalThreshold must be in [0, 1).");
+    }
 
-    DDTreeBuildWorkspace buildWorkspace;
-    buildWorkspace.setup(params.workspace, params.workspaceSize, batchSize, dflashBlockSize, candidateTopK);
-
-    dim3 const candidateGrid(batchSize * dflashBlockSize);
-    dim3 const candidateBlock(kCandidateBlockSize);
-    selectDDTreeCandidatesKernel<<<candidateGrid, candidateBlock, 0, params.stream>>>(draftLogits.dataPointer<float>(),
-        buildWorkspace.candidateTokenIds, buildWorkspace.candidateLogProbs, dflashBlockSize, vocabSize, candidateTopK,
-        firstCandidateLogitsRow);
-    CUDA_CHECK(cudaGetLastError());
-
-    float const confSurvivalFloorLog = params.inputs.confidenceSurvivalThreshold > 0.0F
-        ? logf(params.inputs.confidenceSurvivalThreshold)
-        : -INFINITY;
-    size_t const buildSharedBytes = static_cast<size_t>(verifySize) * sizeof(int32_t);
-    buildDDTreeKernel<<<batchSize, kBuildBlockSize, buildSharedBytes, params.stream>>>(
-        rootTokenIds.dataPointer<int32_t>(), baseLengths.dataPointer<int32_t>(), buildWorkspace.candidateTokenIds,
-        buildWorkspace.candidateLogProbs, depthConfidencePtr, confSurvivalFloorLog, draftVocabMappingTablePtr,
+    float const confSurvivalFloorLog
+        = params.confidenceSurvivalThreshold > 0.0F ? logf(params.confidenceSurvivalThreshold) : -INFINITY;
+    size_t const sharedBytes = 2 * static_cast<size_t>(verifyTokenCount) * sizeof(int32_t);
+    assembleDDTreeKernel<<<batchSize, kBuildBlockSize, sharedBytes, params.stream>>>(
+        rootTokenIds.dataPointer<int32_t>(), baseLengths.dataPointer<int32_t>(), table.tokenIds.dataPointer<int32_t>(),
+        table.logProbs.dataPointer<float>(), childStatesPtr, depthConfidencePtr, confSurvivalFloorLog,
         nodeTokenIds.dataPointer<int32_t>(), nodeDepths.dataPointer<int32_t>(), parentIds.dataPointer<int32_t>(),
         nodeScores.dataPointer<float>(), validCounts.dataPointer<int32_t>(), verifyTokenIds.dataPointer<int32_t>(),
         verifyPositionIds.dataPointer<int32_t>(), packedAncestorMask.dataPointer<int32_t>(),
-        ancestorMask.dataPointer<int8_t>(), contextLengths.dataPointer<int32_t>(),
-        selectTokenIndices.dataPointer<int64_t>(), dflashBlockSize, verifySize, candidateTopK, firstCandidateLogitsRow);
+        contextLengths.dataPointer<int32_t>(), selectTokenIndices.dataPointer<int64_t>(), depthRows, stateCount,
+        verifyTokenCount, candidateTopK);
     CUDA_CHECK(cudaGetLastError());
+}
+
+void ddtreeBuild(DDTreeBuildParams const& params)
+{
+    rt::Tensor const& rootTokenIds = params.inputs.rootTokenIds;
+    check::check(
+        rootTokenIds.getShape().getNumDims() == 1 && rootTokenIds.getShape()[0] > 0, "rootTokenIds must be [batch].");
+    int32_t const batchSize = static_cast<int32_t>(rootTokenIds.getShape()[0]);
+    DraftLogitsExtent const extent = draftLogitsExtent(params.inputs.draftLogits, batchSize);
+    check::check(extent.draftBlockSize > 1 && extent.vocabSize > 0, "Invalid DDTree logits shape.");
+    int32_t const depthRows = extent.draftBlockSize - 1;
+    size_t const listBytes = getCandidateListWorkspaceBytes(batchSize, depthRows, params.candidateTopK);
+    ELLM_CHECK(params.workspaceSize >= 2 * listBytes,
+        "DDTree build workspace too small. Required: " + std::to_string(2 * listBytes)
+            + ", provided: " + std::to_string(params.workspaceSize));
+    ELLM_CHECK(reinterpret_cast<uintptr_t>(params.workspace) % kSpeculativeWorkspaceAlignment == 0,
+        "DDTree workspace must be 256-byte aligned.");
+
+    rt::Coords const tableShape{batchSize, depthRows, 1, params.candidateTopK};
+    char* const workspace = static_cast<char*>(params.workspace);
+    rt::Tensor candidateTokenIds(workspace, tableShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor candidateLogProbs(
+        workspace + listBytes, tableShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+
+    ddtreeSelectLogitCandidates({params.inputs.draftLogits, params.inputs.draftVocabMappingTable,
+        params.firstCandidateLogitsRow, candidateTokenIds, candidateLogProbs, params.stream});
+    ddtreeAssemble({{candidateTokenIds, candidateLogProbs, nullptr}, rootTokenIds, params.inputs.baseLengths,
+        params.inputs.depthConfidence, params.inputs.confidenceSurvivalThreshold, params.outputs, params.stream});
 }
 
 } // namespace kernel

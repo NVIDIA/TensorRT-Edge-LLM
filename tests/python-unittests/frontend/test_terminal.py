@@ -23,7 +23,7 @@ import pytest
 from prompt_toolkit import completion, document
 
 from experimental.frontend import session, terminal
-from experimental.server.runtime import engine
+from tensorrt_edgellm.server.runtime import engine
 
 from . import helpers
 

@@ -1,7 +1,0 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
-tests:
-  - tests/defs/test_common.py::test_build_project
-  - tests/defs/test_server_pipeline.py::test_build_pybind
-  - tests/defs/test_nemo_evaluator.py::test_nemo_eval[NVIDIA-Nemotron-3-Nano-4B-NVFP4]

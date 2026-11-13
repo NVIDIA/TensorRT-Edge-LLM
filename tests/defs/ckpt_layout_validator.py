@@ -33,11 +33,11 @@ import json
 import struct
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from tensorrt_edgellm.checkpoint.component_prefixes import (AUDIO_PREFIXES,
+                                                            VISUAL_PREFIXES)
 from tensorrt_edgellm.config import _VL_LLM_PREFIXES
-from tensorrt_edgellm.quantization.quantization_configs import (
-    _AUDIO_PREFIXES, _VISUAL_PREFIXES)
 
 # ---------------------------------------------------------------------------
 # Safetensors header reader (no torch dependency — just parse the JSON header)
@@ -149,9 +149,9 @@ def _bucket(mod: str) -> str:
     # Visual must come before embed: Phi-4-MM stores its image embedder under
     # ``model.embed_tokens_extend.image_embed.*``; a loose ``embed_tokens in
     # mod`` check would steal those modules into the "embed" bucket.
-    if any(f".{p}." in padded for p in _VISUAL_PREFIXES):
+    if any(f".{p}." in padded for p in VISUAL_PREFIXES):
         return "visual"
-    if any(f".{p}." in padded for p in _AUDIO_PREFIXES):
+    if any(f".{p}." in padded for p in AUDIO_PREFIXES):
         return "audio"
     if ".embed_tokens." in padded:
         return "embed"
@@ -191,6 +191,62 @@ def _normalize(p: Optional[str]) -> str:
     return _PRECISION_ALIAS.get(p.lower(), p.lower())
 
 
+def _group_by_module(tensors: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Split ``module.suffix`` tensor names into ``{module: {suffix: info}}``."""
+    by_mod: Dict[str, Dict[str, Any]] = defaultdict(dict)
+    for full, info in tensors.items():
+        if "." not in full:
+            continue
+        mod, suf = full.rsplit(".", 1)
+        by_mod[mod][suf] = info
+    return by_mod
+
+
+def _bucket_mismatches(
+        classified: Iterable[Tuple[str, Optional[str]]],
+        expected_precisions: Dict[str, Optional[str]]) -> List[str]:
+    """Compare each bucket's dominant module precision with its expectation.
+
+    The dominant kind catches a wholesale unquantized bucket, not a partial
+    miss (a few fp16 modules such as an excluded ``fc`` among many fp8).
+    """
+    actual: Dict[str, Counter] = defaultdict(Counter)
+    examples: Dict[Tuple[str, str], str] = {}
+    for mod, cls in classified:
+        if cls is None:
+            continue
+        b = _bucket(mod)
+        actual[b][cls] += 1
+        # Prefer a ``*_proj`` example; modules such as ``fc`` stay fp16 in
+        # correct exports too.
+        key = (b, cls)
+        if key not in examples or (mod.endswith("_proj")
+                                   and not examples[key].endswith("_proj")):
+            examples[key] = mod
+
+    mismatches: List[str] = []
+    for bucket, precision in expected_precisions.items():
+        expected = _normalize(precision)
+        counts = actual.get(bucket)
+        if not counts:
+            # An "fp16" expectation is satisfied by absence (nothing to check);
+            # any other expectation requires that bucket to actually exist.
+            if expected != "fp16":
+                mismatches.append(
+                    f"{bucket}: expected {expected} but no Linear weights "
+                    f"were found in that bucket")
+            continue
+        got = counts.most_common(1)[0][0]
+        if got != expected:
+            distribution = ", ".join(f"{k}={n}"
+                                     for k, n in counts.most_common())
+            mismatches.append(
+                f"{bucket}: expected {expected} but actually contains "
+                f"{{ {distribution} }} (example module: "
+                f"{examples[(bucket, got)]})")
+    return mismatches
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -203,6 +259,8 @@ def validate_ckpt_layout(
     lm_head_precision: Optional[str] = None,
     visual_precision: Optional[str] = None,
     audio_precision: Optional[str] = None,
+    token_embedding_precision: Optional[str] = None,
+    ple_embedding_precision: Optional[str] = None,
     label: str = "Quantized model",
 ) -> None:
     """Inspect ``ckpt_dir`` and raise ``AssertionError`` on layout mismatch.
@@ -213,6 +271,10 @@ def validate_ckpt_layout(
         lm_head_precision: Expected precision of ``lm_head`` (defaults to fp16).
         visual_precision: Expected precision of the visual tower (default fp16).
         audio_precision: Expected precision of the audio encoder (default fp16).
+        token_embedding_precision: Expected token-embedding precision
+            (default fp16, which also accepts an absent bucket).
+        ple_embedding_precision: ``"fp8"`` requires every ``embed_tokens_per_layer``
+            or n-gram weight tensor to be stored as ``F8_E4M3``.
         label: Prefix for error messages.
     """
     p = Path(ckpt_dir)
@@ -224,57 +286,29 @@ def validate_ckpt_layout(
         raise FileNotFoundError(
             f"{label} has no safetensors files: {ckpt_dir}")
 
-    # Group tensors by module.
-    by_mod: Dict[str, Dict[str, str]] = defaultdict(dict)
-    for full, dt in tensors.items():
-        if "." not in full:
-            continue
-        mod, suf = full.rsplit(".", 1)
-        by_mod[mod][suf] = dt
+    by_mod = _group_by_module(tensors)
+    mismatches = _bucket_mismatches(
+        ((mod, _classify_module(suffixes))
+         for mod, suffixes in by_mod.items()), {
+             "body": body_precision,
+             "lm_head": lm_head_precision,
+             "visual": visual_precision,
+             "audio": audio_precision,
+             "embed": token_embedding_precision,
+         })
 
-    # Classify each module and bucket.
-    actual: Dict[str, Counter] = defaultdict(Counter)
-    examples: Dict[Tuple[str, str], str] = {}
-    for mod, suffixes in by_mod.items():
-        cls = _classify_module(suffixes)
-        if cls is None:
-            continue
-        b = _bucket(mod)
-        actual[b][cls] += 1
-        examples.setdefault((b, cls), mod)
-
-    # Dominant precision per bucket: catches a wholesale unquantized bucket,
-    # not a partial miss (a few fp16 layers among many fp8).
-    def _main_kind(b: str) -> str:
-        c = actual.get(b, Counter())
-        return c.most_common(1)[0][0] if c else "absent"
-
-    expectations = {
-        "body": _normalize(body_precision),
-        "lm_head": _normalize(lm_head_precision),
-        "visual": _normalize(visual_precision),
-        "audio": _normalize(audio_precision),
-    }
-
-    mismatches: List[str] = []
-    for bucket, expected in expectations.items():
-        got = _main_kind(bucket)
-        if got == "absent":
-            # An "fp16" expectation is satisfied by absence (nothing to check);
-            # any other expectation requires that bucket to actually exist.
-            if expected != "fp16":
-                mismatches.append(
-                    f"{bucket}: expected {expected} but no Linear weights "
-                    f"were found in that bucket")
-            continue
-        if got != expected:
-            sample_mod = examples.get((bucket, got), "?")
-            distribution = ", ".join(f"{k}={n}"
-                                     for k, n in actual[bucket].most_common())
-            mismatches.append(
-                f"{bucket}: expected {expected} but checkpoint actually "
-                f"contains {{ {distribution} }} (example module: {sample_mod})"
-            )
+    if ple_embedding_precision:
+        ple_dtypes = {
+            name: dt
+            for name, dt in tensors.items()
+            if "embed_tokens_per_layer" in name and name.endswith(".weight")
+            or "ngram_embedding" in name and name.endswith(".weight")
+        }
+        if not ple_dtypes:
+            mismatches.append("ple: no PLE weight tensor found")
+        for name, dt in ple_dtypes.items():
+            if dt != "F8_E4M3":
+                mismatches.append(f"ple: {name} is {dt}, expected F8_E4M3")
 
     if mismatches:
         # Surface the hf_quant_config.json that produced this mess — that's
@@ -296,3 +330,73 @@ def validate_ckpt_layout(
             "\nThe producer (modelopt PTQ) likely used an exclude_modules "
             "glob that swept the layers you expected to be quantized. "
             "Re-run the quantization recipe with a narrower exclude.")
+
+
+# ---------------------------------------------------------------------------
+# Exported ONNX layout
+# ---------------------------------------------------------------------------
+
+
+def _classify_onnx_module(
+        suffixes: Dict[str, Tuple[str, int]]) -> Optional[str]:
+    """Infer a Linear module's precision from its ONNX initializers.
+
+    ``suffixes`` maps an initializer suffix to ``(dtype name, rank)``. Only the
+    weight decides: the exporter deduplicates identical scalar scales, so a
+    module's ``weight_scale_2`` or ``input_scale`` may be absent. Plugin GEMMs
+    replace ``weight`` with a repacked ``qweight`` (NVFP4 W4A16 adds
+    ``block_scales``; AWQ / GPTQ int4 add ``scales``).
+    """
+    if "qweight" in suffixes:
+        return "nvfp4" if "block_scales" in suffixes else "int4-awq"
+    weight = suffixes.get("weight")
+    if weight is None or weight[1] != 2:
+        return None
+    wdt = weight[0]
+    scale_dtype, scale_rank = suffixes.get("weight_scale", ("", 0))
+    if wdt == "FLOAT4E2M1":
+        return "nvfp4"
+    if wdt.startswith("FLOAT8"):
+        return "mxfp8" if scale_dtype == "UINT8" else "fp8"
+    if wdt == "INT8":
+        # INT4 weights are packed into INT8 with per-group (2-D) scales.
+        return "int4-awq" if scale_rank == 2 else "int8-sq"
+    if wdt in ("FLOAT16", "BFLOAT16", "FLOAT"):
+        return "fp16"
+    return f"unknown(w={wdt})"
+
+
+def validate_onnx_layout(
+    onnx_path: str,
+    *,
+    body_precision: str,
+    lm_head_precision: Optional[str] = None,
+    label: str = "Exported ONNX",
+) -> None:
+    """Raise ``AssertionError`` when ``onnx_path`` weights contradict the
+    precisions named by the ONNX directory (``<id>-<body>-<lm_head>``).
+
+    Weights moved to external sidecars are not ONNX initializers and are not
+    inspected; their buckets count as absent.
+    """
+    import onnx
+
+    model = onnx.load(onnx_path, load_external_data=False)
+    tensors = {
+        init.name:
+        (onnx.TensorProto.DataType.Name(init.data_type), len(init.dims))
+        for init in model.graph.initializer
+    }
+    by_mod = _group_by_module(tensors)
+    mismatches = _bucket_mismatches(((mod, _classify_onnx_module(suffixes))
+                                     for mod, suffixes in by_mod.items()), {
+                                         "body": body_precision,
+                                         "lm_head": lm_head_precision,
+                                     })
+    if mismatches:
+        raise AssertionError(
+            f"{label} weights do not match the ONNX directory name "
+            f"({Path(onnx_path).parent.name}):\n  - " +
+            "\n  - ".join(mismatches) +
+            "\nCheck that the export consumed the checkpoint quantized to "
+            "these precisions.")

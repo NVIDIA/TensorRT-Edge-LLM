@@ -491,7 +491,7 @@ static void launchApplyRopeWriteKVKernel(rt::Tensor& q, rt::Tensor& k, rt::Tenso
     dim3 grid(gDimX, gDimY);
     dim3 block(bDimX, bDimY);
 
-    if (dt == nvinfer1::DataType::kHALF)
+    if (dt == trt_edgellm::DataType::kHALF)
     {
         half* kvCachePtr = kvCache.dataPointer<half>();
         applyRopeWriteKV<half, half><<<grid, block, 0, stream>>>(qPtr, kPtr, vPtr, kvCachePtr, cosSinCachePtr,
@@ -500,7 +500,7 @@ static void launchApplyRopeWriteKVKernel(rt::Tensor& q, rt::Tensor& k, rt::Tenso
             maxPagesPerSeq);
     }
 #if SUPPORTS_FP8
-    else if (dt == nvinfer1::DataType::kFP8)
+    else if (dt == trt_edgellm::DataType::kFP8 || dt == trt_edgellm::DataType::kINT8)
     {
         __nv_fp8_e4m3* kvCachePtr = kvCache.dataPointer<__nv_fp8_e4m3>();
         applyRopeWriteKV<half, __nv_fp8_e4m3><<<grid, block, 0, stream>>>(qPtr, kPtr, vPtr, kvCachePtr, cosSinCachePtr,
@@ -736,7 +736,7 @@ void launchApplyRopeWriteKVSplitQKV(rt::Tensor const& cosSinCache, rt::Tensor co
     dim3 grid(gDimX, gDimY);
     dim3 block(bDimX, bDimY);
 
-    if (dt == nvinfer1::DataType::kHALF)
+    if (dt == trt_edgellm::DataType::kHALF)
     {
         half* kvCachePtr = kvCache.dataPointer<half>();
         applyRopeWriteKVSplitQKVKernel<half, half><<<grid, block, 0, stream>>>(qPtr, kPtr, vPtr, kvCachePtr, nullptr,
@@ -744,7 +744,7 @@ void launchApplyRopeWriteKVSplitQKV(rt::Tensor const& cosSinCache, rt::Tensor co
             numKVHeads, headDim, rotaryDim, cosSinCacheBatchSize, cosSinCacheSeqLen, pageTable, maxPagesPerSeq);
     }
 #if SUPPORTS_FP8
-    else if (dt == nvinfer1::DataType::kFP8)
+    else if (dt == trt_edgellm::DataType::kFP8 || dt == trt_edgellm::DataType::kINT8)
     {
         __nv_fp8_e4m3* kvCachePtr = kvCache.dataPointer<__nv_fp8_e4m3>();
         applyRopeWriteKVSplitQKVKernel<half, __nv_fp8_e4m3><<<grid, block, 0, stream>>>(qPtr, kPtr, vPtr, kvCachePtr,
@@ -767,7 +767,30 @@ void launchApplyRopeWriteKVSplitQKV(rt::Tensor const& cosSinCache, rt::Tensor co
 // Tree decoding via optional tokenPosIds (-1 = padding token).
 // =============================================================================
 
-template <typename T, typename TCache, bool kEnablePdl>
+//! Largest sequence index s with offsets[s] <= token; compact layouts have no empty sequences.
+__device__ __forceinline__ int32_t findCompactSequence(
+    int32_t const* __restrict__ offsets, int32_t numSequences, int32_t token)
+{
+    int32_t low = 0;
+    int32_t high = numSequences - 1;
+    while (low < high)
+    {
+        int32_t const mid = (low + high + 1) / 2;
+        if (offsets[mid] <= token)
+        {
+            low = mid;
+        }
+        else
+        {
+            high = mid - 1;
+        }
+    }
+    return low;
+}
+
+//! kCompactLayout: packedQKV is one [T] token run without padding; cuQSeqLens holds the [N + 1] query offsets,
+//! kvCacheEndLens the [N] KV lengths after this step, and cosSinCache one row per token.
+template <typename T, typename TCache, bool kEnablePdl, bool kCompactLayout>
 __global__ void applyRopeFromPackedToSplitKernel(T const* __restrict__ packedQKV, T* __restrict__ qScratch,
     T* __restrict__ kScratch, T* __restrict__ vScratch, TCache* __restrict__ kvCache, void* __restrict__ fp8QOut,
     float const* __restrict__ cosSinCache, int32_t const* __restrict__ kvCacheEndLens,
@@ -776,7 +799,7 @@ __global__ void applyRopeFromPackedToSplitKernel(T const* __restrict__ packedQKV
     float kScaleQuantOrig, float vScaleQuantOrig, int32_t qSeqLen, int32_t totalNumTokens, int32_t numPages,
     uint32_t numQHead, uint32_t numKVHead, uint32_t headDim, uint32_t poolHeadDim, uint32_t rotaryDim,
     int32_t cosSinCacheBatchSize, int32_t cosSinCacheSeqLen, int32_t const* __restrict__ pageTable,
-    int32_t maxPagesPerSeq, bool writeKVCache, bool tokenAlignedRope)
+    int32_t maxPagesPerSeq, bool writeKVCache, bool tokenAlignedRope, int32_t numSequences)
 {
     // Thread mapping (same as existing kernels for proven memory coalescing):
     //   blockDim.x = headDim / vec_size  (threads per token, cover head vector)
@@ -797,7 +820,7 @@ __global__ void applyRopeFromPackedToSplitKernel(T const* __restrict__ packedQKV
     bool const isTailToken = (tokenIdx >= static_cast<uint32_t>(totalNumTokens));
     uint32_t const clampedTokenIdx = isTailToken ? static_cast<uint32_t>(totalNumTokens - 1) : tokenIdx;
 
-    int32_t const batchIdx = clampedTokenIdx / qSeqLen;
+    int32_t batchIdx = clampedTokenIdx / qSeqLen;
     int64_t const combinedHeads = static_cast<int64_t>(numQHead) + 2 * static_cast<int64_t>(numKVHead);
 
     // RoPE position: prefill (kvCacheEndLens - qSeqLen + offset), decode
@@ -805,7 +828,7 @@ __global__ void applyRopeFromPackedToSplitKernel(T const* __restrict__ packedQKV
     // -1 remains the padding marker).
     // Ragged prefill padding must be identified before page-table or RoPE-cache
     // indexing. It cannot early-return because fused qk_norm uses warp collectives.
-    int32_t const rowInBatch = static_cast<int32_t>(clampedTokenIdx % qSeqLen);
+    int32_t rowInBatch = static_cast<int32_t>(clampedTokenIdx % qSeqLen);
 
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
     if constexpr (kEnablePdl)
@@ -816,11 +839,19 @@ __global__ void applyRopeFromPackedToSplitKernel(T const* __restrict__ packedQKV
     }
 #endif
 
+    if constexpr (kCompactLayout)
+    {
+        batchIdx = findCompactSequence(cuQSeqLens, numSequences, static_cast<int32_t>(clampedTokenIdx));
+        rowInBatch = static_cast<int32_t>(clampedTokenIdx) - cuQSeqLens[batchIdx];
+    }
+
     int32_t actualQSeqLen = qSeqLen;
     if (cuQSeqLens != nullptr)
     {
         actualQSeqLen = cuQSeqLens[batchIdx + 1] - cuQSeqLens[batchIdx];
     }
+    // KV rows of this step end at kvCacheEndLens; padded launches span qSeqLen rows per sequence.
+    int32_t const kvWriteSpan = kCompactLayout ? actualQSeqLen : qSeqLen;
     int32_t sinCosCachePos{};
     bool const isPaddingToken = (tokenPosIds != nullptr && tokenPosIds[clampedTokenIdx] == -1)
         || (cuQSeqLens != nullptr && rowInBatch >= actualQSeqLen);
@@ -831,6 +862,10 @@ __global__ void applyRopeFromPackedToSplitKernel(T const* __restrict__ packedQKV
         {
             sinCosCachePos = 0;
         }
+    }
+    else if constexpr (kCompactLayout)
+    {
+        sinCosCachePos = static_cast<int32_t>(clampedTokenIdx);
     }
     else
     {
@@ -969,8 +1004,8 @@ __global__ void applyRopeFromPackedToSplitKernel(T const* __restrict__ packedQKV
 
             if (writeKVCache && !isPaddingToken)
             {
-                int32_t const kvCacheStartIdx = kvCacheEndLens != nullptr ? kvCacheEndLens[batchIdx] - qSeqLen : 0;
-                int32_t const tokenIdxInCache = kvCacheStartIdx + clampedTokenIdx % qSeqLen;
+                int32_t const kvCacheStartIdx = kvCacheEndLens != nullptr ? kvCacheEndLens[batchIdx] - kvWriteSpan : 0;
+                int32_t const tokenIdxInCache = kvCacheStartIdx + rowInBatch;
                 int32_t const pageRow = tokenIdxInCache / rt::kTOKENS_PER_PAGE;
                 int32_t const inPage = tokenIdxInCache % rt::kTOKENS_PER_PAGE;
                 int32_t const kPage = pageTable[(batchIdx * 2 + 0) * maxPagesPerSeq + pageRow];
@@ -1011,7 +1046,7 @@ void launchApplyRopeFromPackedToSplit(rt::Tensor const& cosSinCache, rt::Optiona
     float kScale, float vScale, cudaStream_t stream, int32_t const* pageTable, int32_t maxPagesPerSeq,
     void* kScratchOut, void* vScratchOut, void* fp8QOut, float qScale, half const* qNormGamma, half const* kNormGamma,
     float rmsNormEps, bool qkNormPostRope, rt::OptionalInputTensor cuQSeqLens, bool writeKVCache, bool enablePdl,
-    bool tokenAlignedRope)
+    bool tokenAlignedRope, bool compactLayout, int32_t numSequences)
 {
     auto const dt = kvCache.getDataType();
     constexpr uint32_t kVEC_SIZE = DVec<half>::vec_size;
@@ -1040,22 +1075,38 @@ void launchApplyRopeFromPackedToSplit(rt::Tensor const& cosSinCache, rt::Optiona
     check::check(cosSinCacheBatchSize == 1 || cosSinCacheBatchSize == batchSize,
         "CosSinCache shall have batch size 1 or equal to runtime batch size");
 
-    if (kvCacheEndLens.has_value())
+    if (compactLayout)
     {
-        check::check(kvCacheEndLens.value().get().getShape()[0] == batchSize,
-            "kvCacheEndLens shall have consistent batch size.");
+        check::check(dt == trt_edgellm::DataType::kFP8 || fp8QOut == nullptr,
+            "Compact layout writes FP8 Q only together with an FP8 KV cache.");
+        check::check(batchSize == 1 && cosSinCacheBatchSize == 1 && cosSinCacheSeqLen >= runtimeSeqLen
+                && tokenAlignedRope && !tokenPosIds.has_value(),
+            "Compact layout requires packed QKV [1, T, H, D] with token-aligned RoPE rows [1, T, rot].");
+        check::check(numSequences > 0 && numSequences <= runtimeSeqLen && kvCacheEndLens.has_value()
+                && cuQSeqLens.has_value() && kvCacheEndLens.value().get().getShape()[0] == numSequences
+                && cuQSeqLens.value().get().getShape()[0] == numSequences + 1
+                && cuQSeqLens.value().get().getDataType() == trt_edgellm::DataType::kINT32,
+            "Compact layout requires query offsets [N + 1] and KV end lengths [N].");
     }
-    if (tokenPosIds.has_value())
+    else
     {
-        check::check(tokenPosIds.value().get().getShape()[0] == batchSize
-                && tokenPosIds.value().get().getShape()[1] == runtimeSeqLen,
-            "tokenPosIds shape shall be [B, S].");
-    }
-    if (cuQSeqLens.has_value())
-    {
-        check::check(cuQSeqLens.value().get().getShape()[0] == batchSize + 1, "cuQSeqLens shape shall be [B + 1].");
-        check::check(cuQSeqLens.value().get().getDataType() == nvinfer1::DataType::kINT32,
-            "cuQSeqLens shall have INT32 data type.");
+        if (kvCacheEndLens.has_value())
+        {
+            check::check(kvCacheEndLens.value().get().getShape()[0] == batchSize,
+                "kvCacheEndLens shall have consistent batch size.");
+        }
+        if (tokenPosIds.has_value())
+        {
+            check::check(tokenPosIds.value().get().getShape()[0] == batchSize
+                    && tokenPosIds.value().get().getShape()[1] == runtimeSeqLen,
+                "tokenPosIds shape shall be [B, S].");
+        }
+        if (cuQSeqLens.has_value())
+        {
+            check::check(cuQSeqLens.value().get().getShape()[0] == batchSize + 1, "cuQSeqLens shape shall be [B + 1].");
+            check::check(cuQSeqLens.value().get().getDataType() == trt_edgellm::DataType::kINT32,
+                "cuQSeqLens shall have INT32 data type.");
+        }
     }
 
     half const* packedPtr = packedQKV.dataPointer<half>();
@@ -1091,9 +1142,10 @@ void launchApplyRopeFromPackedToSplit(rt::Tensor const& cosSinCache, rt::Optiona
     dim3 grid(gDimX, gDimY);
     dim3 block(bDimX, bDimY);
 
-    auto const launchKernel = [&](auto* kvCachePtr, void* fp8QOutput, float qScaleOrig, auto pdlTag) {
+    auto const launchKernel = [&](auto* kvCachePtr, void* fp8QOutput, float qScaleOrig, auto pdlTag, auto layoutTag) {
         using TCache = std::remove_pointer_t<decltype(kvCachePtr)>;
         constexpr bool kEnablePdl = decltype(pdlTag)::value;
+        constexpr bool kCompactLayout = decltype(layoutTag)::value;
 #if SUPPORTS_PROGRAMMATIC_DEPENDENT_LAUNCH
         cudaLaunchAttribute pdlAttribute{};
         cudaLaunchConfig_t launchConfig{};
@@ -1110,49 +1162,70 @@ void launchApplyRopeFromPackedToSplit(rt::Tensor const& cosSinCache, rt::Optiona
             pdlAttribute.val.programmaticStreamSerializationAllowed = 1;
         }
 
-        CUDA_CHECK(cudaLaunchKernelEx(&launchConfig, applyRopeFromPackedToSplitKernel<half, TCache, kEnablePdl>,
-            packedPtr, qScratchPtr, kScratchPtr, vScratchPtr, kvCachePtr, fp8QOutput, cosSinCachePtr, kvCacheEndLensPtr,
-            tokenPosIdsPtr, cuQSeqLensPtr, qNormGamma, kNormGamma, rmsNormEps, qkNormPostRope, qScaleOrig, kScale,
-            vScale, static_cast<int32_t>(runtimeSeqLen), static_cast<int32_t>(totalNumTokens),
-            static_cast<int32_t>(numPages), static_cast<uint32_t>(numQHeads), static_cast<uint32_t>(numKVHeads),
-            static_cast<uint32_t>(headDim), static_cast<uint32_t>(poolHeadDim), static_cast<uint32_t>(rotaryDim),
-            static_cast<int32_t>(cosSinCacheBatchSize), static_cast<int32_t>(cosSinCacheSeqLen), pageTable,
-            maxPagesPerSeq, writeKVCache, tokenAlignedRope));
-#else
-        applyRopeFromPackedToSplitKernel<half, TCache, kEnablePdl><<<grid, block, 0, stream>>>(packedPtr, qScratchPtr,
+        CUDA_CHECK(cudaLaunchKernelEx(&launchConfig,
+            applyRopeFromPackedToSplitKernel<half, TCache, kEnablePdl, kCompactLayout>, packedPtr, qScratchPtr,
             kScratchPtr, vScratchPtr, kvCachePtr, fp8QOutput, cosSinCachePtr, kvCacheEndLensPtr, tokenPosIdsPtr,
             cuQSeqLensPtr, qNormGamma, kNormGamma, rmsNormEps, qkNormPostRope, qScaleOrig, kScale, vScale,
             static_cast<int32_t>(runtimeSeqLen), static_cast<int32_t>(totalNumTokens), static_cast<int32_t>(numPages),
             static_cast<uint32_t>(numQHeads), static_cast<uint32_t>(numKVHeads), static_cast<uint32_t>(headDim),
             static_cast<uint32_t>(poolHeadDim), static_cast<uint32_t>(rotaryDim),
             static_cast<int32_t>(cosSinCacheBatchSize), static_cast<int32_t>(cosSinCacheSeqLen), pageTable,
-            maxPagesPerSeq, writeKVCache, tokenAlignedRope);
+            maxPagesPerSeq, writeKVCache, tokenAlignedRope, numSequences));
+#else
+        applyRopeFromPackedToSplitKernel<half, TCache, kEnablePdl, kCompactLayout><<<grid, block, 0, stream>>>(
+            packedPtr, qScratchPtr, kScratchPtr, vScratchPtr, kvCachePtr, fp8QOutput, cosSinCachePtr, kvCacheEndLensPtr,
+            tokenPosIdsPtr, cuQSeqLensPtr, qNormGamma, kNormGamma, rmsNormEps, qkNormPostRope, qScaleOrig, kScale,
+            vScale, static_cast<int32_t>(runtimeSeqLen), static_cast<int32_t>(totalNumTokens),
+            static_cast<int32_t>(numPages), static_cast<uint32_t>(numQHeads), static_cast<uint32_t>(numKVHeads),
+            static_cast<uint32_t>(headDim), static_cast<uint32_t>(poolHeadDim), static_cast<uint32_t>(rotaryDim),
+            static_cast<int32_t>(cosSinCacheBatchSize), static_cast<int32_t>(cosSinCacheSeqLen), pageTable,
+            maxPagesPerSeq, writeKVCache, tokenAlignedRope, numSequences);
 #endif // SUPPORTS_PROGRAMMATIC_DEPENDENT_LAUNCH
     };
 
-    if (dt == nvinfer1::DataType::kHALF)
+    if (dt == trt_edgellm::DataType::kHALF)
     {
         half* kvCachePtr = kvCache.dataPointer<half>();
-        if (enablePdl)
+        if (compactLayout && enablePdl)
         {
-            launchKernel(kvCachePtr, nullptr /* fp8QOut */, 1.0f /* qScaleQuantOrig */, std::true_type{});
+            launchKernel(
+                kvCachePtr, nullptr /* fp8QOut */, 1.0f /* qScaleQuantOrig */, std::true_type{}, std::true_type{});
+        }
+        else if (compactLayout)
+        {
+            launchKernel(
+                kvCachePtr, nullptr /* fp8QOut */, 1.0f /* qScaleQuantOrig */, std::false_type{}, std::true_type{});
+        }
+        else if (enablePdl)
+        {
+            launchKernel(
+                kvCachePtr, nullptr /* fp8QOut */, 1.0f /* qScaleQuantOrig */, std::true_type{}, std::false_type{});
         }
         else
         {
-            launchKernel(kvCachePtr, nullptr /* fp8QOut */, 1.0f /* qScaleQuantOrig */, std::false_type{});
+            launchKernel(
+                kvCachePtr, nullptr /* fp8QOut */, 1.0f /* qScaleQuantOrig */, std::false_type{}, std::false_type{});
         }
     }
 #if SUPPORTS_FP8
-    else if (dt == nvinfer1::DataType::kFP8)
+    else if (dt == trt_edgellm::DataType::kFP8 || dt == trt_edgellm::DataType::kINT8)
     {
         __nv_fp8_e4m3* kvCachePtr = kvCache.dataPointer<__nv_fp8_e4m3>();
-        if (enablePdl)
+        if (compactLayout && enablePdl)
         {
-            launchKernel(kvCachePtr, fp8QOut, qScale, std::true_type{});
+            launchKernel(kvCachePtr, fp8QOut, qScale, std::true_type{}, std::true_type{});
+        }
+        else if (compactLayout)
+        {
+            launchKernel(kvCachePtr, fp8QOut, qScale, std::false_type{}, std::true_type{});
+        }
+        else if (enablePdl)
+        {
+            launchKernel(kvCachePtr, fp8QOut, qScale, std::true_type{}, std::false_type{});
         }
         else
         {
-            launchKernel(kvCachePtr, fp8QOut, qScale, std::false_type{});
+            launchKernel(kvCachePtr, fp8QOut, qScale, std::false_type{}, std::false_type{});
         }
     }
 #endif

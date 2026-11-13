@@ -102,7 +102,7 @@ constexpr uint32_t preferedKHeadPartBytes = tiledQKVStagingHeadDim512 ? 32 : 64;
 __constant__ constexpr uint32_t cacheVTileSeqLen
     = tiledQKVStagingHeadDim512 ? tiledQKVStagingHeadDim512VTileSeqLen : 32;
 #elif __CUDA_ARCH__ == 800 || __CUDA_ARCH__ == 870 || __CUDA_ARCH__ == 900 || __CUDA_ARCH__ == 1000                    \
-    || __CUDA_ARCH__ == 1010 || __CUDA_ARCH__ == 1100
+    || __CUDA_ARCH__ == 1010 || __CUDA_ARCH__ == 1030 || __CUDA_ARCH__ == 1100
 // This path tiles Q/K/V shared-memory staging to keep shared memory within the per-CTA budget.
 constexpr uint32_t preferedKHeadPartBytes = tiledQKVStagingHeadDim512 ? 32 : (useSmallHeadDim512Tiles ? 64 : 128);
 constexpr bool useWide2CtaHeadDim512VTile = twoCtaHeadDim512 && cacheElemSize < inputElemSize;
@@ -1609,13 +1609,14 @@ CUBIN_EXPORT __global__
         float const vCacheScale, // V dequant scale (quant->orig). 1.0 when KV cache is not quantized.
         uint32_t* __restrict__ semaphores = nullptr, void* __restrict__ scratch = nullptr)
 {
-    assert(allowMultiBlockMode || gridDim.x == 1 || twoCtaHeadDim512);
-    bool const isMultiBlock = !twoCtaHeadDim512 && allowMultiBlockMode && (gridDim.x != 1);
-    uint32_t const nbSubSeqPerSeq = twoCtaHeadDim512 ? 1U : (allowMultiBlockMode ? gridDim.x : 1U);
-    uint32_t const idxSubSeqInSeq = twoCtaHeadDim512 ? 0U : (allowMultiBlockMode ? blockIdx.x : 0U);
+    constexpr uint32_t nbHeadSplits = twoCtaHeadDim512 ? 2U : 1U;
+    assert(allowMultiBlockMode || gridDim.x == nbHeadSplits);
+    bool const isMultiBlock = allowMultiBlockMode && (gridDim.x != nbHeadSplits);
+    uint32_t const nbSubSeqPerSeq = allowMultiBlockMode ? gridDim.x / nbHeadSplits : 1U;
+    uint32_t const idxSubSeqInSeq = allowMultiBlockMode ? blockIdx.x / nbHeadSplits : 0U;
     assert(!isMultiBlock || (semaphores != nullptr && scratch != nullptr));
 
-    // gridDim: x - K/V sequence-dim split; y - number of K or V heads per token; z - number of requests
+    // Each KV split is one CTA or a D512 cluster; cluster ranks partition the head dimension.
     assert(gridDim.z == batchSize && gridDim.y == nbKHeads);
     extern __shared__ char smemByteBuf[];
     SharedMem& smem = *reinterpret_cast<SharedMem*>(&smemByteBuf[0]);
@@ -1881,7 +1882,19 @@ CUBIN_EXPORT __global__
     uint32_t const nbSeqItersWithoutMask = (cacheSeqLen - paddedQSeqLen) / ctaTile.x;
 #endif
 
-    uint32_t const seqStrideIters = nbSubSeqPerSeq;
+    // Capacity-sized grids may include CTAs with no live KV pages.
+    uint32_t const nbLiveTiles = nbSeqIters - nbSkipLeadingTiles;
+    constexpr uint32_t kMIN_SPLIT_TILES = 3U;
+    bool const useSingleCta = !SPEC_DEC && nbLiveTiles < kMIN_SPLIT_TILES;
+    uint32_t const nbActiveSubSeq
+        = isMultiBlock && !useSingleCta ? min(nbSubSeqPerSeq, max(nbLiveTiles, 1U)) : 1U;
+    if (isMultiBlock && idxSubSeqInSeq >= nbActiveSubSeq)
+    {
+        ldgsts::waitGroup<0>();
+        return;
+    }
+    bool const mergeNeeded = isMultiBlock && nbActiveSubSeq > 1U;
+    uint32_t const seqStrideIters = mergeNeeded ? nbSubSeqPerSeq : 1U;
     constexpr bool isKVCacheQuantized = (cacheElemSize < 2);
     uint32_t const seqIterInit = nbSkipLeadingTiles + idxSubSeqInSeq;
 #if BEAM_WIDTH > 1
@@ -1939,7 +1952,7 @@ CUBIN_EXPORT __global__
         auto loadKTilePart = [&](uint32_t seqIter, uint32_t idxBeam, uint32_t idxPart) mutable
         {
             assert(idxBeam < beamWidth);
-            assert(seqIter % nbSubSeqPerSeq == seqIterInit % nbSubSeqPerSeq);
+            assert(seqIter % seqStrideIters == seqIterInit % seqStrideIters);
             auto const idxNextSMemKBuf = idxCurrSMemKBuf.next();
             auto& dst = getSMemKTile(idxNextSMemKBuf);
             uint32_t const dstHeadOffset = 0;
@@ -2023,7 +2036,7 @@ CUBIN_EXPORT __global__
                 bool const isForNextSeqIter = isConvergedTile(seqIter) || idxBeam == beamWidth - 1;
                 if (isForNextSeqIter)
                 {
-                    idxPageBeg += nbPagesPerCtaTile * nbSubSeqPerSeq;
+                    idxPageBeg += nbPagesPerCtaTile * seqStrideIters;
                     loadPages(idxPageBeg);
                 }
 #endif
@@ -2463,7 +2476,7 @@ CUBIN_EXPORT __global__
             = [&](uint32_t seqIter, uint32_t xIter, uint32_t vIter,
                   uint32_t idxBeam) mutable { // @fixme: merge three iteration parameters into idxVTileGlb.
                   assert(idxBeam < beamWidth);
-                  assert(seqIter % nbSubSeqPerSeq == seqIterInit % nbSubSeqPerSeq);
+                  assert(seqIter % seqStrideIters == seqIterInit % seqStrideIters);
                   auto const idxNextSMemVBuf = idxCurrSMemVBuf.next();
                   auto& dst = getSmemVTile(idxNextSMemVBuf);
                   uint32_t const dstHeadOffset = 0;
@@ -2568,7 +2581,7 @@ CUBIN_EXPORT __global__
                       {
                           auto const step = 1;
                           idxPageBeg += (modByPow2(idxPageBeg, nbPagesPerCtaTileLog2) == nbPagesPerCtaTile - 1
-                                  ? nbPagesPerCtaTile * (nbSubSeqPerSeq - 1) + step
+                                  ? nbPagesPerCtaTile * (seqStrideIters - 1) + step
                                   : step);
                           assert(beamWidth == 1
                               || cacheVTileSeqStride <= tokensPerPage
@@ -2583,7 +2596,7 @@ CUBIN_EXPORT __global__
                       {
                           auto const step = divByPow2(xIterSeqStride, tokensPerPageLog2);
                           idxPageBeg += (modByPow2(idxPageBeg, nbPagesPerCtaTileLog2) + step >= nbPagesPerCtaTile
-                                  ? nbPagesPerCtaTile * (nbSubSeqPerSeq - 1) + step
+                                  ? nbPagesPerCtaTile * (seqStrideIters - 1) + step
                                   : step);
                           loadPages(idxPageBeg);
                       }
@@ -2836,12 +2849,18 @@ CUBIN_EXPORT __global__
             }
         }
 
+        // The merge aliases shared storage used by the speculative next-tile prefetch.
+        if (isMultiBlock)
+        {
+            ldgsts::waitGroup<0>();
+            __syncthreads();
+        }
         float const vScale = (isKVCacheQuantized ? vCacheScale : 1.f);
         float voScale = vScale;
         if (seqIterInit < nbSeqIters)
         { // otherwise rcpRowSum will be NAN.
             // The attention sinks are moved to the multi-block reduction part if the multi-block is enabled.
-            if (!isMultiBlock && attentionSinks != nullptr)
+            if (!mergeNeeded && attentionSinks != nullptr)
             {
                 // Attention sinks are per head.
 #if SPEC_DEC
@@ -2890,24 +2909,24 @@ CUBIN_EXPORT __global__
 
         // merge results from different warp groups
         SharedMem::XSmemBuffer* smemOutTile = mergeAndSaveOutTile(outTile, inputElemSize == 2 && cacheElemSize == 1);
-        if (isMultiBlock)
+        if (mergeNeeded)
         {
             static_assert(ctaShapeInWarps.y == 1, "not implemented");
 #if SPEC_DEC
             // Includes both kHeads and qTokens.
             uint32_t const nbIndepHeadTokens = gridDim.y;
             uint32_t const indepHeadTokenIdx = blockIdx.y;
-            uint32_t const nbSeq = nbIndepHeadTokens * batchSize;
+            uint32_t const nbSeq = nbIndepHeadTokens * batchSize * nbHeadSplits;
 #else
-            uint32_t const nbSeq = nbKHeads * batchSize;
+            uint32_t const nbSeq = nbKHeads * batchSize * nbHeadSplits;
 #endif
             uint32_t const nbSubSeq = nbSubSeqPerSeq * nbSeq;
             MemSegmenter<false> segmenter{scratch};
 
 #if SPEC_DEC
-            uint32_t const idxSeq = nbIndepHeadTokens * idxReq + indepHeadTokenIdx;
+            uint32_t const idxSeq = (nbIndepHeadTokens * idxReq + indepHeadTokenIdx) * nbHeadSplits + splitRank;
 #else
-            uint32_t const idxSeq = nbKHeads * idxReq + idxHeadGrp;
+            uint32_t const idxSeq = (nbKHeads * idxReq + idxHeadGrp) * nbHeadSplits + splitRank;
 #endif
             uint32_t const idxBufBase = nbSubSeqPerSeq * idxSeq;
             uint32_t const idxBuf = idxBufBase + idxSubSeqInSeq;
@@ -2951,17 +2970,21 @@ CUBIN_EXPORT __global__
             if (warpIdx.y == 0 && warpGrpIdx == 0 && warpIdxInGrp == 0 && laneId() == 0)
             {
                 uint32_t old;
-                uint32_t const lastOld = nbSubSeqPerSeq - 1;
+                uint32_t const lastOld = nbActiveSubSeq - 1;
                 asm volatile("atom.acq_rel.gpu.global.inc.u32 %0, [%1], %2;\n"
                              : "=r"(old)
                              : "l"(&semaphores[idxSeq]), "r"(lastOld));
-                assert(old < nbSubSeqPerSeq);
+                assert(old < nbActiveSubSeq);
                 mbsmem.isLastCta = (old == lastOld);
             }
             __syncthreads();
 
-            // merge if we are the last CTA.
+            // Only the final producer may write the attention output.
             bool const isLastCta = mbsmem.isLastCta;
+            if (!isLastCta)
+            {
+                return;
+            }
             if (isLastCta)
             {
                 MultiBlockSMem::MBBuf& mbbuf = mbsmem.storage[warpIdx.y];
@@ -2969,7 +2992,7 @@ CUBIN_EXPORT __global__
                 // get row max.
                 if (warpIdx.x == 0)
                 {
-                    ThrdRegRowMax const mergedRowMax = mergeRowMax<8>(warp, rowMaxBuffers + idxBufBase, nbSubSeqPerSeq);
+                    ThrdRegRowMax const mergedRowMax = mergeRowMax<8>(warp, rowMaxBuffers + idxBufBase, nbActiveSubSeq);
                     smemRowMax.storeFromReg<false>(warp, mergedRowMax);
                 }
                 __syncthreads();
@@ -2994,13 +3017,16 @@ CUBIN_EXPORT __global__
                         reinterpret_cast<LdGrain*>(&dstRowMax),
                         reinterpret_cast<LdGrain const*>(&rowMaxBuffers[idxBufBase + n]), nbGrainsPerRowMaxBuf);
                 };
-                loadBufAsync(warpGrpIdx);
+                if (warpGrpIdx < nbActiveSubSeq)
+                {
+                    loadBufAsync(warpGrpIdx);
+                }
                 ldgsts::commitGroup();
                 WarpAcc sumAcc{};
                 ThrdRegRowMax partialMergedRowSum{};
-                for (uint32_t n = warpGrpIdx; n < nbSubSeqPerSeq; n += gemm1NbWarpGrps)
+                for (uint32_t n = warpGrpIdx; n < nbActiveSubSeq; n += gemm1NbWarpGrps)
                 {
-                    if (n + gemm1NbWarpGrps < nbSubSeqPerSeq)
+                    if (n + gemm1NbWarpGrps < nbActiveSubSeq)
                     {
                         loadBufAsync(n + gemm1NbWarpGrps);
                     }

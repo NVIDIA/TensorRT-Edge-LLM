@@ -19,7 +19,8 @@
 
 #include "decoderXQAJitCompiler.h"
 
-#include <NvInferRuntime.h>
+#include "common/dataType.h"
+#include <cuda_runtime_api.h>
 
 #include <cstddef>
 
@@ -49,8 +50,12 @@ struct XQALaunchParams
     float vScale = 1.0f;             //!< V dequant scale (quantized -> original), host scalar
     uint32_t slidingWinSize = 0;     //!< Sliding window size (0 = no sliding window)
     bool contiguousQuerySwa = false; //!< Use a query-relative sliding-window boundary
-    int32_t* semaphores = nullptr;   //!< Semaphores for synchronization
-    void* scratch = nullptr;         //!< Scratch memory
+    //! Caller-owned counters, initialized once to zero and retained across ordered launches.
+    //! Allocate DecoderXQARunner::getSemaphoreCount() entries per context; concurrent contexts must not share them.
+    int32_t* semaphores = nullptr;
+    void* scratch = nullptr;   //!< Scratch memory
+    void* workspace = nullptr; //!< Optional multi-block workspace, owned by the caller
+    size_t workspaceSize = 0;  //!< Allocated workspace bytes
 
     //! Unique device memory pointer for spec-decode tree attention
     void* treeAttnMask = nullptr;      //!< Tree attention mask
@@ -72,8 +77,8 @@ struct XQALaunchParams
     float attentionScale = 1.0F; //!< Absolute QK^T multiplier
     int32_t headGroupSize = 0;   //!< Head group size
 
-    nvinfer1::DataType dataType;   //!< I/O data type of the kernel
-    nvinfer1::DataType kvDataType; //!< KV cache data type
+    trt_edgellm::DataType dataType;   //!< I/O data type of the kernel
+    trt_edgellm::DataType kvDataType; //!< KV cache data type
 };
 
 //! \brief Decoder XQA (eXtended Query Attention) kernel runner
@@ -88,7 +93,7 @@ public:
     //! \param[in] numKvHeads Number of key-value heads
     //! \param[in] headSize Head dimension size
     //! \param[in] smVersion CUDA SM version
-    DecoderXQARunner(nvinfer1::DataType const dataType, nvinfer1::DataType const kvDataType, int32_t batchSize,
+    DecoderXQARunner(trt_edgellm::DataType const dataType, trt_edgellm::DataType const kvDataType, int32_t batchSize,
         int32_t numQHeads, int32_t numKvHeads, int32_t headSize, int32_t smVersion) noexcept;
 
     DecoderXQARunner() noexcept = default;
@@ -117,6 +122,13 @@ public:
     //! \return Initialized XQA launch parameters
     XQALaunchParams initXQAParams() noexcept;
 
+    //! \brief Workspace upper bound for ordinary decode with the given KV capacity.
+    //! \return Bytes including alignment padding, or zero for an unsupported split configuration.
+    size_t getWorkspaceSize(uint32_t kvCacheCapacity) const noexcept;
+
+    //! \brief Fixed counter capacity for any supported batch/head shape that uses KV splitting.
+    static uint32_t getSemaphoreCount() noexcept;
+
     //! \brief Load one decoder XQA kernel from a JIT-generated module image.
     //! \param[in] key JIT key that describes the kernel variant
     //! \param[in] cubinData Cubin or PTX bytes returned by NVRTC
@@ -126,12 +138,12 @@ public:
     static bool loadDecodeXQAKernelFromCubin(XQAJitKey const& key, void const* cubinData, size_t cubinSize);
 
 private:
-    nvinfer1::DataType mDataType;   //!< Data type for computation
-    nvinfer1::DataType mKVDataType; //!< KV cache data type
-    uint32_t mBatchSize;            //!< Batch size
-    uint32_t mNumHeads;             //!< Number of query heads
-    uint32_t mNumKVHeads;           //!< Number of key-value heads
-    uint32_t mHeadSize;             //!< Head dimension size
+    trt_edgellm::DataType mDataType;   //!< Data type for computation
+    trt_edgellm::DataType mKVDataType; //!< KV cache data type
+    uint32_t mBatchSize;               //!< Batch size
+    uint32_t mNumHeads;                //!< Number of query heads
+    uint32_t mNumKVHeads;              //!< Number of key-value heads
+    uint32_t mHeadSize;                //!< Head dimension size
 
     int32_t mSmVersion; //!< CUDA SM version
 };

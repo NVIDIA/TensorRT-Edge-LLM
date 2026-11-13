@@ -28,7 +28,7 @@ namespace kernel
 
 //! Build linear target-verification token IDs: [seed, draft_0, ..., draft_{N-1}].
 void launchGemma4MTPBuildVerifyTokens(int32_t const* seedTokenIds, int32_t const* draftTokenIds,
-    int32_t* verifyTokenIds, int32_t batchSize, int32_t draftingStep, cudaStream_t stream);
+    int32_t* verifyTokenIds, int32_t batchSize, int32_t draftSteps, cudaStream_t stream);
 
 //! Gather one target hidden-state row per batch into the assistant seed-hidden input.
 void launchGemma4MTPGatherSeedHidden(void const* sourceHiddenStates, void* seedHiddenStates,
@@ -37,7 +37,7 @@ void launchGemma4MTPGatherSeedHidden(void const* sourceHiddenStates, void* seedH
 
 //! Store sampled assistant token IDs into the draft-token matrix at the current draft step.
 void launchGemma4MTPStoreDraftToken(int32_t const* selectedTokenIds, int32_t* draftTokenIds, int32_t batchSize,
-    int32_t draftingStep, int32_t step, cudaStream_t stream);
+    int32_t draftSteps, int32_t step, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

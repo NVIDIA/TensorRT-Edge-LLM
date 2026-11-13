@@ -39,9 +39,9 @@ TEST(SafetensorsUtilsTest, FloatTensors)
     }
 
     // CPU tensor: 1D
-    rt::Tensor cpuTensor({5}, rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "cpu_float");
+    rt::Tensor cpuTensor({5}, rt::DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, "cpu_float");
     // GPU tensor: 2D
-    rt::Tensor gpuTensor({2, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "gpu_float");
+    rt::Tensor gpuTensor({2, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "gpu_float");
 
     // Test data
     std::vector<float> cpuData = {1.1f, 2.2f, 3.3f, 4.4f, 5.5f};
@@ -78,7 +78,7 @@ TEST(SafetensorsUtilsTest, FloatTensors)
     EXPECT_NE(loadedCpu, nullptr);
     EXPECT_EQ(loadedCpu->getShape().getNumDims(), 1);
     EXPECT_EQ(loadedCpu->getShape()[0], 5);
-    EXPECT_EQ(loadedCpu->getDataType(), nvinfer1::DataType::kFLOAT);
+    EXPECT_EQ(loadedCpu->getDataType(), trt_edgellm::DataType::kFLOAT);
 
     std::vector<float> loadedCpuData(5);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -94,7 +94,7 @@ TEST(SafetensorsUtilsTest, FloatTensors)
     EXPECT_EQ(loadedGpu->getShape().getNumDims(), 2);
     EXPECT_EQ(loadedGpu->getShape()[0], 2);
     EXPECT_EQ(loadedGpu->getShape()[1], 3);
-    EXPECT_EQ(loadedGpu->getDataType(), nvinfer1::DataType::kFLOAT);
+    EXPECT_EQ(loadedGpu->getDataType(), trt_edgellm::DataType::kFLOAT);
 
     std::vector<float> loadedGpuData(6);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -120,9 +120,9 @@ TEST(SafetensorsUtilsTest, HalfTensors)
     }
 
     // CPU tensor: 3D
-    rt::Tensor cpuTensor({2, 2, 2}, rt::DeviceType::kCPU, nvinfer1::DataType::kHALF, "cpu_half");
+    rt::Tensor cpuTensor({2, 2, 2}, rt::DeviceType::kCPU, trt_edgellm::DataType::kHALF, "cpu_half");
     // GPU tensor: 4D
-    rt::Tensor gpuTensor({1, 2, 3, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "gpu_half");
+    rt::Tensor gpuTensor({1, 2, 3, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "gpu_half");
 
     // Test data
     std::vector<half> cpuData = {__float2half(1.1f), __float2half(2.2f), __float2half(3.3f), __float2half(4.4f),
@@ -164,7 +164,7 @@ TEST(SafetensorsUtilsTest, HalfTensors)
     EXPECT_EQ(loadedCpu->getShape()[0], 2);
     EXPECT_EQ(loadedCpu->getShape()[1], 2);
     EXPECT_EQ(loadedCpu->getShape()[2], 2);
-    EXPECT_EQ(loadedCpu->getDataType(), nvinfer1::DataType::kHALF);
+    EXPECT_EQ(loadedCpu->getDataType(), trt_edgellm::DataType::kHALF);
 
     std::vector<half> loadedCpuData(8);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -182,7 +182,7 @@ TEST(SafetensorsUtilsTest, HalfTensors)
     EXPECT_EQ(loadedGpu->getShape()[1], 2);
     EXPECT_EQ(loadedGpu->getShape()[2], 3);
     EXPECT_EQ(loadedGpu->getShape()[3], 2);
-    EXPECT_EQ(loadedGpu->getDataType(), nvinfer1::DataType::kHALF);
+    EXPECT_EQ(loadedGpu->getDataType(), trt_edgellm::DataType::kHALF);
 
     std::vector<half> loadedGpuData(12);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -208,9 +208,9 @@ TEST(SafetensorsUtilsTest, Bf16Tensors)
     }
 
     // CPU tensor: 2D
-    rt::Tensor cpuTensor({3, 2}, rt::DeviceType::kCPU, nvinfer1::DataType::kBF16, "cpu_bf16");
+    rt::Tensor cpuTensor({3, 2}, rt::DeviceType::kCPU, trt_edgellm::DataType::kBF16, "cpu_bf16");
     // GPU tensor: 5D
-    rt::Tensor gpuTensor({1, 1, 2, 2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kBF16, "gpu_bf16");
+    rt::Tensor gpuTensor({1, 1, 2, 2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kBF16, "gpu_bf16");
 
     // Test data
     std::vector<__nv_bfloat16> cpuData = {__float2bfloat16(-3.8f), __float2bfloat16(0.0f), __float2bfloat16(2.7f),
@@ -251,7 +251,7 @@ TEST(SafetensorsUtilsTest, Bf16Tensors)
     EXPECT_EQ(loadedCpu->getShape().getNumDims(), 2);
     EXPECT_EQ(loadedCpu->getShape()[0], 3);
     EXPECT_EQ(loadedCpu->getShape()[1], 2);
-    EXPECT_EQ(loadedCpu->getDataType(), nvinfer1::DataType::kBF16);
+    EXPECT_EQ(loadedCpu->getDataType(), trt_edgellm::DataType::kBF16);
 
     std::vector<__nv_bfloat16> loadedCpuData(6);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -270,7 +270,7 @@ TEST(SafetensorsUtilsTest, Bf16Tensors)
     EXPECT_EQ(loadedGpu->getShape()[2], 2);
     EXPECT_EQ(loadedGpu->getShape()[3], 2);
     EXPECT_EQ(loadedGpu->getShape()[4], 2);
-    EXPECT_EQ(loadedGpu->getDataType(), nvinfer1::DataType::kBF16);
+    EXPECT_EQ(loadedGpu->getDataType(), trt_edgellm::DataType::kBF16);
 
     std::vector<__nv_bfloat16> loadedGpuData(8);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -296,9 +296,9 @@ TEST(SafetensorsUtilsTest, Int32Tensors)
     }
 
     // CPU tensor: 4D
-    rt::Tensor cpuTensor({1, 2, 2, 2}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "cpu_int32");
+    rt::Tensor cpuTensor({1, 2, 2, 2}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "cpu_int32");
     // GPU tensor: 1D
-    rt::Tensor gpuTensor({8}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "gpu_int32");
+    rt::Tensor gpuTensor({8}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "gpu_int32");
 
     // Test data
     std::vector<int32_t> cpuData = {100, 200, 300, 400, 500, 600, 700, 800};
@@ -337,7 +337,7 @@ TEST(SafetensorsUtilsTest, Int32Tensors)
     EXPECT_EQ(loadedCpu->getShape()[1], 2);
     EXPECT_EQ(loadedCpu->getShape()[2], 2);
     EXPECT_EQ(loadedCpu->getShape()[3], 2);
-    EXPECT_EQ(loadedCpu->getDataType(), nvinfer1::DataType::kINT32);
+    EXPECT_EQ(loadedCpu->getDataType(), trt_edgellm::DataType::kINT32);
 
     std::vector<int32_t> loadedCpuData(8);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -352,7 +352,7 @@ TEST(SafetensorsUtilsTest, Int32Tensors)
     EXPECT_NE(loadedGpu, nullptr);
     EXPECT_EQ(loadedGpu->getShape().getNumDims(), 1);
     EXPECT_EQ(loadedGpu->getShape()[0], 8);
-    EXPECT_EQ(loadedGpu->getDataType(), nvinfer1::DataType::kINT32);
+    EXPECT_EQ(loadedGpu->getDataType(), trt_edgellm::DataType::kINT32);
 
     std::vector<int32_t> loadedGpuData(8);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -384,11 +384,12 @@ TEST(SafetensorsUtilsTest, NonOwnedMemoryTensors)
     // Non-owned tensor 1: FLOAT at offset 0
     float* floatPtr = static_cast<float*>(sharedMemoryBuffer);
     rt::Tensor nonOwnedFloatTensor(
-        floatPtr, {2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "non_owned_float");
+        floatPtr, {2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "non_owned_float");
 
     // Non-owned tensor 2: HALF at offset 16 bytes (4 floats)
     half* halfPtr = static_cast<half*>(sharedMemoryBuffer) + 8; // 4 floats = 16 bytes
-    rt::Tensor nonOwnedHalfTensor(halfPtr, {3, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "non_owned_half");
+    rt::Tensor nonOwnedHalfTensor(
+        halfPtr, {3, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "non_owned_half");
 
     // Test data
     std::vector<float> floatData = {10.1f, 10.2f, 10.3f, 10.4f};
@@ -431,7 +432,7 @@ TEST(SafetensorsUtilsTest, NonOwnedMemoryTensors)
     EXPECT_EQ(loadedFloat->getShape().getNumDims(), 2);
     EXPECT_EQ(loadedFloat->getShape()[0], 2);
     EXPECT_EQ(loadedFloat->getShape()[1], 2);
-    EXPECT_EQ(loadedFloat->getDataType(), nvinfer1::DataType::kFLOAT);
+    EXPECT_EQ(loadedFloat->getDataType(), trt_edgellm::DataType::kFLOAT);
 
     std::vector<float> loadedFloatData(4);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -447,7 +448,7 @@ TEST(SafetensorsUtilsTest, NonOwnedMemoryTensors)
     EXPECT_EQ(loadedHalf->getShape().getNumDims(), 2);
     EXPECT_EQ(loadedHalf->getShape()[0], 3);
     EXPECT_EQ(loadedHalf->getShape()[1], 3);
-    EXPECT_EQ(loadedHalf->getDataType(), nvinfer1::DataType::kHALF);
+    EXPECT_EQ(loadedHalf->getDataType(), trt_edgellm::DataType::kHALF);
 
     std::vector<half> loadedHalfData(9);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -480,16 +481,16 @@ TEST(SafetensorsUtilsTest, MultipleTensorsWithSharedMemory)
 
     // Multiple non-owned tensors sharing the same memory buffer
     float* floatPtr = static_cast<float*>(sharedMemoryBuffer);
-    rt::Tensor tensor1(floatPtr, {2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "shared_float");
+    rt::Tensor tensor1(floatPtr, {2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "shared_float");
 
     half* halfPtr = static_cast<half*>(sharedMemoryBuffer) + 8; // 4 floats = 16 bytes
-    rt::Tensor tensor2(halfPtr, {3, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "shared_half");
+    rt::Tensor tensor2(halfPtr, {3, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "shared_half");
 
     __nv_bfloat16* bf16Ptr = static_cast<__nv_bfloat16*>(sharedMemoryBuffer) + 17; // 34 bytes offset
-    rt::Tensor tensor3(bf16Ptr, {2, 4}, rt::DeviceType::kGPU, nvinfer1::DataType::kBF16, "shared_bf16");
+    rt::Tensor tensor3(bf16Ptr, {2, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kBF16, "shared_bf16");
 
     int32_t* int32Ptr = static_cast<int32_t*>(sharedMemoryBuffer) + 25; // 50 bytes offset
-    rt::Tensor tensor4(int32Ptr, {2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "shared_int32");
+    rt::Tensor tensor4(int32Ptr, {2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "shared_int32");
 
     // Test data
     std::vector<float> floatData = {1.1f, 2.2f, 3.3f, 4.4f};
@@ -626,7 +627,7 @@ TEST(SafetensorsUtilsTest, SafetensorsLoadingFromFile)
     EXPECT_EQ(tensor0->getShape().getNumDims(), 2);
     EXPECT_EQ(tensor0->getShape()[0], 1);
     EXPECT_EQ(tensor0->getShape()[1], 5);
-    EXPECT_EQ(tensor0->getDataType(), nvinfer1::DataType::kHALF);
+    EXPECT_EQ(tensor0->getDataType(), trt_edgellm::DataType::kHALF);
 
     // Copy tensor0 data from GPU to CPU using direct CUDA operations
     std::vector<half> tensor0Cpu(5);
@@ -646,7 +647,7 @@ TEST(SafetensorsUtilsTest, SafetensorsLoadingFromFile)
     EXPECT_EQ(tensor1->getShape().getNumDims(), 2);
     EXPECT_EQ(tensor1->getShape()[0], 1);
     EXPECT_EQ(tensor1->getShape()[1], 3);
-    EXPECT_EQ(tensor1->getDataType(), nvinfer1::DataType::kBF16);
+    EXPECT_EQ(tensor1->getDataType(), trt_edgellm::DataType::kBF16);
 
     // Copy tensor1 data from GPU to CPU using direct CUDA operations
     std::vector<__nv_bfloat16> tensor1Cpu(3);
@@ -673,15 +674,15 @@ TEST(SafetensorsUtilsTest, SafetensorsErrorHandling)
     EXPECT_FALSE(std::filesystem::exists(testFile));
 
     // Test 2: Empty tensor name
-    rt::Tensor tensorWithEmptyName({2, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "");
+    rt::Tensor tensorWithEmptyName({2, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "");
     std::vector<rt::Tensor> tensorsWithEmptyName;
     tensorsWithEmptyName.push_back(std::move(tensorWithEmptyName));
     EXPECT_FALSE(rt::safetensors::saveSafetensors(testFile, tensorsWithEmptyName, stream));
     EXPECT_FALSE(std::filesystem::exists(testFile));
 
     // Test 3: Duplicate tensor names
-    rt::Tensor tensor1({2, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "duplicate_name");
-    rt::Tensor tensor2({4, 5}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "duplicate_name");
+    rt::Tensor tensor1({2, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "duplicate_name");
+    rt::Tensor tensor2({4, 5}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "duplicate_name");
     std::vector<rt::Tensor> tensorsWithDuplicateNames;
     tensorsWithDuplicateNames.push_back(std::move(tensor1));
     tensorsWithDuplicateNames.push_back(std::move(tensor2));
@@ -706,9 +707,9 @@ TEST(SafetensorsUtilsTest, Int8Tensors)
     }
 
     // CPU tensor: 2D
-    rt::Tensor cpuTensor({3, 4}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT8, "cpu_int8");
+    rt::Tensor cpuTensor({3, 4}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT8, "cpu_int8");
     // GPU tensor: 3D
-    rt::Tensor gpuTensor({2, 2, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "gpu_int8");
+    rt::Tensor gpuTensor({2, 2, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "gpu_int8");
 
     // Test data
     std::vector<int8_t> cpuData = {-128, -64, -32, -16, -8, -4, -2, -1, 0, 1, 2, 4};
@@ -746,7 +747,7 @@ TEST(SafetensorsUtilsTest, Int8Tensors)
     EXPECT_EQ(loadedCpu->getShape().getNumDims(), 2);
     EXPECT_EQ(loadedCpu->getShape()[0], 3);
     EXPECT_EQ(loadedCpu->getShape()[1], 4);
-    EXPECT_EQ(loadedCpu->getDataType(), nvinfer1::DataType::kINT8);
+    EXPECT_EQ(loadedCpu->getDataType(), trt_edgellm::DataType::kINT8);
 
     std::vector<int8_t> loadedCpuData(12);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -763,7 +764,7 @@ TEST(SafetensorsUtilsTest, Int8Tensors)
     EXPECT_EQ(loadedGpu->getShape()[0], 2);
     EXPECT_EQ(loadedGpu->getShape()[1], 2);
     EXPECT_EQ(loadedGpu->getShape()[2], 3);
-    EXPECT_EQ(loadedGpu->getDataType(), nvinfer1::DataType::kINT8);
+    EXPECT_EQ(loadedGpu->getDataType(), trt_edgellm::DataType::kINT8);
 
     std::vector<int8_t> loadedGpuData(12);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -789,9 +790,9 @@ TEST(SafetensorsUtilsTest, Uint8Tensors)
     }
 
     // CPU tensor: 1D
-    rt::Tensor cpuTensor({8}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8, "cpu_uint8");
+    rt::Tensor cpuTensor({8}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8, "cpu_uint8");
     // GPU tensor: 4D
-    rt::Tensor gpuTensor({1, 2, 2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8, "gpu_uint8");
+    rt::Tensor gpuTensor({1, 2, 2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8, "gpu_uint8");
 
     // Test data
     std::vector<uint8_t> cpuData = {0, 1, 2, 4, 8, 16, 32, 64};
@@ -828,7 +829,7 @@ TEST(SafetensorsUtilsTest, Uint8Tensors)
     EXPECT_NE(loadedCpu, nullptr);
     EXPECT_EQ(loadedCpu->getShape().getNumDims(), 1);
     EXPECT_EQ(loadedCpu->getShape()[0], 8);
-    EXPECT_EQ(loadedCpu->getDataType(), nvinfer1::DataType::kUINT8);
+    EXPECT_EQ(loadedCpu->getDataType(), trt_edgellm::DataType::kUINT8);
 
     std::vector<uint8_t> loadedCpuData(8);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -846,7 +847,7 @@ TEST(SafetensorsUtilsTest, Uint8Tensors)
     EXPECT_EQ(loadedGpu->getShape()[1], 2);
     EXPECT_EQ(loadedGpu->getShape()[2], 2);
     EXPECT_EQ(loadedGpu->getShape()[3], 2);
-    EXPECT_EQ(loadedGpu->getDataType(), nvinfer1::DataType::kUINT8);
+    EXPECT_EQ(loadedGpu->getDataType(), trt_edgellm::DataType::kUINT8);
 
     std::vector<uint8_t> loadedGpuData(8);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -872,9 +873,9 @@ TEST(SafetensorsUtilsTest, Int64Tensors)
     }
 
     // CPU tensor: 2D
-    rt::Tensor cpuTensor({2, 3}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "cpu_int64");
+    rt::Tensor cpuTensor({2, 3}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64, "cpu_int64");
     // GPU tensor: 1D
-    rt::Tensor gpuTensor({6}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "gpu_int64");
+    rt::Tensor gpuTensor({6}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "gpu_int64");
 
     // Test data
     std::vector<int64_t> cpuData
@@ -914,7 +915,7 @@ TEST(SafetensorsUtilsTest, Int64Tensors)
     EXPECT_EQ(loadedCpu->getShape().getNumDims(), 2);
     EXPECT_EQ(loadedCpu->getShape()[0], 2);
     EXPECT_EQ(loadedCpu->getShape()[1], 3);
-    EXPECT_EQ(loadedCpu->getDataType(), nvinfer1::DataType::kINT64);
+    EXPECT_EQ(loadedCpu->getDataType(), trt_edgellm::DataType::kINT64);
 
     std::vector<int64_t> loadedCpuData(6);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -929,7 +930,7 @@ TEST(SafetensorsUtilsTest, Int64Tensors)
     EXPECT_NE(loadedGpu, nullptr);
     EXPECT_EQ(loadedGpu->getShape().getNumDims(), 1);
     EXPECT_EQ(loadedGpu->getShape()[0], 6);
-    EXPECT_EQ(loadedGpu->getDataType(), nvinfer1::DataType::kINT64);
+    EXPECT_EQ(loadedGpu->getDataType(), trt_edgellm::DataType::kINT64);
 
     std::vector<int64_t> loadedGpuData(6);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -955,9 +956,9 @@ TEST(SafetensorsUtilsTest, Fp8Tensors)
     }
 
     // CPU tensor: 3D
-    rt::Tensor cpuTensor({2, 2, 2}, rt::DeviceType::kCPU, nvinfer1::DataType::kFP8, "cpu_fp8");
+    rt::Tensor cpuTensor({2, 2, 2}, rt::DeviceType::kCPU, trt_edgellm::DataType::kFP8, "cpu_fp8");
     // GPU tensor: 2D
-    rt::Tensor gpuTensor({3, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8, "gpu_fp8");
+    rt::Tensor gpuTensor({3, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8, "gpu_fp8");
 
     // Test data - FP8 E4M3 format
     // Note: FP8 values are represented as uint8_t in memory
@@ -997,7 +998,7 @@ TEST(SafetensorsUtilsTest, Fp8Tensors)
     EXPECT_EQ(loadedCpu->getShape()[0], 2);
     EXPECT_EQ(loadedCpu->getShape()[1], 2);
     EXPECT_EQ(loadedCpu->getShape()[2], 2);
-    EXPECT_EQ(loadedCpu->getDataType(), nvinfer1::DataType::kFP8);
+    EXPECT_EQ(loadedCpu->getDataType(), trt_edgellm::DataType::kFP8);
 
     std::vector<uint8_t> loadedCpuData(8);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -1013,7 +1014,7 @@ TEST(SafetensorsUtilsTest, Fp8Tensors)
     EXPECT_EQ(loadedGpu->getShape().getNumDims(), 2);
     EXPECT_EQ(loadedGpu->getShape()[0], 3);
     EXPECT_EQ(loadedGpu->getShape()[1], 3);
-    EXPECT_EQ(loadedGpu->getDataType(), nvinfer1::DataType::kFP8);
+    EXPECT_EQ(loadedGpu->getDataType(), trt_edgellm::DataType::kFP8);
 
     std::vector<uint8_t> loadedGpuData(9);
     CUDA_CHECK(cudaMemcpyAsync(
@@ -1042,21 +1043,21 @@ TEST(SafetensorsUtilsTest, AllDataTypesMixed)
     std::vector<rt::Tensor> tensors;
 
     // FLOAT tensor
-    rt::Tensor floatTensor({2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "float_tensor");
+    rt::Tensor floatTensor({2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "float_tensor");
     std::vector<float> floatData = {1.1f, 2.2f, 3.3f, 4.4f};
     CUDA_CHECK(
         cudaMemcpyAsync(floatTensor.rawPointer(), floatData.data(), 4 * sizeof(float), cudaMemcpyHostToDevice, stream));
     tensors.push_back(std::move(floatTensor));
 
     // HALF tensor
-    rt::Tensor halfTensor({2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "half_tensor");
+    rt::Tensor halfTensor({2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "half_tensor");
     std::vector<half> halfData = {__float2half(5.0f), __float2half(6.0f), __float2half(7.0f), __float2half(8.0f)};
     CUDA_CHECK(
         cudaMemcpyAsync(halfTensor.rawPointer(), halfData.data(), 4 * sizeof(half), cudaMemcpyHostToDevice, stream));
     tensors.push_back(std::move(halfTensor));
 
     // BF16 tensor
-    rt::Tensor bf16Tensor({2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kBF16, "bf16_tensor");
+    rt::Tensor bf16Tensor({2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kBF16, "bf16_tensor");
     std::vector<__nv_bfloat16> bf16Data
         = {__float2bfloat16(9.0f), __float2bfloat16(10.0f), __float2bfloat16(11.0f), __float2bfloat16(12.0f)};
     CUDA_CHECK(cudaMemcpyAsync(
@@ -1064,35 +1065,35 @@ TEST(SafetensorsUtilsTest, AllDataTypesMixed)
     tensors.push_back(std::move(bf16Tensor));
 
     // INT8 tensor
-    rt::Tensor int8Tensor({2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "int8_tensor");
+    rt::Tensor int8Tensor({2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "int8_tensor");
     std::vector<int8_t> int8Data = {13, 14, 15, 16};
     CUDA_CHECK(
         cudaMemcpyAsync(int8Tensor.rawPointer(), int8Data.data(), 4 * sizeof(int8_t), cudaMemcpyHostToDevice, stream));
     tensors.push_back(std::move(int8Tensor));
 
     // UINT8 tensor
-    rt::Tensor uint8Tensor({2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8, "uint8_tensor");
+    rt::Tensor uint8Tensor({2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8, "uint8_tensor");
     std::vector<uint8_t> uint8Data = {17, 18, 19, 20};
     CUDA_CHECK(cudaMemcpyAsync(
         uint8Tensor.rawPointer(), uint8Data.data(), 4 * sizeof(uint8_t), cudaMemcpyHostToDevice, stream));
     tensors.push_back(std::move(uint8Tensor));
 
     // INT32 tensor
-    rt::Tensor int32Tensor({2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "int32_tensor");
+    rt::Tensor int32Tensor({2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "int32_tensor");
     std::vector<int32_t> int32Data = {21, 22, 23, 24};
     CUDA_CHECK(cudaMemcpyAsync(
         int32Tensor.rawPointer(), int32Data.data(), 4 * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
     tensors.push_back(std::move(int32Tensor));
 
     // INT64 tensor
-    rt::Tensor int64Tensor({2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "int64_tensor");
+    rt::Tensor int64Tensor({2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "int64_tensor");
     std::vector<int64_t> int64Data = {25LL, 26LL, 27LL, 28LL};
     CUDA_CHECK(cudaMemcpyAsync(
         int64Tensor.rawPointer(), int64Data.data(), 4 * sizeof(int64_t), cudaMemcpyHostToDevice, stream));
     tensors.push_back(std::move(int64Tensor));
 
     // FP8 tensor
-    rt::Tensor fp8Tensor({2, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8, "fp8_tensor");
+    rt::Tensor fp8Tensor({2, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8, "fp8_tensor");
     std::vector<uint8_t> fp8Data = {29, 30, 31, 32};
     CUDA_CHECK(
         cudaMemcpyAsync(fp8Tensor.rawPointer(), fp8Data.data(), 4 * sizeof(uint8_t), cudaMemcpyHostToDevice, stream));
@@ -1115,7 +1116,7 @@ TEST(SafetensorsUtilsTest, AllDataTypesMixed)
 
     // Verify FLOAT tensor
     EXPECT_NE(tensorMap["float_tensor"], nullptr);
-    EXPECT_EQ(tensorMap["float_tensor"]->getDataType(), nvinfer1::DataType::kFLOAT);
+    EXPECT_EQ(tensorMap["float_tensor"]->getDataType(), trt_edgellm::DataType::kFLOAT);
     std::vector<float> loadedFloatData(4);
     CUDA_CHECK(cudaMemcpyAsync(loadedFloatData.data(), tensorMap["float_tensor"]->rawPointer(), 4 * sizeof(float),
         cudaMemcpyDeviceToHost, stream));
@@ -1127,7 +1128,7 @@ TEST(SafetensorsUtilsTest, AllDataTypesMixed)
 
     // Verify HALF tensor
     EXPECT_NE(tensorMap["half_tensor"], nullptr);
-    EXPECT_EQ(tensorMap["half_tensor"]->getDataType(), nvinfer1::DataType::kHALF);
+    EXPECT_EQ(tensorMap["half_tensor"]->getDataType(), trt_edgellm::DataType::kHALF);
     std::vector<half> loadedHalfData(4);
     CUDA_CHECK(cudaMemcpyAsync(loadedHalfData.data(), tensorMap["half_tensor"]->rawPointer(), 4 * sizeof(half),
         cudaMemcpyDeviceToHost, stream));
@@ -1139,7 +1140,7 @@ TEST(SafetensorsUtilsTest, AllDataTypesMixed)
 
     // Verify BF16 tensor
     EXPECT_NE(tensorMap["bf16_tensor"], nullptr);
-    EXPECT_EQ(tensorMap["bf16_tensor"]->getDataType(), nvinfer1::DataType::kBF16);
+    EXPECT_EQ(tensorMap["bf16_tensor"]->getDataType(), trt_edgellm::DataType::kBF16);
     std::vector<__nv_bfloat16> loadedBf16Data(4);
     CUDA_CHECK(cudaMemcpyAsync(loadedBf16Data.data(), tensorMap["bf16_tensor"]->rawPointer(), 4 * sizeof(__nv_bfloat16),
         cudaMemcpyDeviceToHost, stream));
@@ -1151,7 +1152,7 @@ TEST(SafetensorsUtilsTest, AllDataTypesMixed)
 
     // Verify INT8 tensor
     EXPECT_NE(tensorMap["int8_tensor"], nullptr);
-    EXPECT_EQ(tensorMap["int8_tensor"]->getDataType(), nvinfer1::DataType::kINT8);
+    EXPECT_EQ(tensorMap["int8_tensor"]->getDataType(), trt_edgellm::DataType::kINT8);
     std::vector<int8_t> loadedInt8Data(4);
     CUDA_CHECK(cudaMemcpyAsync(loadedInt8Data.data(), tensorMap["int8_tensor"]->rawPointer(), 4 * sizeof(int8_t),
         cudaMemcpyDeviceToHost, stream));
@@ -1163,7 +1164,7 @@ TEST(SafetensorsUtilsTest, AllDataTypesMixed)
 
     // Verify UINT8 tensor
     EXPECT_NE(tensorMap["uint8_tensor"], nullptr);
-    EXPECT_EQ(tensorMap["uint8_tensor"]->getDataType(), nvinfer1::DataType::kUINT8);
+    EXPECT_EQ(tensorMap["uint8_tensor"]->getDataType(), trt_edgellm::DataType::kUINT8);
     std::vector<uint8_t> loadedUint8Data(4);
     CUDA_CHECK(cudaMemcpyAsync(loadedUint8Data.data(), tensorMap["uint8_tensor"]->rawPointer(), 4 * sizeof(uint8_t),
         cudaMemcpyDeviceToHost, stream));
@@ -1175,7 +1176,7 @@ TEST(SafetensorsUtilsTest, AllDataTypesMixed)
 
     // Verify INT32 tensor
     EXPECT_NE(tensorMap["int32_tensor"], nullptr);
-    EXPECT_EQ(tensorMap["int32_tensor"]->getDataType(), nvinfer1::DataType::kINT32);
+    EXPECT_EQ(tensorMap["int32_tensor"]->getDataType(), trt_edgellm::DataType::kINT32);
     std::vector<int32_t> loadedInt32Data(4);
     CUDA_CHECK(cudaMemcpyAsync(loadedInt32Data.data(), tensorMap["int32_tensor"]->rawPointer(), 4 * sizeof(int32_t),
         cudaMemcpyDeviceToHost, stream));
@@ -1187,7 +1188,7 @@ TEST(SafetensorsUtilsTest, AllDataTypesMixed)
 
     // Verify INT64 tensor
     EXPECT_NE(tensorMap["int64_tensor"], nullptr);
-    EXPECT_EQ(tensorMap["int64_tensor"]->getDataType(), nvinfer1::DataType::kINT64);
+    EXPECT_EQ(tensorMap["int64_tensor"]->getDataType(), trt_edgellm::DataType::kINT64);
     std::vector<int64_t> loadedInt64Data(4);
     CUDA_CHECK(cudaMemcpyAsync(loadedInt64Data.data(), tensorMap["int64_tensor"]->rawPointer(), 4 * sizeof(int64_t),
         cudaMemcpyDeviceToHost, stream));
@@ -1199,7 +1200,7 @@ TEST(SafetensorsUtilsTest, AllDataTypesMixed)
 
     // Verify FP8 tensor
     EXPECT_NE(tensorMap["fp8_tensor"], nullptr);
-    EXPECT_EQ(tensorMap["fp8_tensor"]->getDataType(), nvinfer1::DataType::kFP8);
+    EXPECT_EQ(tensorMap["fp8_tensor"]->getDataType(), trt_edgellm::DataType::kFP8);
     std::vector<uint8_t> loadedFp8Data(4);
     CUDA_CHECK(cudaMemcpyAsync(loadedFp8Data.data(), tensorMap["fp8_tensor"]->rawPointer(), 4 * sizeof(uint8_t),
         cudaMemcpyDeviceToHost, stream));

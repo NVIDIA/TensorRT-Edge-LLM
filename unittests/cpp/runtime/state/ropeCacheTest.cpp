@@ -182,7 +182,7 @@ TEST_F(RopeCacheTest, TensorShapeAndType)
     EXPECT_EQ(t.getShape()[1], maxSeqLen);
     EXPECT_EQ(t.getShape()[2], rotaryDim);
     EXPECT_EQ(t.getDeviceType(), DeviceType::kGPU);
-    EXPECT_EQ(t.getDataType(), nvinfer1::DataType::kFLOAT);
+    EXPECT_EQ(t.getDataType(), trt_edgellm::DataType::kFLOAT);
 }
 
 TEST_F(RopeCacheTest, NoRopeDeduplication)

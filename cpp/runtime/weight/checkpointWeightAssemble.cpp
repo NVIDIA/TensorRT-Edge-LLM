@@ -27,6 +27,7 @@
 #include "kernels/weightsTransform/int4/groupwiseGemm/v2/int4CuteDslRepack.h"
 #include "kernels/weightsTransform/int4/moe/gptqMarlin/gptqMarlinRepack.h"
 #include "kernels/weightsTransform/int4/moe/gptqMarlin/int4MoeScaleRepack.h"
+#include "kernels/weightsTransform/iq2_xxs/iq2XxsRepack.h"
 #include "kernels/weightsTransform/nvfp4/moe/common/nvfp4MoeScaleTransform.h"
 #include "kernels/weightsTransform/nvfp4/moe/common/nvfp4MoeWeightTransform.h"
 #include "kernels/weightsTransform/nvfp4/moe/sm110/nvfp4MoePluginTransform.h"
@@ -91,7 +92,7 @@ int32_t int4PluginVersion(Json const& binding)
     return version;
 }
 
-void validateOutput(Tensor const& output, Coords const& shape, nvinfer1::DataType dtype, std::string const& label)
+void validateOutput(Tensor const& output, Coords const& shape, trt_edgellm::DataType dtype, std::string const& label)
 {
     ELLM_CHECK(output.getShape() == shape, label + " shape does not match engine binding");
     ELLM_CHECK(output.getDataType() == dtype, label + " dtype does not match engine binding");
@@ -99,7 +100,7 @@ void validateOutput(Tensor const& output, Coords const& shape, nvinfer1::DataTyp
 
 bool validateGptqGroups(View const& groups, int32_t K, int32_t numGroups, int32_t groupSize, std::string const& key)
 {
-    ELLM_CHECK(groups.dtype == nvinfer1::DataType::kINT32 && groups.shape.volume() == K,
+    ELLM_CHECK(groups.dtype == trt_edgellm::DataType::kINT32 && groups.shape.volume() == K,
         "GPTQ g_idx must be INT32 [K]: " + key);
     ELLM_CHECK(numGroups > 0 && groupSize > 0 && numGroups * groupSize == K, "Invalid GPTQ group geometry: " + key);
     auto const* values = reinterpret_cast<int32_t const*>(groups.data);
@@ -145,7 +146,7 @@ void assembleGptqActivationPermutation(
     ELLM_CHECK(groupSize > 0 && K % groupSize == 0, "Invalid GPTQ activation permutation group size: " + key);
     int32_t const numGroups = K / groupSize;
     validateGptqGroups(groups, K, numGroups, groupSize, key);
-    validateOutput(output, Coords{K}, nvinfer1::DataType::kINT32, "GPTQ activation permutation output");
+    validateOutput(output, Coords{K}, trt_edgellm::DataType::kINT32, "GPTQ activation permutation output");
     CUDA_CHECK(kernel::launchGptqActivationPermutation(reinterpret_cast<int32_t const*>(groups.deviceData),
         static_cast<int32_t*>(output.rawPointer()), K, numGroups, groupSize, stream));
 }
@@ -167,10 +168,15 @@ void loadIdentityWeight(CheckpointReader& checkpoint, Json const& binding, Tenso
     }
     ELLM_CHECK(!sourceKey.empty(), "Failed to load checkpoint tensor for " + output.getName());
 
-    nvinfer1::DataType const sourceType = source.dtype;
-    nvinfer1::DataType const outputType = output.getDataType();
-    bool const needCast = outputType == nvinfer1::DataType::kHALF && sourceType != nvinfer1::DataType::kHALF
-        && (sourceType == nvinfer1::DataType::kBF16 || sourceType == nvinfer1::DataType::kFLOAT);
+    trt_edgellm::DataType const sourceType = source.dtype;
+    trt_edgellm::DataType const outputType = output.getDataType();
+    bool const needCast = outputType == trt_edgellm::DataType::kHALF && sourceType != trt_edgellm::DataType::kHALF
+        && (sourceType == trt_edgellm::DataType::kBF16 || sourceType == trt_edgellm::DataType::kFLOAT);
+    // Packed byte blocks (Q8_0) are stored as U8 and bound as INT8; the copy is byte-identical.
+    auto const isByte = [](trt_edgellm::DataType type) {
+        return type == trt_edgellm::DataType::kINT8 || type == trt_edgellm::DataType::kUINT8;
+    };
+    bool const sameBytes = sourceType == outputType || (isByte(sourceType) && isByte(outputType));
     Coords const want = output.getShape();
     Coords const have = source.shape;
 
@@ -244,7 +250,7 @@ void loadIdentityWeight(CheckpointReader& checkpoint, Json const& binding, Tenso
                 {
                     CUDA_CHECK(kernel::launchCopyBytes(mapped.deviceData, destination, sourceBytes, stream));
                 }
-                else if (sourceType == nvinfer1::DataType::kFLOAT)
+                else if (sourceType == trt_edgellm::DataType::kFLOAT)
                 {
                     CUDA_CHECK(kernel::launchFp32ToFp16(mapped.deviceData, destination, count, stream));
                 }
@@ -258,7 +264,7 @@ void loadIdentityWeight(CheckpointReader& checkpoint, Json const& binding, Tenso
 
     if (hasShard)
     {
-        ELLM_CHECK(!needCast || outputType == nvinfer1::DataType::kHALF,
+        ELLM_CHECK(!needCast || outputType == trt_edgellm::DataType::kHALF,
             "checkpoint TP cast currently requires an FP16 engine binding");
         ELLM_CHECK(needCast || sourceType == outputType,
             "checkpoint TP shard dtype does not match binding for " + output.getName());
@@ -313,7 +319,7 @@ void loadIdentityWeight(CheckpointReader& checkpoint, Json const& binding, Tenso
             size_t const rangeBytes = rowCount * sourceRowBytes;
             auto* destination = static_cast<uint8_t*>(output.rawPointer()) + firstRow * destinationRowBytes;
             runRange(rangeOffset, rangeBytes, [&](View const& mapped) {
-                if (needCast && sourceType == nvinfer1::DataType::kFLOAT)
+                if (needCast && sourceType == trt_edgellm::DataType::kFLOAT)
                 {
                     CUDA_CHECK(kernel::launchFp32SliceToFp16(mapped.deviceData, destination, rowCount, sourceColumns,
                         sourceColumnOffset, destinationColumns, stream));
@@ -337,10 +343,9 @@ void loadIdentityWeight(CheckpointReader& checkpoint, Json const& binding, Tenso
 
     if (!needTranspose)
     {
-        ELLM_CHECK(!needCast || outputType == nvinfer1::DataType::kHALF,
+        ELLM_CHECK(!needCast || outputType == trt_edgellm::DataType::kHALF,
             "checkpoint cast currently requires an FP16 engine binding");
-        ELLM_CHECK(needCast || sourceType == outputType,
-            "checkpoint weight dtype does not match binding for " + output.getName());
+        ELLM_CHECK(needCast || sameBytes, "checkpoint weight dtype does not match binding for " + output.getName());
         ELLM_CHECK(source.bytes == static_cast<size_t>(source.shape.volume()) * utils::getTypeSize(sourceType),
             "checkpoint weight byte size does not match metadata for " + output.getName());
         ELLM_CHECK(static_cast<size_t>(output.getMemoryCapacity())
@@ -366,23 +371,23 @@ void loadIdentityWeight(CheckpointReader& checkpoint, Json const& binding, Tenso
     }
 
     ELLM_CHECK(
-        outputType == nvinfer1::DataType::kHALF, "checkpoint transpose currently requires an FP16 engine binding");
+        outputType == trt_edgellm::DataType::kHALF, "checkpoint transpose currently requires an FP16 engine binding");
     runRange(0, source.bytes, [&](View const& mapped) {
         int32_t const rows = static_cast<int32_t>(have[0]);
         int32_t const columns = static_cast<int32_t>(have[1]);
-        if (sourceType == nvinfer1::DataType::kBF16)
+        if (sourceType == trt_edgellm::DataType::kBF16)
         {
             CUDA_CHECK(
                 kernel::launchBf16TransposeToFp16(mapped.deviceData, output.rawPointer(), rows, columns, stream));
         }
-        else if (sourceType == nvinfer1::DataType::kFLOAT)
+        else if (sourceType == trt_edgellm::DataType::kFLOAT)
         {
             CUDA_CHECK(
                 kernel::launchFp32TransposeToFp16(mapped.deviceData, output.rawPointer(), rows, columns, stream));
         }
         else
         {
-            ELLM_CHECK(sourceType == nvinfer1::DataType::kHALF,
+            ELLM_CHECK(sourceType == trt_edgellm::DataType::kHALF,
                 "checkpoint transpose only supports FP16, BF16, or FP32 sources");
             CUDA_CHECK(kernel::launchTransposeFp16(mapped.deviceData, output.rawPointer(), rows, columns, stream));
         }
@@ -395,18 +400,18 @@ void castWeightToFp32(CheckpointReader const& checkpoint, Json const& binding, T
     ELLM_CHECK(keys.size() == 1, "FP32 cast expects exactly one checkpoint tensor");
     std::string const& key = keyName(keys, 0);
     View const source = requireView(checkpoint, key, "FP32 cast source");
-    validateOutput(output, source.shape, nvinfer1::DataType::kFLOAT, "FP32 cast output");
-    if (source.dtype == nvinfer1::DataType::kFLOAT)
+    validateOutput(output, source.shape, trt_edgellm::DataType::kFLOAT, "FP32 cast output");
+    if (source.dtype == trt_edgellm::DataType::kFLOAT)
     {
         CUDA_CHECK(kernel::launchCopyBytes(source.deviceData, output.rawPointer(), source.bytes, stream));
     }
-    else if (source.dtype == nvinfer1::DataType::kBF16)
+    else if (source.dtype == trt_edgellm::DataType::kBF16)
     {
         CUDA_CHECK(kernel::launchBf16ToFp32(source.deviceData, output.rawPointer(), source.shape.volume(), stream));
     }
     else
     {
-        ELLM_CHECK(source.dtype == nvinfer1::DataType::kHALF,
+        ELLM_CHECK(source.dtype == trt_edgellm::DataType::kHALF,
             "FP32 cast supports only FP16, BF16, and FP32 checkpoint tensors: " + key);
         CUDA_CHECK(kernel::launchFp16ToFp32(source.deviceData, output.rawPointer(), source.shape.volume(), stream));
     }
@@ -418,10 +423,14 @@ void assembleGptqFfnQweight(CheckpointReader const& checkpoint, Json const& bind
     Json const& keys = checkpointKeys(binding);
     ELLM_CHECK(!keys.empty(), "gptq_ffn_qweight missing checkpoint_keys");
     View const qweight = requireView(checkpoint, keyName(keys, 0), "GPTQ qweight");
-    ELLM_CHECK(qweight.dtype == nvinfer1::DataType::kINT32 && qweight.shape.getNumDims() == 2,
-        "GPTQ qweight must be INT32 [K/8,N]");
-    int32_t const K = static_cast<int32_t>(qweight.shape[0]) * 8;
-    int32_t const N = static_cast<int32_t>(qweight.shape[1]);
+    ELLM_CHECK(qweight.dtype == trt_edgellm::DataType::kINT32 && qweight.shape.getNumDims() == 2,
+        "GPTQ qweight must be a rank-2 INT32 tensor");
+    std::string const checkpointLayout = binding.value("checkpoint_layout", std::string{"gptq"});
+    ELLM_CHECK(checkpointLayout == "gptq" || checkpointLayout == "output-major",
+        "unsupported GPTQ checkpoint layout: " + checkpointLayout);
+    bool const outputMajor = checkpointLayout == "output-major";
+    int32_t const K = static_cast<int32_t>(qweight.shape[outputMajor ? 1 : 0]) * 8;
+    int32_t const N = static_cast<int32_t>(qweight.shape[outputMajor ? 0 : 1]);
 
     View qzeros;
     bool hasZeros = false;
@@ -429,10 +438,11 @@ void assembleGptqFfnQweight(CheckpointReader const& checkpoint, Json const& bind
     int32_t groupSize = K;
     if (keys.size() > 1 && findView(checkpoint, keyName(keys, 1), qzeros) && qzeros.bytes > 0)
     {
-        ELLM_CHECK(
-            qzeros.dtype == nvinfer1::DataType::kINT32 && qzeros.shape.getNumDims() == 2 && qzeros.shape[1] * 8 == N,
-            "GPTQ qzeros must be INT32 [groups,N/8]");
-        numGroups = static_cast<int32_t>(qzeros.shape[0]);
+        ELLM_CHECK(qzeros.dtype == trt_edgellm::DataType::kINT32 && qzeros.shape.getNumDims() == 2
+                && qzeros.shape[outputMajor ? 0 : 1] * 8 == N,
+            outputMajor ? "compressed-tensors zero point must be INT32 [N/8,groups]"
+                        : "GPTQ qzeros must be INT32 [groups,N/8]");
+        numGroups = static_cast<int32_t>(qzeros.shape[outputMajor ? 1 : 0]);
         ELLM_CHECK(numGroups > 0 && K % numGroups == 0, "invalid GPTQ group count");
         groupSize = K / numGroups;
         hasZeros = true;
@@ -446,7 +456,7 @@ void assembleGptqFfnQweight(CheckpointReader const& checkpoint, Json const& bind
         {
             if (!hasZeros)
             {
-                ELLM_CHECK(groups.dtype == nvinfer1::DataType::kINT32 && groups.shape.volume() == K,
+                ELLM_CHECK(groups.dtype == trt_edgellm::DataType::kINT32 && groups.shape.volume() == K,
                     "GPTQ g_idx must be INT32 [K]: " + groupKey);
                 auto const* values = reinterpret_cast<int32_t const*>(groups.data);
                 int32_t maximum = 0;
@@ -464,28 +474,29 @@ void assembleGptqFfnQweight(CheckpointReader const& checkpoint, Json const& bind
         }
     }
 
-    auto const* zeros = hasZeros ? reinterpret_cast<int32_t const*>(qzeros.deviceData) : nullptr;
+    bool const preserveZeroPoints = binding.value("preserve_zero_points", false);
+    auto const* zeros = hasZeros && !preserveZeroPoints ? reinterpret_cast<int32_t const*>(qzeros.deviceData) : nullptr;
     int32_t const* permutation = nullptr;
     if (activationPermutation != nullptr)
     {
-        validateOutput(*activationPermutation, Coords{K}, nvinfer1::DataType::kINT32, "GPTQ activation permutation");
+        validateOutput(*activationPermutation, Coords{K}, trt_edgellm::DataType::kINT32, "GPTQ activation permutation");
         permutation = static_cast<int32_t const*>(activationPermutation->rawPointer());
     }
     int32_t const zeroPointOffset = binding.value("zero_point_offset", 1);
     if (int4PluginVersion(binding) == 2)
     {
-        validateOutput(output, Coords{kernel::int4CuteDslFragmentRows(N, K), 512}, nvinfer1::DataType::kINT8,
+        validateOutput(output, Coords{kernel::int4CuteDslFragmentRows(N, K), 512}, trt_edgellm::DataType::kINT8,
             "GPTQ INT4 V2 output");
         CUDA_CHECK(kernel::launchGptqInt4CuteDslRepack(reinterpret_cast<int32_t const*>(qweight.deviceData), zeros,
             permutation, static_cast<int8_t*>(output.rawPointer()), N, K, numGroups, groupSize, zeroPointOffset,
-            stream));
+            outputMajor, stream));
     }
     else
     {
-        validateOutput(output, Coords{N / 2, K}, nvinfer1::DataType::kINT8, "GPTQ INT4 V1 output");
+        validateOutput(output, Coords{N / 2, K}, trt_edgellm::DataType::kINT8, "GPTQ INT4 V1 output");
         CUDA_CHECK(kernel::launchGptqInt4PluginV1Repack(reinterpret_cast<int32_t const*>(qweight.deviceData), zeros,
             permutation, static_cast<int8_t*>(output.rawPointer()), N, K, numGroups, groupSize, zeroPointOffset,
-            stream));
+            outputMajor, stream));
     }
 }
 
@@ -505,12 +516,14 @@ std::array<int32_t, 3> qkvProjectionWidths(Json const& binding)
 void assembleGptqQkvQweight(CheckpointReader const& checkpoint, Json const& binding,
     Tensor const* activationPermutation, Tensor& output, cudaStream_t stream)
 {
+    ELLM_CHECK(binding.value("checkpoint_layout", std::string{"gptq"}) == "gptq",
+        "fused GPTQ Q/K/V assembly does not support output-major checkpoints");
     Json const& keys = checkpointKeys(binding);
     ELLM_CHECK(keys.size() == 9, "fused GPTQ Q/K/V qweight requires three keys per projection");
     std::array<int32_t, 3> const widths = qkvProjectionWidths(binding);
 
     View const firstQweight = requireView(checkpoint, keyName(keys, 0), "GPTQ Q qweight");
-    ELLM_CHECK(firstQweight.dtype == nvinfer1::DataType::kINT32 && firstQweight.shape.getNumDims() == 2,
+    ELLM_CHECK(firstQweight.dtype == trt_edgellm::DataType::kINT32 && firstQweight.shape.getNumDims() == 2,
         "fused GPTQ Q/K/V qweight must be INT32 [K/8,N]");
     int32_t const K = static_cast<int32_t>(firstQweight.shape[0]) * 8;
     int32_t const totalWidth = widths[0] + widths[1] + widths[2];
@@ -533,12 +546,12 @@ void assembleGptqQkvQweight(CheckpointReader const& checkpoint, Json const& bind
     int32_t const version = int4PluginVersion(binding);
     if (version == 1)
     {
-        validateOutput(output, Coords{totalWidth / 2, K}, nvinfer1::DataType::kINT8, "fused GPTQ Q/K/V V1 output");
+        validateOutput(output, Coords{totalWidth / 2, K}, trt_edgellm::DataType::kINT8, "fused GPTQ Q/K/V V1 output");
     }
     else
     {
-        validateOutput(output, Coords{kernel::int4CuteDslFragmentRows(totalWidth, K), 512}, nvinfer1::DataType::kINT8,
-            "fused GPTQ Q/K/V V2 output");
+        validateOutput(output, Coords{kernel::int4CuteDslFragmentRows(totalWidth, K), 512},
+            trt_edgellm::DataType::kINT8, "fused GPTQ Q/K/V V2 output");
     }
 
     size_t outputOffset = 0;
@@ -553,12 +566,13 @@ void assembleGptqQkvQweight(CheckpointReader const& checkpoint, Json const& bind
             {"checkpoint_keys", std::move(projectionKeys)},
             {"int4_gemm_plugin_version", version},
             {"zero_point_offset", binding.value("zero_point_offset", 1)},
+            {"preserve_zero_points", binding.value("preserve_zero_points", false)},
         };
         int32_t const width = widths[projection];
         Coords const shape
             = version == 1 ? Coords{width / 2, K} : Coords{kernel::int4CuteDslFragmentRows(width, K), 512};
         Tensor projectionOutput(static_cast<int8_t*>(output.rawPointer()) + outputOffset, shape, DeviceType::kGPU,
-            nvinfer1::DataType::kINT8, output.getName());
+            trt_edgellm::DataType::kINT8, output.getName());
         assembleGptqFfnQweight(checkpoint, projectionBinding, activationPermutation, projectionOutput, stream);
         outputOffset += static_cast<size_t>(shape.volume());
     }
@@ -578,11 +592,13 @@ void assembleGptqQkvScales(CheckpointReader const& checkpoint, Json const& bindi
     for (size_t projection = 0; projection < sources.size(); ++projection)
     {
         Coords const expectedShape{numGroups, widths[projection]};
-        ELLM_CHECK(sources[projection].dtype == nvinfer1::DataType::kHALF && sources[projection].shape == expectedShape,
+        ELLM_CHECK(
+            sources[projection].dtype == trt_edgellm::DataType::kHALF && sources[projection].shape == expectedShape,
             "GPTQ Q/K/V scales must be FP16 [groups,output_width]");
     }
     int32_t const totalWidth = widths[0] + widths[1] + widths[2];
-    validateOutput(output, Coords{numGroups, totalWidth}, nvinfer1::DataType::kHALF, "fused GPTQ Q/K/V scale output");
+    validateOutput(
+        output, Coords{numGroups, totalWidth}, trt_edgellm::DataType::kHALF, "fused GPTQ Q/K/V scale output");
     CUDA_CHECK(kernel::launchGptqInt4QkvScaleConcat(sources[0].deviceData, widths[0], sources[1].deviceData, widths[1],
         sources[2].deviceData, widths[2], numGroups, output.rawPointer(), stream));
 }
@@ -590,34 +606,25 @@ void assembleGptqQkvScales(CheckpointReader const& checkpoint, Json const& bindi
 void assembleAwqFfnQweight(CheckpointReader const& checkpoint, Json const& binding, Tensor& output, cudaStream_t stream)
 {
     Json const& keys = checkpointKeys(binding);
-    ELLM_CHECK(keys.size() >= 2, "awq_ffn_qweight requires qweight and qzeros keys");
+    ELLM_CHECK(keys.size() == 1, "awq_ffn_qweight requires one qweight key");
     View const qweight = requireView(checkpoint, keyName(keys, 0), "AWQ qweight");
-    View const qzeros = requireView(checkpoint, keyName(keys, 1), "AWQ qzeros");
-    ELLM_CHECK(qweight.dtype == nvinfer1::DataType::kINT32 && qweight.shape.getNumDims() == 2,
+    ELLM_CHECK(qweight.dtype == trt_edgellm::DataType::kINT32 && qweight.shape.getNumDims() == 2,
         "AWQ qweight must be INT32 [K,N/8]");
-    ELLM_CHECK(qzeros.dtype == nvinfer1::DataType::kINT32 && qzeros.shape.getNumDims() == 2
-            && qzeros.shape[1] == qweight.shape[1],
-        "AWQ qzeros must be INT32 [groups,N/8]");
     int32_t const K = static_cast<int32_t>(qweight.shape[0]);
     int32_t const N = static_cast<int32_t>(qweight.shape[1]) * 8;
-    int32_t const numGroups = static_cast<int32_t>(qzeros.shape[0]);
-    ELLM_CHECK(numGroups > 0 && K % numGroups == 0, "invalid AWQ group count");
-    int32_t const groupSize = K / numGroups;
 
     auto const* weight = reinterpret_cast<int32_t const*>(qweight.deviceData);
-    auto const* zeros = reinterpret_cast<int32_t const*>(qzeros.deviceData);
     if (int4PluginVersion(binding) == 2)
     {
-        validateOutput(output, Coords{kernel::int4CuteDslFragmentRows(N, K), 512}, nvinfer1::DataType::kINT8,
+        validateOutput(output, Coords{kernel::int4CuteDslFragmentRows(N, K), 512}, trt_edgellm::DataType::kINT8,
             "AWQ INT4 V2 output");
-        CUDA_CHECK(kernel::launchAwqInt4CuteDslRepack(
-            weight, zeros, static_cast<int8_t*>(output.rawPointer()), N, K, numGroups, groupSize, stream));
+        CUDA_CHECK(kernel::launchAwqInt4CuteDslRepack(weight, static_cast<int8_t*>(output.rawPointer()), N, K, stream));
     }
     else
     {
-        validateOutput(output, Coords{N / 2, K}, nvinfer1::DataType::kINT8, "AWQ INT4 V1 output");
-        CUDA_CHECK(kernel::launchAwqInt4PluginV1Repack(
-            weight, zeros, static_cast<int8_t*>(output.rawPointer()), N, K, numGroups, groupSize, stream));
+        validateOutput(output, Coords{N / 2, K}, trt_edgellm::DataType::kINT8, "AWQ INT4 V1 output");
+        CUDA_CHECK(
+            kernel::launchAwqInt4PluginV1Repack(weight, static_cast<int8_t*>(output.rawPointer()), N, K, stream));
     }
 }
 
@@ -635,14 +642,14 @@ void assembleModelOptAwqFfnQweight(
 
     if (int4PluginVersion(binding) == 2)
     {
-        validateOutput(output, Coords{kernel::int4CuteDslFragmentRows(N, K), 512}, nvinfer1::DataType::kINT8,
+        validateOutput(output, Coords{kernel::int4CuteDslFragmentRows(N, K), 512}, trt_edgellm::DataType::kINT8,
             "ModelOpt INT4 V2 output");
         CUDA_CHECK(kernel::launchModelOptInt4CuteDslRepack(
             source.deviceData, static_cast<int8_t*>(output.rawPointer()), N, K, stream));
     }
     else
     {
-        validateOutput(output, Coords{N / 2, K}, nvinfer1::DataType::kINT8, "ModelOpt INT4 V1 output");
+        validateOutput(output, Coords{N / 2, K}, trt_edgellm::DataType::kINT8, "ModelOpt INT4 V1 output");
         CUDA_CHECK(kernel::launchModelOptInt4PluginV1Repack(
             source.deviceData, static_cast<int8_t*>(output.rawPointer()), N, K, stream));
     }
@@ -669,7 +676,7 @@ void stackExpertMatrices(CheckpointReader const& checkpoint, Json const& keys, i
     ELLM_CHECK(perExpertBytes == static_cast<size_t>(rows) * columns, "NVFP4 expert matrix must contain bytes");
     Coords const outputShape = output.getShape();
     ELLM_CHECK(outputShape.getNumDims() == 3 && outputShape[0] == numExperts && outputShape[1] >= rows
-            && outputShape[2] >= columns && output.getDataType() == nvinfer1::DataType::kINT8,
+            && outputShape[2] >= columns && output.getDataType() == trt_edgellm::DataType::kINT8,
         "NVFP4 stacked matrix shape does not match engine binding");
 
     auto* destination = static_cast<uint8_t*>(output.rawPointer());
@@ -709,7 +716,7 @@ void assembleNvfp4Scales(CheckpointReader const& checkpoint, Json const& keys, i
     ELLM_CHECK(first.shape.getNumDims() == 2, "NVFP4 scale source must be rank-2");
     int32_t const rows = static_cast<int32_t>(first.shape[0]);
     int32_t const columns = static_cast<int32_t>(first.shape[1]);
-    ELLM_CHECK((first.dtype == nvinfer1::DataType::kFP8 || first.dtype == nvinfer1::DataType::kINT8)
+    ELLM_CHECK((first.dtype == trt_edgellm::DataType::kFP8 || first.dtype == trt_edgellm::DataType::kINT8)
             && first.bytes == static_cast<size_t>(rows) * columns,
         "NVFP4 scale source must contain FP8 bytes");
     int32_t const sourceOutputRows = paired ? 2 * rows : rows;
@@ -717,7 +724,7 @@ void assembleNvfp4Scales(CheckpointReader const& checkpoint, Json const& keys, i
     ELLM_CHECK(outputShape.getNumDims() == 6 && outputShape[0] == numExperts
             && outputShape[1] >= (sourceOutputRows + 127) / 128 && outputShape[2] >= (columns + 3) / 4
             && outputShape[3] == 32 && outputShape[4] == 4 && outputShape[5] == 4
-            && output.getDataType() == nvinfer1::DataType::kINT8,
+            && output.getDataType() == trt_edgellm::DataType::kINT8,
         "NVFP4 scale output shape does not match engine binding");
 
     int32_t const outputRows = static_cast<int32_t>(outputShape[1]) * 128;
@@ -755,19 +762,19 @@ void assembleNvfp4Scales(CheckpointReader const& checkpoint, Json const& keys, i
 float readScaleScalar(View const& view, std::string const& key)
 {
     ELLM_CHECK(view.bytes > 0, "Empty scale tensor: " + key);
-    if (view.dtype == nvinfer1::DataType::kFLOAT)
+    if (view.dtype == trt_edgellm::DataType::kFLOAT)
     {
         float value;
         std::memcpy(&value, view.data, sizeof(value));
         return value;
     }
-    if (view.dtype == nvinfer1::DataType::kHALF)
+    if (view.dtype == trt_edgellm::DataType::kHALF)
     {
         __half value;
         std::memcpy(&value, view.data, sizeof(value));
         return __half2float(value);
     }
-    if (view.dtype == nvinfer1::DataType::kBF16)
+    if (view.dtype == trt_edgellm::DataType::kBF16)
     {
         uint16_t bits;
         std::memcpy(&bits, view.data, sizeof(bits));
@@ -776,7 +783,7 @@ float readScaleScalar(View const& view, std::string const& key)
         std::memcpy(&value, &fp32Bits, sizeof(value));
         return value;
     }
-    ELLM_CHECK(view.dtype == nvinfer1::DataType::kFP8 || view.dtype == nvinfer1::DataType::kINT8,
+    ELLM_CHECK(view.dtype == trt_edgellm::DataType::kFP8 || view.dtype == trt_edgellm::DataType::kINT8,
         "Unsupported NVFP4 scale dtype: " + key);
     uint8_t const bits = view.data[0];
     float const sign = (bits & 0x80) != 0 ? -1.0f : 1.0f;
@@ -823,7 +830,7 @@ Nvfp4ProjectionSource requireNvfp4Projection(
     ELLM_CHECK(rows > 0 && rowBytes > 0 && scale.shape[0] == rows && rowBytes == scaleColumns * 8
             && weight.bytes == static_cast<size_t>(rows) * rowBytes
             && scale.bytes == static_cast<size_t>(rows) * scaleColumns
-            && (scale.dtype == nvinfer1::DataType::kFP8 || scale.dtype == nvinfer1::DataType::kINT8),
+            && (scale.dtype == trt_edgellm::DataType::kFP8 || scale.dtype == trt_edgellm::DataType::kINT8),
         "NVFP4 provider weight/scale layout is inconsistent");
     return {weight, scale, rows, rowBytes, scaleColumns};
 }
@@ -857,7 +864,7 @@ void assembleNormalizedNvfp4Weights(CheckpointReader const& checkpoint, Json con
     int32_t const minimumRows = paired ? 2 * first.rows : first.rows;
     ELLM_CHECK(outputShape.getNumDims() == 3 && outputShape[0] == numExperts && outputShape[1] >= minimumRows
             && outputShape[2] >= first.rowBytes && outputShape[2] % 8 == 0 && (!paired || outputShape[1] % 2 == 0)
-            && output.getDataType() == nvinfer1::DataType::kINT8,
+            && output.getDataType() == trt_edgellm::DataType::kINT8,
         "normalized NVFP4 weight output shape does not match engine binding");
 
     int32_t const outputRows = static_cast<int32_t>(outputShape[1]);
@@ -915,7 +922,7 @@ void assembleNormalizedNvfp4Scales(CheckpointReader const& checkpoint, Json cons
     ELLM_CHECK(outputShape.getNumDims() == 6 && outputShape[0] == numExperts
             && outputShape[1] >= (minimumRows + 127) / 128 && outputShape[2] >= (first.scaleColumns + 3) / 4
             && outputShape[3] == 32 && outputShape[4] == 4 && outputShape[5] == 4
-            && output.getDataType() == nvinfer1::DataType::kINT8,
+            && output.getDataType() == trt_edgellm::DataType::kINT8,
         "normalized NVFP4 scale output shape does not match engine binding");
 
     int32_t const outputRows = static_cast<int32_t>(outputShape[1]) * 128;
@@ -970,7 +977,7 @@ void assembleNvfp4PerExpertScalars(
     ELLM_CHECK(numExperts > 0 && numExperts <= 512 && keysPerExpert > 0
             && static_cast<int32_t>(keys.size()) == numExperts * keysPerExpert,
         "NVFP4 scalar key count does not match the expert layout");
-    validateOutput(output, Coords{numExperts}, nvinfer1::DataType::kFLOAT, "NVFP4 per-expert scalar output");
+    validateOutput(output, Coords{numExperts}, trt_edgellm::DataType::kFLOAT, "NVFP4 per-expert scalar output");
 
     bool const reciprocal = binding.value("reciprocal_alpha", false);
     bool const requireEqual = binding.value("require_equal", false);
@@ -1022,7 +1029,7 @@ void assembleNvfp4A16Qweight(
     ELLM_CHECK(static_cast<int32_t>(keys.size()) == shape.experts * shape.projections,
         "W4A16 qweight key count does not match the expert layout");
     validateOutput(output, Coords{shape.experts, shape.outputK / 16, 8 * shape.projections * shape.outputN},
-        nvinfer1::DataType::kINT8, "W4A16 qweight output");
+        trt_edgellm::DataType::kINT8, "W4A16 qweight output");
 
     size_t const sourceBytes = static_cast<size_t>(shape.sourceN) * shape.sourceK / 2;
     size_t const outputBytes = static_cast<size_t>(output.getShape().volume() / shape.experts);
@@ -1063,7 +1070,7 @@ void assembleNvfp4A16Scale(CheckpointReader const& checkpoint, Json const& bindi
     int32_t const sourceGroups = shape.sourceK / 16;
     int32_t const outputGroups = shape.outputK / 16;
     validateOutput(output, Coords{shape.experts, outputGroups, shape.projections * shape.outputN},
-        nvinfer1::DataType::kINT8, "W4A16 scale output");
+        trt_edgellm::DataType::kINT8, "W4A16 scale output");
 
     size_t const sourceBytes = static_cast<size_t>(shape.sourceN) * sourceGroups;
     size_t const outputBytes = static_cast<size_t>(output.getShape().volume() / shape.experts);
@@ -1077,7 +1084,8 @@ void assembleNvfp4A16Scale(CheckpointReader const& checkpoint, Json const& bindi
             View const firstView = requireView(checkpoint, keyName(keys, base), "W4A16 block scale");
             ELLM_CHECK(firstView.shape.getNumDims() == 2 && firstView.shape[0] == shape.sourceN
                     && firstView.bytes == sourceBytes
-                    && (firstView.dtype == nvinfer1::DataType::kFP8 || firstView.dtype == nvinfer1::DataType::kINT8),
+                    && (firstView.dtype == trt_edgellm::DataType::kFP8
+                        || firstView.dtype == trt_edgellm::DataType::kINT8),
                 "W4A16 block scale shape does not match its binding");
             first[static_cast<size_t>(local)] = firstView.deviceData;
             if (shape.projections == 2)
@@ -1104,7 +1112,7 @@ void assembleNvfp4A16Alpha(CheckpointReader const& checkpoint, Json const& bindi
             && static_cast<int32_t>(keys.size()) == experts * projections,
         "W4A16 alpha key count does not match the expert layout");
     Coords const outputShape = projections == 1 ? Coords{experts} : Coords{projections, experts};
-    validateOutput(output, outputShape, nvinfer1::DataType::kHALF, "W4A16 alpha output");
+    validateOutput(output, outputShape, trt_edgellm::DataType::kHALF, "W4A16 alpha output");
 
     bool const reciprocal = binding.value("reciprocal_alpha", false);
     std::array<float, 1024> values{};
@@ -1139,7 +1147,7 @@ void assembleInt4MoeQweights(CheckpointReader const& checkpoint, Json const& bin
         "INT4 MoE qweight binding key count mismatch");
 
     View const first = requireView(checkpoint, keyName(keys, 0), "INT4 MoE qweight");
-    ELLM_CHECK(first.dtype == nvinfer1::DataType::kINT32 && first.shape.getNumDims() == 2,
+    ELLM_CHECK(first.dtype == trt_edgellm::DataType::kINT32 && first.shape.getNumDims() == 2,
         "INT4 MoE qweight must be provider GPTQ INT32 [K/8,N]");
     int32_t const K = static_cast<int32_t>(first.shape[0]) * 8;
     int32_t const projectionN = static_cast<int32_t>(first.shape[1]);
@@ -1151,7 +1159,7 @@ void assembleInt4MoeQweights(CheckpointReader const& checkpoint, Json const& bin
     int32_t groupSize = binding.value("group_size", 64);
     if (hasZeros)
     {
-        ELLM_CHECK(firstZeros.dtype == nvinfer1::DataType::kINT32 && firstZeros.shape.getNumDims() == 2
+        ELLM_CHECK(firstZeros.dtype == trt_edgellm::DataType::kINT32 && firstZeros.shape.getNumDims() == 2
                 && firstZeros.shape[1] * 8 == projectionN,
             "INT4 MoE qzeros must be INT32 [groups,N/8]");
         numGroups = static_cast<int32_t>(firstZeros.shape[0]);
@@ -1159,7 +1167,8 @@ void assembleInt4MoeQweights(CheckpointReader const& checkpoint, Json const& bin
         groupSize = K / numGroups;
     }
 
-    validateOutput(output, Coords{numExperts, K / 16, 2 * N * 4}, nvinfer1::DataType::kINT8, "INT4 MoE qweight output");
+    validateOutput(
+        output, Coords{numExperts, K / 16, 2 * N * 4}, trt_edgellm::DataType::kINT8, "INT4 MoE qweight output");
     size_t const bytesPerExpert = static_cast<size_t>(K / 16) * 2 * N * sizeof(int32_t);
     auto* destination = static_cast<uint8_t*>(output.rawPointer());
     int32_t const zeroPointOffset = binding.value("zero_point_offset", 1);
@@ -1236,12 +1245,12 @@ void assembleInt4MoeScales(CheckpointReader const& checkpoint, Json const& bindi
             && static_cast<int32_t>(keys.size()) == numExperts * projectionsPerExpert,
         "INT4 MoE scale binding key count mismatch");
     View const first = requireView(checkpoint, keyName(keys, 0), "INT4 MoE scale");
-    ELLM_CHECK(first.dtype == nvinfer1::DataType::kHALF && first.shape.getNumDims() == 2,
+    ELLM_CHECK(first.dtype == trt_edgellm::DataType::kHALF && first.shape.getNumDims() == 2,
         "INT4 MoE scale must be FP16 [groups,N]");
     int32_t const groups = static_cast<int32_t>(first.shape[0]);
     int32_t const projectionN = static_cast<int32_t>(first.shape[1]);
     int32_t const N = projectionsPerExpert * projectionN;
-    validateOutput(output, Coords{numExperts, groups, N}, nvinfer1::DataType::kHALF, "INT4 MoE scale output");
+    validateOutput(output, Coords{numExperts, groups, N}, trt_edgellm::DataType::kHALF, "INT4 MoE scale output");
 
     size_t const bytesPerExpert = static_cast<size_t>(groups) * N * sizeof(uint16_t);
     auto* destination = static_cast<uint8_t*>(output.rawPointer());
@@ -1275,17 +1284,17 @@ void assembleInt4MoeScales(CheckpointReader const& checkpoint, Json const& bindi
     });
 }
 
-kernel::Fp16MoeSourceType fp16MoeSourceType(nvinfer1::DataType dtype)
+kernel::Fp16MoeSourceType fp16MoeSourceType(trt_edgellm::DataType dtype)
 {
-    if (dtype == nvinfer1::DataType::kHALF)
+    if (dtype == trt_edgellm::DataType::kHALF)
     {
         return kernel::Fp16MoeSourceType::kFp16;
     }
-    if (dtype == nvinfer1::DataType::kBF16)
+    if (dtype == trt_edgellm::DataType::kBF16)
     {
         return kernel::Fp16MoeSourceType::kBf16;
     }
-    ELLM_CHECK(dtype == nvinfer1::DataType::kFLOAT, "FP16 MoE checkpoint weights must be FP16, BF16, or FP32");
+    ELLM_CHECK(dtype == trt_edgellm::DataType::kFLOAT, "FP16 MoE checkpoint weights must be FP16, BF16, or FP32");
     return kernel::Fp16MoeSourceType::kFp32;
 }
 
@@ -1306,7 +1315,7 @@ void assembleFp16Moe(
         "FP16 MoE output must be rank-3 with one matrix per expert");
     int32_t const outputRows = static_cast<int32_t>(output.getShape()[1]);
     int32_t const outputColumns = static_cast<int32_t>(output.getShape()[2]);
-    ELLM_CHECK(output.getDataType() == nvinfer1::DataType::kHALF && outputRows >= rows && outputColumns >= columns,
+    ELLM_CHECK(output.getDataType() == trt_edgellm::DataType::kHALF && outputRows >= rows && outputColumns >= columns,
         "FP16 MoE output must be FP16 and no smaller than each checkpoint matrix");
     ELLM_CHECK(!paired || (outputRows == 2 * rows && outputColumns == columns),
         "Paired FP16 MoE output must preserve the SwiGLU interleave shape");
@@ -1339,9 +1348,114 @@ void assembleFp16Moe(
     });
 }
 
+void assembleStackedFp16Moe(
+    CheckpointReader const& checkpoint, Json const& binding, bool paired, Tensor& output, cudaStream_t stream)
+{
+    Json const& keys = checkpointKeys(binding);
+    ELLM_CHECK(keys.size() == 1, "Stacked FP16 MoE expects one checkpoint tensor");
+    View const source = requireView(checkpoint, keyName(keys, 0), "stacked FP16 MoE weight");
+    ELLM_CHECK(source.shape.getNumDims() == 3, "Stacked FP16 MoE weight must be rank-3");
+    int32_t const experts = static_cast<int32_t>(source.shape[0]);
+    int32_t const sourceRows = static_cast<int32_t>(source.shape[1]);
+    int32_t const columns = static_cast<int32_t>(source.shape[2]);
+    ELLM_CHECK(experts > 0 && sourceRows > 0 && columns > 0 && (!paired || sourceRows % 128 == 0),
+        "Invalid stacked FP16 MoE weight dimensions");
+    validateOutput(output, source.shape, trt_edgellm::DataType::kHALF, "stacked FP16 MoE output");
+    kernel::Fp16MoeSourceType const sourceType = fp16MoeSourceType(source.dtype);
+    ELLM_CHECK(source.bytes % static_cast<size_t>(experts) == 0, "Invalid stacked FP16 MoE source byte count");
+    size_t const sourceBytesPerExpert = source.bytes / static_cast<size_t>(experts);
+    size_t const outputBytesPerExpert = static_cast<size_t>(sourceRows) * columns * sizeof(uint16_t);
+    auto const* sourceData = source.deviceData;
+    auto* destination = static_cast<uint8_t*>(output.rawPointer());
+
+    forCheckpointSourceBatches(experts, [&](int32_t begin, int32_t count) {
+        std::array<uint8_t const*, kernel::kCheckpointSourcesPerLaunch> firstSources{};
+        std::array<uint8_t const*, kernel::kCheckpointSourcesPerLaunch> secondSources{};
+        for (int32_t local = 0; local < count; ++local)
+        {
+            auto const* expert = sourceData + static_cast<size_t>(begin + local) * sourceBytesPerExpert;
+            firstSources[static_cast<size_t>(local)] = paired ? expert + sourceBytesPerExpert / 2 : expert;
+            if (paired)
+            {
+                secondSources[static_cast<size_t>(local)] = expert;
+            }
+        }
+        CUDA_CHECK(kernel::launchFp16MoeSourceBatch(firstSources.data(), paired ? secondSources.data() : nullptr, count,
+            destination + static_cast<size_t>(begin) * outputBytesPerExpert, paired ? sourceRows / 2 : sourceRows,
+            columns, sourceRows, columns, sourceType, stream));
+    });
+}
+
+View requireIq2XxsMatrix(CheckpointReader const& checkpoint, std::string const& key, int32_t& N, int32_t& kBlocks)
+{
+    View const view = requireView(checkpoint, key, "IQ2_XXS weight");
+    ELLM_CHECK(view.dtype == trt_edgellm::DataType::kUINT8 && view.shape.getNumDims() == 3
+            && view.shape[2] == kernel::kIq2XxsBlockBytes,
+        "IQ2_XXS weight must be uint8 [N, K/256, 66]: " + key);
+    N = static_cast<int32_t>(view.shape[0]);
+    kBlocks = static_cast<int32_t>(view.shape[1]);
+    return view;
+}
+
+void assembleIq2XxsGemm(
+    CheckpointReader const& checkpoint, Json const& binding, bool bases, Tensor& output, cudaStream_t stream)
+{
+    Json const& keys = checkpointKeys(binding);
+    ELLM_CHECK(keys.size() == 1, "IQ2_XXS GEMM binding expects one checkpoint key");
+    int32_t N = 0;
+    int32_t kBlocks = 0;
+    View const source = requireIq2XxsMatrix(checkpoint, keyName(keys, 0), N, kBlocks);
+    ELLM_CHECK(N % 8 == 0, "IQ2_XXS GEMM rows must be a multiple of 8: " + keyName(keys, 0));
+    int32_t const packing = N % 128 == 0 ? 128 : 8;
+    if (bases)
+    {
+        validateOutput(output, Coords{kBlocks, N}, trt_edgellm::DataType::kHALF, "IQ2_XXS GEMM bases");
+    }
+    else
+    {
+        validateOutput(
+            output, Coords{N / packing, kBlocks, packing, 64}, trt_edgellm::DataType::kINT8, "IQ2_XXS GEMM values");
+    }
+    CUDA_CHECK(kernel::launchIq2XxsGemmRepack(reinterpret_cast<uint8_t const*>(source.deviceData),
+        bases ? nullptr : static_cast<int8_t*>(output.rawPointer()),
+        bases ? static_cast<uint16_t*>(output.rawPointer()) : nullptr, N, kBlocks, stream));
+}
+
+void assembleIq2XxsMoe(
+    CheckpointReader const& checkpoint, Json const& binding, bool bases, Tensor& output, cudaStream_t stream)
+{
+    Json const& keys = checkpointKeys(binding);
+    int32_t const numExperts = binding.value("num_experts", 0);
+    ELLM_CHECK(numExperts > 0 && static_cast<int32_t>(keys.size()) == numExperts,
+        "IQ2_XXS MoE binding needs one checkpoint key per expert");
+    int32_t N = 0;
+    int32_t kBlocks = 0;
+    View const first = requireIq2XxsMatrix(checkpoint, keyName(keys, 0), N, kBlocks);
+    ELLM_CHECK(N % 128 == 0, "IQ2_XXS MoE rows must be a multiple of 128: " + keyName(keys, 0));
+    // Payload words and FP16 base pairs are both exposed to the plugin as flat int32 tensors.
+    int64_t const wordsPerExpert
+        = bases ? static_cast<int64_t>(N) * kBlocks / 2 : static_cast<int64_t>(N) * kBlocks * 16;
+    validateOutput(output, Coords{numExperts * wordsPerExpert}, trt_edgellm::DataType::kINT32,
+        bases ? "IQ2_XXS MoE bases" : "IQ2_XXS MoE payload");
+    auto* destination = static_cast<int32_t*>(output.rawPointer());
+    forCheckpointSourceBatches(numExperts, [&](int32_t begin, int32_t count) {
+        std::array<uint8_t const*, kernel::kCheckpointSourcesPerLaunch> sources{};
+        for (int32_t local = 0; local < count; ++local)
+        {
+            std::string const& key = keyName(keys, static_cast<size_t>(begin + local));
+            View const view = requireView(checkpoint, key, "IQ2_XXS expert weight");
+            ELLM_CHECK(view.dtype == first.dtype && view.shape == first.shape, "IQ2_XXS expert shape mismatch: " + key);
+            sources[static_cast<size_t>(local)] = reinterpret_cast<uint8_t const*>(view.deviceData);
+        }
+        int32_t* batchOutput = destination + begin * wordsPerExpert;
+        CUDA_CHECK(kernel::launchIq2XxsMoeRepackSourceBatch(sources.data(), count, bases ? nullptr : batchOutput,
+            bases ? reinterpret_cast<uint16_t*>(batchOutput) : nullptr, N, kBlocks, stream));
+    });
+}
+
 void fillGeneratedWeight(Json const& binding, Tensor& output, cudaStream_t stream)
 {
-    ELLM_CHECK(output.getDataType() == nvinfer1::DataType::kFLOAT,
+    ELLM_CHECK(output.getDataType() == trt_edgellm::DataType::kFLOAT,
         "generated weight binding currently requires F32: " + output.getName());
     CUDA_CHECK(kernel::launchFillFp32(
         output.rawPointer(), output.getShape().volume(), binding.value("fill_value", 0.0f), stream));
@@ -1387,10 +1501,18 @@ void loadCheckpointWeight(CheckpointReader& checkpoint, Json const& binding, std
         float const embeddingScale = binding.value("embedding_scale", 1.0f);
         if (embeddingScale != 1.0f)
         {
-            ELLM_CHECK(output.getDataType() == nvinfer1::DataType::kHALF, "Embedding scale requires an FP16 tensor");
+            ELLM_CHECK(output.getDataType() == trt_edgellm::DataType::kHALF, "Embedding scale requires an FP16 tensor");
             CUDA_CHECK(
                 kernel::launchScaleFp16(output.rawPointer(), output.getShape().volume(), embeddingScale, stream));
         }
+    }
+    else if (assemble == "iq2_xxs_gemm_values" || assemble == "iq2_xxs_gemm_bases")
+    {
+        assembleIq2XxsGemm(checkpoint, binding, assemble == "iq2_xxs_gemm_bases", output, stream);
+    }
+    else if (assemble == "iq2_xxs_moe_qweight" || assemble == "iq2_xxs_moe_bases")
+    {
+        assembleIq2XxsMoe(checkpoint, binding, assemble == "iq2_xxs_moe_bases", output, stream);
     }
     else if (assemble == "gptq_activation_permutation")
     {
@@ -1515,6 +1637,14 @@ void loadCheckpointWeight(CheckpointReader& checkpoint, Json const& binding, std
     else if (assemble == "fp16_moe_fc2")
     {
         assembleFp16Moe(checkpoint, binding, false, output, stream);
+    }
+    else if (assemble == "fp16_moe_stacked_fc1")
+    {
+        assembleStackedFp16Moe(checkpoint, binding, true, output, stream);
+    }
+    else if (assemble == "fp16_moe_stacked_fc2")
+    {
+        assembleStackedFp16Moe(checkpoint, binding, false, output, stream);
     }
     else
     {

@@ -14,8 +14,10 @@ Exact `supported_sms` per variant live in `kernelSrcs/build_cutedsl.py`
 |---|---|---|---|---|
 | `gdn_decode` | 1 | SM80+ | Ampere (SM80), Blackwell (SM110) | small/large-batch dispatch at runtime (threshold n=32) |
 | `gdn_prefill` | > 1 | SM80+ | Ampere (SM80), Blackwell (SM110) | per-row context masking via `context_lengths`; should work on Hopper (SM90) but not yet tested |
-| `gdn_prefill_blackwell` | > 1 | SM100/101/110 | Blackwell (SM110) | uses TMA + warp-level pipeline; requires `cu_seqlens`; not built on Ampere/Hopper/Orin |
+| `gdn_prefill_varlen` | variable | SM80/86/87/89/90/100/101/103/110/120/121 | — | sequential packed prefill for Ampere, Orin, Ada, Hopper, and Blackwell; in-place resident state; no Blackwell scratch requirements |
+| `gdn_prefill_blackwell` | > 1 | SM100/101/103/110 | Blackwell (SM110) | uses TMA + warp-level pipeline; requires `cu_seqlens`; not built on Ampere/Hopper/Orin |
 | `gdn_prefill_blackwell_geforce` | > 1 | SM120/121 | GB10 (SM121) | 64-token warp-MMA/TMA path; direct indexed resident state and `context_lengths` |
+| `gdn_prefill_blackwell_varlen` | > 1 | SM100/101/103/110 | Blackwell (SM100, SM110) | packed token layout plus `cu_seqlens`; prefill segment of the gated_delta_net plugin's compact execution phase |
 | `gdn_decode_mtp_cache` | 1..16 | SM80+ | Ampere (SM80), Blackwell (SM110) | linear MTP/DFlash verification with per-step checkpoint cache |
 
 All variants require CUDA 12.6+.
@@ -31,8 +33,9 @@ cross-compilation, artifact layout, and CMake configuration.
 
 CMake defines `CUTE_DSL_GDN_ENABLED` when the generated metadata contains this
 group. If it also contains `gdn_prefill_blackwell`, CMake defines
-`CUTE_DSL_GDN_BLACKWELL_ENABLED`; `gdn_prefill_blackwell_geforce` similarly
-defines `CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED`.
+`CUTE_DSL_GDN_BLACKWELL_ENABLED` for both padded and packed-varlen Blackwell
+prefill; `gdn_prefill_blackwell_geforce` similarly defines
+`CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED`.
 
 ## Standalone Test / Export
 
@@ -46,6 +49,7 @@ python3 gdn_decode_mtp.py --n 4 --h 8 --hv 8 --k 128 --v 128 --seq_len 4 --cache
 
 # Blackwell prefill (needs a supported Blackwell-class GPU)
 python3 gdn_prefill_blackwell.py --n 4 --h 8 --hv 8 --k 128 --v 128 --seq_len 128
+python3 gdn_prefill_blackwell.py --varlen --h 1 --hv 1
 
 # Blackwell GeForce prefill (needs an SM120/121 GPU)
 python3 gdn_prefill_sm12x.py --n 2 --h 16 --hv 32 --k 128 --v 128 --seq_len 128
@@ -53,12 +57,16 @@ python3 gdn_prefill_sm12x.py --n 2 --h 16 --hv 32 --k 128 --v 128 --seq_len 128
 # AOT export (single variant)
 python3 gdn_decode.py --export_only --output_dir ./out --file_name gdn_decode --function_prefix gdn_decode
 python3 gdn_prefill.py --export_only --output_dir ./out --file_name gdn_prefill --function_prefix gdn_prefill
+python3 gdn_prefill.py --export_only --varlen --output_dir ./out --file_name gdn_prefill_varlen --function_prefix gdn_prefill_varlen
 python3 gdn_prefill_blackwell.py --export_only --output_dir ./out --file_name gdn_prefill_blackwell --function_prefix gdn_prefill_blackwell
+python3 gdn_prefill_blackwell.py --export_only --varlen --output_dir ./out --file_name gdn_prefill_blackwell_varlen --function_prefix gdn_prefill_blackwell_varlen
 python3 gdn_prefill_sm12x.py --export_only --output_dir ./out --file_name gdn_prefill_blackwell_geforce --function_prefix gdn_prefill_blackwell_geforce
 ```
 
 `context_lengths_preset` options — decode: `all_ones`, `first_half_active`;
 prefill: `full`, `half`, `staggered`; Blackwell prefill: `full`, `half`.
+For `gdn_prefill.py`, `--varlen` requires `--export_only`; the standalone
+accuracy command exercises padded prefill.
 
 ## Tensor Shapes
 
@@ -73,10 +81,59 @@ prefill: `full`, `half`, `staggered`; Blackwell prefill: `full`, `half`.
 | `state_indices` | `(N,)` execution-to-resident map | same | INT32 |
 | `context_lengths` | `(N,)` device | same | INT32 |
 
-SM100/101/110 prefill additionally uses `cu_seqlens` (`(N+1,)` INT32) and
+SM100/101/103/110 prefill additionally uses `cu_seqlens` (`(N+1,)` INT32) and
 separate `h0` input/output views. SM120/121 prefill aliases the resident pool
 for input/output and uses Tensor Map descriptor scratch. See the generated
 headers and `CuteDslGDNRunner` for the exact backend layouts.
+
+### Sequential packed prefill
+
+`gdn_prefill_varlen` uses contiguous, physically packed token tensors with
+`K=V=128`. `N` is the number of sequences, `total_tokens` is their combined
+token count, and `HV` must be a positive multiple of `H`.
+
+| Tensor | Packed shape | Dtype |
+|---|---|---|
+| `q`, `k` | `(total_tokens, H, K)` | FP16 |
+| `v`, `o` | `(total_tokens, HV, V)` | FP16 |
+| `a`, `b` | `(total_tokens, HV)` | FP16 |
+| `A_log` | `(HV,)` | FP32 |
+| `dt_bias` | `(HV,)` | FP16 |
+| `h0_source` | `(R_pool, HV, K, V)` | FP32 |
+| `state_indices` (optional in the runner) | `(N,)` | INT32 |
+| `cu_seqlens` | `(N+1,)` | INT32 |
+
+`cu_seqlens` contains device-side exclusive token offsets: it starts at zero,
+is nondecreasing, and ends at `total_tokens`. Sequence `i` occupies
+`[cu_seqlens[i], cu_seqlens[i+1])`; equal adjacent offsets represent an empty
+sequence and leave its state unchanged. The generated AOT wrapper names this
+offset argument `context_lengths`; pass the prefix sums, not per-row lengths.
+State is updated in place in the resident pool; `h0_source` must be 32-byte
+aligned for this variant's AOT contract. Optional `state_indices`
+entries must be unique and in `[0, R_pool)`; without this map, sequence `i`
+uses resident row `i`, so `R_pool` must be at least `N`.
+
+To call this variant through `CuteDslGDNRunner::run`, set `packed_varlen=true`,
+`use_prefill=true`, `use_mtp=false`, `n=N`, `total_tokens`, `smVersion` for the
+device, the head and dimension fields, and the device pointers above. `N` and
+`total_tokens` must be positive. Set `state_pool_rows=R_pool` when using
+`state_indices` and pass an explicit CUDA stream. The runner selects `gdn_prefill_varlen` on
+SM80/86/87/89/90; it selects optimized packed variants on Blackwell. Sequential
+packed prefill requires no `h0_scratch`, `h0_out_scratch`, or
+`tensormap_scratch` buffers.
+
+### Blackwell packed prefill
+
+The standalone `gdn_prefill_blackwell_varlen` variant uses physically packed
+token inputs: Q/K are `(total_tokens, H, D)`, V/O are
+`(total_tokens, HV, D)`, and A/B are `(total_tokens, HV)`. Its `cu_seqlens`
+identifies each batch row while recurrent state remains `(N, HV, D, D)`.
+`cu_seqlens` must have shape `(N+1,)`, start at zero, be nondecreasing, and end
+at `total_tokens`; zero-length rows are represented by adjacent equal offsets.
+A single AOT artifact supports runtime `H` and `HV` values where `HV` is a
+positive multiple of `H`. The runner selects this path when `packed_varlen` is
+set, but the plugin does not set it. Plugin integration must reserve the
+runner's packed-ragged tensor-map descriptor workspace.
 
 DDTree verification is implemented in C++/CUDA chunk form, not as a CuTe DSL
 AOT kernel. It uses `tree_parent_ids` and `tree_depths` (`(N,S)` INT32) plus
@@ -95,7 +152,7 @@ Blackwell GeForce prefill, or MTP cache AOT module on its first use and keeps
 it resident for process lifetime. Blackwell GeForce prefill is selected when
 `CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED` and `smVersion` is 120 or 121;
 Blackwell prefill is selected when `CUTE_DSL_GDN_BLACKWELL_ENABLED` and
-`smVersion` is 100, 101, or 110.
+`smVersion` is 100, 101, 103, or 110.
 The plugin calls `ensureKernelModules(GDNParams, stream)` before enqueue-side
 state copies; `run()` repeats that guard defensively. DDTree uses its C++/CUDA
 implementation and does not load a CuTe DSL AOT module.

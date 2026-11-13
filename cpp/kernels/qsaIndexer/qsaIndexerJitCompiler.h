@@ -17,8 +17,11 @@
 
 #pragma once
 
+#include "kernels/PluginJitKernels/pluginJitKey.h"
+
+#include <array>
+#include <cstddef>
 #include <cstdint>
-#include <tuple>
 #include <vector>
 
 namespace trt_edgellm
@@ -32,33 +35,42 @@ enum class QsaIndexerJitDataType : uint32_t
 
 //! \brief Key that identifies one NVRTC-compiled QSA indexer module variant.
 //!
-//! One compilation produces a single cubin holding all ten extern "C" entry points
-//! (qsa_indexer_q_prep, qsa_indexer_k_compress, qsa_indexer_k_compress_paged,
+//! One compilation produces a single cubin holding all extern "C" entry points
+//! (qsa_indexer_q_prep, qsa_indexer_k_compress,
 //! qsa_indexer_scores, qsa_indexer_ids_fill, qsa_indexer_expand,
-//! qsa_indexer_raw_k_tail_write_prefill, qsa_indexer_pre_decode,
-//! qsa_indexer_scores_decode, qsa_indexer_topk_expand_decode) specialized for
+//! qsa_indexer_raw_k_tail_write_prefill, qsa_indexer_pre_decode, qsa_indexer_seal,
+//! qsa_indexer_scores_decode, qsa_indexer_topk_expand_decode, qsa_indexer_k_compress_append,
+//! qsa_indexer_scores_paged, qsa_indexer_tree_paths, qsa_indexer_tree_k_compress,
+//! qsa_indexer_tree_scores, qsa_indexer_tree_map_indices) specialized for
 //! (sm, dataType).
 struct QsaIndexerJitKey
 {
     int32_t sm{};
     QsaIndexerJitDataType dataType{QsaIndexerJitDataType::kHALF};
 
-    auto asTuple() const noexcept
+    static constexpr size_t kNumWords{2};
+
+    //! The fields in digest and hash order.
+    std::array<uint32_t, kNumWords> keyWords() const noexcept
     {
-        return std::tie(sm, dataType);
+        return {static_cast<uint32_t>(sm), static_cast<uint32_t>(dataType)};
+    }
+
+    static QsaIndexerJitKey fromKeyWords(std::array<uint32_t, kNumWords> const& words) noexcept
+    {
+        QsaIndexerJitKey key;
+        key.sm = static_cast<int32_t>(words[0]);
+        key.dataType = static_cast<QsaIndexerJitDataType>(words[1]);
+        return key;
     }
 
     bool operator==(QsaIndexerJitKey const& other) const noexcept
     {
-        return asTuple() == other.asTuple();
+        return keyWords() == other.keyWords();
     }
 };
 
-struct QsaIndexerJitKernel
-{
-    QsaIndexerJitKey key;
-    std::vector<uint8_t> cubin;
-};
+using QsaIndexerJitKernel = PluginJitKernel<QsaIndexerJitKey>;
 
 bool canCompileQsaIndexerJitKernel(QsaIndexerJitKey const& key) noexcept;
 

@@ -45,7 +45,7 @@ struct Gemma4UnifiedVisionConfig
 class Gemma4UnifiedVisionRunner : public MultimodalRunner
 {
 public:
-    Gemma4UnifiedVisionRunner(std::string const& engineDir, cudaStream_t stream);
+    Gemma4UnifiedVisionRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
     ~Gemma4UnifiedVisionRunner() noexcept = default;
 
     bool preprocess(rt::LLMGenerationRequest const& request, std::vector<std::vector<int32_t>>& batchedInputIds,

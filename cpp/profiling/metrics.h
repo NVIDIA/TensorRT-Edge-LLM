@@ -42,10 +42,10 @@ namespace StageNames
 {
 inline std::string const kLLM_PREFILL = "llm_prefill";                     //!< LLM prefill stage
 inline std::string const kLLM_GENERATION = "llm_generation";               //!< LLM generation stage
-inline std::string const kLLM_LAYER = "llm_layer";                         //!< LLM layer profiling
 inline std::string const kMULTIMODAL_PROCESSING = "multimodal_processing"; //!< Multimodal processing stage (legacy)
 inline std::string const kAUDIO_ENCODER = "audio_encoder";                 //!< Audio encoder stage
 inline std::string const kVISION_ENCODER = "vision_encoder";               //!< Vision encoder stage
+inline std::string const kVISION_GATHER = "vision_gather"; //!< Visual embedding and deepstack shard communication
 inline std::string const kSPEC_DECODE_DRAFT_PREFILL = "spec_decode_draft_prefill"; //!< Speculative decode draft prefill
 inline std::string const kSPEC_DECODE_DRAFT_PROPOSAL
     = "spec_decode_draft_proposal"; //!< Speculative decode draft proposal
@@ -77,6 +77,9 @@ struct LLMRequestMetrics
     int32_t decodedTokens{0};          //!< Output tokens sampled after prefill.
     double promptSeconds{0.0};         //!< Wall time through prefill and first-token sampling.
     double generationSeconds{0.0};     //!< Wall time from prefill completion through the last generated token.
+    //! When the first prefill began, in nanoseconds since the steady clock's epoch; -1 if unavailable. On Linux the
+    //! steady clock is CLOCK_MONOTONIC, which Python's time.monotonic_ns() reads too.
+    int64_t prefillStartNs{-1};
 };
 
 /*!

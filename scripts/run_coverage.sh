@@ -117,8 +117,7 @@ cmake -S "${PROJECT_ROOT}" -B "${BUILD_DIR}" \
     -DENABLE_COVERAGE=ON \
     -DENABLE_CUTE_DSL="${ENABLE_CUTE_DSL}" \
     -DCUTE_DSL_ARTIFACT_TAG="${CUTE_DSL_ARTIFACT_TAG}" \
-    -DTRT_PACKAGE_DIR="${TRT_PACKAGE_DIR}" \
-    -DCUDA_CTK_VERSION="${CUDA_VERSION}"
+    -DTRT_PACKAGE_DIR="${TRT_PACKAGE_DIR}"
 
 # ---------------------------------------------------------------------------
 # Step 2 — Build

@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cuda_fp16.h>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <vector>
@@ -75,6 +76,65 @@ inline void applyNeoxRope(std::vector<double>& head, std::vector<float> const& c
         head[i] = in[i] * c - in[i + kRotaryDim / 2] * s;
         head[i + kRotaryDim / 2] = in[i + kRotaryDim / 2] * c + in[i] * s;
     }
+}
+
+//! Token-aligned rope rows for a kernel launch (the ragged ABI `rope_rotary_cos_sin` gather):
+//! row i is `table` row positions[i]; a negative position yields a NaN row so any kernel that
+//! reads a padding row is caught.
+inline std::vector<float> gatherCosSinRows(std::vector<float> const& table, std::vector<int32_t> const& positions)
+{
+    std::vector<float> rows(positions.size() * kRotaryDim, std::numeric_limits<float>::quiet_NaN());
+    for (size_t i = 0; i < positions.size(); ++i)
+    {
+        if (positions[i] >= 0)
+        {
+            std::copy_n(table.begin() + static_cast<int64_t>(positions[i]) * kRotaryDim, kRotaryDim,
+                rows.begin() + static_cast<int64_t>(i) * kRotaryDim);
+        }
+    }
+    return rows;
+}
+
+//! Prefill rope positions in activation-row order: row b*S + t is position t while t < lens[b]
+//! and -1 (padding) otherwise.
+inline std::vector<int32_t> prefillRopePositions(std::vector<int32_t> const& lens, int32_t seqLen)
+{
+    std::vector<int32_t> positions(lens.size() * seqLen, -1);
+    for (size_t b = 0; b < lens.size(); ++b)
+    {
+        for (int32_t t = 0; t < std::min(lens[b], seqLen); ++t)
+        {
+            positions[b * seqLen + t] = t;
+        }
+    }
+    return positions;
+}
+
+//! Decode rope positions: row b is the new token of sequence b, position lens[b] - 1.
+inline std::vector<int32_t> decodeRopePositions(std::vector<int32_t> const& lens)
+{
+    std::vector<int32_t> positions(lens.size());
+    for (size_t b = 0; b < lens.size(); ++b)
+    {
+        positions[b] = lens[b] - 1;
+    }
+    return positions;
+}
+
+//! A block rope row: the 64 FP32 held in the 128 T of the V-tail of the block's first token (host
+//! mirror element offset `base`); see "Pool tails" in qsaIndexerKernels.h.
+inline std::vector<float> blockRopeRow(std::vector<half> const& pool, int64_t base)
+{
+    std::vector<float> row(kRotaryDim);
+    std::memcpy(row.data(), pool.data() + base, kRotaryDim * sizeof(float));
+    return row;
+}
+
+inline uint32_t floatBits(float value)
+{
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
 }
 
 //! Gemma-norm one 128-dim head: y = x / sqrt(mean(x^2) + eps) * (1 + w).

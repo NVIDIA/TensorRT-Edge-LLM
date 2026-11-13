@@ -118,3 +118,24 @@ TEST(RequestProfilerTest, InterleavedRequestsKeepTheirOwnTimingsAfterCompaction)
     EXPECT_DOUBLE_EQ(secondResult.promptSeconds, 1.0);
     EXPECT_DOUBLE_EQ(secondResult.generationSeconds, 3.0);
 }
+
+TEST(RequestProfilerTest, ReportsWhenTheFirstPrefillChunkBeganOnTheProfilerClock)
+{
+    // Given collection enabled and a prefill split across two chunks, when the profiler snapshots before, during
+    // and after the prefill, then it reports -1 until the prefill begins and the first chunk's clock reading from
+    // then on; with collection disabled it never reports a start.
+    TestClock::current = TestClock::time_point{} + std::chrono::nanoseconds(1234);
+    Profiler profiler;
+    EXPECT_EQ(profiler.snapshot(2).prefillStartNs, -1);
+    profiler.beginPrefill(true);
+    TestClock::current += std::chrono::seconds(1);
+    profiler.beginPrefill(true);
+    EXPECT_EQ(profiler.snapshot(2).prefillStartNs, 1234);
+    profiler.finishPrefill(1);
+    EXPECT_EQ(profiler.snapshot(2).prefillStartNs, 1234);
+
+    Profiler disabled;
+    disabled.beginPrefill(false);
+    disabled.finishPrefill(1);
+    EXPECT_EQ(disabled.snapshot(2).prefillStartNs, -1);
+}

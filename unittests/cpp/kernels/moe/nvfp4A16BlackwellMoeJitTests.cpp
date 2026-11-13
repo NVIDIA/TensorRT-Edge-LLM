@@ -20,6 +20,7 @@
 //! trips (any host with NVRTC 13, no GPU needed) and module loading (SM110).
 #include "common/cudaUtils.h"
 #include "kernels/PluginJitKernels/pluginJitCompiler.h"
+#include "kernels/PluginJitKernels/pluginJitDigest.h"
 #include "kernels/moe/nvfp4A16BlackwellMoe/nvfp4A16BlackwellMoeDispatchPolicy.h"
 #include "kernels/moe/nvfp4A16BlackwellMoe/nvfp4A16BlackwellMoeJitCompiler.h"
 #include "kernels/moe/nvfp4A16BlackwellMoe/nvfp4A16BlackwellMoeJitRunner.h"
@@ -30,6 +31,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace trt_edgellm
@@ -183,7 +185,7 @@ TEST(Nvfp4A16BlackwellMoeJitTest, CompilesAndRoundTripsTheBundle)
     Nvfp4A16BlackwellMoeJitKernel const kernel = compileNvfp4A16BlackwellMoeJitKernel(key);
     EXPECT_TRUE(kernel.key == key);
     ASSERT_FALSE(kernel.cubin.empty());
-    EXPECT_TRUE(computeNvfp4A16BlackwellMoeJitDigest(key, kernel.cubin.data(), kernel.cubin.size()) == kernel.digest);
+    EXPECT_TRUE(computePluginJitDigest(key, kernel.cubin.data(), kernel.cubin.size()) == kernel.digest);
     // Second request of the same key is served by the compile cache.
     Nvfp4A16BlackwellMoeJitKernel const again = compileNvfp4A16BlackwellMoeJitKernel(key);
     EXPECT_EQ(again.cubin, kernel.cubin);
@@ -198,6 +200,57 @@ TEST(Nvfp4A16BlackwellMoeJitTest, CompilesAndRoundTripsTheBundle)
     blob.back() ^= 0x5AU;
     EXPECT_THROW(deserializeNvfp4A16BlackwellMoeJitKernel(blob.data(), blob.size()), std::runtime_error);
     EXPECT_THROW(deserializeNvfp4A16BlackwellMoeJitKernel(nullptr, 0), std::invalid_argument);
+}
+
+TEST(Nvfp4A16BlackwellMoeJitTest, RejectsMalformedBundles)
+{
+    Nvfp4A16BlackwellMoeJitKernel kernel;
+    kernel.key = nemotronKey();
+    kernel.cubin = {0x7FU, 0x45U, 0x4CU, 0x46U, 0x01U};
+    kernel.digest = computePluginJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
+    std::vector<uint8_t> const blob = serializeNvfp4A16BlackwellMoeJitKernel(kernel);
+    auto const deserialize = [](std::vector<uint8_t> const& bytes) {
+        return deserializeNvfp4A16BlackwellMoeJitKernel(bytes.data(), bytes.size());
+    };
+    EXPECT_TRUE(deserialize(blob).key == kernel.key);
+
+    std::vector<uint8_t> tampered = blob;
+    tampered[0] ^= 0xFFU; // magic word
+    EXPECT_THROW(deserialize(tampered), std::runtime_error);
+    tampered.assign(blob.begin(), blob.end() - 1); // truncated
+    EXPECT_THROW(deserialize(tampered), std::runtime_error);
+    tampered = blob;
+    tampered.push_back(0U); // trailing byte
+    EXPECT_THROW(deserialize(tampered), std::runtime_error);
+    tampered = blob;
+    tampered.back() ^= 0x5AU; // cubin byte: digest mismatch
+    EXPECT_THROW(deserialize(tampered), std::runtime_error);
+
+    kernel.cubin[0] = 0x00U; // not an ELF image
+    kernel.digest = computePluginJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
+    EXPECT_THROW(serializeNvfp4A16BlackwellMoeJitKernel(kernel), std::invalid_argument);
+}
+
+TEST(Nvfp4A16BlackwellMoeJitTest, RejectsVersionedLayoutBundlesAtTheHeader)
+{
+    Nvfp4A16BlackwellMoeJitKernel kernel;
+    kernel.key = nemotronKey();
+    kernel.cubin = {0x7FU, 0x45U, 0x4CU, 0x46U, 0x01U};
+    kernel.digest = computePluginJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
+    std::vector<uint8_t> const blob = serializeNvfp4A16BlackwellMoeJitKernel(kernel);
+
+    // The previous layout: magic "NMOE", format version 1, then the same record.
+    std::vector<uint8_t> legacy{0x4EU, 0x4DU, 0x4FU, 0x45U, 0x01U, 0x00U, 0x00U, 0x00U};
+    legacy.insert(legacy.end(), blob.begin() + sizeof(uint32_t), blob.end());
+    try
+    {
+        deserializeNvfp4A16BlackwellMoeJitKernel(legacy.data(), legacy.size());
+        FAIL() << "a versioned-layout bundle must be refused";
+    }
+    catch (std::runtime_error const& error)
+    {
+        EXPECT_NE(std::string(error.what()).find("magic word"), std::string::npos) << error.what();
+    }
 }
 
 TEST(Nvfp4A16BlackwellMoeJitTest, BothDataTypesAndPrefetchVariantsCompile)

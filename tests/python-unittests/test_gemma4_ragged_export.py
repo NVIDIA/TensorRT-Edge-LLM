@@ -66,7 +66,9 @@ def test_gemma4_ple_vision_export_uses_token_major_contract():
     shapes = dict(zip(spec.input_names, spec.dynamic_shapes))
 
     assert args["inputs_embeds"].ndim == 2
-    assert args["ple_token_embeds_0"].ndim == 2
+    assert args["ple_cache_pool"].ndim == 2
+    assert args["ple_row_map"].shape == (args["inputs_embeds"].shape[0], 1)
+    assert not any(name.startswith("ple_token_embeds_") for name in args)
     assert args["rope_rotary_cos_sin_sliding"].ndim == 2
     assert args["rope_rotary_cos_sin_full"].ndim == 2
     assert args["vision_block_ids"].ndim == 1
@@ -96,6 +98,21 @@ def test_gemma4_tiny_onnx_connects_ragged_vision_metadata(tmp_path):
             "attention_sequence_lengths", "execution_phase_marker",
             "context_sequence_count_carrier", "vision_block_ids"
         }
+
+
+def test_gemma4_jetspec_base_emits_target_hidden():
+    """A JetSpec base export emits the concatenated target-layer hidden states and the tree inputs."""
+    config = _config()
+    config.jetspec_base = True
+    config.jetspec_target_layer_ids = [0, 1]
+
+    spec = Gemma4ForCausalLM(config).onnx_export_spec()
+    args = dict(zip(spec.input_names, spec.args))
+    outputs = spec.wrapped(*spec.args)
+
+    assert "packed_attention_mask" in args
+    assert spec.output_names[1] == "hidden_states"
+    assert outputs[1].shape == (spec.args[0].shape[0], 2 * config.hidden_size)
 
 
 def test_gemma4_tree_base_logits_selection_has_independent_dynamic_axis(
@@ -137,6 +154,7 @@ def test_gemma4_assistant_uses_token_major_shared_kv_contract():
 
 
 def test_gemma4_k_eq_v_fp8_kv_uses_calibrated_v_scale():
+    """K=V FP8 KV export uses the calibrated V scale, else the K scale."""
     config = _config()
     config.attention_k_eq_v = True
     config.quant.kv_cache_quant = "fp8"
@@ -151,8 +169,16 @@ def test_gemma4_k_eq_v_fp8_kv_uses_calibrated_v_scale():
 
     assert attn._qkv_scales_float[1:] == pytest.approx([0.003, 0.05])
 
+    fallback = Gemma4ForCausalLM(config)
+    assert _set_tensor(fallback, prefix + "k_proj.k_scale",
+                       torch.tensor([0.003]))
+    setup_fp8_qkv_scales_for_export(fallback)
+    assert fallback.model.layers[1].self_attn._qkv_scales_float[
+        1:] == pytest.approx([0.003, 0.003])
+
 
 def test_gemma4_assistant_reads_target_fp8_kv_scales():
+    """The assistant attends with its donor target layers' K/V scales."""
     config = _config()
     config.backbone_hidden_size = config.hidden_size
     config.quant.kv_cache_quant = "fp8"

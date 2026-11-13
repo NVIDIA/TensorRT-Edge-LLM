@@ -523,8 +523,8 @@ TEST(KVPageTableTest, GatherUsesResidentOrderAndKeepsDestinationAddressStable)
     cudaStream_t stream{};
     CUDA_CHECK(cudaStreamCreate(&stream));
     ASSERT_TRUE(table.upload(stream));
-    Tensor residentSlots({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "residentSlots");
-    Tensor gathered({maxBatch, 2, maxPagesPerSeq}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "gathered");
+    Tensor residentSlots({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "residentSlots");
+    Tensor gathered({maxBatch, 2, maxPagesPerSeq}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "gathered");
     void const* const gatheredAddress = gathered.rawPointer();
     std::vector<int32_t> const order{2, 0, 3};
     CUDA_CHECK(cudaMemcpyAsync(

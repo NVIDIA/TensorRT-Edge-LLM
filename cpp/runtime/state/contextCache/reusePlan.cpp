@@ -104,14 +104,14 @@ ReusePlan makeHybridReusePlan(std::vector<HybridCheckpointCandidate> const& cand
     plan.mode = ReusePlanMode::kHybrid;
     plan.hybridHasAttention = hasAttention;
 
-    auto makeCold = [&]() {
+    auto setCold = [&]() {
         plan.kind = inputTokenCount == 0 ? ReusePlanKind::kStandard : ReusePlanKind::kNoReusablePrefix;
         plan.demand.baseKvPages = hasAttention ? static_cast<int32_t>(totalInputPages) : 0;
-        return plan;
     };
     if (inputTokenCount == 0 || lookupPolicy == ContextCacheLookupPolicy::kBypass)
     {
-        return makeCold();
+        setCold();
+        return plan;
     }
 
     std::vector<HybridCheckpointCandidate> ordered = candidates;
@@ -162,7 +162,8 @@ ReusePlan makeHybridReusePlan(std::vector<HybridCheckpointCandidate> const& cand
             = hasAttention ? static_cast<int32_t>(totalInputPages - static_cast<int64_t>(fullBlockCount)) : 0;
         return plan;
     }
-    return makeCold();
+    setCold();
+    return plan;
 }
 
 ReusePlan makeHybridMtpReusePlan(std::vector<HybridCheckpointCandidate> const& candidates,
@@ -177,17 +178,17 @@ ReusePlan makeHybridMtpReusePlan(std::vector<HybridCheckpointCandidate> const& c
     plan.mode = ReusePlanMode::kHybridMtp;
     plan.hybridHasAttention = true;
 
-    auto makeCold = [&]() {
+    auto setCold = [&]() {
         plan.kind = inputTokenCount == 0 ? ReusePlanKind::kStandard : ReusePlanKind::kNoReusablePrefix;
         // MTP is a speculative deployment: a cold request still runs the draft engine over the full input, so the draft
         // pool needs the same full-input reservation as the base pool (mirrors makeSpecReusePlan's cold demand).
         plan.demand.baseKvPages = static_cast<int32_t>(totalInputPages);
         plan.demand.draftKvPages = static_cast<int32_t>(totalInputPages);
-        return plan;
     };
     if (inputTokenCount == 0 || lookupPolicy == ContextCacheLookupPolicy::kBypass)
     {
-        return makeCold();
+        setCold();
+        return plan;
     }
 
     std::vector<HybridCheckpointCandidate> ordered = candidates;
@@ -207,21 +208,26 @@ ReusePlan makeHybridMtpReusePlan(std::vector<HybridCheckpointCandidate> const& c
         }
 
         CacheRecord const& record = records.get(*recordId);
-        // This is the local form of SpecReuseContract::futureDependencyTokens == 1; keep the boundary token private.
-        // Hybrid MTP checkpoint arithmetic intentionally remains local to this shipping path.
-        size_t const fullBlockCount = static_cast<size_t>((candidate.exactLength - 1) / pageSize);
-        bool const logicalPrefixMatches = record.logicalBlockHashes.size() == fullBlockCount
-            && fullBlockCount <= inputFullBlockHashes.size()
+        // The record's logicalBlockHashes was populated by the publisher using the mode's futureDependencyTokens;
+        // use its size as the canonical block count rather than recomputing locally.
+        size_t const fullBlockCount = record.logicalBlockHashes.size();
+        bool const logicalPrefixMatches = fullBlockCount <= inputFullBlockHashes.size()
             && std::equal(
                 record.logicalBlockHashes.begin(), record.logicalBlockHashes.end(), inputFullBlockHashes.begin());
-        // MTP always publishes a partial page, so both snapshots must be present.
-        bool const snapshotSetComplete
-            = record.recurrentSnapshotSlot.has_value() && record.partialKvSnapshotSlot.has_value();
+        // Recurrent state is always snapshotted; the partial-KV snapshot is present only when the checkpoint
+        // length is not page-aligned (zero-dependency modes can publish without one).
+        bool const snapshotSetComplete = record.recurrentSnapshotSlot.has_value();
         bool const basePathComplete = record.basePagePath.size() == fullBlockCount;
         bool const draftPathComplete
             = record.specState.has_value() && record.specState->pagePath.size() == fullBlockCount;
         if (!logicalPrefixMatches || !snapshotSetComplete || !basePathComplete || !draftPathComplete)
         {
+            LOG_DEBUG(
+                "HybridSpec candidate len=%d rejected: prefix=%d snapshot=%d base=%d draft=%d "
+                "(recordBlocks=%zu fullBlocks=%zu inputBlocks=%zu basePath=%zu specState=%d)",
+                candidate.exactLength, logicalPrefixMatches, snapshotSetComplete, basePathComplete, draftPathComplete,
+                record.logicalBlockHashes.size(), fullBlockCount, inputFullBlockHashes.size(),
+                record.basePagePath.size(), record.specState.has_value());
             continue;
         }
 
@@ -239,7 +245,8 @@ ReusePlan makeHybridMtpReusePlan(std::vector<HybridCheckpointCandidate> const& c
         plan.demand.draftKvPages = privatePageCount;
         return plan;
     }
-    return makeCold();
+    setCold();
+    return plan;
 }
 } // namespace rt
 } // namespace trt_edgellm

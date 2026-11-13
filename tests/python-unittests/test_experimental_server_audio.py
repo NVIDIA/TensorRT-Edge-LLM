@@ -20,11 +20,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from experimental.server.runtime import engine as server_engine
-from experimental.server.runtime.engine import (TTS, AudioParams,
-                                                _native_audio_params,
-                                                _pump_channels, _stream_tts)
-from experimental.server.runtime.engine_build import PreparedModel
+from tensorrt_edgellm.server.runtime import engine as server_engine
+from tensorrt_edgellm.server.runtime.engine import (TTS, AudioParams,
+                                                    _native_audio_params,
+                                                    _pump_channels,
+                                                    _stream_tts)
+from tensorrt_edgellm.server.runtime.engine_build import PreparedModel
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -44,7 +45,7 @@ FAKE_RT = SimpleNamespace(FinishReason=_FakeFinishReason)
 
 
 class _FakeChannel:
-    """Mimics the pybind channel pop/terminal API for one producer run."""
+    """Mimics the nanobind channel pop/terminal API for one producer run."""
 
     def __init__(self, chunks, finished_from_start=False):
         self._chunks = deque(chunks)
@@ -183,7 +184,7 @@ def _mock_prepared_tts(monkeypatch, tmp_path, *, complete=True):
             (directory / filename).touch()
     prepared = PreparedModel(str(bundle), str(checkpoint))
     monkeypatch.setattr(
-        "experimental.server.runtime.engine_build.prepare_model",
+        "tensorrt_edgellm.server.runtime.engine_build.prepare_model",
         lambda *args, **kwargs: prepared)
     return prepared
 

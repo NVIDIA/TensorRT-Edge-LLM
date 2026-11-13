@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved. SPDX-License-Identifier: Apache-2.0
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(CUDAToolkit)
+find_dependency(Threads)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
+find_dependency(TensorRT REQUIRED COMPONENTS OnnxParser)
+include("${CMAKE_CURRENT_LIST_DIR}/TensorRTEdgeLLMTargets.cmake")
+
+# edgellmCore is static and loads the plugin with dlopen, so the plugin is not
+# a link dependency that would otherwise add the SDK library directory to a
+# consumer executable's RUNPATH. Propagate that directory explicitly; the
+# imported plugin target resolves its own directory when the consumer is
+# generated, preserving relocatability of the installed SDK.
+if(UNIX AND NOT APPLE AND TARGET TensorRTEdgeLLM::Core)
+  set_property(
+    TARGET TensorRTEdgeLLM::Core
+    APPEND
+    PROPERTY INTERFACE_LINK_OPTIONS
+             "-Wl,-rpath,$<TARGET_FILE_DIR:TensorRTEdgeLLM::Plugin>")
+endif()
+
+check_required_components(TensorRTEdgeLLM)

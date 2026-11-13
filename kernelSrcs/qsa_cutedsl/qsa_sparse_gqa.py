@@ -24,7 +24,7 @@ import os
 import sys
 import time
 from types import SimpleNamespace
-from typing import Callable, Type
+from typing import Callable, Optional, Type
 
 _parsed_args = None
 _saved_argv = None
@@ -44,12 +44,13 @@ from cutlass._mlir.dialects import llvm
 from cutlass.cute.nvgpu import cpasync, warp
 from cutlass.cute.runtime import from_dlpack
 from cutlass.cutlass_dsl import T, dsl_user_op
+from cutlass.experimental.primitives import nvvm_wrapper
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from cutedsl_utils import aot_placeholders  # isort: skip
 
 
-"""QSA sparse-GQA prefill and split-K decode kernels (CuTe DSL), AOT-export build.
+"""QSA sparse-GQA prefill, chunk-prefill and decode kernels with AOT export.
 
 Qwen Sparse Attention (Qwen3.8-Flash-Next): every query token carries an
 int32 list of selected KV token indices produced by the QSA indexer
@@ -70,6 +71,8 @@ K/V row).  FA2-style online softmax (exp2, scale folded at exponent time —
 i.e. applied to the FP32 scores, never pre-scaled into the fp16/bf16 Q).
 ``QSASparseGQADecode`` is the single-token split-K variant over the paged
 KV pool; its class docstring documents the decode layout and grid.
+``QSASparseGQAChunkPrefill`` uses the prefill query grid with paged KV and
+absolute token indices, sharing the same MMA and online-softmax core.
 
 Guarantees:
   * ``-1`` entries: K/V smem rows zero-filled AND scores forced to -inf
@@ -123,6 +126,9 @@ class QSASparseGQAPrefill:
         self._head_dim_padded = (head_dim + 31) // 32 * 32
         self._num_threads = num_threads
         self._pipe_depth = pipe_depth
+        self._async_index_prefetch = (
+            num_threads == 32 and pipe_depth == 2
+        )
         # cp.async row gather: one warp-wave per K/V row, 128-bit per lane.
         self._async_load_cache_mode = cpasync.LoadCacheMode.GLOBAL
 
@@ -200,6 +206,25 @@ class QSASparseGQAPrefill:
         contracts.  ``sm_count`` is ABI symmetry with the FMHA-v2 wrappers
         and is unused.
         """
+        _ = sm_count
+        self._launch(
+            q_tensor, k_tensor, v_tensor, o_tensor, indices, context_lengths,
+            attention_scale, stream, None,
+        )
+
+    @cute.jit
+    def _launch(
+        self,
+        q_tensor: cute.Tensor,
+        k_tensor: cute.Tensor,
+        v_tensor: cute.Tensor,
+        o_tensor: cute.Tensor,
+        indices: cute.Tensor,
+        query_lengths: cute.Tensor,
+        attention_scale: cutlass.Float32,
+        stream: cuda.CUstream,
+        page_table: Optional[cute.Tensor],
+    ):
         if cutlass.const_expr(
             not (
                 q_tensor.element_type
@@ -272,6 +297,16 @@ class QSASparseGQAPrefill:
                 16,
             ]
 
+            # Two slots keep the next metadata copy separate from this read.
+            sMeta: cute.struct.Align[
+                cute.struct.MemRange[
+                    cutlass.Int32,
+                    2 * self._n_block_size
+                    if page_table is not None and self._async_index_prefetch else 0,
+                ],
+                16,
+            ]
+
         # ///////////////////////////////////////////////////////////////////
         # GMEM copies.  The row gather uses a (1, 32) x (1, 8) tiled copy:
         # one warp-wave moves one whole 256-element K/V/Q row (32 lanes x
@@ -318,14 +353,13 @@ class QSASparseGQAPrefill:
         )
         LOG2_E = 1.4426950408889634074
         softmax_scale_log2 = attention_scale * LOG2_E
-        _ = sm_count
         self.kernel(
             q_tensor,
             k_tensor,
             v_tensor,
             o_tensor,
             indices,
-            context_lengths,
+            query_lengths,
             softmax_scale_log2,
             sQ_layout,
             sKV_layout,
@@ -335,6 +369,7 @@ class QSASparseGQAPrefill:
             gmem_tiled_copy_row_O,
             tiled_mma,
             SharedStorage,
+            page_table,
         ).launch(
             grid=grid_dim,
             block=[self._num_threads, 1, 1],
@@ -359,6 +394,7 @@ class QSASparseGQAPrefill:
         gmem_tiled_copy_row_O: cute.TiledCopy,
         tiled_mma: cute.TiledMma,
         SharedStorage: cutlass.Constexpr,
+        mPT: Optional[cute.Tensor],
     ):
         """Sparse FA2 body: prologue cp.async Q rows + gathered K chunk 0,
         chunk loop of ``compute_one_chunk`` (BMM1 -> sparse mask + online
@@ -376,14 +412,20 @@ class QSASparseGQAPrefill:
         ctx_len = mCtxLen[batch]
         topk = mIdx.shape[2]
 
-        # Chunk bound: never more useful entries than (token + 1) causal
-        # candidates; correctness never depends on this (entries past the
-        # valid prefix are -1 and masked), only wasted work does.
-        row_limit = cutlass.min(topk, token + 1)
+        # Valid entries precede all -1 padding, even when ids are unsorted.
+        # Both layouts walk only this prefix to keep their softmax tile counts equal.
+        row_limit = cutlass.Int32(0)
+        if token < ctx_len:
+            upper = cutlass.min(topk, token + 1)
+            if cutlass.const_expr(mPT is not None):
+                upper = topk
+            while row_limit < upper:
+                middle = (row_limit + upper) // 2
+                if mIdx[batch, token, middle] >= 0:
+                    row_limit = middle + 1
+                else:
+                    upper = middle
         n_chunks = cute.ceil_div(row_limit, self._n_block_size)
-        # Padding query rows: run zero chunks; acc_O keeps its zero fill and
-        # the row_sum == 0 guard in normalize_softmax stores exact zeros.
-        n_chunks = 0 if token >= ctx_len else n_chunks
 
         # ///////////////////////////////////////////////////////////////////
         # Strides recomputed from shapes (not read from the layout) so the
@@ -403,6 +445,9 @@ class QSASparseGQAPrefill:
             + head_base * self._head_dim
         )
         kv_row_base = batch * kv_batch_stride + kv_head * self._head_dim
+        if cutlass.const_expr(mPT is not None):
+            kv_seq_stride = cute.assume(num_kv_heads * mK.shape[3], divby=8)
+            kv_row_base = cute.assume(kv_head * mK.shape[3], divby=8)
 
         # ///////////////////////////////////////////////////////////////////
         # Shared memory.
@@ -418,6 +463,12 @@ class QSASparseGQAPrefill:
                 stride=(self._n_block_size, 1),
             )
         )
+
+        sMeta = None
+        if cutlass.const_expr(mPT is not None and self._async_index_prefetch):
+            sMeta = storage.sMeta.get_tensor(
+                cute.make_layout((2, self._n_block_size), stride=(self._n_block_size, 1))
+            )
 
         gmem_thr_copy_row = gmem_tiled_copy_row.get_slice(tidx)
         gmem_thr_copy_row_O = gmem_tiled_copy_row_O.get_slice(tidx)
@@ -534,26 +585,34 @@ class QSASparseGQAPrefill:
                     )
                 else:
                     tQsQ[None, row, 0].fill(0)
-        # Index prefetch runs ONE pipeline step ahead of the K/V gather: the
-        # coalesced index load for chunk c is issued a full iteration before
-        # the gather that consumes it, so its gmem round-trip hides under a
-        # chunk of compute instead of sitting on the cp.async address path.
+        # Physical K/V rows are prepared one pipeline step ahead of their
+        # gather, overlapping the dependent metadata loads with compute.
         idx_reg = cutlass.Int32(-1)
+        krow_reg = cutlass.Int32(-1)
+        vrow_reg = cutlass.Int32(-1)
         if n_chunks > 0:
             idx_reg = self._load_chunk_indices(
                 mIdx, batch, token, cutlass.Int32(0), topk
             )
+            krow_reg, vrow_reg = self._load_chunk_rows(mPT, batch, idx_reg)
         for s in cutlass.range_constexpr(self._pipe_depth):
             if s < n_chunks:
                 self._gather_stage(
                     mK, mV, sIdx, tKsK, tVsV,
                     gmem_tiled_copy_row, gmem_thr_copy_row,
                     kv_row_base, kv_seq_stride,
-                    idx_reg, cutlass.Int32(s),
+                    idx_reg, krow_reg, vrow_reg, cutlass.Int32(s), mPT,
                 )
                 idx_reg = self._load_chunk_indices(
                     mIdx, batch, token, cutlass.Int32(s + 1), topk
                 )
+                krow_reg, vrow_reg = self._load_chunk_rows(mPT, batch, idx_reg)
+            if cutlass.const_expr(mPT is not None and self._async_index_prefetch and s == 0):
+                if self._pipe_depth + 1 < n_chunks:
+                    self._prefetch_chunk_indices(
+                        mIdx, sMeta, batch, token,
+                        cutlass.Int32(self._pipe_depth + 1), topk, cutlass.Int32(0),
+                    )
             cute.arch.cp_async_commit_group()
 
         # ///////////////////////////////////////////////////////////////////
@@ -563,22 +622,50 @@ class QSASparseGQAPrefill:
         # ///////////////////////////////////////////////////////////////////
         for i in range(n_chunks):
             stage = i % self._pipe_depth
+            next_chunk = i + self._pipe_depth
             cute.arch.cp_async_wait_group(self._pipe_depth - 1)
             self.cta_sync_barrier.arrive_and_wait()
+            idx_ahead = cutlass.Int32(-1)
+            page_k_ahead = cutlass.Int32(-1)
+            page_v_ahead = cutlass.Int32(-1)
+            if cutlass.const_expr(mPT is not None and self._async_index_prefetch):
+                # Metadata and K/V groups alternate after the prologue. The
+                # wait above completes this stage's K/V and its metadata.
+                lane = tidx % 32
+                if next_chunk + 1 < n_chunks:
+                    if lane < self._n_block_size and (next_chunk + 1) * self._n_block_size + lane < topk:
+                        idx_ahead = sMeta[i % 2, lane]
+                    page_k_ahead, page_v_ahead = self._load_chunk_page_ids(
+                        mPT, batch, idx_ahead
+                    )
+                if next_chunk + 2 < n_chunks:
+                    self._prefetch_chunk_indices(
+                        mIdx, sMeta, batch, token, next_chunk + 2, topk, (i + 1) % 2,
+                    )
+                cute.arch.cp_async_commit_group()
             self.compute_one_chunk(
                 mma_params, smem_copy_params, softmax_params, sIdx, stage,
             )
-            next_chunk = i + self._pipe_depth
             if next_chunk < n_chunks:
                 self._gather_stage(
                     mK, mV, sIdx, tKsK, tVsV,
                     gmem_tiled_copy_row, gmem_thr_copy_row,
                     kv_row_base, kv_seq_stride,
-                    idx_reg, stage,
+                    idx_reg, krow_reg, vrow_reg, stage, mPT,
                 )
-                idx_reg = self._load_chunk_indices(
-                    mIdx, batch, token, next_chunk + 1, topk
-                )
+                if cutlass.const_expr(mPT is not None and self._async_index_prefetch):
+                    idx_reg = idx_ahead
+                    krow_reg = cutlass.Int32(-1)
+                    vrow_reg = cutlass.Int32(-1)
+                    if idx_ahead >= 0:
+                        in_page = idx_ahead % 128
+                        krow_reg = page_k_ahead * 128 + in_page
+                        vrow_reg = page_v_ahead * 128 + in_page
+                else:
+                    idx_reg = self._load_chunk_indices(
+                        mIdx, batch, token, next_chunk + 1, topk
+                    )
+                    krow_reg, vrow_reg = self._load_chunk_rows(mPT, batch, idx_reg)
             cute.arch.cp_async_commit_group()
 
         # ///////////////////////////////////////////////////////////////////
@@ -673,6 +760,53 @@ class QSASparseGQAPrefill:
         return idx_l
 
     @cute.jit
+    def _prefetch_chunk_indices(
+        self, mIdx: cute.Tensor, sMeta: cute.Tensor,
+        batch: cutlass.Int32, token: cutlass.Int32, chunk: cutlass.Int32,
+        topk: cutlass.Int32, slot: cutlass.Int32,
+    ):
+        tidx, _, _ = cute.arch.thread_idx()
+        lane = tidx % 32
+        pos = chunk * self._n_block_size + lane
+        if lane < self._n_block_size and pos < topk:
+            src = mIdx.iterator + cute.crd2idx((batch, token, pos), mIdx.layout)
+            dst = sMeta.iterator + slot * self._n_block_size + lane
+            nvvm_wrapper.cp_async_shared_global(dst, src, 4, "ca")
+
+    @cute.jit
+    def _load_chunk_page_ids(
+        self,
+        mPT: cute.Tensor,
+        batch: cutlass.Int32,
+        idx_l: cutlass.Int32,
+    ):
+        page_k = cutlass.Int32(-1)
+        page_v = cutlass.Int32(-1)
+        if idx_l >= 0:
+            page = idx_l // 128
+            page_k = mPT[batch, 0, page]
+            page_v = mPT[batch, 1, page]
+        return page_k, page_v
+
+    @cute.jit
+    def _load_chunk_rows(
+        self,
+        mPT: Optional[cute.Tensor],
+        batch: cutlass.Int32,
+        idx_l: cutlass.Int32,
+    ):
+        """Resolve each lane's physical K/V token rows; invalid rows stay -1."""
+        krow_l = idx_l
+        vrow_l = idx_l
+        if cutlass.const_expr(mPT is not None):
+            if idx_l >= 0:
+                page = idx_l // 128
+                in_page = idx_l % 128
+                krow_l = mPT[batch, 0, page] * 128 + in_page
+                vrow_l = mPT[batch, 1, page] * 128 + in_page
+        return krow_l, vrow_l
+
+    @cute.jit
     def _gather_stage(
         self,
         mK: cute.Tensor,
@@ -685,7 +819,10 @@ class QSASparseGQAPrefill:
         kv_row_base: cutlass.Int32,
         kv_seq_stride: cutlass.Int32,
         idx_l: cutlass.Int32,
+        krow_l: cutlass.Int32,
+        vrow_l: cutlass.Int32,
         stage: cutlass.Int32,
+        mPT: Optional[cute.Tensor],
     ):
         """Gather one ``n_block_size``-row chunk's K AND V into pipeline
         ``stage`` and stage its token indices into ``sIdx[stage]``.
@@ -696,10 +833,9 @@ class QSASparseGQAPrefill:
         NaN-poisoned memory.  K and V share the same index, so a single pass
         issues both — the whole chunk becomes one cp.async group.
 
-        ``idx_l`` is the chunk's per-lane index register prefetched by
-        ``_load_chunk_indices``; the row loop broadcasts row ``w``'s index
-        from lane ``w`` with ``shfl.sync.idx`` — zero memory traffic per row,
-        and the broadcast value keeps the per-row branches warp-uniform.
+        Paged gathers broadcast only the physical K/V rows from lane ``w``;
+        dense gathers broadcast its token index once. Original indices stay
+        in ``sIdx`` for masking, independent of physical pool addresses.
 
         The lane-local ``sIdx[stage, lane]`` store replaces the old
         all-lanes-store-everything pattern; readers (the softmax mask) only
@@ -711,12 +847,18 @@ class QSASparseGQAPrefill:
         if lane < self._n_block_size:
             sIdx[stage, lane] = idx_l
         for w in cutlass.range_constexpr(self._n_block_size):
-            # Broadcast row w's index from lane w (warp-uniform result).
-            idx = cutlass.Int32(cute.arch.shuffle_sync(idx_l, w))
+            krow = cutlass.Int32(-1)
+            vrow = cutlass.Int32(-1)
+            if cutlass.const_expr(mPT is not None):
+                krow = cutlass.Int32(cute.arch.shuffle_sync(krow_l, w))
+                vrow = cutlass.Int32(cute.arch.shuffle_sync(vrow_l, w))
+            else:
+                krow = cutlass.Int32(cute.arch.shuffle_sync(idx_l, w))
+                vrow = krow
             self._gather_row(
                 mK, mV, dstK, dstV, gmem_tiled_copy_row,
                 gmem_thr_copy_row, kv_row_base, kv_seq_stride,
-                idx, w, stage,
+                krow, vrow, w, stage, mPT,
             )
 
     @cute.jit
@@ -730,14 +872,19 @@ class QSASparseGQAPrefill:
         gmem_thr_copy_row,
         kv_row_base: cutlass.Int32,
         kv_seq_stride: cutlass.Int32,
-        idx: cutlass.Int32,
+        krow: cutlass.Int32,
+        vrow: cutlass.Int32,
         w: cutlass.Constexpr,
         stage: cutlass.Int32,
+        mPT: Optional[cute.Tensor],
     ):
         """cp.async one token's K and V rows into ``dstK/dstV[w, stage]``;
-        invalid (``idx < 0``) rows are zero-filled."""
-        if idx >= 0:
-            row_off = kv_row_base + idx * kv_seq_stride
+        invalid (``krow < 0``) rows are zero-filled."""
+        if krow >= 0:
+            row_off = kv_row_base + krow * kv_seq_stride
+            v_row_off = row_off
+            if cutlass.const_expr(mPT is not None):
+                v_row_off = kv_row_base + vrow * kv_seq_stride
             gRowK = self._gmem_row_view(mK, row_off)
             tRowK = gmem_thr_copy_row.partition_S(gRowK)
             tRowKAligned = cute.make_tensor(tRowK.iterator.align(16), tRowK.layout)
@@ -746,7 +893,7 @@ class QSASparseGQAPrefill:
                 tRowKAligned[None, 0, 0],
                 dstK[None, w, 0, stage],
             )
-            gRowV = self._gmem_row_view(mV, row_off)
+            gRowV = self._gmem_row_view(mV, v_row_off)
             tRowV = gmem_thr_copy_row.partition_S(gRowV)
             tRowVAligned = cute.make_tensor(tRowV.iterator.align(16), tRowV.layout)
             cute.copy(
@@ -1026,6 +1173,32 @@ class QSASparseGQAPrefill:
 
     def _threadquad_reduce_sum(self, val: cutlass.Float32) -> cutlass.Float32:
         return self._threadquad_reduce(val, lambda x, y: x + y)
+
+
+class QSASparseGQAChunkPrefill(QSASparseGQAPrefill):
+    """Multi-query sparse attention over the widened paged KV pool.
+
+    ``indices`` contains absolute causal KV token ids for each query row.
+    Only the first ``head_dim`` columns of a pool row are attention data.
+    ``query_lengths`` excludes padding from both input reads and computation.
+    """
+
+    @cute.jit
+    def __call__(
+        self,
+        q_tensor: cute.Tensor,
+        kv_pool: cute.Tensor,
+        page_table: cute.Tensor,
+        indices: cute.Tensor,
+        query_lengths: cute.Tensor,
+        o_tensor: cute.Tensor,
+        attention_scale: cutlass.Float32,
+        stream: cuda.CUstream,
+    ):
+        self._launch(
+            q_tensor, kv_pool, kv_pool, o_tensor, indices, query_lengths,
+            attention_scale, stream, page_table,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2038,21 +2211,25 @@ def _generate_qsa_indices(
     compress_ratio: int = 4,
     block_topk: int = 512,
     seed: int = 20260829,
+    past_lengths=None,
 ) -> np.ndarray:
     """Generate index lists matching the QSA indexer output contract.
 
-    Per valid row t: ``min(block_topk, (t+1)//ratio)`` distinct blocks
+    Per valid row at absolute position t: ``min(block_topk, (t+1)//ratio)`` distinct blocks
     (random subset standing in for the score top-k), expanded to runs of
     ``ratio`` consecutive token ids and packed to the front in shuffled
     block order, followed by the ``(t+1) % ratio`` tail tokens (always
     present), ``-1``-padded to ``topk``.  Padding rows are all ``-1``.
+    ``past_lengths`` shifts each request's query positions for chunk-prefill.
     """
     rng = np.random.default_rng(seed)
     idx = np.full((batch_size, seqlen, topk), -1, dtype=np.int32)
     for b in range(batch_size):
         L = int(ctx_lengths[b])
+        past = 0 if past_lengths is None else int(past_lengths[b])
         for t in range(L):
-            n_vis = (t + 1) // compress_ratio
+            position = past + t
+            n_vis = (position + 1) // compress_ratio
             k_sel = min(block_topk, n_vis)
             if k_sel > 0:
                 blocks = rng.choice(n_vis, size=k_sel, replace=False)
@@ -2062,7 +2239,7 @@ def _generate_qsa_indices(
                 ).reshape(-1)
             else:
                 toks = np.empty(0, dtype=np.int64)
-            tail = np.arange(n_vis * compress_ratio, t + 1)
+            tail = np.arange(n_vis * compress_ratio, position + 1)
             row = np.concatenate([toks, tail]).astype(np.int32)
             assert len(row) <= topk, (t, len(row), topk)
             idx[b, t, : len(row)] = row
@@ -2457,10 +2634,11 @@ def _wrap_partials_tensor(arr: cp.ndarray):
     )
 
 
-def _make_decode_aot_tensors(
+def _make_paged_aot_tensors(
     dtype,
     *,
     batch_size: int,
+    seqlen: int,
     num_head: int,
     num_kv_head: int,
     head_dim: int,
@@ -2468,13 +2646,11 @@ def _make_decode_aot_tensors(
     num_flat_pages: int,
     max_pages: int,
     topk: int,
-    max_splits: int,
-    m_block_size: int,
 ):
-    """Create storage-free descriptors matching the decode runtime layouts."""
+    """Create storage-free descriptors for paged sparse attention."""
     q, _ = _create_bsnd_tensor(
         batch_size,
-        1,
+        seqlen,
         num_head,
         head_dim,
         dtype,
@@ -2483,7 +2659,7 @@ def _make_decode_aot_tensors(
     )
     output, _ = _create_bsnd_tensor(
         batch_size,
-        1,
+        seqlen,
         num_head,
         head_dim,
         dtype,
@@ -2519,6 +2695,36 @@ def _make_decode_aot_tensors(
         .mark_compact_shape_dynamic(mode=2, stride_order=page_table_stride_order)
     )
 
+    return {
+        "q": q,
+        "pool": pool,
+        "page_table": page_table,
+        "indices": _make_indices_placeholder(batch_size, seqlen, topk),
+        "context_lengths": _make_ctx_lengths_placeholder(batch_size),
+        "output": output,
+    }
+
+
+def _make_decode_aot_tensors(
+    dtype,
+    *,
+    batch_size: int,
+    num_head: int,
+    num_kv_head: int,
+    head_dim: int,
+    pool_head_dim: int,
+    num_flat_pages: int,
+    max_pages: int,
+    topk: int,
+    max_splits: int,
+    m_block_size: int,
+):
+    """Create the paged decode descriptors and split-K workspaces."""
+    tensors = _make_paged_aot_tensors(
+        dtype, batch_size=batch_size, seqlen=1, num_head=num_head,
+        num_kv_head=num_kv_head, head_dim=head_dim, pool_head_dim=pool_head_dim,
+        num_flat_pages=num_flat_pages, max_pages=max_pages, topk=topk,
+    )
     num_partials = batch_size * num_kv_head * max_splits
 
     def _make_partials(shape):
@@ -2532,13 +2738,7 @@ def _make_decode_aot_tensors(
             leading_dim=2
         ).mark_compact_shape_dynamic(mode=0, stride_order=(0, 1, 2))
 
-    return {
-        "q": q,
-        "pool": pool,
-        "page_table": page_table,
-        "indices": _make_indices_placeholder(batch_size, 1, topk),
-        "context_lengths": _make_ctx_lengths_placeholder(batch_size),
-        "output": output,
+    tensors.update({
         "partial_output": _make_partials(
             (num_partials, m_block_size, head_dim)
         ),
@@ -2546,7 +2746,8 @@ def _make_decode_aot_tensors(
             (num_partials, 2, m_block_size)
         ),
         "counters": _make_ctx_lengths_placeholder(batch_size * num_kv_head),
-    }
+    })
+    return tensors
 
 
 def _generate_decode_indices(
@@ -2876,9 +3077,151 @@ def run_decode(
     return avg_us
 
 
+def run_chunk_prefill(
+    dtype,
+    batch_size: int,
+    seqlen: int,
+    num_head: int,
+    head_dim: int,
+    kv_group_size: int = 12,
+    topk: int = 2051,
+    pool_head_dim: int = 384,
+    past_seqlen: int = 126,
+    softmax_scale: float = 0.0,
+    m_block_size: int = QSA_DEFAULT_M_BLOCK,
+    n_block_size: int = QSA_DEFAULT_N_BLOCK,
+    num_threads: int = QSA_DEFAULT_THREADS,
+    pipe_depth: int = QSA_DEFAULT_PIPE_DEPTH,
+    ragged: bool = False,
+    warmup_iterations: int = 3,
+    iterations: int = 10,
+    skip_ref_check: bool = False,
+    export_only: bool = False,
+    output_dir: str = "./qsa_sparse_aot_artifacts",
+    file_name: str = "qsa_sparse_chunk_prefill",
+    function_prefix: str = "qsa_sparse_chunk_prefill",
+):
+    """Export or check paged chunk attention against an FP32 gather oracle."""
+    if not QSASparseGQAChunkPrefill.can_implement(
+        dtype, head_dim, m_block_size, n_block_size, num_threads, pipe_depth
+    ):
+        raise ValueError("Unsupported chunk-prefill configuration")
+    if num_head <= 0 or kv_group_size <= 0 or num_head % kv_group_size:
+        raise ValueError("num_head must be positive and divisible by kv_group_size")
+    if kv_group_size > m_block_size:
+        raise ValueError("kv_group_size must fit the query tile")
+    if min(batch_size, seqlen, topk) <= 0 or past_seqlen < 0:
+        raise ValueError("Invalid chunk-prefill lengths")
+    if pool_head_dim < head_dim or pool_head_dim % 8:
+        raise ValueError("pool_head_dim must be >= head_dim and divisible by 8")
+    if softmax_scale <= 0.0:
+        softmax_scale = 1.0 / math.sqrt(head_dim)
+    num_kv_heads = num_head // kv_group_size
+    capacity = past_seqlen + seqlen
+    max_pages = (capacity + 127) // 128
+    num_pages = batch_size * max_pages + 1
+    kernel = QSASparseGQAChunkPrefill(
+        head_dim, m_block_size, n_block_size, num_threads, pipe_depth
+    )
+    if export_only:
+        tensors = _make_paged_aot_tensors(
+            dtype, batch_size=batch_size, seqlen=seqlen, num_head=num_head,
+            num_kv_head=num_kv_heads, head_dim=head_dim, pool_head_dim=pool_head_dim,
+            num_flat_pages=2 * num_pages, max_pages=max_pages, topk=topk,
+        )
+        compiled = cute.compile(
+            kernel, tensors["q"], tensors["pool"], tensors["page_table"],
+            tensors["indices"], tensors["context_lengths"], tensors["output"],
+            cutlass.Float32(softmax_scale), aot_placeholders.make_stream(),
+        )
+        os.makedirs(output_dir, exist_ok=True)
+        compiled.export_to_c(
+            file_path=output_dir, file_name=file_name, function_prefix=function_prefix
+        )
+        print(f"[{file_name}] Exported to {output_dir}/{file_name}.h and .o")
+        return None
+
+    cp_dtype = _cutlass_to_cupy_dtype(dtype)
+    nan_value = _nan_pattern(dtype)
+    cp.random.seed(20260921)
+    rng = np.random.default_rng(20260921)
+    query_lengths = np.full(batch_size, seqlen, dtype=np.int32)
+    past_lengths = np.full(batch_size, past_seqlen, dtype=np.int32)
+    if ragged and batch_size > 1:
+        query_lengths[1:] = rng.integers(0, seqlen + 1, size=batch_size - 1)
+        query_lengths[-1] = 0
+        past_lengths[1:] = rng.integers(0, past_seqlen + 1, size=batch_size - 1)
+
+    def _random(shape):
+        values = cp.random.uniform(-1, 1, shape).astype(cp.float32)
+        if dtype == cutlass.Float16:
+            return values.astype(cp.float16)
+        return (values.view(cp.uint32) >> 16).astype(cp.uint16)
+
+    q_arr = cp.full((batch_size, seqlen, num_head, head_dim), nan_value, dtype=cp_dtype)
+    k_dense = cp.full((batch_size, capacity, num_kv_heads, head_dim), nan_value, dtype=cp_dtype)
+    v_dense = cp.full_like(k_dense, nan_value)
+    pool_arr = cp.full((2 * num_pages, 128, num_kv_heads, pool_head_dim), nan_value, dtype=cp_dtype)
+    pt_host = np.full((batch_size, 2, max_pages), -1, dtype=np.int32)
+    for b in range(batch_size):
+        live_queries = int(query_lengths[b])
+        total = int(past_lengths[b]) + live_queries
+        q_arr[b, :live_queries] = _random((live_queries, num_head, head_dim))
+        k_dense[b, :total] = _random((total, num_kv_heads, head_dim))
+        v_dense[b, :total] = _random((total, num_kv_heads, head_dim))
+        base = b * max_pages + 1
+        live_pages = (total + 127) // 128
+        pt_host[b, 0, :live_pages] = (base + rng.permutation(max_pages))[:live_pages]
+        pt_host[b, 1, :live_pages] = (num_pages + base + rng.permutation(max_pages))[:live_pages]
+        for token in range(total):
+            page, row = divmod(token, 128)
+            pool_arr[pt_host[b, 0, page], row, :, :head_dim] = k_dense[b, token]
+            pool_arr[pt_host[b, 1, page], row, :, :head_dim] = v_dense[b, token]
+    idx_host = _generate_qsa_indices(
+        batch_size, seqlen, topk, query_lengths, past_lengths=past_lengths
+    )
+    idx_arr = cp.asarray(idx_host)
+    pt_arr = cp.asarray(pt_host)
+    lengths_arr = cp.asarray(query_lengths)
+    o_arr = cp.full_like(q_arr, nan_value)
+    args = (
+        _wrap_bsnd(q_arr, dtype), _wrap_pool_tensor(pool_arr, dtype),
+        _wrap_page_table_tensor(pt_arr), _wrap_indices_tensor(idx_arr),
+        _wrap_ctx_lengths_tensor(lengths_arr), _wrap_bsnd(o_arr, dtype),
+        cutlass.Float32(softmax_scale), cuda.CUstream(cp.cuda.get_current_stream().ptr),
+    )
+    compiled = cute.compile(kernel, *args)
+    compiled(*args)
+    cp.cuda.Device().synchronize()
+    if not skip_ref_check:
+        # Given poisoned padding and permuted pages, when the chunk runs, then
+        # each live row matches its causal index list and padding stays zero.
+        reference = _qsa_sparse_reference(
+            q_arr, k_dense, v_dense, idx_host, query_lengths, softmax_scale, dtype
+        )
+        actual = _to_float32(o_arr, dtype)
+        if not bool(cp.all(cp.isfinite(actual)).get()):
+            raise RuntimeError("Chunk-prefill read poisoned Q/K/V or indexer state")
+        _report_reference_error(f"[{file_name}]", actual, reference)
+        for b in range(batch_size):
+            if not bool(cp.all(o_arr[b, int(query_lengths[b]):] == 0).get()):
+                raise RuntimeError("Chunk-prefill padding is not exact zero")
+        print(f"[{file_name}] CHUNK_PREFILL_PASS")
+    for _ in range(warmup_iterations):
+        compiled(*args)
+    cp.cuda.Device().synchronize()
+    start = time.time()
+    for _ in range(iterations):
+        compiled(*args)
+    cp.cuda.Device().synchronize()
+    avg_us = (time.time() - start) / iterations * 1e6
+    print(f"[{file_name}] avg_time_us: {avg_us:.2f}")
+    return avg_us
+
+
 def _parse_args(argv=None):
     p = argparse.ArgumentParser(
-        description="QSA sparse-GQA CuTe DSL prefill kernel: test and AOT export."
+        description="QSA sparse-GQA CuTe DSL kernels: test and AOT export."
     )
     p.add_argument("--dtype", type=cutlass.dtype, default=cutlass.Float16,
                    help="Input/output dtype: Float16 or BFloat16 (default: Float16).")
@@ -2905,6 +3248,10 @@ def _parse_args(argv=None):
     p.add_argument("--decode", action="store_true",
                    help="Run/export the split-K DECODE kernel instead of prefill. "
                         "seqlen = total context of the first step.")
+    p.add_argument("--chunk_prefill", action="store_true",
+                   help="Run/export multi-query sparse attention over paged KV.")
+    p.add_argument("--past_seqlen", type=int, default=126,
+                   help="Cached prefix length for the chunk-prefill check.")
     p.add_argument("--decode_steps", type=int, default=1,
                    help="Decode steps to run+check (each appends one token).")
     p.add_argument("--max_splits", type=int, default=8,
@@ -2929,6 +3276,24 @@ def _parse_args(argv=None):
 
 def main():
     args = _parsed_args
+    if args.chunk_prefill:
+        if args.decode:
+            raise ValueError("--decode and --chunk_prefill are mutually exclusive")
+        run_chunk_prefill(
+            dtype=args.dtype, batch_size=args.batch_size, seqlen=args.seqlen,
+            num_head=args.num_head, head_dim=args.head_dim,
+            kv_group_size=args.kv_group_size, topk=args.topk,
+            pool_head_dim=args.pool_head_dim, past_seqlen=args.past_seqlen,
+            softmax_scale=args.softmax_scale, m_block_size=args.m_block_size,
+            n_block_size=args.n_block_size,
+            num_threads=(QSA_DEFAULT_THREADS if args.num_threads is None else args.num_threads),
+            pipe_depth=(QSA_DEFAULT_PIPE_DEPTH if args.pipe_depth is None else args.pipe_depth),
+            ragged=args.ragged, warmup_iterations=args.warmup_iterations,
+            iterations=args.iterations, skip_ref_check=args.skip_ref_check,
+            export_only=args.export_only, output_dir=args.output_dir,
+            file_name=args.file_name, function_prefix=args.function_prefix,
+        )
+        return
     if args.decode:
         num_threads = (QSA_DECODE_DEFAULT_THREADS if args.num_threads is None
                        else args.num_threads)

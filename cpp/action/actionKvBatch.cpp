@@ -19,28 +19,73 @@
 
 #include "common/checkMacros.h"
 #include "common/cudaUtils.h"
+#include "common/logger.h"
 #include "common/pagedKvTypes.h"
-
-#include <NvInferRuntimeBase.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 
 namespace trt_edgellm::rt
 {
+namespace
+{
 
-ActionKvBatchCollector::ActionKvBatchCollector(int32_t maxBatch, int32_t maxPagesPerSeq, int32_t numPages)
+class MaterializeLeaseGuard
+{
+public:
+    MaterializeLeaseGuard(std::vector<CacheRequestLease>& capturedLeases, cudaStream_t stream) noexcept
+        : mCapturedLeases(capturedLeases)
+        , mStream(stream)
+    {
+    }
+
+    MaterializeLeaseGuard(MaterializeLeaseGuard const&) = delete;
+    MaterializeLeaseGuard& operator=(MaterializeLeaseGuard const&) = delete;
+
+    ~MaterializeLeaseGuard() noexcept
+    {
+        if (!mCommitted)
+        {
+            if (cudaStreamSynchronize(mStream) != cudaSuccess)
+            {
+                LOG_ERROR("Action KV rollback could not prove stream quiescence.");
+                std::terminate();
+            }
+            mCapturedLeases.clear();
+        }
+    }
+
+    void commit() noexcept
+    {
+        mCommitted = true;
+    }
+
+private:
+    std::vector<CacheRequestLease>& mCapturedLeases;
+    cudaStream_t mStream{};
+    bool mCommitted{};
+};
+
+} // namespace
+
+ActionKvBatchCollector::ActionKvBatchCollector(
+    int32_t maxBatch, int32_t maxPagesPerSeq, int32_t numPages, ContextCacheManager* pageManager)
     : mMaxBatch(maxBatch)
     , mPageTable(maxBatch, maxPagesPerSeq, numPages)
-    , mHostLengths({maxBatch}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "ActionKvBatchCollector::mHostLengths")
-    , mDeviceLengths({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "ActionKvBatchCollector::mDeviceLengths")
+    , mPageManager(pageManager)
+    , mHostLengths({maxBatch}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "ActionKvBatchCollector::mHostLengths")
+    , mDeviceLengths(
+          {maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "ActionKvBatchCollector::mDeviceLengths")
 {
     ELLM_CHECK(maxBatch > 0, "Action KV snapshot capacity must be positive");
 }
 
 void ActionKvBatchCollector::beginRequest(std::vector<bool> const& actionSlots, std::vector<int64_t> const& mropeDeltas)
 {
+    ELLM_CHECK(
+        mCapturedPageLeases.empty(), "Previous action page ownership must be released before beginning a new request");
     ELLM_CHECK(static_cast<int32_t>(actionSlots.size()) <= mMaxBatch,
         "Action KV snapshot request exceeds configured batch capacity");
     ELLM_CHECK(actionSlots.size() == mropeDeltas.size(),
@@ -68,10 +113,10 @@ void ActionKvBatchCollector::captureFinished(KVPageTable const& pageTable, Tenso
     ELLM_CHECK(finished.size() == residentRefs.size(),
         "Action KV snapshot finish state and resident mapping must have the same size");
     ELLM_CHECK(
-        pageTable.maxPagesPerSeq() == mPageTable.maxPagesPerSeq() && pageTable.numPages() == mPageTable.numPages(),
+        pageTable.maxPagesPerSeq() <= mPageTable.maxPagesPerSeq() && pageTable.numPages() == mPageTable.numPages(),
         "Action KV snapshot page table is incompatible with the action-local table");
     ELLM_CHECK(deviceKvLengths.getDeviceType() == DeviceType::kGPU
-            && deviceKvLengths.getDataType() == nvinfer1::DataType::kINT32,
+            && deviceKvLengths.getDataType() == trt_edgellm::DataType::kINT32,
         "Action KV snapshot lengths must be an INT32 GPU tensor");
     ELLM_CHECK(deviceKvLengths.getShape().volume() >= static_cast<int64_t>(finished.size()),
         "Action KV snapshot length tensor does not cover the active batch");
@@ -79,6 +124,8 @@ void ActionKvBatchCollector::captureFinished(KVPageTable const& pageTable, Tenso
     std::vector<uint8_t> seen(mActionSlots.size(), 0U);
     int32_t const* const deviceLengths = deviceKvLengths.dataPointer<int32_t>();
     int32_t* const hostLengths = mHostLengths.dataPointer<int32_t>();
+    std::vector<size_t> copiedOriginals;
+    copiedOriginals.reserve(finished.size());
     for (size_t slot = 0; slot < finished.size(); ++slot)
     {
         int32_t const originalIndex = originalIndices[slot];
@@ -101,8 +148,19 @@ void ActionKvBatchCollector::captureFinished(KVPageTable const& pageTable, Tenso
         snapshot.pageIds.assign(row, row + pageTable.maxPagesPerSeq());
         mByOriginalIndex[original] = std::move(snapshot);
         mPending[original] = 1U;
+        copiedOriginals.push_back(original);
         CUDA_CHECK(cudaMemcpyAsync(
             hostLengths + originalIndex, deviceLengths + slot, sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
+    }
+    if (mPageManager != nullptr && !copiedOriginals.empty())
+    {
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        completeCapture();
+        for (size_t const original : copiedOriginals)
+        {
+            SequenceSnapshot const& snapshot = *mByOriginalIndex[original];
+            mCapturedPageLeases.push_back(mPageManager->retainBasePages(snapshot.pageIds));
+        }
     }
 }
 
@@ -124,9 +182,9 @@ void ActionKvBatchCollector::completeCapture()
         ELLM_CHECK(livePages <= static_cast<int32_t>(snapshot.pageIds.size()),
             "Action KV snapshot length exceeds its page-table row");
         snapshot.pageIds.resize(static_cast<size_t>(livePages));
-        ELLM_CHECK(
-            std::all_of(snapshot.pageIds.begin(), snapshot.pageIds.end(), [](int32_t pageId) { return pageId >= 0; }),
-            "Action KV snapshot has an unmapped live page");
+        ELLM_CHECK(std::all_of(snapshot.pageIds.begin(), snapshot.pageIds.end(),
+                       [&](int32_t pageId) { return pageId >= 0 && pageId < mPageTable.numPages(); }),
+            "Action KV snapshot has an invalid live page");
         mPending[original] = 0U;
     }
 }
@@ -137,6 +195,7 @@ ActionKvBatchView ActionKvBatchCollector::materialize(cudaStream_t stream)
     ELLM_CHECK(!mActionSlots.empty(), "Action KV snapshot request was not initialized");
     ELLM_CHECK(std::none_of(mPending.begin(), mPending.end(), [](uint8_t pending) { return pending != 0U; }),
         "Action KV snapshot has an unfinished length transfer");
+    MaterializeLeaseGuard materializeGuard(mCapturedPageLeases, stream);
 
     int32_t const actionCount = static_cast<int32_t>(std::count(mActionSlots.begin(), mActionSlots.end(), true));
     check::check(mHostLengths.reshape({actionCount}) && mDeviceLengths.reshape({actionCount}),
@@ -172,7 +231,17 @@ ActionKvBatchView ActionKvBatchCollector::materialize(cudaStream_t stream)
     CUDA_CHECK(cudaMemcpyAsync(mDeviceLengths.rawPointer(), mHostLengths.rawPointer(),
         static_cast<size_t>(actionCount) * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
     mMaterialized = true;
+    materializeGuard.commit();
     return ActionKvBatchView{mPageTable, mDeviceLengths, mHostLengths, mDenseMropeDeltas, actionCount};
+}
+
+void ActionKvBatchCollector::releaseMaterialized(cudaStream_t stream)
+{
+    if (!mCapturedPageLeases.empty())
+    {
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        mCapturedPageLeases.clear();
+    }
 }
 
 std::vector<int32_t> const& ActionKvBatchCollector::originalRequestIndices() const noexcept

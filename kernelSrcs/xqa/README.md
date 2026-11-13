@@ -35,13 +35,13 @@ kernels. The test executable is located in the build directory.
 To run all primary attention and tree-attention decoding tests:
 
 ```bash
-./build/unittests/unitTestKernelsAttention --gtest_filter=XQAAttentionDecodingTest.*:XQATreeAttentionDecodingTest.*
+./build/bin/unitTests/unitTestKernelsAttention --gtest_filter=XQAAttentionDecodingTest.*:XQATreeAttentionDecodingTest.*
 ```
 
 To list all available tests:
 
 ```bash
-./build/unittests/unitTestKernelsAttention --gtest_list_tests
+./build/bin/unitTests/unitTestKernelsAttention --gtest_list_tests
 ```
 
 ## Adding XQA Configurations

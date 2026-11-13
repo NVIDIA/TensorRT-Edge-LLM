@@ -88,7 +88,7 @@ def _load_runtime_module():
             return importlib.import_module("_edgellm_runtime")
         except ImportError as exc:
             raise RuntimeError(
-                "build the experimental native runtime and add its pybind "
+                "build the experimental native runtime and add its nanobind "
                 "directory to PYTHONPATH") from exc
 
 

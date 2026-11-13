@@ -20,11 +20,14 @@ is placed in the same ONNX directory structure used by the standard export
 pipeline, so downstream engine build and inference tests can consume it.
 """
 
+import contextlib
+import glob
 import json
 import os
 import shutil
 import sys
 import tempfile
+from dataclasses import replace
 
 import pytest
 from conftest import EnvironmentConfig
@@ -32,13 +35,19 @@ from pytest_helpers import run_command, timer_context
 
 from tensorrt_edgellm import config as edgellm_config
 
+from . import ckpt_layout_validator
 from .config import (GEMMA4_MTP_ASSISTANT_MODELS_MAP, ModelType, TaskType,
                      TestConfig, infer_checkpoint_export_model_type,
                      strip_model_quant_suffixes)
-from .utils.command_generation import resolve_lora_model_name
+from .utils.checkpoint_export_helpers import (get_export_model_dir,
+                                              resolve_export_subdir,
+                                              run_checkpoint_export,
+                                              run_command_list)
+from .utils.command_generation import (generate_pre_export_commands,
+                                       resolve_lora_model_name)
 
 # --externalize-weights wiring. extw_<token> -> CLI kinds for
-# tensorrt_edgellm.scripts.export --externalize-weights.
+# tensorrt_edgellm.onnx.cli --externalize-weights.
 _EXTW_TOKEN_MAP = {
     "ffn": ["int4_ffn"],
     "lm": ["lm_head"],
@@ -80,6 +89,14 @@ def _verify_externalized_outputs(out_dir, requested_cli_kinds):
     """
     if not requested_cli_kinds:
         return
+    # Omni-family exports nest the LLM backbone one level down (see
+    # ``_LAYOUT_OVERRIDES`` in ``onnx/cli.py``: thinker -> ``llm/thinker``),
+    # so the externalized safetensors and the config.json manifest live with the
+    # thinker rather than at the ``llm/`` root.  Non-Omni models have no
+    # ``thinker/`` subdir and keep the flat layout.
+    thinker_dir = os.path.join(out_dir, "thinker")
+    if os.path.isdir(thinker_dir):
+        out_dir = thinker_dir
     config_path = os.path.join(out_dir, "config.json")
     if not os.path.isfile(config_path):
         pytest.fail(
@@ -131,7 +148,7 @@ def _requires_ddtree_state_inputs(model_dir):
     return cfg.is_hybrid
 
 
-def _verify_tree_base_inputs(mode, onnx_path, model_dir):
+def _verify_spec_base_inputs(mode, onnx_path, model_dir):
     input_names = _onnx_graph_input_names(onnx_path)
     expected_attention_inputs = {
         "attention_position_ids", "packed_attention_mask"
@@ -139,17 +156,19 @@ def _verify_tree_base_inputs(mode, onnx_path, model_dir):
     missing = expected_attention_inputs - input_names
     if missing:
         pytest.fail(
-            f"{mode} tree-base ONNX missing inputs {sorted(missing)}: {onnx_path}"
+            f"{mode} speculative target ONNX missing inputs {sorted(missing)}: {onnx_path}"
         )
 
     if not _requires_ddtree_state_inputs(model_dir):
         return
 
-    expected_state_inputs = {"tree_parent_ids", "tree_depths"}
+    expected_state_inputs = {
+        "tree_parent_ids", "tree_depths", "spec_verify_layout"
+    }
     missing = expected_state_inputs - input_names
     if missing:
         pytest.fail(
-            f"{mode} hybrid tree-base ONNX missing inputs {sorted(missing)}: {onnx_path}"
+            f"{mode} hybrid speculative target ONNX missing inputs {sorted(missing)}: {onnx_path}"
         )
 
 
@@ -179,9 +198,23 @@ def _assert_dflash_target_kv_update_contract(onnx_path):
                 f"'kv_page_table', got {page_table_input!r}")
 
 
+def _require_draft_onnx(mode, draft_onnx_dir, config):
+    """Return the draft ``model.onnx`` after checking its weights carry the
+    precisions its directory name claims."""
+    draft_onnx = os.path.join(draft_onnx_dir, "model.onnx")
+    if not os.path.exists(draft_onnx):
+        pytest.fail(f"{mode} draft ONNX not found: {draft_onnx}")
+    ckpt_layout_validator.validate_onnx_layout(
+        draft_onnx,
+        body_precision=config.draft_llm_precision,
+        lm_head_precision=config.draft_lm_head_precision,
+        label=f"{mode} draft ONNX")
+    return draft_onnx
+
+
 def test_checkpoint_export(test_param: str, test_logger,
                            env_config: EnvironmentConfig):
-    """Export a pre-quantized model via tensorrt_edgellm.scripts.export."""
+    """Export a pre-quantized model via tensorrt_edgellm.onnx.cli."""
 
     config = TestConfig.from_param_string(
         test_param, infer_checkpoint_export_model_type(test_param),
@@ -206,7 +239,7 @@ def test_checkpoint_export(test_param: str, test_logger,
         export_cmd = [
             sys.executable,
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             torch_dir,
             tmp_dir,
         ]
@@ -220,6 +253,8 @@ def test_checkpoint_export(test_param: str, test_logger,
 
         if config.int4_gemm_plugin_v1:
             export_cmd += ["--int4-gemm-plugin-version", "1"]
+        if config.target_sm is not None:
+            export_cmd += ["--target-sm", str(config.target_sm)]
 
         env_vars = {}
         if config.trt_native_attn:
@@ -244,12 +279,15 @@ def test_checkpoint_export(test_param: str, test_logger,
         # expects them under ``<llm_onnx_dir>/{talker,code_predictor}/``. The
         # standard non-TTS export emits a single ``tmp/llm/`` that maps
         # directly to ``<llm_onnx_dir>/``.
-        llm_output = os.path.join(tmp_dir, "llm")
+        # DiffusionGemma / dllm-family models emit ``dllm/`` instead of ``llm/``.
+        # Fall back to it so downstream copytree targets the exporter output.
+        llm_subdir = resolve_export_subdir(tmp_dir, "llm")
         cp_output = os.path.join(tmp_dir, "code_predictor")
-        if not os.path.isdir(llm_output):
+        if llm_subdir is None:
             pytest.fail(
-                f"the checkpoint exporter did not produce llm/ output directory in {tmp_dir}"
+                f"the checkpoint exporter did not produce llm/ or dllm/ output directory in {tmp_dir}"
             )
+        llm_output = os.path.join(tmp_dir, llm_subdir)
         if os.path.isdir(cp_output):
             # TTS layout: tmp/llm/         -> onnx/llm-<prec>/talker/
             #             tmp/code_predictor/ -> onnx/llm-<prec>/code_predictor/
@@ -263,12 +301,16 @@ def test_checkpoint_export(test_param: str, test_logger,
             # Standard layout: tmp/llm/ -> onnx/llm-<prec>/
             shutil.copytree(llm_output, llm_onnx_dir, dirs_exist_ok=True)
 
-        # If the model also has a visual encoder output, move that too
-        visual_output = os.path.join(tmp_dir, "visual")
-        if os.path.isdir(visual_output):
+        # If the model also has a visual encoder output, move that too.
+        # Qwen3-Omni families emit ``vision/`` rather than ``visual/``.
+        visual_subdir = resolve_export_subdir(tmp_dir, "visual")
+        if visual_subdir is not None:
+            visual_output = os.path.join(tmp_dir, visual_subdir)
             visual_onnx_dir = config.get_visual_onnx_dir(
                 config.visual_precision or "fp16")
             shutil.copytree(visual_output, visual_onnx_dir, dirs_exist_ok=True)
+            test_logger.info("Copied %s/ → %s (visual encoder)", visual_subdir,
+                             visual_onnx_dir)
 
         # Same for audio encoder (ASR / Omni).
         audio_output = os.path.join(tmp_dir, "audio")
@@ -322,6 +364,72 @@ def test_checkpoint_export(test_param: str, test_logger,
         )
 
 
+def _require_generated_quant_checkpoint(checkpoint_dir: str) -> None:
+    """Require the files emitted by unified ModelOpt HF quantization."""
+    if not os.path.isdir(checkpoint_dir):
+        raise FileNotFoundError(
+            f"Generated quantized checkpoint not found: {checkpoint_dir}")
+    for filename in ("config.json", "hf_quant_config.json"):
+        if not os.path.isfile(os.path.join(checkpoint_dir, filename)):
+            raise FileNotFoundError(
+                f"Generated quantized checkpoint missing {filename}: "
+                f"{checkpoint_dir}")
+    weights = glob.glob(os.path.join(checkpoint_dir, "*.safetensors"))
+    weights.extend(glob.glob(os.path.join(checkpoint_dir, "*.bin")))
+    if not weights:
+        raise FileNotFoundError(
+            "Generated quantized checkpoint missing weight files "
+            f"(*.safetensors / *.bin): {checkpoint_dir}")
+
+
+@contextlib.contextmanager
+def _quantized_checkpoint(test_param: str, test_logger,
+                          env_config: EnvironmentConfig, prefix: str):
+    """Quantize into job-local scratch and yield the checkpoint directory.
+
+    Yields None when the parameter needs no quantization. The scratch
+    directory is removed on exit, including when quantization or the body
+    raises.
+    """
+    model_type = infer_checkpoint_export_model_type(test_param)
+    config = TestConfig.from_param_string(test_param, model_type,
+                                          TaskType.EXPORT, env_config)
+    if not generate_pre_export_commands(config):
+        yield None
+        return
+
+    test_cache_dir = os.environ.get("TEST_CACHE_DIR")
+    if not test_cache_dir:
+        raise ValueError(
+            "TEST_CACHE_DIR is required for checkpoint quantization exports")
+    os.makedirs(test_cache_dir, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix=prefix,
+                                     dir=test_cache_dir) as scratch_dir:
+        quant_config = TestConfig.from_param_string(
+            test_param, model_type, TaskType.EXPORT,
+            replace(env_config, onnx_dir=scratch_dir))
+        run_command_list(generate_pre_export_commands(quant_config),
+                         "Pre-export", test_logger)
+        checkpoint = get_export_model_dir(quant_config)
+        _require_generated_quant_checkpoint(checkpoint)
+        yield checkpoint
+
+
+def test_checkpoint_export_with_quantization(test_param: str, test_logger,
+                                             env_config: EnvironmentConfig):
+    """Quantize a base checkpoint in job-local scratch, then export it."""
+    final_config = TestConfig.from_param_string(
+        test_param, infer_checkpoint_export_model_type(test_param),
+        TaskType.EXPORT, env_config)
+
+    with _quantized_checkpoint(test_param, test_logger, env_config,
+                               "checkpoint_quant_") as checkpoint:
+        if checkpoint is None:
+            pytest.fail(f"No quantization command generated for {test_param}")
+        run_checkpoint_export(final_config, test_logger, model_dir=checkpoint)
+
+
 def _run_checkpoint_export(cmd, timeout, test_logger, label, env_vars=None):
     """Run an checkpoint export command and fail on error."""
     with timer_context(label, test_logger):
@@ -335,15 +443,30 @@ def _run_checkpoint_export(cmd, timeout, test_logger, label, env_vars=None):
                 f"{label} failed: {result.get('error', 'Unknown error')}")
 
 
+def _eagle_base_requires_draft_dir(base_dir):
+    """Qwen3.5-family EAGLE bases take their hidden-state layers from the draft config.
+
+    The exporter also requires ``--eagle-draft-dir`` for Gemma4 bases.
+    """
+    from tensorrt_edgellm.onnx.cli import (_GEMMA4_MODEL_TYPES,
+                                           _QWEN35_EAGLE_BASE_MODEL_TYPES)
+
+    with open(os.path.join(base_dir, "config.json"), encoding="utf-8") as f:
+        model_type = json.load(f).get("model_type")
+    return (model_type in _QWEN35_EAGLE_BASE_MODEL_TYPES
+            or model_type in _GEMMA4_MODEL_TYPES)
+
+
 def test_checkpoint_eagle_export(test_param: str, test_logger,
                                  env_config: EnvironmentConfig):
-    """Export EAGLE base + draft models via tensorrt_edgellm.scripts.export.
+    """Export EAGLE base + draft models via tensorrt_edgellm.onnx.cli.
 
     Uses pre-quantized unified checkpoints for both base and draft models
     so that no on-the-fly quantization is needed during CI.
 
     Two tensorrt-edgellm-export invocations:
-      1. Base model with --eagle-base  -> llm-base ONNX (+ visual for VLMs)
+      1. Base model with --eagle-base (plus --eagle-draft-dir for
+         Qwen3.5-family bases) -> llm-base ONNX (+ visual for VLMs)
       2. Draft model -> draft ONNX
     """
 
@@ -364,9 +487,11 @@ def test_checkpoint_eagle_export(test_param: str, test_logger,
         raise FileNotFoundError(
             f"Draft model checkpoint not found: {draft_torch_dir}")
 
-    # Export params include quantized hub suffixes to locate the checkpoint, but
-    # downstream ONNX paths are keyed by the base model name.
-    config.model_name = strip_model_quant_suffixes(config.model_name)
+    # Export params include quantized hub suffixes to locate the checkpoint.
+    # Do not assign this back to config.model_name: get_onnx_base_dir() picks
+    # per-checkpoint whether to keep a direct alias's full name (e.g.
+    # Qwen3-8B-FP8) or strip to the base, and needs the original name intact.
+    display_name = strip_model_quant_suffixes(config.model_name)
 
     # Output directories
     llm_onnx_dir = config.get_llm_onnx_dir()
@@ -382,19 +507,23 @@ def test_checkpoint_eagle_export(test_param: str, test_logger,
         base_cmd = [
             "python3",
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             base_torch_dir,
             tmp_base,
             "--eagle-base",
         ]
+        base_timeout = 600
+        if _eagle_base_requires_draft_dir(base_torch_dir):
+            base_cmd += ["--eagle-draft-dir", draft_torch_dir]
+            base_timeout = 1200
         extw_kinds = _extw_cli_kinds(config.externalize_weights)
         if extw_kinds:
             base_cmd += ["--externalize-weights", *extw_kinds]
         _run_checkpoint_export(
             base_cmd,
-            600,
+            base_timeout,
             test_logger,
-            f"Exporting EAGLE base {config.model_name} via the checkpoint exporter",
+            f"Exporting EAGLE base {display_name} via the checkpoint exporter",
             env_vars=export_env_vars)
 
         # Copy base LLM ONNX
@@ -404,18 +533,22 @@ def test_checkpoint_eagle_export(test_param: str, test_logger,
         shutil.copytree(base_llm_out, llm_onnx_dir, dirs_exist_ok=True)
         _verify_externalized_outputs(llm_onnx_dir, extw_kinds)
 
-        # Copy visual encoder if present (VLM models)
-        base_vis_out = os.path.join(tmp_base, "visual")
-        if os.path.isdir(base_vis_out):
+        # Copy visual encoder if present (VLM models).
+        # Qwen3-Omni families emit ``vision/`` rather than ``visual/``.
+        base_vis_subdir = resolve_export_subdir(tmp_base, "visual")
+        if base_vis_subdir is not None:
+            base_vis_out = os.path.join(tmp_base, base_vis_subdir)
             visual_onnx_dir = config.get_visual_onnx_dir(
                 config.visual_precision or "fp16")
             shutil.copytree(base_vis_out, visual_onnx_dir, dirs_exist_ok=True)
+            test_logger.info("Copied %s/ → %s (visual encoder)",
+                             base_vis_subdir, visual_onnx_dir)
 
         # --- Export draft model ---
         draft_cmd = [
             "python3",
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             draft_torch_dir,
             tmp_draft,
         ]
@@ -451,7 +584,7 @@ def test_checkpoint_eagle_export(test_param: str, test_logger,
 
 def test_checkpoint_dflash_export(test_param: str, test_logger,
                                   env_config: EnvironmentConfig):
-    """Export DFlash base + draft models via tensorrt_edgellm.scripts.export."""
+    """Export DFlash base + draft models via tensorrt_edgellm.onnx.cli."""
 
     config = TestConfig.from_param_string(
         test_param, infer_checkpoint_export_model_type(test_param),
@@ -463,21 +596,10 @@ def test_checkpoint_dflash_export(test_param: str, test_logger,
         raise FileNotFoundError(
             f"Base model checkpoint not found: {base_torch_dir}")
 
-    draft_torch_dir = config.get_dflash_draft_model_dir()
+    draft_torch_dir = config.get_block_draft_checkpoint_dir()
     if not os.path.exists(draft_torch_dir):
         raise FileNotFoundError(
             f"DFlash draft model checkpoint not found: {draft_torch_dir}")
-
-    # Export test params may include a quantized checkpoint suffix in the model
-    # name (for example "Qwen3.5-4B-NVFP4") to locate the pre-quantized base
-    # checkpoint.  Downstream build/inference tests use the canonical base model
-    # name plus precision ("Qwen3.5-4B-nvfp4"), so normalize the ONNX path after
-    # both checkpoint locations have been resolved.
-    _QUANT_SUFFIXES = ("-NVFP4", "-FP8", "-FP8-KV", "-INT8-SQ", "-INT4-AWQ")
-    for suffix in _QUANT_SUFFIXES:
-        if config.model_name.endswith(suffix):
-            config.model_name = config.model_name[:-len(suffix)]
-            break
 
     llm_onnx_dir = config.get_llm_onnx_dir()
     draft_onnx_dir = config.get_draft_onnx_dir()
@@ -486,14 +608,13 @@ def test_checkpoint_dflash_export(test_param: str, test_logger,
 
     tmp_base = tempfile.mkdtemp(prefix="dflash_base_export_")
     tmp_draft = tempfile.mkdtemp(prefix="dflash_draft_export_")
-    use_tree_base = config.is_dflash_tree
-    base_export_flag = "--dflash-tree-base" if use_tree_base else "--dflash-base"
+    base_export_flag = "--dflash-base"
 
     try:
         base_cmd = [
             "python3",
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             base_torch_dir,
             tmp_base,
             base_export_flag,
@@ -516,7 +637,7 @@ def test_checkpoint_dflash_export(test_param: str, test_logger,
         draft_cmd = [
             "python3",
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             base_torch_dir,
             tmp_draft,
             "--dflash-draft",
@@ -544,18 +665,15 @@ def test_checkpoint_dflash_export(test_param: str, test_logger,
     base_onnx = os.path.join(llm_onnx_dir, "model.onnx")
     if not os.path.exists(base_onnx):
         pytest.fail(f"DFlash base ONNX not found: {base_onnx}")
-    if use_tree_base:
-        _verify_tree_base_inputs("DFlash", base_onnx, base_torch_dir)
+    _verify_spec_base_inputs("DFlash", base_onnx, base_torch_dir)
 
-    draft_onnx = os.path.join(draft_onnx_dir, "model.onnx")
-    if not os.path.exists(draft_onnx):
-        pytest.fail(f"DFlash draft ONNX not found: {draft_onnx}")
+    draft_onnx = _require_draft_onnx("DFlash", draft_onnx_dir, config)
     _assert_dflash_target_kv_update_contract(draft_onnx)
 
 
 def test_checkpoint_jetspec_export(test_param: str, test_logger,
                                    env_config: EnvironmentConfig):
-    """Export JetSpec base + draft models via tensorrt_edgellm.scripts.export."""
+    """Export JetSpec base + draft models via tensorrt_edgellm.onnx.cli."""
 
     config = TestConfig.from_param_string(
         test_param, infer_checkpoint_export_model_type(test_param),
@@ -567,13 +685,12 @@ def test_checkpoint_jetspec_export(test_param: str, test_logger,
         raise FileNotFoundError(
             f"Base model checkpoint not found: {base_torch_dir}")
 
-    draft_torch_dir = config.get_jetspec_draft_model_dir()
+    draft_torch_dir = config.get_block_draft_checkpoint_dir()
     if not os.path.exists(draft_torch_dir):
         raise FileNotFoundError(
             f"JetSpec draft model checkpoint not found: {draft_torch_dir}")
 
-    config.model_name = strip_model_quant_suffixes(config.model_name)
-
+    # Do not strip config.model_name here -- see test_checkpoint_eagle_export.
     llm_onnx_dir = config.get_llm_onnx_dir()
     draft_onnx_dir = config.get_draft_onnx_dir()
     os.makedirs(llm_onnx_dir, exist_ok=True)
@@ -581,14 +698,13 @@ def test_checkpoint_jetspec_export(test_param: str, test_logger,
 
     tmp_base = tempfile.mkdtemp(prefix="jetspec_base_export_")
     tmp_draft = tempfile.mkdtemp(prefix="jetspec_draft_export_")
-    use_tree_base = config.is_jetspec_tree
-    base_export_flag = "--jetspec-tree-base" if use_tree_base else "--jetspec-base"
+    base_export_flag = "--jetspec-base"
 
     try:
         base_cmd = [
             "python3",
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             base_torch_dir,
             tmp_base,
             base_export_flag,
@@ -611,7 +727,7 @@ def test_checkpoint_jetspec_export(test_param: str, test_logger,
         draft_cmd = [
             "python3",
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             base_torch_dir,
             tmp_draft,
             "--jetspec-draft",
@@ -639,18 +755,108 @@ def test_checkpoint_jetspec_export(test_param: str, test_logger,
     base_onnx = os.path.join(llm_onnx_dir, "model.onnx")
     if not os.path.exists(base_onnx):
         pytest.fail(f"JetSpec base ONNX not found: {base_onnx}")
-    if use_tree_base:
-        _verify_tree_base_inputs("JetSpec", base_onnx, base_torch_dir)
+    _verify_spec_base_inputs("JetSpec", base_onnx, base_torch_dir)
 
-    draft_onnx = os.path.join(draft_onnx_dir, "model.onnx")
-    if not os.path.exists(draft_onnx):
-        pytest.fail(f"JetSpec draft ONNX not found: {draft_onnx}")
+    draft_onnx = _require_draft_onnx("JetSpec", draft_onnx_dir, config)
+    _assert_dflash_target_kv_update_contract(draft_onnx)
+
+
+def test_checkpoint_domino_export(test_param: str, test_logger,
+                                  env_config: EnvironmentConfig):
+    """Export Domino base + draft models via tensorrt_edgellm.onnx.cli."""
+
+    config = TestConfig.from_param_string(
+        test_param, infer_checkpoint_export_model_type(test_param),
+        TaskType.EXPORT, env_config)
+    export_env_vars = config.get_export_env_vars() or None
+
+    base_torch_dir = config.get_torch_model_dir()
+    if not os.path.exists(base_torch_dir):
+        raise FileNotFoundError(
+            f"Base model checkpoint not found: {base_torch_dir}")
+
+    draft_torch_dir = config.get_block_draft_checkpoint_dir()
+    if not os.path.exists(draft_torch_dir):
+        raise FileNotFoundError(
+            f"Domino draft model checkpoint not found: {draft_torch_dir}")
+
+    config.model_name = strip_model_quant_suffixes(config.model_name)
+
+    llm_onnx_dir = config.get_llm_onnx_dir()
+    draft_onnx_dir = config.get_draft_onnx_dir()
+    os.makedirs(llm_onnx_dir, exist_ok=True)
+    os.makedirs(draft_onnx_dir, exist_ok=True)
+
+    tmp_base = tempfile.mkdtemp(prefix="domino_base_export_")
+    tmp_draft = tempfile.mkdtemp(prefix="domino_draft_export_")
+
+    try:
+        base_cmd = [
+            "python3",
+            "-m",
+            "tensorrt_edgellm.onnx.cli",
+            base_torch_dir,
+            tmp_base,
+            "--domino-base",
+            "--domino-draft-dir",
+            draft_torch_dir,
+        ]
+        _run_checkpoint_export(
+            base_cmd,
+            1200,
+            test_logger,
+            f"Exporting Domino base {config.model_name} via the checkpoint exporter",
+            env_vars=export_env_vars)
+
+        base_llm_out = os.path.join(tmp_base, "llm")
+        if not os.path.isdir(base_llm_out):
+            pytest.fail(
+                f"Domino base export did not produce llm/ in {tmp_base}")
+        shutil.copytree(base_llm_out, llm_onnx_dir, dirs_exist_ok=True)
+
+        draft_cmd = [
+            "python3",
+            "-m",
+            "tensorrt_edgellm.onnx.cli",
+            base_torch_dir,
+            tmp_draft,
+            "--domino-draft",
+            "--domino-draft-dir",
+            draft_torch_dir,
+        ]
+        _run_checkpoint_export(
+            draft_cmd,
+            1200,
+            test_logger,
+            f"Exporting Domino draft {config.draft_model_id} via the checkpoint exporter",
+            env_vars=export_env_vars)
+
+        # The Domino draft exporter reuses the DFlash draft output path.
+        draft_output = os.path.join(tmp_draft, "dflash_draft")
+        if not os.path.isdir(draft_output):
+            pytest.fail(
+                f"Domino draft export did not produce dflash_draft/ in {tmp_draft}"
+            )
+        shutil.copytree(draft_output, draft_onnx_dir, dirs_exist_ok=True)
+
+    finally:
+        shutil.rmtree(tmp_base, ignore_errors=True)
+        shutil.rmtree(tmp_draft, ignore_errors=True)
+
+    base_onnx = os.path.join(llm_onnx_dir, "model.onnx")
+    if not os.path.exists(base_onnx):
+        pytest.fail(f"Domino base ONNX not found: {base_onnx}")
+
+    draft_onnx = _require_draft_onnx("Domino", draft_onnx_dir, config)
+    domino_heads = os.path.join(draft_onnx_dir, "domino_heads.safetensors")
+    if not os.path.exists(domino_heads):
+        pytest.fail(f"Domino draft heads sidecar not found: {domino_heads}")
     _assert_dflash_target_kv_update_contract(draft_onnx)
 
 
 def test_checkpoint_dspark_export(test_param: str, test_logger,
                                   env_config: EnvironmentConfig):
-    """Export DSpark base + draft models via tensorrt_edgellm.scripts.export."""
+    """Export DSpark base + draft models via tensorrt_edgellm.onnx.cli."""
 
     config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                           TaskType.EXPORT, env_config)
@@ -660,15 +866,10 @@ def test_checkpoint_dspark_export(test_param: str, test_logger,
         raise FileNotFoundError(
             f"Base model checkpoint not found: {base_torch_dir}")
 
-    draft_torch_dir = config.get_dspark_draft_model_dir()
+    draft_torch_dir = config.get_block_draft_checkpoint_dir()
     if not os.path.exists(draft_torch_dir):
         raise FileNotFoundError(
             f"DSpark draft model checkpoint not found: {draft_torch_dir}")
-
-    # Export test params may include a quantized checkpoint suffix in the model
-    # name. Normalize the output path after checkpoint resolution so downstream
-    # build/inference tests use the canonical base model name plus precision.
-    config.model_name = strip_model_quant_suffixes(config.model_name)
 
     llm_onnx_dir = config.get_llm_onnx_dir()
     draft_onnx_dir = config.get_draft_onnx_dir()
@@ -677,14 +878,13 @@ def test_checkpoint_dspark_export(test_param: str, test_logger,
 
     tmp_base = tempfile.mkdtemp(prefix="dspark_base_export_")
     tmp_draft = tempfile.mkdtemp(prefix="dspark_draft_export_")
-    use_tree_base = config.is_dspark_tree
-    base_export_flag = "--dspark-tree-base" if use_tree_base else "--dspark-base"
+    base_export_flag = "--dspark-base"
 
     try:
         base_cmd = [
             "python3",
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             base_torch_dir,
             tmp_base,
             base_export_flag,
@@ -705,7 +905,7 @@ def test_checkpoint_dspark_export(test_param: str, test_logger,
         draft_cmd = [
             "python3",
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             base_torch_dir,
             tmp_draft,
             "--dspark-draft",
@@ -731,12 +931,9 @@ def test_checkpoint_dspark_export(test_param: str, test_logger,
     base_onnx = os.path.join(llm_onnx_dir, "model.onnx")
     if not os.path.exists(base_onnx):
         pytest.fail(f"DSpark base ONNX not found: {base_onnx}")
-    if use_tree_base:
-        _verify_tree_base_inputs("DSpark", base_onnx, base_torch_dir)
+    _verify_spec_base_inputs("DSpark", base_onnx, base_torch_dir)
 
-    draft_onnx = os.path.join(draft_onnx_dir, "model.onnx")
-    if not os.path.exists(draft_onnx):
-        pytest.fail(f"DSpark draft ONNX not found: {draft_onnx}")
+    draft_onnx = _require_draft_onnx("DSpark", draft_onnx_dir, config)
     _assert_dflash_target_kv_update_contract(draft_onnx)
 
     heads_path = os.path.join(draft_onnx_dir, "dspark_heads.safetensors")
@@ -768,7 +965,7 @@ def test_checkpoint_mtp_export(test_param: str, test_logger,
         export_cmd = [
             "python3",
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             torch_dir,
             tmp_dir,
             "--mtp",
@@ -820,6 +1017,8 @@ def test_checkpoint_mtp_export(test_param: str, test_logger,
     base_onnx = os.path.join(llm_onnx_dir, "model.onnx")
     if not os.path.exists(base_onnx):
         pytest.fail(f"MTP base ONNX not found: {base_onnx}")
+    if config.is_mtp_tree:
+        _verify_spec_base_inputs("MTP", base_onnx, torch_dir)
 
     draft_onnx = os.path.join(draft_onnx_dir, "model.onnx")
     if not os.path.exists(draft_onnx):
@@ -853,7 +1052,7 @@ def test_checkpoint_lora_export(test_param: str, test_logger,
         export_cmd = [
             "python3",
             "-m",
-            "tensorrt_edgellm.scripts.export",
+            "tensorrt_edgellm.onnx.cli",
             torch_dir,
             tmp_dir,
         ]
@@ -935,13 +1134,24 @@ def test_checkpoint_lora_export(test_param: str, test_logger,
 
         shutil.copytree(llm_output, llm_onnx_dir, dirs_exist_ok=True)
 
+        visual_output = os.path.join(tmp_dir, "visual")
+        if os.path.isdir(visual_output):
+            visual_onnx_dir = config.get_visual_onnx_dir(
+                config.visual_precision or "fp16")
+            shutil.copytree(visual_output, visual_onnx_dir, dirs_exist_ok=True)
+            test_logger.info("Copied visual/ → %s (visual encoder)",
+                             visual_onnx_dir)
+
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def test_llm_loader_tp_export(test_param: str, test_logger,
                               env_config: EnvironmentConfig):
-    """Export per-rank ONNX via tensorrt_edgellm.scripts.export --tp-size N.
+    """Export per-rank ONNX via tensorrt_edgellm.onnx.cli --tp-size N.
+
+    A quantized precision is quantized into job-local scratch first; an FP16
+    case exports the torch checkpoint directly.
 
     Validates:
       - Per-rank files exist: model_world{N}_rank{i}.onnx and matching .data
@@ -952,46 +1162,63 @@ def test_llm_loader_tp_export(test_param: str, test_logger,
     """
     import hashlib
 
-    config = TestConfig.from_param_string(test_param, ModelType.LLM,
-                                          TaskType.EXPORT, env_config)
+    config = TestConfig.from_param_string(
+        test_param, infer_checkpoint_export_model_type(test_param),
+        TaskType.EXPORT, env_config)
     tp_size = config.tp_size or 0
     if tp_size < 2:
         pytest.fail("test_llm_loader_tp_export needs a tp<N> parameter with "
                     f"N > 1, got: {test_param}")
     export_env_vars = config.get_export_env_vars() or None
 
-    torch_dir = config.get_torch_model_dir()
-    if not os.path.exists(torch_dir):
-        raise FileNotFoundError(f"Model checkpoint not found: {torch_dir}")
-
     llm_onnx_dir = config.get_llm_onnx_dir()
-    os.makedirs(llm_onnx_dir, exist_ok=True)
+    with _quantized_checkpoint(test_param, test_logger, env_config,
+                               "tp_export_quant_") as quantized:
+        torch_dir = quantized or config.get_torch_model_dir()
+        if not os.path.exists(torch_dir):
+            raise FileNotFoundError(f"Model checkpoint not found: {torch_dir}")
 
-    tmp_dir = tempfile.mkdtemp(prefix="llm_loader_tp_export_")
-    try:
-        export_cmd = [
-            "python3",
-            "-m",
-            "tensorrt_edgellm.scripts.export",
-            torch_dir,
-            tmp_dir,
-            "--tp-size",
-            str(tp_size),
-        ]
-        _run_checkpoint_export(export_cmd,
-                               600,
-                               test_logger,
-                               f"TP={tp_size} export for {config.model_name}",
-                               env_vars=export_env_vars)
+        os.makedirs(llm_onnx_dir, exist_ok=True)
 
-        llm_output = os.path.join(tmp_dir, "llm")
-        if not os.path.isdir(llm_output):
-            pytest.fail(
-                f"llm_loader did not produce llm/ output directory in {tmp_dir}"
-            )
-        shutil.copytree(llm_output, llm_onnx_dir, dirs_exist_ok=True)
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir = tempfile.mkdtemp(prefix="llm_loader_tp_export_")
+        try:
+            export_cmd = [
+                "python3",
+                "-m",
+                "tensorrt_edgellm.onnx.cli",
+                torch_dir,
+                tmp_dir,
+                "--tp-size",
+                str(tp_size),
+            ]
+            _run_checkpoint_export(
+                export_cmd,
+                600,
+                test_logger,
+                f"TP={tp_size} export for {config.model_name}",
+                env_vars=export_env_vars)
+
+            llm_output = os.path.join(tmp_dir, "llm")
+            if not os.path.isdir(llm_output):
+                pytest.fail(
+                    f"llm_loader did not produce llm/ output directory in {tmp_dir}"
+                )
+            shutil.copytree(llm_output, llm_onnx_dir, dirs_exist_ok=True)
+
+            visual_output = os.path.join(tmp_dir, "visual")
+            if os.path.isdir(visual_output):
+                shutil.copytree(visual_output,
+                                config.get_visual_onnx_dir(
+                                    config.visual_precision or "fp16"),
+                                dirs_exist_ok=True)
+
+            action_output = os.path.join(tmp_dir, "action")
+            if os.path.isdir(action_output):
+                shutil.copytree(action_output,
+                                config.get_action_onnx_dir(),
+                                dirs_exist_ok=True)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # Validate per-rank files exist and external-data files are distinct.
     rank_files = []

@@ -43,7 +43,6 @@
 #include <utility>
 #include <vector>
 
-using namespace nvinfer1;
 using namespace trt_edgellm;
 using namespace trt_edgellm::rt;
 
@@ -134,9 +133,9 @@ DeploymentConfig makeEagleDeployment()
     deployment.draft->specDecodeType = SpecDecodeMode::kEAGLE;
     deployment.draft->baseModelHiddenSize = deployment.base.hiddenSize * 2;
     SpecDecodeConfig spec;
-    spec.draftingTopK = 2;
-    spec.draftingStep = 2;
-    spec.verifySize = 4;
+    spec.draftTopK = 2;
+    spec.draftSteps = 2;
+    spec.verifyTokenCount = 4;
     deployment.specConfig = spec;
     return deployment;
 }
@@ -415,26 +414,66 @@ TEST_F(ContextCacheRequestTests, FullyCommittedContractPublishesCommittedDecodeS
     ASSERT_TRUE(request->finish());
 }
 
-TEST_F(ContextCacheRequestTests, HostImageKeysThePlaceholderRunOnItsPixels)
+//! The identity arrives on the context, so where the pixels live decides nothing here: a frame the
+//! host never reads keys its placeholder run exactly as a host frame does.
+TEST_F(ContextCacheRequestTests, AnIdentifiedImageKeysThePlaceholderRunWhereverItLives)
+{
+    size_t mediaAwareSoFar = 0;
+    for (rt::DeviceType const device : {rt::DeviceType::kCPU, rt::DeviceType::kGPU})
+    {
+        DecodingInferenceContext context = makeContext({makeImageTokens()}, mStream);
+        LLMGenerationRequest const request = makeImageRequest(device);
+        context.imageContentDigests = {{Hash128{7, 11}}};
+
+        std::optional<ContextCacheRequest> admitted = ContextCacheRequest::begin(
+            *mCoordinator, request, context, false, DecodingKvHeadroom{1, 0}, {kIMAGE_TOKEN_ID});
+        ASSERT_TRUE(admitted.has_value());
+        EXPECT_EQ(mCoordinator->metrics().mediaAwareSequences, ++mediaAwareSoFar);
+        EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, 0U);
+        ASSERT_TRUE(admitted->finish());
+    }
+}
+
+TEST_F(ContextCacheRequestTests, AnImageWithoutAnIdentityBypassesRatherThanFails)
 {
     DecodingInferenceContext context = makeContext({makeImageTokens()}, mStream);
     LLMGenerationRequest const request = makeImageRequest(rt::DeviceType::kCPU);
 
+    // Admitted rather than thrown out of, and bypassed rather than keyed on the placeholder run,
+    // which every image shares.
     std::optional<ContextCacheRequest> admitted = ContextCacheRequest::begin(
         *mCoordinator, request, context, false, DecodingKvHeadroom{1, 0}, {kIMAGE_TOKEN_ID});
     ASSERT_TRUE(admitted.has_value());
-    EXPECT_EQ(mCoordinator->metrics().mediaAwareSequences, 1U);
+    EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, 1U);
+    EXPECT_EQ(mCoordinator->metrics().mediaAwareSequences, 0U);
+    ASSERT_TRUE(admitted->finish());
+}
+
+//! A multimodal deployment passes its media token ids with every request, text-only ones included; a
+//! request with no images has nothing to identify and stays on the cache path.
+TEST_F(ContextCacheRequestTests, TextOnlyRequestOnAMediaModelStillUsesTheCache)
+{
+    DecodingInferenceContext context = makeContext({makeTokens(129)}, mStream);
+    LLMGenerationRequest request;
+    request.requests.emplace_back();
+
+    std::optional<ContextCacheRequest> admitted = ContextCacheRequest::begin(
+        *mCoordinator, request, context, false, DecodingKvHeadroom{1, 0}, {kIMAGE_TOKEN_ID});
+    ASSERT_TRUE(admitted.has_value());
     EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, 0U);
     ASSERT_TRUE(admitted->finish());
 }
 
-TEST_F(ContextCacheRequestTests, ImageTheHostCannotReadBypassesRatherThanFails)
+//! A digest table that covers only some of a sequence's images covers none of them: the whole request
+//! bypasses, the identified images included.
+TEST_F(ContextCacheRequestTests, PartlyIdentifiedImagesBypassTheWholeRequest)
 {
     DecodingInferenceContext context = makeContext({makeImageTokens()}, mStream);
-    LLMGenerationRequest const request = makeImageRequest(rt::DeviceType::kGPU);
+    LLMGenerationRequest request = makeImageRequest(rt::DeviceType::kCPU);
+    request.requests[0].imageBuffers.emplace_back(
+        Tensor({1, kIMAGE_EXTENT, kIMAGE_EXTENT, 3}, rt::DeviceType::kCPU, DataType::kUINT8));
+    context.imageContentDigests = {{Hash128{7, 11}}};
 
-    // Admitted rather than thrown out of, and bypassed rather than keyed on the placeholder run,
-    // which every image shares.
     std::optional<ContextCacheRequest> admitted = ContextCacheRequest::begin(
         *mCoordinator, request, context, false, DecodingKvHeadroom{1, 0}, {kIMAGE_TOKEN_ID});
     ASSERT_TRUE(admitted.has_value());
@@ -458,6 +497,28 @@ TEST_F(ContextCacheRequestTests, ImageBypassPreservesSchedulerOwnedResidentSlot)
     ASSERT_TRUE(admitted->finish());
 }
 
+//! A sequence joining a live request carries its images as identities, not pixels; its placeholder
+//! run keys on them exactly as a founding sequence's does.
+TEST_F(ContextCacheRequestTests, AJoinerKeysItsPlaceholderRunOnTheIdentityItCarries)
+{
+    DecodingInferenceContext context = makeContext({makeTokens(kTOKENS_PER_PAGE)}, mStream);
+    std::optional<ContextCacheRequest> request = begin(context);
+    ASSERT_TRUE(request.has_value());
+    completeRuntimePrefill(*request, context);
+    ASSERT_EQ(mCoordinator->metrics().mediaAwareSequences, 0U);
+
+    int32_t prefillStart = -1;
+    ASSERT_EQ(request->admitSequence(makeImageTokens(), std::string{}, DecodingKvHeadroom{1, 0}, prefillStart,
+                  ResidentRef{1, 1}, mStream, ContextCacheLookupPolicy::kUseCache,
+                  ContextCacheCommitPolicy::kIncludingGeneratedTokens, {kIMAGE_TOKEN_ID}, {Hash128{7, 11}}),
+        ContextCacheRequest::AdmitSequenceStatus::kAdmitted);
+    EXPECT_EQ(prefillStart, 0);
+    EXPECT_EQ(mCoordinator->metrics().mediaAwareSequences, 1U);
+    EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, 0U);
+    ASSERT_TRUE(request->retractSequenceAdmission());
+    ASSERT_TRUE(request->finish());
+}
+
 class ContextCacheRequestHybridTests : public ::testing::Test
 {
 protected:
@@ -469,13 +530,7 @@ protected:
         mPageTable = makePageTable(*mCache, mStream);
         ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
         constexpr int32_t kSNAPSHOT_SLOTS{4};
-        ContextCacheConfig config{/*.enabled=*/true, /*.maxRecords=*/16,
-            /*.recurrentSnapshotPoolBytes=*/
-            static_cast<int64_t>(static_cast<size_t>(kSNAPSHOT_SLOTS)
-                * HybridSnapshotStorage::recurrentBytesPerSlot(mCache->getMambaCacheManager().getConfig())),
-            /*.partialKvSnapshotPoolBytes=*/
-            static_cast<int64_t>(static_cast<size_t>(kSNAPSHOT_SLOTS)
-                * HybridSnapshotStorage::partialKvBytesPerSlot(mCache->getKVCacheManager().getConfig()))};
+        ContextCacheConfig config{/*.enabled=*/true, /*.maxRecords=*/16, /*.maxSnapshots=*/kSNAPSHOT_SLOTS};
         ContextCachePhysicalResources resources{*mCache, *mPageTable, nullptr, nullptr};
         mCoordinator = std::make_unique<ContextCacheCoordinator>(
             config, mDeployment, validateContextCacheDeployment(mDeployment), resources, mStream);

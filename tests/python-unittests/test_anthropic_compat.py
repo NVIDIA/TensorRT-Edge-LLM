@@ -24,11 +24,11 @@ _REPO_ROOT = os.path.normpath(
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from experimental.server.api.anthropic_compat import (build_content_blocks,
-                                                      content_tail_events,
-                                                      convert_request,
-                                                      convert_stop_reason,
-                                                      message_start_events)
+from tensorrt_edgellm.server.api.anthropic_compat import (build_content_blocks,
+                                                          content_tail_events,
+                                                          convert_request,
+                                                          convert_stop_reason,
+                                                          message_start_events)
 
 
 def test_converts_request():

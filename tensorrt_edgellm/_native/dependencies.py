@@ -36,8 +36,7 @@ _INSTALL_GUIDANCE = (
     "tensorrt==10.16.0.72 for TensorRT 10 payloads other than DGX Spark, "
     "tensorrt==10.16.1.11 for DGX Spark, and tensorrt==11.0.0.114 for "
     "TensorRT 11 x86 payloads. Install from PyPI with NVIDIA's package index; "
-    "see the published-wheel section of the TensorRT Edge-LLM Installation "
-    "Guide.")
+    "see the TensorRT Edge-LLM Installation Guide.")
 
 
 def _runtime_soname(module: ModuleType) -> str:

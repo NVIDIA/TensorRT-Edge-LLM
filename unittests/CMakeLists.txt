@@ -11,6 +11,25 @@
 # 70 MB and a full link regardless of how few tests it holds.
 
 # ---------------------------------------------------------------------------
+# Host optimization for the test targets. With no CMAKE_BUILD_TYPE (what CI
+# uses) CMake adds no -O flag, so every CPU reference, including the ones nvcc
+# hands to the host compiler, runs at -O0. This raises the host code to -O2
+# without -DNDEBUG so assertions stay enabled. An explicit build type or a
+# coverage build keeps its own flags.
+# ---------------------------------------------------------------------------
+function(edgellm_optimize_unit_test_host TARGET)
+  if(CMAKE_BUILD_TYPE
+     OR CMAKE_CONFIGURATION_TYPES
+     OR ENABLE_COVERAGE
+     OR MSVC)
+    return()
+  endif()
+  target_compile_options(
+    ${TARGET} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-O2>
+                      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-O2>)
+endfunction()
+
+# ---------------------------------------------------------------------------
 # Shared helpers (CPU reference implementations, tensor assertions). Consumers
 # include them unqualified, e.g. #include "references.h".
 # ---------------------------------------------------------------------------
@@ -25,6 +44,7 @@ target_include_directories(
 # itself, wrapped in --whole-archive, and a transitive copy arriving ahead of
 # that marker would be pulled normally and make the marker a no-op.
 target_link_libraries(unitTestSupport PUBLIC commonLibraryExt)
+edgellm_optimize_unit_test_host(unitTestSupport)
 add_cross_build_link_options(unitTestSupport)
 
 # ---------------------------------------------------------------------------
@@ -49,6 +69,11 @@ function(edgellm_add_unit_test)
   # Tests that exercise TRT-RTX-only code compile only on TRT-RTX builds.
   if(NOT IS_TRT_RTX)
     list(FILTER _srcs EXCLUDE REGEX "rtxRuntimeCacheTest\\.cpp$")
+  else()
+    # These build engines with INetworkDefinition::addPluginV3, which TRT-RTX
+    # does not have.
+    list(FILTER _srcs EXCLUDE REGEX
+         "(w2a16GemmEngineTests|w2a16MoePluginTests)\\.cpp$")
   endif()
 
   if(NOT _srcs)
@@ -69,14 +94,18 @@ function(edgellm_add_unit_test)
   # Fixing this on the consumer rather than on edgellmCore is deliberate: making
   # the archive device-link itself would change how every other consumer links
   # it, including the Python bindings, which whole-archive it and device-link it
-  # again. experimental/pybind/CMakeLists.txt solves the same problem the same
-  # way.
+  # again. python/nanobind/CMakeLists.txt solves the same problem the same way.
   add_executable(
     ${ARG_NAME} ${_srcs}
                 "${CMAKE_CURRENT_SOURCE_DIR}/support/deviceLinkStub.cu")
-  set_target_properties(${ARG_NAME} PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+  set_target_properties(
+    ${ARG_NAME}
+    PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON
+               RUNTIME_OUTPUT_DIRECTORY
+               "${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}/unitTests")
   target_include_directories(${ARG_NAME} PRIVATE ${COMMON_INCLUDE_DIRS}
                                                  ${CMAKE_SOURCE_DIR})
+  edgellm_optimize_unit_test_host(${ARG_NAME})
   # Tests that read fixtures resolve them against the source tree.
   target_compile_definitions(${ARG_NAME}
                              PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
@@ -85,8 +114,8 @@ function(edgellm_add_unit_test)
                                PRIVATE ENABLE_CUTEDSL_MODULE_TEST_HOOK)
   endif()
   # Resource-registration tests resolve the plugin's exported lifecycle ABI. The
-  # plugin is a shared library built into the build tree's root, so a test that
-  # dlopen()s it cannot derive the path from its own location down here.
+  # plugin is built under lib while tests are grouped under bin/unitTests, so a
+  # test that dlopen()s it cannot derive the path from its own location.
   add_dependencies(${ARG_NAME} NvInfer_edgellm_plugin)
   target_compile_definitions(
     ${ARG_NAME}
@@ -118,21 +147,50 @@ function(edgellm_add_unit_test)
             ${_edgellm_core_link}
             edgellmPluginJit
             commonLibraryExt
-            exampleUtils
+            edgellmApplicationSupport
             ${CUDA_DRIVER_LINK_LIB})
   cute_dsl_setup(LINK_TARGETS ${ARG_NAME})
   add_cross_build_link_options(${ARG_NAME})
 
   # No RESOURCE_LOCK: the groups are safe to run concurrently. Each writes its
   # scratch files under a name unique to its own suite, and the device memory
-  # they hold at once is small. Running them serialized costs more wall clock
-  # than the single binary did, because each pays its own CUDA context setup.
+  # they hold at once is small (unitTestKernelsMisc, which is not, runs alone).
+  # Running them serialized costs more wall clock than the single binary did,
+  # because each pays its own CUDA context setup.
   add_test(NAME ${ARG_NAME} COMMAND ${ARG_NAME})
   add_dependencies(unitTests ${ARG_NAME})
 endfunction()
 
 # Convenience target: `ninja unitTests` builds every group.
 add_custom_target(unitTests)
+
+# The installed-package test configures and builds a consumer with this
+# toolchain. MSVC needs its developer environment for that, so record the one
+# this build was configured in; ctest then works from any shell.
+set(_toolchain_env_arg)
+if(MSVC)
+  set(_toolchain_env
+      "${CMAKE_CURRENT_BINARY_DIR}/installedApplicationsEnv.cmake")
+  set(_toolchain_env_content)
+  foreach(_var PATH INCLUDE LIB LIBPATH)
+    string(APPEND _toolchain_env_content
+           "set(ENV{${_var}} [==[$ENV{${_var}}]==])\n")
+  endforeach()
+  file(WRITE "${_toolchain_env}" "${_toolchain_env_content}")
+  set(_toolchain_env_arg "-DEDGELLM_TOOLCHAIN_ENV=${_toolchain_env}")
+endif()
+
+add_test(
+  NAME unitTestInstalledApplications
+  COMMAND
+    ${CMAKE_COMMAND} -DEDGELLM_BINARY_DIR=${CMAKE_BINARY_DIR}
+    ${_toolchain_env_arg} -DEDGELLM_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+    -DEDGELLM_GENERATOR=${CMAKE_GENERATOR} -DEDGELLM_CONFIG=$<CONFIG>
+    -DTRT_PACKAGE_DIR=${TRT_PACKAGE_DIR} -DCUDAToolkit_ROOT=${CUDAToolkit_ROOT}
+    -DEDGELLM_CUDA_COMPILER=${CMAKE_CUDA_COMPILER}
+    "-DEDGELLM_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES}" -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/runInstalledApplications.cmake)
+set_tests_properties(unitTestInstalledApplications PROPERTIES LABELS "package")
 
 edgellm_add_unit_test(
   NAME
@@ -146,6 +204,15 @@ edgellm_add_unit_test(
   cpp/sampler
   cpp/multimodal)
 
+if(ENABLE_SAFETY_RUNTIME)
+  file(GLOB SAFETY_TEST_SRCS CONFIGURE_DEPENDS "cpp/safety/*.cpp")
+  target_sources(unitTestCommon PRIVATE ${SAFETY_TEST_SRCS})
+  target_compile_definitions(unitTestCommon PRIVATE ENABLE_SAFETY_RUNTIME=1)
+  target_link_libraries(unitTestCommon PRIVATE edgellmBuilder
+                                               edgellmSafetyRuntime)
+endif()
+set_property(GLOBAL APPEND PROPERTY EDGELLM_REGISTERED_TEST_DIRS cpp/safety)
+
 edgellm_add_unit_test(
   NAME
   unitTestRuntime
@@ -153,11 +220,19 @@ edgellm_add_unit_test(
   cpp/runtime
   cpp/runtime/config
   cpp/runtime/exec
+  cpp/runtime/embedding
   cpp/runtime/decoding
   cpp/runtime/multiDevice
   cpp/runtime/weight)
+target_include_directories(unitTestRuntime PRIVATE ${ONNX_PARSER_INCLUDE_DIR})
+target_link_libraries(unitTestRuntime PRIVATE edgellmBuilder)
 
 edgellm_add_unit_test(NAME unitTestScheduler DIRS cpp/scheduler)
+edgellm_add_unit_test(NAME unitTestRuntimeMultiStage DIRS
+                      cpp/runtime/multiStage)
+
+edgellm_add_unit_test(NAME unitTestVisionDataParallel DIRS
+                      cpp/runtime/visionDataParallel)
 
 edgellm_add_unit_test(NAME unitTestRuntimeState DIRS cpp/runtime/state)
 
@@ -165,10 +240,20 @@ edgellm_add_unit_test(NAME unitTestContextCache DIRS
                       cpp/runtime/state/contextCache)
 
 edgellm_add_unit_test(
-  NAME unitTestKernelsAttention DIRS cpp/kernels/contextAttentionKernels
-  cpp/kernels/decodeAttentionKernels cpp/kernels/audioAttentionKernels)
+  NAME
+  unitTestKernelsAttention
+  DIRS
+  cpp/kernels/contextAttentionKernels
+  cpp/kernels/decodeAttentionKernels
+  cpp/kernels/audioAttentionKernels
+  cpp/kernels/sparseAttention)
 
 edgellm_add_unit_test(NAME unitTestKernelsMoe DIRS cpp/kernels/moe)
+
+edgellm_add_unit_test(NAME unitTestKernelsW2A16Gemm DIRS cpp/kernels/gemm)
+
+edgellm_add_unit_test(NAME unitTestW2A16GemmPlugin DIRS
+                      cpp/plugins/w2a16GemmPlugin)
 
 # CuTe DSL AOT wrappers lower extended launches through the runtime's
 # _cudaLaunchKernelEx entry point. Intercept it only when MoE grouped-GEMM
@@ -206,16 +291,33 @@ edgellm_add_unit_test(
   cpp/kernels/talkerMLPKernels
   cpp/kernels/gdnKernels
   cpp/kernels/int4GroupwiseGemmKernels
+  cpp/kernels/lora
   cpp/kernels/kvCacheUtilKernels
   cpp/kernels/multiDeviceKernels
   cpp/kernels/nvfp4A16BlackwellGemm
   cpp/kernels/nvfp4A16BlackwellGemv
   cpp/kernels/dart
-  cpp/kernels/qsaIndexer)
+  cpp/kernels/qsaIndexer
+  cpp/kernels/q8_0
+  cpp/kernels/PluginJitKernels)
+# The embedding-kernel tests of 64-bit element offsets each hold an 8 GiB tensor
+# (more than 2^32 FP16 elements), checking free device memory just before
+# allocating it. The group runs alone so that no concurrent group takes that
+# memory in between, or fails for lack of it.
+set_tests_properties(unitTestKernelsMisc PROPERTIES RUN_SERIAL TRUE)
 
 edgellm_add_unit_test(
-  NAME unitTestPlugins DIRS cpp/plugins/nvfp4A16GemmPlugin
-  cpp/plugins/nvfp4A16BlackwellMoePlugin cpp/plugins/allReducePlugin)
+  NAME
+  unitTestPlugins
+  DIRS
+  cpp/plugins/nvfp4A16GemmPlugin
+  cpp/plugins/nvfp4A16BlackwellMoePlugin
+  cpp/plugins/allReducePlugin
+  cpp/plugins/compactExecution
+  cpp/plugins/lowRankCandidateHeadPlugin
+  cpp/plugins/mamba
+  cpp/plugins/q8_0LinearPlugin
+  cpp/plugins/w2a16MoePlugin)
 
 edgellm_add_unit_test(NAME unitTestCuteDslKernels DIRS
                       kernelSrcs/int4_fp16_gemm_cutedsl)
@@ -237,7 +339,20 @@ endif()
 
 edgellm_add_unit_test(NAME unitTestExamples DIRS examples/utils)
 target_include_directories(unitTestExamples
-                           PRIVATE ${CMAKE_SOURCE_DIR}/examples/utils)
+                           PRIVATE ${CMAKE_SOURCE_DIR}/examples/cpp/common)
+
+if(TARGET gr00tExperimental)
+  edgellm_add_unit_test(NAME unitTestGr00t DIRS experimental_models/gr00t_n1d7)
+  # The bundle-identity test reaches the GR00T component builder, which is not
+  # part of edgellmCore.
+  target_link_libraries(unitTestGr00t PRIVATE gr00tExperimental edgellmBuilder)
+  target_include_directories(
+    unitTestGr00t
+    PRIVATE ${CMAKE_SOURCE_DIR}/experimental_models/gr00t_n1d7/cpp)
+else()
+  set_property(GLOBAL APPEND PROPERTY EDGELLM_REGISTERED_TEST_DIRS
+                                      experimental_models/gr00t_n1d7)
+endif()
 
 # ---------------------------------------------------------------------------
 # Every test source must belong to a group.

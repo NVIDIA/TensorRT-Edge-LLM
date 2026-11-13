@@ -261,7 +261,7 @@ struct MarlinCase
     char const* name;
     int32_t numTokens;
     int64_t moeBlockSize;
-    nvinfer1::DataType activationType;
+    trt_edgellm::DataType activationType;
     bool mulTopkWeights;
     uint32_t seed;
 };
@@ -274,12 +274,12 @@ std::vector<MarlinCase> defaultCases()
     // fallback. mulTopkWeights mirrors the plugin's FC1 (false) and FC2 (true)
     // call sites.
     return {
-        {"decode_t1_blk8_fp16", 1, 8, nvinfer1::DataType::kHALF, false, 0xDEADBEEFU},
-        {"decode_t1_blk8_bf16", 1, 8, nvinfer1::DataType::kBF16, false, 0xDEADBEEFU},
-        {"prefill_t64_blk32_fp16", 64, 32, nvinfer1::DataType::kHALF, false, 0x5EED1234U},
-        {"prefill_t64_blk32_bf16", 64, 32, nvinfer1::DataType::kBF16, false, 0x5EED1234U},
-        {"decode_t1_blk8_bf16_weighted", 1, 8, nvinfer1::DataType::kBF16, true, 0xC0FFEEU},
-        {"prefill_t64_blk32_fp16_weighted", 64, 32, nvinfer1::DataType::kHALF, true, 0xC0FFEEU},
+        {"decode_t1_blk8_fp16", 1, 8, trt_edgellm::DataType::kHALF, false, 0xDEADBEEFU},
+        {"decode_t1_blk8_bf16", 1, 8, trt_edgellm::DataType::kBF16, false, 0xDEADBEEFU},
+        {"prefill_t64_blk32_fp16", 64, 32, trt_edgellm::DataType::kHALF, false, 0x5EED1234U},
+        {"prefill_t64_blk32_bf16", 64, 32, trt_edgellm::DataType::kBF16, false, 0x5EED1234U},
+        {"decode_t1_blk8_bf16_weighted", 1, 8, trt_edgellm::DataType::kBF16, true, 0xC0FFEEU},
+        {"prefill_t64_blk32_fp16_weighted", 64, 32, trt_edgellm::DataType::kHALF, true, 0xC0FFEEU},
     };
 }
 
@@ -293,10 +293,10 @@ struct CaseData
     RoutingIndices routing;
 };
 
-float roundToActivationType(float const value, nvinfer1::DataType const type)
+float roundToActivationType(float const value, trt_edgellm::DataType const type)
 {
-    return type == nvinfer1::DataType::kHALF ? __half2float(__float2half(value))
-                                             : __bfloat162float(__float2bfloat16(value));
+    return type == trt_edgellm::DataType::kHALF ? __half2float(__float2half(value))
+                                                : __bfloat162float(__float2bfloat16(value));
 }
 
 CaseData buildCase(MarlinCase const& cfg)
@@ -376,21 +376,21 @@ std::vector<float> runCase(CaseData const& data)
 
     Tensor input({cfg.numTokens, kHiddenSize}, DeviceType::kGPU, cfg.activationType);
     Tensor output({totalSlots, kOutDim}, DeviceType::kGPU, cfg.activationType);
-    Tensor weights({kNumExperts, numKTiles, 2 * kOutDim}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    Tensor blockScales({kNumExperts, numKTiles, kOutDim}, DeviceType::kGPU, nvinfer1::DataType::kINT8);
+    Tensor weights({kNumExperts, numKTiles, 2 * kOutDim}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    Tensor blockScales({kNumExperts, numKTiles, kOutDim}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
     Tensor globalScales({kNumExperts}, DeviceType::kGPU, cfg.activationType);
-    Tensor sortedTokenIds({capacity}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    Tensor sortedTokenIds({capacity}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     Tensor expertIds(
-        {static_cast<int64_t>(data.routing.expertIds.size())}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    Tensor numTokensPostPadded({1}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    Tensor topkWeights({capacity}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    Tensor workspace({workspaceElements}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        {static_cast<int64_t>(data.routing.expertIds.size())}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    Tensor numTokensPostPadded({1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    Tensor topkWeights({capacity}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    Tensor workspace({workspaceElements}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
     // The kernel skips padded rows, so start from a known-zero output.
     CUDA_CHECK(
         cudaMemset(output.rawPointer(), 0, output.getShape().volume() * utils::getTypeSize(output.getDataType())));
 
-    if (cfg.activationType == nvinfer1::DataType::kHALF)
+    if (cfg.activationType == trt_edgellm::DataType::kHALF)
     {
         std::vector<half> hostInput(data.activations.size());
         for (size_t i = 0; i < hostInput.size(); ++i)
@@ -437,7 +437,7 @@ std::vector<float> runCase(CaseData const& data)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<float> result(static_cast<size_t>(totalSlots) * kOutDim);
-    if (cfg.activationType == nvinfer1::DataType::kHALF)
+    if (cfg.activationType == trt_edgellm::DataType::kHALF)
     {
         std::vector<half> hostOutput(result.size());
         CUDA_CHECK(cudaMemcpy(
@@ -571,7 +571,7 @@ TEST(Nvfp4A16MoeMarlinSm12xTest, accuracy)
 
         Summary const summary = summarize(result, reference, cfg.numTokens * kTopK, kOutDim);
         double const maxRelativeL2
-            = cfg.activationType == nvinfer1::DataType::kHALF ? kMaxRelativeL2Fp16 : kMaxRelativeL2Bf16;
+            = cfg.activationType == trt_edgellm::DataType::kHALF ? kMaxRelativeL2Fp16 : kMaxRelativeL2Bf16;
         std::cout << "[" << cfg.name << "] median_cos=" << summary.medianCosine << " rel_l2=" << summary.relativeL2
                   << std::endl;
         EXPECT_GE(summary.medianCosine, kMinCosine)

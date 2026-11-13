@@ -37,8 +37,8 @@ namespace kernel
 void launchFusedCombine(rt::Tensor& out, float c0, rt::Tensor const& v0, float c1, rt::Tensor const& v1, float c2,
     rt::Tensor const* v2, float c3, rt::Tensor const* v3, cudaStream_t stream);
 
-//! \brief Fill the device FLOAT32 tensor `out` with standard-normal noise using counter-based
-//! Philox (seeded, order-independent, reproducible for a given seed regardless of grid
+//! \brief Fill the device FLOAT32 tensor `out` with standard-normal noise from a counter-based
+//! hash (seeded, order-independent, reproducible for a given seed regardless of grid
 //! configuration).
 void launchNormalNoiseFill(rt::Tensor& out, uint64_t seed, uint64_t offset, cudaStream_t stream);
 

@@ -180,6 +180,17 @@ class Terminal:
             self._thinking = True
         self._write_text(text)
 
+    def show_tool(self, name, result):
+        """Show a tool call and its JSON result between response segments."""
+        if self._thinking:
+            self._end_thinking()
+        elif self._response_written:
+            self._write_text("\n")
+        self._response_written = False
+        text = f"[{name}] {result}"
+        self.status((DIM if self.color else "") + text +
+                    (RESET if self.color else ""))
+
     def _end_thinking(self):
         if self._thinking:
             self._write_text((RESET if self.color else "") +

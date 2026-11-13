@@ -20,6 +20,7 @@
 #include "common/cudaUtils.h"
 #include "common/executionPhase.h"
 #include "common/logger.h"
+#include "kernels/compactPhase/compactPhaseSupport.h"
 #include "plugins/utils/pluginUtils.h"
 #include "plugins/utils/raggedPluginMetadata.h"
 #if defined(CUTE_DSL_GDN_ENABLED) || defined(CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED)
@@ -46,6 +47,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -71,7 +73,7 @@ constexpr int32_t kOUT_O_IDX{0};
 constexpr int32_t kOUT_H0_SOURCE_IDX{1};
 constexpr int32_t kOUT_INTERMEDIATE_STATES_IDX{2};
 constexpr int32_t kNUM_REQUIRED_INPUTS{13};
-constexpr int32_t kNUM_DDTREE_OPTIONAL_INPUTS{2};
+constexpr int32_t kNUM_SPEC_VERIFY_OPTIONAL_INPUTS{2};
 constexpr int32_t kNUM_REQUIRED_OUTPUTS{2};
 constexpr int32_t kNUM_SPEC_VERIFY_OPTIONAL_OUTPUTS{1};
 
@@ -90,13 +92,69 @@ bool requestGdnPdl()
 }
 #endif
 
-#ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
-constexpr size_t blackwellGeforceTensorMapBytes()
+//! Aligned copies of the decode rows' a and b gates ([N, Hv] FP16 each) and their state indices and context lengths
+//! ([N] INT32 each): the decode kernel's AOT build assumes 16-byte aligned tensors, which offset suffix pointers miss.
+[[maybe_unused]] size_t compactDecodeMetadataBytes(int32_t numSequences, int32_t numValueHeads)
+{
+    size_t const gateBytes = static_cast<size_t>(numSequences) * numValueHeads * sizeof(half);
+    size_t const indexBytes = static_cast<size_t>(numSequences) * sizeof(int32_t);
+    return 2 * alignTensorSize(gateBytes) + 2 * alignTensorSize(indexBytes);
+}
+
+[[maybe_unused]] bool isBlackwellGeforceSm(int32_t smVersion)
+{
+    return smVersion == 120 || smVersion == 121;
+}
+
+#ifdef CUTE_DSL_GDN_ENABLED
+[[maybe_unused]] constexpr size_t blackwellRaggedTensorMapBytes()
+{
+    return static_cast<size_t>(CuteDslGDNRunner::kBlackwellRaggedMaxSMCount)
+        * CuteDslGDNRunner::kBlackwellRaggedTensorMapsPerCTA
+        * CuteDslGDNRunner::kBlackwellRaggedTensorMapDescriptorBytes;
+}
+static_assert(blackwellRaggedTensorMapBytes() % kDEVICE_ALIGNMENT == 0);
+
+[[maybe_unused]] constexpr size_t blackwellGeforceTensorMapBytes()
 {
     return static_cast<size_t>(CuteDslGDNRunner::kBlackwellGeforceMaxSMCount)
         * CuteDslGDNRunner::kBlackwellGeforceTensorMapDescriptorBytes;
 }
 static_assert(blackwellGeforceTensorMapBytes() % kDEVICE_ALIGNMENT == 0);
+
+//! Phase-8 workspace segments, as byte offsets. SM100/101/103/110: cu_seqlens | h0_scratch | h0_out_scratch | tensor
+//! maps | decode metadata; the padded prefill and the diffusion state offset depend on the first two starting at
+//! offsets 0 and the padded cu_seqlens size. SM120/121: tensor maps | decode metadata, since that kernel updates the
+//! resident pool in place and reads cu_seqlens from query_start_offsets. SM80-SM90: decode metadata only.
+struct CompactWorkspaceLayout
+{
+    size_t h0Scratch{};
+    size_t h0OutScratch{};
+    size_t tensorMaps{};
+    size_t decodeMetadata{};
+    size_t bytes{};
+};
+
+CompactWorkspaceLayout compactWorkspaceLayout(int32_t smVersion, int32_t numSequences, int32_t numPrefill,
+    int32_t numDecode, int32_t hv, int32_t kDim, int32_t vDim)
+{
+    CompactWorkspaceLayout layout{};
+    if (isBlackwellGeforceSm(smVersion))
+    {
+        layout.decodeMetadata = blackwellGeforceTensorMapBytes();
+    }
+    else if (smVersion >= 100)
+    {
+        size_t const h0ScratchBytes
+            = alignTensorSize(static_cast<size_t>(numPrefill) * hv * kDim * vDim * sizeof(float));
+        layout.h0Scratch = alignTensorSize(static_cast<size_t>(numSequences + 1) * sizeof(int32_t));
+        layout.h0OutScratch = layout.h0Scratch + h0ScratchBytes;
+        layout.tensorMaps = layout.h0OutScratch + h0ScratchBytes;
+        layout.decodeMetadata = layout.tensorMaps + blackwellRaggedTensorMapBytes();
+    }
+    layout.bytes = layout.decodeMetadata + compactDecodeMetadataBytes(numDecode, hv);
+    return layout;
+}
 #endif
 
 } // namespace
@@ -112,13 +170,12 @@ REGISTER_TENSORRT_PLUGIN(GatedDeltaNetPluginCreator);
 // the object can never be constructed; all other methods are shared.
 // ---------------------------------------------------------------------------
 #ifdef CUTE_DSL_GDN_ENABLED
-GatedDeltaNetPlugin::GatedDeltaNetPlugin(std::string const& name, int32_t kDim, int32_t vDim, bool useSpecVerifyState,
-    bool useDDTree, bool useDiffusionState)
+GatedDeltaNetPlugin::GatedDeltaNetPlugin(
+    std::string const& name, int32_t kDim, int32_t vDim, bool useSpecVerifyState, bool useDiffusionState)
     : mLayerName(name)
     , mKDim(kDim)
     , mVDim(vDim)
-    , mUseSpecVerifyState(useSpecVerifyState || useDDTree)
-    , mUseDDTree(useDDTree)
+    , mUseSpecVerifyState(useSpecVerifyState)
     , mUseDiffusionState(useDiffusionState)
     , mSMVersion(getSMVersion())
 {
@@ -133,13 +190,12 @@ GatedDeltaNetPlugin::GatedDeltaNetPlugin(std::string const& name, int32_t kDim, 
     }
 }
 #else
-GatedDeltaNetPlugin::GatedDeltaNetPlugin(std::string const& name, int32_t kDim, int32_t vDim, bool useSpecVerifyState,
-    bool useDDTree, bool useDiffusionState)
+GatedDeltaNetPlugin::GatedDeltaNetPlugin(
+    std::string const& name, int32_t kDim, int32_t vDim, bool useSpecVerifyState, bool useDiffusionState)
     : mLayerName(name)
     , mKDim(kDim)
     , mVDim(vDim)
-    , mUseSpecVerifyState(useSpecVerifyState || useDDTree)
-    , mUseDDTree(useDDTree)
+    , mUseSpecVerifyState(useSpecVerifyState)
     , mUseDiffusionState(useDiffusionState)
 {
     LOG_ERROR("GatedDeltaNet plugin is not available: build with CUTE_DSL_GDN_ENABLED to enable it.");
@@ -152,10 +208,10 @@ GatedDeltaNetPlugin::GatedDeltaNetPlugin(std::string const& name, PluginFieldCol
 {
     mKDim = parsePluginScalarField<int32_t>("k_dim", fc).value_or(128);
     mVDim = parsePluginScalarField<int32_t>("v_dim", fc).value_or(128);
-    mUseSpecVerifyState = parsePluginScalarField<int32_t>("use_mtp", fc).value_or(0) != 0;
-    mUseDDTree = parsePluginScalarField<int32_t>("use_ddtree", fc).value_or(0) != 0;
+    auto const verify = parsePluginScalarField<int32_t>("use_spec_verify_state", fc);
+    ELLM_CHECK(verify.has_value(), "gated_delta_net: missing verify capability; re-export and rebuild artifacts");
+    mUseSpecVerifyState = verify.value() != 0;
     mUseDiffusionState = parsePluginScalarField<int32_t>("use_diffusion_state", fc).value_or(0) != 0;
-    mUseSpecVerifyState = mUseSpecVerifyState || mUseDDTree;
 
 #ifdef CUTE_DSL_GDN_ENABLED
     mSMVersion = getSMVersion();
@@ -195,8 +251,7 @@ IPluginV3* GatedDeltaNetPlugin::clone() noexcept
 {
     try
     {
-        auto* p
-            = new GatedDeltaNetPlugin(mLayerName, mKDim, mVDim, mUseSpecVerifyState, mUseDDTree, mUseDiffusionState);
+        auto* p = new GatedDeltaNetPlugin(mLayerName, mKDim, mVDim, mUseSpecVerifyState, mUseDiffusionState);
         p->setPluginNamespace(mNamespace.c_str());
         return p;
     }
@@ -228,6 +283,25 @@ char const* GatedDeltaNetPlugin::getPluginNamespace() const noexcept
 void GatedDeltaNetPlugin::setPluginNamespace(char const* pluginNamespace) noexcept
 {
     mNamespace = pluginNamespace ? pluginNamespace : "";
+}
+
+bool GatedDeltaNetPlugin::supportsCompactPhase() const noexcept
+{
+    return gatedDeltaNetCompactSupport(mKDim, mVDim, mSMVersion, mUseSpecVerifyState, mUseDiffusionState).supported;
+}
+
+std::string GatedDeltaNetPlugin::describeLayer() const
+{
+    std::string shape = "K head dim " + std::to_string(mKDim) + ", V head dim " + std::to_string(mVDim);
+    if (mUseSpecVerifyState)
+    {
+        shape += ", spec-verify state";
+    }
+    if (mUseDiffusionState)
+    {
+        shape += ", diffusion state";
+    }
+    return describePluginLayer("gated_delta_net", mLayerName, shape);
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +344,7 @@ int32_t GatedDeltaNetPlugin::getOutputShapes(DimsExprs const* inputs, [[maybe_un
         [[maybe_unused]] int32_t const expectedNbOutputs
             = kNUM_REQUIRED_OUTPUTS + (mUseSpecVerifyState ? kNUM_SPEC_VERIFY_OPTIONAL_OUTPUTS : 0);
         [[maybe_unused]] int32_t const expectedNbInputs
-            = kNUM_REQUIRED_INPUTS + (mUseDDTree ? kNUM_DDTREE_OPTIONAL_INPUTS : 0);
+            = kNUM_REQUIRED_INPUTS + (mUseSpecVerifyState ? kNUM_SPEC_VERIFY_OPTIONAL_INPUTS : 0);
         assert(nbInputs == expectedNbInputs);
         assert(nbOutputs == expectedNbOutputs);
         // o has same shape as v: [n, seq_len, hv, v]
@@ -279,6 +353,9 @@ int32_t GatedDeltaNetPlugin::getOutputShapes(DimsExprs const* inputs, [[maybe_un
         outputs[kOUT_H0_SOURCE_IDX] = inputs[kIN_H0_SOURCE_IDX];
         if (mUseSpecVerifyState)
         {
+            // Declared as one state per verify token for engine compatibility. Verification writes only
+            // n * gdnTreeVerifyRowBytes bytes, in place, and the runtime binds a buffer of that size, so this output
+            // relies on TensorRT handing the plugin the bound address rather than staging the declared volume.
             auto const* zero = exprBuilder.constant(0);
             auto const* verifyProfile = exprBuilder.operation(
                 DimensionOperation::kEQUAL, *inputs[kIN_CONTEXT_SEQUENCE_COUNT_IDX].d[0], *zero);
@@ -302,7 +379,8 @@ bool GatedDeltaNetPlugin::supportsFormatCombination(
 {
     int32_t const expectedNbOutputs
         = kNUM_REQUIRED_OUTPUTS + (mUseSpecVerifyState ? kNUM_SPEC_VERIFY_OPTIONAL_OUTPUTS : 0);
-    int32_t const expectedNbInputs = kNUM_REQUIRED_INPUTS + (mUseDDTree ? kNUM_DDTREE_OPTIONAL_INPUTS : 0);
+    int32_t const expectedNbInputs
+        = kNUM_REQUIRED_INPUTS + (mUseSpecVerifyState ? kNUM_SPEC_VERIFY_OPTIONAL_INPUTS : 0);
     if (nbInputs != expectedNbInputs || nbOutputs != expectedNbOutputs)
         return false;
     if (inOut[pos].desc.format != TensorFormat::kLINEAR)
@@ -314,7 +392,7 @@ bool GatedDeltaNetPlugin::supportsFormatCombination(
         return inOut[pos].desc.type == DataType::kINT32;
     if (pos == kIN_CONTEXT_SEQUENCE_COUNT_IDX)
         return inOut[pos].desc.type == DataType::kINT32;
-    if (mUseDDTree && (pos == kIN_TREE_PARENT_IDS_IDX || pos == kIN_TREE_DEPTHS_IDX))
+    if (mUseSpecVerifyState && (pos == kIN_TREE_PARENT_IDS_IDX || pos == kIN_TREE_DEPTHS_IDX))
         return inOut[pos].desc.type == DataType::kINT32;
     // FP32 outputs: h0_out, intermediate_states (when present)
     if (pos == expectedNbInputs + kOUT_H0_SOURCE_IDX)
@@ -330,7 +408,8 @@ int32_t GatedDeltaNetPlugin::configurePlugin(DynamicPluginTensorDesc const* in, 
 {
     int32_t const expectedNbOutputs
         = kNUM_REQUIRED_OUTPUTS + (mUseSpecVerifyState ? kNUM_SPEC_VERIFY_OPTIONAL_OUTPUTS : 0);
-    int32_t const expectedNbInputs = kNUM_REQUIRED_INPUTS + (mUseDDTree ? kNUM_DDTREE_OPTIONAL_INPUTS : 0);
+    int32_t const expectedNbInputs
+        = kNUM_REQUIRED_INPUTS + (mUseSpecVerifyState ? kNUM_SPEC_VERIFY_OPTIONAL_INPUTS : 0);
     if (nbInputs != expectedNbInputs)
     {
         LOG_ERROR("gated_delta_net: expected %d inputs, got %d", expectedNbInputs, nbInputs);
@@ -376,12 +455,21 @@ int32_t GatedDeltaNetPlugin::configurePlugin(DynamicPluginTensorDesc const* in, 
         LOG_ERROR("gated_delta_net: context_sequence_count_carrier must be 1D INT32");
         return -1;
     }
-    if (mUseDDTree
+    if (mUseSpecVerifyState
         && (in[kIN_TREE_PARENT_IDS_IDX].desc.type != DataType::kINT32
             || in[kIN_TREE_DEPTHS_IDX].desc.type != DataType::kINT32
             || in[kIN_TREE_PARENT_IDS_IDX].desc.dims.nbDims != 1 || in[kIN_TREE_DEPTHS_IDX].desc.dims.nbDims != 1))
     {
-        LOG_ERROR("gated_delta_net: DDTree tree_parent_ids/tree_depths must be 1D INT32");
+        LOG_ERROR("gated_delta_net: tree_parent_ids and tree_depths must be 1D INT32");
+        return -1;
+    }
+    // Every GDN kernel maps value head i to Q/K head i / (Hv / H).
+    int64_t const numQKHeads = in[kIN_Q_IDX].desc.dims.d[1];
+    int64_t const numVHeads = in[kIN_V_IDX].desc.dims.d[1];
+    if (numQKHeads <= 0 || numVHeads < numQKHeads || numVHeads % numQKHeads != 0)
+    {
+        LOG_ERROR("gated_delta_net: value heads (%lld) must be a positive multiple of Q/K heads (%lld)",
+            static_cast<long long>(numVHeads), static_cast<long long>(numQKHeads));
         return -1;
     }
     return 0;
@@ -390,7 +478,8 @@ int32_t GatedDeltaNetPlugin::configurePlugin(DynamicPluginTensorDesc const* in, 
 size_t GatedDeltaNetPlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inputs, int32_t nbInputs,
     [[maybe_unused]] DynamicPluginTensorDesc const* outputs, int32_t nbOutputs) const noexcept
 {
-    int32_t const expectedNbInputs = kNUM_REQUIRED_INPUTS + (mUseDDTree ? kNUM_DDTREE_OPTIONAL_INPUTS : 0);
+    int32_t const expectedNbInputs
+        = kNUM_REQUIRED_INPUTS + (mUseSpecVerifyState ? kNUM_SPEC_VERIFY_OPTIONAL_INPUTS : 0);
     if (inputs == nullptr || nbInputs != expectedNbInputs || nbOutputs != getNbOutputs())
     {
         LOG_ERROR("gated_delta_net: invalid workspace input/output count");
@@ -402,6 +491,8 @@ size_t GatedDeltaNetPlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inpu
     int32_t const kDim = static_cast<int32_t>(inputs[kIN_H0_SOURCE_IDX].max.d[2]);
     int32_t const vDim = static_cast<int32_t>(inputs[kIN_H0_SOURCE_IDX].max.d[3]);
     size_t const stateBytes = alignTensorSize(static_cast<size_t>(maxN) * maxHv * kDim * vDim * sizeof(float));
+    bool const reservesCompact = supportsCompactPhase();
+    reportCompactWorkspace("gated_delta_net", mLayerName, reservesCompact);
 
     size_t backendWorkspaceBytes = 0;
 
@@ -411,7 +502,6 @@ size_t GatedDeltaNetPlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inpu
     size_t const cuSeqPadded = alignTensorSize(cuSeqBytes);
     // h0 scratch [maxN, maxHv, kDim, vDim] f32 — separate buffer for Blackwell h0_out.
     size_t const h0ScratchBytes = static_cast<size_t>(maxN) * maxHv * kDim * vDim * sizeof(float);
-
     backendWorkspaceBytes = std::max(backendWorkspaceBytes, cuSeqPadded + h0ScratchBytes);
 #endif
 
@@ -421,26 +511,28 @@ size_t GatedDeltaNetPlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inpu
     backendWorkspaceBytes = std::max(backendWorkspaceBytes, blackwellGeforceTensorMapBytes());
 #endif
 
-    total = backendWorkspaceBytes;
-    if (mUseSpecVerifyState && !mUseDDTree)
+#ifdef CUTE_DSL_GDN_ENABLED
+    if (reservesCompact)
     {
-        total = std::max(total, stateBytes);
+        backendWorkspaceBytes = std::max(
+            backendWorkspaceBytes, compactWorkspaceLayout(mSMVersion, maxN, maxN, maxN, maxHv, kDim, vDim).bytes);
     }
+#endif
 
-    if (mUseDDTree)
+    total = backendWorkspaceBytes;
+    if (mUseSpecVerifyState)
     {
         int32_t const maxN = static_cast<int32_t>(inputs[kIN_CONTEXT_LENGTHS_IDX].max.d[0]);
         int32_t const maxTokens = static_cast<int32_t>(inputs[kIN_Q_IDX].max.d[0]);
-        int32_t const maxSeqLen = std::max(1, maxTokens / maxN);
+        int32_t const maxSeqLen = std::max(1, maxTokens);
 
-        // Chunk-form verify uses ancestor masks. The KS/QS + prep scratch
-        // lives in the intermediate-states row tail, NOT here — engine plans
-        // serialize this size at build time, so growing it silently overflows
-        // on pre-existing engines.
+        // Chunk-form verify reads the resident state in place and needs only the split path's ancestor masks. The
+        // KS/QS + prep scratch lives in the intermediate-states row tail, NOT here — engine plans serialize this size
+        // at build time, so growing it silently overflows on pre-existing engines.
         int32_t const chunkNodes = std::min(maxSeqLen, kernel::kGDN_TREE_CHUNK_MAX_NODES);
         size_t const maskBytes = alignTensorSize(
             static_cast<size_t>(maxN) * chunkNodes * kernel::kGDN_TREE_CHUNK_MASK_WORDS * sizeof(uint32_t));
-        total = std::max(total, maskBytes + stateBytes);
+        total = std::max(total, maskBytes);
     }
     if (mUseDiffusionState)
     {
@@ -464,6 +556,12 @@ int32_t GatedDeltaNetPlugin::getAliasedInput([[maybe_unused]] int32_t outputInde
 int32_t GatedDeltaNetPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDesc const* outputDesc,
     void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream) noexcept
 {
+    PluginTensorDesc const& phaseMarkerDesc = inputDesc[kIN_EXECUTION_PHASE_MARKER_IDX];
+    if (phaseMarkerDesc.dims.nbDims == 1
+        && phaseMarkerDesc.dims.d[0] == static_cast<int64_t>(rt::ExecutionPhase::kMixedPrefillDecode))
+    {
+        return enqueueCompact(inputDesc, outputDesc, inputs, outputs, workspace, stream);
+    }
     int64_t const* qDims = inputDesc[kIN_Q_IDX].dims.d;
     RaggedPluginMetadata ragged{};
     try
@@ -503,7 +601,6 @@ int32_t GatedDeltaNetPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTe
         return -1;
     }
 
-    constexpr int32_t kLinearSpecVerifyMaxSeqLen = 16;
     rt::ExecutionPhase const phase = ragged.phase;
     bool const verifyActive = phase == rt::ExecutionPhase::kSpecTargetVerify;
     bool const diffusionDenoise = phase == rt::ExecutionPhase::kDiffusionDenoise;
@@ -526,23 +623,16 @@ int32_t GatedDeltaNetPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTe
         LOG_ERROR("gated_delta_net: SPEC_TARGET_VERIFY requires verify-capable engine metadata");
         return -1;
     }
-    bool const ddtreeActive = mUseDDTree && verifyActive;
-    bool const mtpActive = mUseSpecVerifyState && verifyActive && !ddtreeActive;
-    if (mtpActive && (seq_len < 1 || seq_len > kLinearSpecVerifyMaxSeqLen))
-    {
-        LOG_ERROR("gated_delta_net: linear spec-verify kernel supports seq_len in [1, %d], got %d",
-            kLinearSpecVerifyMaxSeqLen, seq_len);
-        return -1;
-    }
-    if (ddtreeActive)
+    bool const chunkVerifyActive = verifyActive;
+    if (chunkVerifyActive)
     {
         PluginTensorDesc const& parentDesc = inputDesc[kIN_TREE_PARENT_IDS_IDX];
         PluginTensorDesc const& depthDesc = inputDesc[kIN_TREE_DEPTHS_IDX];
         if (seq_len < 1 || parentDesc.dims.nbDims != 1 || depthDesc.dims.nbDims != 1
             || parentDesc.dims.d[0] != physicalTokens || depthDesc.dims.d[0] != physicalTokens)
         {
-            LOG_ERROR(
-                "gated_delta_net: DDTree requires flat tree_parent_ids/tree_depths shape [T_exec=%d]", physicalTokens);
+            LOG_ERROR("gated_delta_net: verification requires flat tree_parent_ids/tree_depths shape [T_exec=%d]",
+                physicalTokens);
             return -1;
         }
     }
@@ -552,9 +642,9 @@ int32_t GatedDeltaNetPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTe
     params.h = h;
     params.hv = hv;
     params.smVersion = mSMVersion;
-    params.use_mtp = mtpActive;
+    params.use_mtp = false;
     params.use_prefill = contextLike || (proposalActive && seq_len > 1);
-    if (!ddtreeActive && !CuteDslGDNRunner::ensureKernelModules(params, stream))
+    if (!chunkVerifyActive && !CuteDslGDNRunner::ensureKernelModules(params, stream))
     {
         LOG_ERROR("gated_delta_net: failed to load the selected CuTe DSL GDN module");
         return -1;
@@ -569,16 +659,16 @@ int32_t GatedDeltaNetPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTe
         return -1;
     }
 
-    if (ddtreeActive && !kernel::gdnTreeChunkVerifyEnabled(seq_len))
+    if (chunkVerifyActive && !kernel::gdnTreeChunkVerifyEnabled(seq_len))
     {
-        LOG_ERROR("gated_delta_net: DDTree chunk-form verify supports seq_len <= %d, got %d",
+        LOG_ERROR("gated_delta_net: chunk-form verification supports seq_len <= %d, got %d",
             kernel::kGDN_TREE_CHUNK_MAX_NODES, seq_len);
         return -1;
     }
 
     size_t backendWorkspaceBytes = 0;
 #ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
-    if (mSMVersion == 100 || mSMVersion == 101 || mSMVersion == 110)
+    if (mSMVersion == 100 || mSMVersion == 101 || mSMVersion == 103 || mSMVersion == 110)
     {
         size_t const cuSeqPadded = alignTensorSize(static_cast<size_t>(n + 1) * sizeof(int32_t));
         size_t const h0ScratchBytes = static_cast<size_t>(n) * hv * k_dim * v_dim * sizeof(float);
@@ -596,47 +686,39 @@ int32_t GatedDeltaNetPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTe
     {
         if (workspace == nullptr)
         {
-            LOG_ERROR("gated_delta_net: transactional execution requires state workspace");
+            LOG_ERROR("gated_delta_net: verify and diffusion denoise require the plugin workspace");
             return -1;
         }
-        size_t const maskBytes = ddtreeActive
-            ? alignTensorSize(static_cast<size_t>(n) * seq_len * kernel::kGDN_TREE_CHUNK_MASK_WORDS * sizeof(uint32_t))
-            : 0;
-        size_t const stateOffset = diffusionDenoise ? backendWorkspaceBytes : maskBytes;
-        h0State = static_cast<char*>(workspace) + stateOffset;
-        launchGdnStateGather(inputs[kIN_H0_SOURCE_IDX], h0State, inputs[kIN_STATE_INDICES_IDX], n, hv, statePoolRows,
-            k_dim, v_dim, stream);
+        // Chunk verification reads the resident rows in place; only diffusion denoise updates a private copy.
+        if (diffusionDenoise)
+        {
+            h0State = static_cast<char*>(workspace) + backendWorkspaceBytes;
+            launchGdnStateGather(inputs[kIN_H0_SOURCE_IDX], h0State, inputs[kIN_STATE_INDICES_IDX], n, hv,
+                statePoolRows, k_dim, v_dim, stream);
+        }
     }
 
     // Stateless chunk-form tree verify. Reads h0 strictly read-only and writes
     // o plus replay stash into the head of the intermediate_states buffer.
-    if (ddtreeActive)
+    if (chunkVerifyActive)
     {
-        // Workspace: ancestor masks only (reserved by getWorkspaceSize when
-        // mUseDDTree). The KS/QS + prep scratch lives in the row tail of the
-        // intermediate-states buffer.
+        // Workspace: the split path's ancestor masks only (reserved by getWorkspaceSize when verify
+        // capability). The KS/QS + prep scratch lives in the row tail of the intermediate-states buffer.
         uint32_t* masks = static_cast<uint32_t*>(workspace);
-        if (cudaError_t const e
-            = kernel::gdnTreeBuildAncestorMasks(static_cast<int32_t const*>(inputs[kIN_TREE_PARENT_IDS_IDX]), masks, n,
-                seq_len, /*maxDepth=*/seq_len, stream);
-            e != cudaSuccess)
-        {
-            LOG_ERROR("gated_delta_net: gdnTreeBuildAncestorMasks launch failed: %s", cudaGetErrorString(e));
-            return -1;
-        }
 
-        // Per-batch stash stride == one intermediate buffer row, so batches
-        // land in disjoint, engine-compatible regions.
-        size_t const stashBatchStrideBytes
-            = static_cast<size_t>(seq_len) * hv * static_cast<size_t>(k_dim) * v_dim * sizeof(float);
+        // One request's stash row; the runtime sizes the intermediate buffer and reads the commit at this stride.
+        size_t const stashBatchStrideBytes = kernel::gdnTreeVerifyRowBytes(h, hv, seq_len);
         // Standard scaled dot-product attention scale for the chunk-form verify kernel.
         float const qScale = 1.f / std::sqrt(static_cast<float>(k_dim));
-        cudaError_t const verifyErr = kernel::gdnTreeVerifyChunk(static_cast<float const*>(h0State),
+        cudaError_t const verifyErr = kernel::gdnTreeVerifyChunk(static_cast<float const*>(inputs[kIN_H0_SOURCE_IDX]),
+            static_cast<int32_t const*>(inputs[kIN_STATE_INDICES_IDX]), statePoolRows,
             static_cast<__half const*>(inputs[kIN_Q_IDX]), static_cast<__half const*>(inputs[kIN_K_IDX]),
             static_cast<__half const*>(inputs[kIN_V_IDX]), static_cast<__half const*>(inputs[kIN_A_IDX]),
             static_cast<__half const*>(inputs[kIN_B_IDX]), static_cast<float const*>(inputs[kIN_A_LOG_IDX]),
-            static_cast<__half const*>(inputs[kIN_DT_BIAS_IDX]), masks, static_cast<__half*>(outputs[kOUT_O_IDX]),
-            outputs[kOUT_INTERMEDIATE_STATES_IDX], stashBatchStrideBytes, n, seq_len, h, hv, qScale,
+            static_cast<__half const*>(inputs[kIN_DT_BIAS_IDX]),
+            static_cast<int32_t const*>(inputs[kIN_TREE_PARENT_IDS_IDX]), masks,
+            static_cast<__half*>(outputs[kOUT_O_IDX]), outputs[kOUT_INTERMEDIATE_STATES_IDX], stashBatchStrideBytes, n,
+            seq_len, h, hv, qScale,
             /*useQKL2Norm=*/true, stream);
         if (verifyErr != cudaSuccess)
         {
@@ -644,6 +726,12 @@ int32_t GatedDeltaNetPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTe
             return -1;
         }
         return 0;
+    }
+
+    if (!params.use_prefill)
+    {
+        return enqueueDecodeRows(
+            inputs, outputs, 0, 0, n, h, hv, k_dim, v_dim, statePoolRows, /*alignedMetadata=*/nullptr, stream);
     }
 
     params.q = const_cast<void*>(inputs[kIN_Q_IDX]);
@@ -672,39 +760,200 @@ int32_t GatedDeltaNetPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTe
         params.state_pool_rows = n;
     }
 
-    if (mtpActive)
-    {
-        // MTP decode: process all seq_len draft tokens with per-step state caching.
-        params.use_mtp = true;
-        params.intermediate_states = outputs[kOUT_INTERMEDIATE_STATES_IDX];
-    }
-    else
-    {
 #ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
-        // Blackwell prefill: carve cu_seqlens and h0 scratch out of the pre-allocated workspace.
-        //   workspace layout: [cu_seqlens: (n+1)*int32, pad to 128B] [h0_scratch: n*hv*k*v*f32]
-        if (params.use_prefill && (mSMVersion == 100 || mSMVersion == 101 || mSMVersion == 110))
-        {
-            size_t const cuSeqBytes = static_cast<size_t>(n + 1) * sizeof(int32_t);
-            size_t const cuSeqPadded = (cuSeqBytes + 127u) & ~static_cast<size_t>(127u);
+    // Blackwell prefill: carve cu_seqlens and h0 scratch out of the pre-allocated workspace.
+    //   workspace layout: [cu_seqlens: (n+1)*int32, pad to 128B] [h0_scratch: n*hv*k*v*f32]
+    if (params.use_prefill && (mSMVersion == 100 || mSMVersion == 101 || mSMVersion == 103 || mSMVersion == 110))
+    {
+        size_t const cuSeqBytes = static_cast<size_t>(n + 1) * sizeof(int32_t);
+        size_t const cuSeqPadded = (cuSeqBytes + 127u) & ~static_cast<size_t>(127u);
 
-            char* bwBase = static_cast<char*>(workspace);
-            launchGdnCalCuSeqLens(inputs[kIN_CONTEXT_LENGTHS_IDX], bwBase, n, stream);
-            params.cu_seqlens = bwBase;
-            params.h0_scratch = bwBase + cuSeqPadded;
-        }
+        char* bwBase = static_cast<char*>(workspace);
+        launchGdnCalCuSeqLens(inputs[kIN_CONTEXT_LENGTHS_IDX], bwBase, n, stream);
+        params.cu_seqlens = bwBase;
+        params.h0_scratch = bwBase + cuSeqPadded;
+    }
 #endif
 #ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
-        if (params.use_prefill && (mSMVersion == 120 || mSMVersion == 121))
+    if (params.use_prefill && (mSMVersion == 120 || mSMVersion == 121))
+    {
+        if (workspace == nullptr)
         {
-            if (workspace == nullptr)
+            LOG_ERROR("gated_delta_net: Blackwell GeForce prefill requires workspace");
+            return -1;
+        }
+        params.tensormap_scratch = workspace;
+    }
+#endif
+
+    CuteDslGDNRunner runner;
+    int ret = runner.run(params, stream);
+
+    return (ret == 0) ? 0 : -1;
+}
+
+int32_t GatedDeltaNetPlugin::enqueueCompact(PluginTensorDesc const* inputDesc, PluginTensorDesc const* outputDesc,
+    void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream) noexcept
+{
+    int32_t const h = static_cast<int32_t>(inputDesc[kIN_Q_IDX].dims.d[1]);
+    int32_t const kDim = static_cast<int32_t>(inputDesc[kIN_Q_IDX].dims.d[2]);
+    int32_t const hv = static_cast<int32_t>(inputDesc[kIN_V_IDX].dims.d[1]);
+    int32_t const vDim = static_cast<int32_t>(inputDesc[kIN_V_IDX].dims.d[2]);
+    if (!supportsCompactPhase() || kDim != mKDim || vDim != mVDim || h <= 0 || hv % h != 0)
+    {
+        LOG_ERROR("%s: compact execution is not supported for this layer on this GPU.", describeLayer().c_str());
+        return -1;
+    }
+    RaggedPluginMetadata ragged{};
+    int32_t statePoolRows{};
+    try
+    {
+        ragged = decodeRaggedPluginMetadata("gated_delta_net", inputDesc[kIN_Q_IDX], inputDesc[kIN_CONTEXT_LENGTHS_IDX],
+            inputDesc[kIN_QUERY_START_OFFSETS_IDX], inputDesc[kIN_EXECUTION_PHASE_MARKER_IDX],
+            inputDesc[kIN_CONTEXT_SEQUENCE_COUNT_IDX], RaggedLayoutSupport::kPaddedAndCompact);
+        statePoolRows = validateIndexedResidentStateDescriptors("gated_delta_net", ragged.numSequences,
+            inputDesc[kIN_STATE_INDICES_IDX], inputDesc[kIN_H0_SOURCE_IDX], outputDesc[kOUT_H0_SOURCE_IDX],
+            DataType::kFLOAT, {hv, kDim, vDim});
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("%s", e.what());
+        return -1;
+    }
+    if (workspace == nullptr || outputs[kOUT_H0_SOURCE_IDX] != inputs[kIN_H0_SOURCE_IDX])
+    {
+        LOG_ERROR("gated_delta_net: compact execution requires workspace and an aliased resident state pool");
+        return -1;
+    }
+    int32_t const numSequences = ragged.numSequences;
+    int32_t const numPrefill = ragged.numContextSequences;
+    int32_t const numDecode = ragged.numDecodeSequences;
+    int32_t const numPrefillTokens = ragged.contextExecutionRows;
+
+    CompactWorkspaceLayout const layout
+        = compactWorkspaceLayout(mSMVersion, numSequences, numPrefill, numDecode, hv, kDim, vDim);
+    auto* const base = static_cast<char*>(workspace);
+    bool const stateScratch = mSMVersion >= 100 && !isBlackwellGeforceSm(mSMVersion);
+
+    // Load the decode module before the in-place Q/K normalization of the prefill rows. A default GDNParams selects
+    // the single-step decode backend.
+    if (numDecode > 0 && !CuteDslGDNRunner::ensureKernelModules(GDNParams{}, stream))
+    {
+        LOG_ERROR("%s: failed to load the compact CuTe DSL GDN decode module", describeLayer().c_str());
+        return -1;
+    }
+    if (numPrefill > 0)
+    {
+        GDNParams prefill{};
+        prefill.q = const_cast<void*>(inputs[kIN_Q_IDX]);
+        prefill.k = const_cast<void*>(inputs[kIN_K_IDX]);
+        prefill.v = const_cast<void*>(inputs[kIN_V_IDX]);
+        prefill.a = const_cast<void*>(inputs[kIN_A_IDX]);
+        prefill.b = const_cast<void*>(inputs[kIN_B_IDX]);
+        prefill.A_log = const_cast<void*>(inputs[kIN_A_LOG_IDX]);
+        prefill.dt_bias = const_cast<void*>(inputs[kIN_DT_BIAS_IDX]);
+        prefill.h0_source = const_cast<void*>(inputs[kIN_H0_SOURCE_IDX]);
+        prefill.state_indices = const_cast<void*>(inputs[kIN_STATE_INDICES_IDX]);
+        prefill.cu_seqlens = const_cast<void*>(inputs[kIN_QUERY_START_OFFSETS_IDX]);
+        prefill.o = outputs[kOUT_O_IDX];
+        prefill.use_prefill = true;
+        prefill.packed_varlen = true;
+        prefill.n = numPrefill;
+        prefill.seq_len = numPrefillTokens;
+        prefill.total_tokens = numPrefillTokens;
+        prefill.h = h;
+        prefill.hv = hv;
+        prefill.k_dim = kDim;
+        prefill.v_dim = vDim;
+        prefill.state_pool_rows = statePoolRows;
+        prefill.smVersion = mSMVersion;
+        prefill.enablePdl = requestGdnPdl();
+        prefill.h0_scratch = stateScratch ? base + layout.h0Scratch : nullptr;
+        prefill.h0_out_scratch = stateScratch ? base + layout.h0OutScratch : nullptr;
+        prefill.tensormap_scratch = mSMVersion >= 100 ? base + layout.tensorMaps : nullptr;
+        try
+        {
+            if (!CuteDslGDNRunner::ensureKernelModules(prefill, stream))
             {
-                LOG_ERROR("gated_delta_net: Blackwell GeForce prefill requires workspace");
+                LOG_ERROR("%s: failed to load the compact CuTe DSL GDN prefill module", describeLayer().c_str());
                 return -1;
             }
-            params.tensormap_scratch = workspace;
+            CuteDslGDNRunner runner;
+            if (runner.run(prefill, stream) != 0)
+            {
+                return -1;
+            }
         }
-#endif
+        catch (std::exception const& e)
+        {
+            LOG_ERROR("gated_delta_net: compact prefill failed: %s", e.what());
+            return -1;
+        }
+    }
+    if (numDecode == 0)
+    {
+        return 0;
+    }
+    return enqueueDecodeRows(inputs, outputs, numPrefillTokens, numPrefill, numDecode, h, hv, kDim, vDim, statePoolRows,
+        base + layout.decodeMetadata, stream);
+}
+
+int32_t GatedDeltaNetPlugin::enqueueDecodeRows(void const* const* inputs, void* const* outputs, int32_t firstRow,
+    int32_t firstSequence, int32_t numSequences, int32_t h, int32_t hv, int32_t kDim, int32_t vDim,
+    int32_t statePoolRows, void* alignedMetadata, cudaStream_t stream) const noexcept
+{
+    int64_t const qkOffset = static_cast<int64_t>(firstRow) * h * kDim;
+    int64_t const vOffset = static_cast<int64_t>(firstRow) * hv * vDim;
+    int64_t const gateOffset = static_cast<int64_t>(firstRow) * hv;
+    GDNParams params{};
+    params.q = static_cast<__half*>(const_cast<void*>(inputs[kIN_Q_IDX])) + qkOffset;
+    params.k = static_cast<__half*>(const_cast<void*>(inputs[kIN_K_IDX])) + qkOffset;
+    params.v = static_cast<__half*>(const_cast<void*>(inputs[kIN_V_IDX])) + vOffset;
+    params.a = static_cast<__half*>(const_cast<void*>(inputs[kIN_A_IDX])) + gateOffset;
+    params.b = static_cast<__half*>(const_cast<void*>(inputs[kIN_B_IDX])) + gateOffset;
+    params.A_log = const_cast<void*>(inputs[kIN_A_LOG_IDX]);
+    params.dt_bias = const_cast<void*>(inputs[kIN_DT_BIAS_IDX]);
+    params.h0_source = const_cast<void*>(inputs[kIN_H0_SOURCE_IDX]);
+    params.context_lengths = static_cast<int32_t*>(const_cast<void*>(inputs[kIN_CONTEXT_LENGTHS_IDX])) + firstSequence;
+    params.state_indices = static_cast<int32_t*>(const_cast<void*>(inputs[kIN_STATE_INDICES_IDX])) + firstSequence;
+    params.o = static_cast<__half*>(outputs[kOUT_O_IDX]) + vOffset;
+    params.n = numSequences;
+    params.seq_len = 1;
+    params.h = h;
+    params.hv = hv;
+    params.k_dim = kDim;
+    params.v_dim = vDim;
+    params.state_pool_rows = statePoolRows;
+    params.smVersion = mSMVersion;
+    params.enablePdl = requestGdnPdl();
+    if (firstRow != 0 || firstSequence != 0)
+    {
+        // The decode kernel's AOT build assumes 16-byte aligned tensors; offset suffix pointers that miss that
+        // alignment are staged in workspace.
+        size_t const gateBytes = static_cast<size_t>(numSequences) * hv * sizeof(__half);
+        size_t const indexBytes = static_cast<size_t>(numSequences) * sizeof(int32_t);
+        auto* const metadata = static_cast<char*>(alignedMetadata);
+        auto const copy = [&](size_t dstOffset, void* src, size_t bytes) -> void* {
+            if (reinterpret_cast<uintptr_t>(src) % 16 == 0)
+            {
+                return src;
+            }
+            CUDA_CHECK(cudaMemcpyAsync(metadata + dstOffset, src, bytes, cudaMemcpyDeviceToDevice, stream));
+            return metadata + dstOffset;
+        };
+        try
+        {
+            params.a = copy(0, params.a, gateBytes);
+            params.b = copy(alignTensorSize(gateBytes), params.b, gateBytes);
+            params.state_indices = copy(2 * alignTensorSize(gateBytes), params.state_indices, indexBytes);
+            params.context_lengths = copy(
+                2 * alignTensorSize(gateBytes) + alignTensorSize(indexBytes), params.context_lengths, indexBytes);
+        }
+        catch (std::exception const& e)
+        {
+            LOG_ERROR("gated_delta_net: decode metadata copy failed: %s", e.what());
+            return -1;
+        }
     }
 
     CuteDslGDNRunner runner;
@@ -720,12 +969,20 @@ int32_t GatedDeltaNetPlugin::enqueue(PluginTensorDesc const* /* inputDesc */, Pl
     // Constructor already threw; this path should be unreachable.
     return -1;
 }
+
+int32_t GatedDeltaNetPlugin::enqueueCompact(PluginTensorDesc const* /* inputDesc */,
+    PluginTensorDesc const* /* outputDesc */, void const* const* /* inputs */, void* const* /* outputs */,
+    void* /* workspace */, cudaStream_t /* stream */) noexcept
+{
+    return -1;
+}
 #endif // CUTE_DSL_GDN_ENABLED
 
 int32_t GatedDeltaNetPlugin::onShapeChange(
     PluginTensorDesc const* in, int32_t nbInputs, PluginTensorDesc const* out, int32_t nbOutputs) noexcept
 {
-    int32_t const expectedNbInputs = kNUM_REQUIRED_INPUTS + (mUseDDTree ? kNUM_DDTREE_OPTIONAL_INPUTS : 0);
+    int32_t const expectedNbInputs
+        = kNUM_REQUIRED_INPUTS + (mUseSpecVerifyState ? kNUM_SPEC_VERIFY_OPTIONAL_INPUTS : 0);
     return in != nullptr && out != nullptr && nbInputs == expectedNbInputs && nbOutputs == getNbOutputs() ? 0 : -1;
 }
 
@@ -744,11 +1001,10 @@ PluginFieldCollection const* GatedDeltaNetPlugin::getFieldsToSerialize() noexcep
     mDataToSerialize.emplace_back("k_dim", &mKDim, PluginFieldType::kINT32, 1);
     mDataToSerialize.emplace_back("v_dim", &mVDim, PluginFieldType::kINT32, 1);
     mUseSpecVerifyStateField = mUseSpecVerifyState ? 1 : 0;
-    mDataToSerialize.emplace_back("use_mtp", &mUseSpecVerifyStateField, PluginFieldType::kINT32, 1);
-    mUseDDTreeField = mUseDDTree ? 1 : 0;
-    mDataToSerialize.emplace_back("use_ddtree", &mUseDDTreeField, PluginFieldType::kINT32, 1);
+    mDataToSerialize.emplace_back("use_spec_verify_state", &mUseSpecVerifyStateField, PluginFieldType::kINT32, 1);
     mUseDiffusionStateField = mUseDiffusionState ? 1 : 0;
     mDataToSerialize.emplace_back("use_diffusion_state", &mUseDiffusionStateField, PluginFieldType::kINT32, 1);
+    mDataToSerialize.emplace_back(layerNameField(mLayerName));
 
     mFCToSerialize.nbFields = mDataToSerialize.size();
     mFCToSerialize.fields = mDataToSerialize.data();
@@ -766,8 +1022,7 @@ GatedDeltaNetPluginCreator::GatedDeltaNetPluginCreator()
     mPluginAttributes.clear();
     mPluginAttributes.emplace_back(PluginField("k_dim", nullptr, PluginFieldType::kINT32, 1));
     mPluginAttributes.emplace_back(PluginField("v_dim", nullptr, PluginFieldType::kINT32, 1));
-    mPluginAttributes.emplace_back(PluginField("use_mtp", nullptr, PluginFieldType::kINT32, 1));
-    mPluginAttributes.emplace_back(PluginField("use_ddtree", nullptr, PluginFieldType::kINT32, 1));
+    mPluginAttributes.emplace_back(PluginField("use_spec_verify_state", nullptr, PluginFieldType::kINT32, 1));
     mPluginAttributes.emplace_back(PluginField("use_diffusion_state", nullptr, PluginFieldType::kINT32, 1));
     mFieldCollection.nbFields = static_cast<int32_t>(mPluginAttributes.size());
     mFieldCollection.fields = mPluginAttributes.data();
@@ -803,7 +1058,7 @@ IPluginV3* GatedDeltaNetPluginCreator::createPlugin(
 {
     try
     {
-        auto* plugin = new GatedDeltaNetPlugin(std::string(name), fc);
+        auto* plugin = new GatedDeltaNetPlugin(resolvePluginLayerName(name, fc), fc);
         plugin->setPluginNamespace(mNamespace.c_str());
         return plugin;
     }

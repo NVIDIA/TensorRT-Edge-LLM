@@ -17,14 +17,15 @@
 
 #pragma once
 
-#include "common/hashUtils.h"
 #include "runtime/decoding/decodingStrategy.h"
+#include "runtime/decoding/jumpForward.h"
 #include "runtime/decoding/specCommonStateTracker.h"
 #include "runtime/state/externalWeightManager.h"
 
 #include <filesystem>
 #include <memory>
-#include <unordered_map>
+#include <optional>
+#include <vector>
 
 namespace trt_edgellm
 {
@@ -35,8 +36,7 @@ class EagleDecoder final : public DecodingStrategy
 {
 public:
     EagleDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
-        SpecDecodeDraftingConfig const& draftingConfig, std::unique_ptr<EngineExecutor> draftExecutor,
-        ExternalWeightManager draftWeights, cudaStream_t stream);
+        std::unique_ptr<EngineExecutor> draftExecutor, ExternalWeightManager draftWeights, cudaStream_t stream);
 
     DecodingStrategyKind kind() const noexcept override
     {
@@ -53,32 +53,37 @@ public:
         return true;
     }
 
-    DecodingKvHeadroom requiredKvHeadroom() const override;
+    DecodingKvHeadroomPolicy kvHeadroom() const override;
 
     bool decodeStep(DecodingInferenceContext& context) override;
     bool captureCudaGraphs(cudaStream_t stream) override;
     bool initializeForGeneration(DecodingInferenceContext& context) override;
+    void beginBatch() noexcept override;
+    void appendRow(int32_t executionRow) noexcept override;
+    bool seatRow(DecodingInferenceContext& context, int32_t executionRow) override;
+    bool prefillSeatedChunk(DecodingInferenceContext& context) override;
     std::vector<int32_t> const& commonMaterializedStateLengths() const noexcept override;
 
     int64_t getRequiredContextMemorySize() const noexcept override;
     void setContextMemory(Tensor& memory) override;
-
-    bool hasSystemPromptKVCache(SystemPromptCacheKey const& key) const override;
-    void restoreSystemPromptKVCache(
-        SystemPromptCacheKey const& key, int32_t residentSlot, cudaStream_t stream) override;
-    bool runSystemPromptPrefill(DecodingInferenceContext& context) override;
-    void saveSystemPromptKVCache(SystemPromptCacheKey const& key, std::string const& prompt,
-        std::vector<tokenizer::Rank> const& tokenizedPrompt, int32_t promptIdsLength, cudaStream_t stream) override;
 
     void resetForNewSequences(Tensor& reuseLengths, cudaStream_t stream) override;
     void onBatchEvict(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch, int32_t newActiveBatch,
         Tensor& deviceBatchMapping, cudaStream_t stream) override;
 
 private:
-    bool runDraftModelPrefill(DecodingInferenceContext& context);
+    //! @param heldBackTokens Prompt positions at each row's end left for the next accept pass (seatRow holds one).
+    bool runDraftModelPrefill(DecodingInferenceContext& context, int32_t heldBackTokens = 0);
     bool constructDraftProposal(DecodingInferenceContext& context);
     bool runBaseModelVerification(DecodingInferenceContext& context);
     bool runDraftModelAcceptToken(DecodingInferenceContext& context);
+
+    //! True when the draft engine's head emits sorted candidate ids and log-probabilities instead of logits.
+    bool hasCandidateHead() const noexcept;
+    //! Views the draft head's outputs (candidate tensors or logits) as `rows` selected rows.
+    void reshapeDraftHeadOutputs(int64_t rows);
+    //! Writes the top draftTopK children of each of `rows` draft rows into sampling.indices/scores [rows, draftTopK].
+    void selectDraftChildren(int32_t rows, int32_t draftTopK, cudaStream_t stream);
 
     DecodingRuntimeContext& mRuntime;
     HybridCacheManager& mDraftCacheManager;
@@ -90,12 +95,13 @@ private:
 
     Tensor mDraftProposalSize;
     Tensor mDraftAttentionMask;
-    //! [maxBatch, verifySize] parent row of each verify node, for the guided-decoding mask walk.
-    Tensor mVerifyParentIds;
     Tensor mDraftTokenIdsFullTable;
     Tensor mDraftTokenScoreFullTable;
     Tensor mDraftTokenPredecessorFullTable;
     Tensor mDraftVocabMappingTable;
+    //! Candidate-head outputs [rows, draftCandidateCount]; empty for dense-head drafts.
+    Tensor mDraftSupportIds;
+    Tensor mDraftSupportLogProbs;
     Tensor mDraftRootTokenId;
     Tensor mDraftTokenIdsTable;
     Tensor mDraftTokenScoresTable;
@@ -105,10 +111,15 @@ private:
     Tensor mAcceptedTokenIndices;
     Tensor mAcceptLength;
     Tensor mHostAcceptLengths;
+    Tensor mHostSeatStaging; //!< [B, 2] INT32 pinned; seatRow() only
     Tensor mHostAcceptedTokenIds;
+    //! Target hidden states of each row's last accepted span, [maxBatch * maxAcceptDepth, baseOutputHiddenDim]; a
+    //! seated prefill overwrites the pipeline's baseHiddenStates between decode steps.
+    Tensor mAcceptedHiddenStates;
+    //! Every row's draft has consumed its prompt, so its next draft input is its last accepted span.
+    bool mDraftPrimed{false};
     SpecCommonStateTracker mCommonStateTracker;
-
-    hash_utils::HashMap<SystemPromptCacheKey, SystemPromptKVCache> mSystemPromptKVCacheDraft;
+    JumpGraftSession mJump; //!< The grafter of a deployment that can jump, and whether this round grafted.
 };
 
 } // namespace rt

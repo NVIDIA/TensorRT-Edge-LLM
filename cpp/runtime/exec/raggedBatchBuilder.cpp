@@ -84,12 +84,21 @@ constexpr int32_t kPaddingSentinel = -1;
 
 void validateContract(RaggedEngineContract const& contract)
 {
-    ELLM_CHECK(contract.backend == TokenLayoutBackend::kEntryPaddedCompatibility, "unsupported token layout backend");
+    bool const compact = contract.backend == TokenLayoutBackend::kNativeCompactRagged;
+    ELLM_CHECK(contract.backend == TokenLayoutBackend::kEntryPaddedCompatibility || compact,
+        "unsupported token layout backend");
     ELLM_CHECK(contract.maxNumSequences > 0, "maxNumSequences must be positive");
     ELLM_CHECK(contract.maxQueryLength > 0, "maxQueryLength must be positive");
     ELLM_CHECK(contract.maxPhysicalTokens > 0, "maxPhysicalTokens must be positive");
     ELLM_CHECK(contract.recurrentPoolRows > 0, "recurrentPoolRows must be positive");
-    ELLM_CHECK(!contract.mixedStepSupported, "mixed execution is not supported by the entry-padded ragged backend");
+    if (compact)
+    {
+        ELLM_CHECK(contract.mixedStepSupported, "the compact ragged backend requires mixed-step support");
+    }
+    else
+    {
+        ELLM_CHECK(!contract.mixedStepSupported, "mixed execution is not supported by the entry-padded ragged backend");
+    }
 }
 
 int32_t checkedInt32(int64_t value, char const* description)
@@ -97,6 +106,30 @@ int32_t checkedInt32(int64_t value, char const* description)
     ELLM_CHECK(value >= 0 && value <= std::numeric_limits<int32_t>::max(),
         std::string(description) + " exceeds int32 capacity");
     return static_cast<int32_t>(value);
+}
+
+void checkScheduledSequence(ScheduledSequence const& sequence, RaggedEngineContract const& contract,
+    IdentitySetScratch& requestIdentities, IdentitySetScratch& residentSlots)
+{
+    ELLM_CHECK(sequence.identity.requestId != 0, "request ID zero is reserved");
+    ELLM_CHECK(sequence.identity.resident.epoch != 0, "resident epoch zero is reserved");
+    ELLM_CHECK(sequence.identity.resident.slot >= 0 && sequence.identity.resident.slot < contract.recurrentPoolRows,
+        "resident slot is outside the configured pool");
+    ELLM_CHECK(requestIdentities.insert(sequence.identity.requestId), "duplicate request ID in scheduled step");
+    ELLM_CHECK(residentSlots.insert(static_cast<uint64_t>(sequence.identity.resident.slot)),
+        "duplicate resident slot in scheduled step");
+    ELLM_CHECK(sequence.queryLength > 0, "query length must be positive");
+    ELLM_CHECK(sequence.queryLength <= contract.maxQueryLength, "query length exceeds engine capacity");
+    ELLM_CHECK(sequence.pastLength >= 0, "past length must not be negative");
+    ELLM_CHECK(sequence.queryTokens.data != nullptr, "token range data must not be null");
+    ELLM_CHECK(sequence.queryTokens.extent >= 0 && sequence.queryTokens.begin >= 0 && sequence.queryTokens.count > 0,
+        "token range bounds must be non-negative and non-empty");
+    ELLM_CHECK(sequence.queryTokens.count == sequence.queryLength, "token range count must equal query length");
+    ELLM_CHECK(
+        static_cast<int64_t>(sequence.queryTokens.begin) + sequence.queryTokens.count <= sequence.queryTokens.extent,
+        "token range exceeds its source extent");
+    ELLM_CHECK(static_cast<int64_t>(sequence.pastLength) + sequence.queryLength <= std::numeric_limits<int32_t>::max(),
+        "resulting sequence length exceeds int32 capacity");
 }
 
 } // namespace
@@ -116,12 +149,12 @@ void RaggedBatchBuilder::reserve(RaggedExecutionBatch& batch)
         = static_cast<int64_t>(mContract.maxPhysicalTokens) * static_cast<int64_t>(sizeof(int32_t));
     if (batch.hostTokenIds.isEmpty())
     {
-        batch.hostTokenIds = Tensor({mContract.maxPhysicalTokens}, DeviceType::kCPU, nvinfer1::DataType::kINT32,
+        batch.hostTokenIds = Tensor({mContract.maxPhysicalTokens}, DeviceType::kCPU, trt_edgellm::DataType::kINT32,
             "RaggedExecutionBatch::hostTokenIds");
     }
     else
     {
-        ELLM_CHECK(batch.hostTokenIds.getDataType() == nvinfer1::DataType::kINT32
+        ELLM_CHECK(batch.hostTokenIds.getDataType() == trt_edgellm::DataType::kINT32
                 && batch.hostTokenIds.getDeviceType() == DeviceType::kCPU
                 && batch.hostTokenIds.getMemoryCapacity() >= requiredTokenBytes,
             "existing host token storage does not satisfy the ragged contract");
@@ -143,6 +176,11 @@ void RaggedBatchBuilder::reserve(RaggedExecutionBatch& batch)
 void RaggedBatchBuilder::buildInto(ScheduledStep const& step, RaggedExecutionBatch& batch)
 {
     validateContract(mContract);
+    if (mContract.backend == TokenLayoutBackend::kNativeCompactRagged)
+    {
+        buildCompactInto(step, batch);
+        return;
+    }
     size_t const maxSequences = static_cast<size_t>(mContract.maxNumSequences);
     mRequestIdentityScratch.reserve(maxSequences);
     mResidentSlotScratch.reserve(maxSequences);
@@ -163,29 +201,7 @@ void RaggedBatchBuilder::buildInto(ScheduledStep const& step, RaggedExecutionBat
     for (int32_t sequenceIndex = 0; sequenceIndex < numSequences; ++sequenceIndex)
     {
         ScheduledSequence const& sequence = step.sequences[static_cast<size_t>(sequenceIndex)];
-        ELLM_CHECK(sequence.identity.requestId != 0, "request ID zero is reserved");
-        ELLM_CHECK(sequence.identity.resident.epoch != 0, "resident epoch zero is reserved");
-        ELLM_CHECK(
-            sequence.identity.resident.slot >= 0 && sequence.identity.resident.slot < mContract.recurrentPoolRows,
-            "resident slot is outside the configured pool");
-        ELLM_CHECK(
-            mRequestIdentityScratch.insert(sequence.identity.requestId), "duplicate request ID in scheduled step");
-        ELLM_CHECK(mResidentSlotScratch.insert(static_cast<uint64_t>(sequence.identity.resident.slot)),
-            "duplicate resident slot in scheduled step");
-        ELLM_CHECK(sequence.queryLength > 0, "query length must be positive");
-        ELLM_CHECK(sequence.queryLength <= mContract.maxQueryLength, "query length exceeds engine capacity");
-        ELLM_CHECK(sequence.pastLength >= 0, "past length must not be negative");
-        ELLM_CHECK(sequence.queryTokens.data != nullptr, "token range data must not be null");
-        ELLM_CHECK(
-            sequence.queryTokens.extent >= 0 && sequence.queryTokens.begin >= 0 && sequence.queryTokens.count > 0,
-            "token range bounds must be non-negative and non-empty");
-        ELLM_CHECK(sequence.queryTokens.count == sequence.queryLength, "token range count must equal query length");
-        ELLM_CHECK(static_cast<int64_t>(sequence.queryTokens.begin) + sequence.queryTokens.count
-                <= sequence.queryTokens.extent,
-            "token range exceeds its source extent");
-        ELLM_CHECK(
-            static_cast<int64_t>(sequence.pastLength) + sequence.queryLength <= std::numeric_limits<int32_t>::max(),
-            "resulting sequence length exceeds int32 capacity");
+        checkScheduledSequence(sequence, mContract, mRequestIdentityScratch, mResidentSlotScratch);
 
         if (sequence.work == SequenceWork::kContext)
         {
@@ -211,6 +227,7 @@ void RaggedBatchBuilder::buildInto(ScheduledStep const& step, RaggedExecutionBat
     ELLM_CHECK(physicalTokens <= mContract.maxPhysicalTokens, "scheduled step exceeds physical token capacity");
 
     batch.layout = mContract.backend;
+    batch.placeholderLogitsRows = 0;
     batch.sequenceOrder.clear();
     batch.positions.clear();
     batch.queryStartOffsets.clear();
@@ -257,6 +274,98 @@ void RaggedBatchBuilder::buildInto(ScheduledStep const& step, RaggedExecutionBat
     }
     batch.queryStartOffsets[static_cast<size_t>(numSequences)] = physicalTokens;
     batch.shape.numLogits = checkedInt32(static_cast<int64_t>(batch.logitsIndices.size()), "logits count");
+
+#ifndef NDEBUG
+    validateExecutionBatch(batch, mContract);
+#endif
+}
+
+void RaggedBatchBuilder::buildCompactInto(ScheduledStep const& step, RaggedExecutionBatch& batch)
+{
+    size_t const maxSequences = static_cast<size_t>(mContract.maxNumSequences);
+    mRequestIdentityScratch.reserve(maxSequences);
+    mResidentSlotScratch.reserve(maxSequences);
+    ELLM_CHECK(!step.sequences.empty(), "scheduled step must contain at least one sequence");
+    ELLM_CHECK(step.sequences.size() <= maxSequences, "scheduled step exceeds sequence capacity");
+
+    int32_t const numSequences = checkedInt32(static_cast<int64_t>(step.sequences.size()), "sequence count");
+    int32_t queryWidth = 0;
+    int64_t validTokens = 0;
+    int32_t numContextSequences = 0;
+    int64_t numContextTokens = 0;
+    bool decodeSeen = false;
+    mRequestIdentityScratch.clear();
+    mResidentSlotScratch.clear();
+    for (ScheduledSequence const& sequence : step.sequences)
+    {
+        checkScheduledSequence(sequence, mContract, mRequestIdentityScratch, mResidentSlotScratch);
+        if (sequence.work == SequenceWork::kContext)
+        {
+            ELLM_CHECK(!decodeSeen, "compact steps require every context sequence before every decode sequence");
+            ++numContextSequences;
+            numContextTokens += sequence.queryLength;
+        }
+        else
+        {
+            ELLM_CHECK(sequence.work == SequenceWork::kDecode, "unknown sequence work kind");
+            ELLM_CHECK(sequence.queryLength == 1, "vanilla decode requires query length one");
+            decodeSeen = true;
+        }
+        queryWidth = std::max(queryWidth, sequence.queryLength);
+        validTokens += sequence.queryLength;
+        ELLM_CHECK(validTokens <= mContract.maxPhysicalTokens, "scheduled step exceeds physical token capacity");
+    }
+    int32_t const numTokens = static_cast<int32_t>(validTokens);
+
+    batch.layout = TokenLayoutBackend::kNativeCompactRagged;
+    batch.stepId = step.id;
+    batch.shape = RaggedStepShape{numSequences, numTokens, numTokens, queryWidth, numContextSequences,
+        static_cast<int32_t>(numContextTokens), numSequences};
+    batch.sequenceOrder.clear();
+    batch.queryLengths.clear();
+    batch.pastLengths.clear();
+    batch.attentionSequenceLengths.clear();
+    batch.stateIndices.clear();
+    batch.logitsIndices.clear();
+    batch.logitsToSequence.clear();
+    batch.sequenceWorks.clear();
+    check::check(batch.hostTokenIds.reshape({numTokens}), "host token storage reshape failed");
+    int32_t* const tokenIds = batch.hostTokenIds.dataPointer<int32_t>();
+    batch.positions.resize(static_cast<size_t>(numTokens));
+    batch.queryStartOffsets.resize(static_cast<size_t>(numSequences) + 1);
+
+    int32_t rowStart = 0;
+    for (int32_t row = 0; row < numSequences; ++row)
+    {
+        ScheduledSequence const& sequence = step.sequences[static_cast<size_t>(row)];
+        batch.queryStartOffsets[static_cast<size_t>(row)] = rowStart;
+        batch.queryLengths.push_back(sequence.queryLength);
+        batch.pastLengths.push_back(sequence.pastLength);
+        batch.attentionSequenceLengths.push_back(sequence.pastLength + sequence.queryLength);
+        batch.stateIndices.push_back(sequence.identity.resident.slot);
+        batch.sequenceOrder.push_back(sequence.identity);
+        batch.sequenceWorks.push_back(sequence.work);
+        std::copy_n(sequence.queryTokens.data + sequence.queryTokens.begin, sequence.queryLength, tokenIds + rowStart);
+        for (int32_t token = 0; token < sequence.queryLength; ++token)
+        {
+            batch.positions[static_cast<size_t>(rowStart + token)] = sequence.pastLength + token;
+        }
+        rowStart += sequence.queryLength;
+        if (sequence.selectLastTokenLogits)
+        {
+            batch.logitsIndices.push_back(rowStart - 1);
+            batch.logitsToSequence.push_back(row);
+        }
+    }
+    batch.queryStartOffsets[static_cast<size_t>(numSequences)] = numTokens;
+    batch.placeholderLogitsRows = numSequences - static_cast<int32_t>(batch.logitsToSequence.size());
+    for (int32_t row = 0; row < numSequences; ++row)
+    {
+        if (!step.sequences[static_cast<size_t>(row)].selectLastTokenLogits)
+        {
+            batch.logitsIndices.push_back(batch.queryStartOffsets[static_cast<size_t>(row) + 1] - 1);
+        }
+    }
 
 #ifndef NDEBUG
     validateExecutionBatch(batch, mContract);
@@ -388,9 +497,125 @@ void RaggedBatchBuilder::validateRuntimeAdapterStep(ScheduledStep const& step, i
     }
 }
 
+namespace
+{
+
+void validateCompactExecutionBatch(RaggedExecutionBatch const& batch, RaggedEngineContract const& contract)
+{
+    RaggedStepShape const& shape = batch.shape;
+    ELLM_CHECK(batch.layout == contract.backend, "execution layout does not match the engine contract");
+    ELLM_CHECK(shape.numSequences > 0 && shape.numSequences <= contract.maxNumSequences,
+        "execution sequence count is outside engine capacity");
+    ELLM_CHECK(shape.physicalTokens == shape.validTokens && shape.validTokens >= shape.numSequences
+            && shape.physicalTokens <= contract.maxPhysicalTokens,
+        "compact execution token shape is invalid");
+    ELLM_CHECK(shape.numContextSequences >= 0 && shape.numContextSequences <= shape.numSequences,
+        "compact context sequence count is outside the execution batch");
+    ELLM_CHECK(shape.numContextTokens == shape.validTokens - (shape.numSequences - shape.numContextSequences),
+        "compact context tokens do not leave one row per decode sequence");
+
+    size_t const numSequences = static_cast<size_t>(shape.numSequences);
+    ELLM_CHECK(!batch.hostTokenIds.isEmpty() && batch.hostTokenIds.getDeviceType() == DeviceType::kCPU
+            && batch.hostTokenIds.getDataType() == trt_edgellm::DataType::kINT32
+            && batch.hostTokenIds.getShape().volume() == shape.physicalTokens,
+        "host token ID storage has the wrong shape or type");
+    ELLM_CHECK(
+        batch.positions.size() == static_cast<size_t>(shape.physicalTokens), "position storage has the wrong size");
+    ELLM_CHECK(batch.queryStartOffsets.size() == numSequences + 1, "query offsets have the wrong size");
+    ELLM_CHECK(batch.queryLengths.size() == numSequences, "query lengths have the wrong size");
+    ELLM_CHECK(batch.pastLengths.size() == numSequences, "past lengths have the wrong size");
+    ELLM_CHECK(batch.attentionSequenceLengths.size() == numSequences, "attention sequence lengths have the wrong size");
+    ELLM_CHECK(batch.stateIndices.size() == numSequences, "state indices have the wrong size");
+    ELLM_CHECK(batch.sequenceOrder.size() == numSequences, "sequence identity snapshot has the wrong size");
+    ELLM_CHECK(batch.sequenceWorks.size() == numSequences, "sequence work snapshot has the wrong size");
+    ELLM_CHECK(batch.queryStartOffsets.front() == 0, "compact query offsets must start at zero");
+
+    int32_t queryWidth = 0;
+    for (size_t index = 0; index < numSequences; ++index)
+    {
+        int32_t const queryLength = batch.queryLengths[index];
+        int32_t const start = batch.queryStartOffsets[index];
+        ELLM_CHECK(queryLength > 0 && queryLength <= contract.maxQueryLength, "query length is invalid");
+        ELLM_CHECK(
+            batch.queryStartOffsets[index + 1] == start + queryLength && start + queryLength <= shape.physicalTokens,
+            "compact query offsets are not the prefix sum of query lengths");
+        bool const contextRow = static_cast<int32_t>(index) < shape.numContextSequences;
+        ELLM_CHECK(contextRow ? batch.sequenceWorks[index] == SequenceWork::kContext
+                              : batch.sequenceWorks[index] == SequenceWork::kDecode && queryLength == 1,
+            "compact rows must be context sequences followed by single-token decode sequences");
+        ELLM_CHECK(batch.pastLengths[index] >= 0, "past length is invalid");
+        ELLM_CHECK(
+            static_cast<int64_t>(batch.pastLengths[index]) + queryLength == batch.attentionSequenceLengths[index],
+            "attention sequence length must equal past plus query length");
+        ELLM_CHECK(
+            batch.stateIndices[index] == batch.sequenceOrder[index].resident.slot, "state and resident slots disagree");
+        ELLM_CHECK(batch.stateIndices[index] >= 0 && batch.stateIndices[index] < contract.recurrentPoolRows,
+            "state index is outside the configured pool");
+        auto const previousStates = batch.stateIndices.begin() + static_cast<ptrdiff_t>(index);
+        ELLM_CHECK(std::find(batch.stateIndices.begin(), previousStates, batch.stateIndices[index]) == previousStates,
+            "duplicate state index in compact execution batch");
+        auto const previousIdentities = batch.sequenceOrder.begin() + static_cast<ptrdiff_t>(index);
+        ELLM_CHECK(std::find_if(batch.sequenceOrder.begin(), previousIdentities,
+                       [&](SequenceIdentity const& identity) {
+                           return identity.requestId == batch.sequenceOrder[index].requestId;
+                       })
+                == previousIdentities,
+            "duplicate request identity snapshot");
+        for (int32_t token = 0; token < queryLength; ++token)
+        {
+            ELLM_CHECK(batch.positions[static_cast<size_t>(start + token)] == batch.pastLengths[index] + token,
+                "valid token has the wrong absolute position");
+        }
+        queryWidth = std::max(queryWidth, queryLength);
+    }
+    ELLM_CHECK(batch.queryStartOffsets.back() == shape.physicalTokens, "terminal query offset is invalid");
+    ELLM_CHECK(queryWidth == shape.queryWidth, "compact query width is inconsistent");
+
+    ELLM_CHECK(
+        shape.numLogits == shape.numSequences && static_cast<int32_t>(batch.logitsIndices.size()) == shape.numLogits,
+        "compact execution needs one logits row per sequence");
+    ELLM_CHECK(batch.placeholderLogitsRows >= 0
+            && batch.logitsToSequence.size() + static_cast<size_t>(batch.placeholderLogitsRows)
+                == batch.logitsIndices.size(),
+        "logits routing storage has the wrong size");
+    auto const lastRow = [&batch](size_t sequence) {
+        return static_cast<int64_t>(batch.queryStartOffsets[sequence]) + batch.queryLengths[sequence] - 1;
+    };
+    int32_t previousSequence = -1;
+    for (size_t logitsRow = 0; logitsRow < batch.logitsToSequence.size(); ++logitsRow)
+    {
+        int32_t const sequenceIndex = batch.logitsToSequence[logitsRow];
+        ELLM_CHECK(sequenceIndex > previousSequence && sequenceIndex < shape.numSequences,
+            "compact logits rows must follow execution-row order without duplicates");
+        previousSequence = sequenceIndex;
+        ELLM_CHECK(batch.logitsIndices[logitsRow] == lastRow(static_cast<size_t>(sequenceIndex)),
+            "logits index does not select the final valid row");
+    }
+    size_t routed = 0;
+    size_t placeholder = batch.logitsToSequence.size();
+    for (size_t sequence = 0; sequence < numSequences; ++sequence)
+    {
+        if (routed < batch.logitsToSequence.size() && batch.logitsToSequence[routed] == static_cast<int32_t>(sequence))
+        {
+            ++routed;
+            continue;
+        }
+        ELLM_CHECK(batch.logitsIndices[placeholder] == lastRow(sequence),
+            "a placeholder logits row must select the final row of a sequence that samples nothing");
+        ++placeholder;
+    }
+}
+
+} // namespace
+
 void RaggedBatchBuilder::validateExecutionBatch(RaggedExecutionBatch const& batch, RaggedEngineContract const& contract)
 {
     validateContract(contract);
+    if (contract.backend == TokenLayoutBackend::kNativeCompactRagged)
+    {
+        validateCompactExecutionBatch(batch, contract);
+        return;
+    }
     RaggedStepShape const& shape = batch.shape;
     ELLM_CHECK(batch.layout == contract.backend, "execution layout does not match the engine contract");
     ELLM_CHECK(shape.numSequences > 0 && shape.numSequences <= contract.maxNumSequences,
@@ -405,7 +630,7 @@ void RaggedBatchBuilder::validateExecutionBatch(RaggedExecutionBatch const& batc
     size_t const numSequences = static_cast<size_t>(shape.numSequences);
     size_t const physicalTokens = static_cast<size_t>(shape.physicalTokens);
     ELLM_CHECK(!batch.hostTokenIds.isEmpty() && batch.hostTokenIds.getDeviceType() == DeviceType::kCPU
-            && batch.hostTokenIds.getDataType() == nvinfer1::DataType::kINT32
+            && batch.hostTokenIds.getDataType() == trt_edgellm::DataType::kINT32
             && batch.hostTokenIds.getShape().volume() == shape.physicalTokens,
         "host token ID storage has the wrong shape or type");
     int32_t const* tokenIds = batch.hostTokenIds.dataPointer<int32_t>();

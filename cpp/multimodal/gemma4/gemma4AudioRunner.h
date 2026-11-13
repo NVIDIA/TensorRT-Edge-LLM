@@ -56,7 +56,8 @@ public:
     //! \brief Constructor
     //! \param[in] engineDir Directory containing the audio encoder engine
     //! \param[in] stream CUDA stream for execution
-    Gemma4AudioRunner(std::string const& engineDir, cudaStream_t stream);
+    //! \param[in] checkpointDir HF checkpoint directory used by runtime weight loading
+    Gemma4AudioRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
 
     ~Gemma4AudioRunner() noexcept = default;
 

@@ -178,6 +178,12 @@ void launchApplyRopeQOnly(rt::Tensor const& cosSinCache, rt::Tensor& q, cudaStre
 //!             metadata or @p packedQKV, and trigger dependents after every CTA has completed its output stores.
 //! @param[in]  tokenAlignedRope Whether cosSinCache rows are aligned with packed execution rows instead of absolute
 //!             token positions.
+//! @param[in]  compactLayout Execute one unpadded token run of @p numSequences sequences: @p packedQKV and
+//!             @p qScratch are [1, T, ...], @p cuQSeqLens holds the [N + 1] query offsets, @p kvCacheEndLens the [N]
+//!             KV lengths after this step (token t of sequence s is written at kvCacheEndLens[s] - q[s] +
+//!             t - offsets[s] through page-table row s), and @p cosSinCache is token-aligned [1, T, rotaryDim].
+//!             Requires @p tokenAlignedRope and no @p tokenPosIds.
+//! @param[in]  numSequences Sequence count N of a compact launch; unused otherwise.
 //! @throws std::runtime_error if tensor shape or data type is incorrect.
 void launchApplyRopeFromPackedToSplit(rt::Tensor const& cosSinCache, rt::OptionalInputTensor kvCacheEndLens,
     rt::OptionalInputTensor tokenPosIds, rt::Tensor const& packedQKV, rt::Tensor& qScratch, rt::Tensor& kvCache,
@@ -185,7 +191,7 @@ void launchApplyRopeFromPackedToSplit(rt::Tensor const& cosSinCache, rt::Optiona
     void* kScratchOut = nullptr, void* vScratchOut = nullptr, void* fp8QOut = nullptr, float qScale = 1.0f,
     half const* qNormGamma = nullptr, half const* kNormGamma = nullptr, float rmsNormEps = 1e-6f,
     bool qkNormPostRope = false, rt::OptionalInputTensor cuQSeqLens = std::nullopt, bool writeKVCache = true,
-    bool enablePdl = false, bool tokenAlignedRope = false);
+    bool enablePdl = false, bool tokenAlignedRope = false, bool compactLayout = false, int32_t numSequences = 0);
 
 } // namespace kernel
 } // namespace trt_edgellm

@@ -25,8 +25,6 @@
 #include <limits>
 #include <string>
 
-using namespace nvinfer1;
-
 namespace trt_edgellm
 {
 namespace rt
@@ -77,10 +75,8 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
         totalBytes += recurrentBytes + convBytes;
     }
 
-    // Allocate spec-verify intermediate state buffers when enabled (maxIntermediateSeqLen > 0). The
-    // recurrent-state commit path is selected by the engine's explicit spec-verify mode: replay =
-    // Mamba; snapshot = GDN/DDTree, which keeps the per-token full-state snapshot committed by the scatter.
-    // The conv state always uses per-token snapshots committed by the batched scatter.
+    // Mamba and GDN use different replay stashes to reconstruct accepted recurrent states.
+    // Conv state uses per-token snapshots committed by the batched scatter.
     bool const useReplay = mConfig.specVerifyUsesReplay;
     if (mConfig.maxIntermediateSeqLen > 0)
     {
@@ -131,14 +127,13 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
             }
             else
             {
-                int64_t const intermRecVolume = stashSeq * mConfig.recurrentStateNumHeads
-                    * mConfig.recurrentStateHeadDim * mConfig.recurrentStateSize;
-                size_t const intermRecBytes = static_cast<size_t>(intermRecVolume) * recurrentElemSize;
-                mIntermediateRecurrentStates.emplace_back(
-                    rt::Tensor({mConfig.maxBatchSize, mConfig.maxIntermediateSeqLen, mConfig.recurrentStateNumHeads,
-                                   mConfig.recurrentStateHeadDim, mConfig.recurrentStateSize},
-                        DeviceType::kGPU, mConfig.recurrentStateType,
-                        "MambaCacheManager::intermediateRecurrentState_" + idx));
+                rt::Coords const stashShape
+                    = kernel::gdnTreeVerifyStashShape(mConfig.recurrentStateType == DataType::kFLOAT, mConfig.convDim,
+                        mConfig.maxBatchSize, mConfig.maxIntermediateSeqLen, mConfig.recurrentStateNumHeads,
+                        mConfig.recurrentStateHeadDim, mConfig.recurrentStateSize);
+                size_t const intermRecBytes = static_cast<size_t>(stashShape.volume()) * recurrentElemSize;
+                mIntermediateRecurrentStates.emplace_back(rt::Tensor(stashShape, DeviceType::kGPU,
+                    mConfig.recurrentStateType, "MambaCacheManager::intermediateRecurrentState_" + idx));
                 CUDA_CHECK(
                     cudaMemsetAsync(mIntermediateRecurrentStates.back().rawPointer(), 0, intermRecBytes, stream));
                 totalBytes += intermRecBytes;
@@ -155,7 +150,7 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
             totalBytes += intermConvBytes;
         }
 
-        // Build the MtpLayerInfo array for the batched conv-state (and, for GDN, recurrent) scatter;
+        // Build the MtpLayerInfo array for batched conv scatter and GDN replay;
         // pointers are stable, so upload runs once. In the Mamba replay path the recurrent source is
         // null (recurrent commits via replay reconstruction, not scatter).
         std::vector<kernel::MtpLayerInfo> hostInfos(mConfig.numRecurrentLayers);
@@ -307,7 +302,7 @@ void MambaCacheManager::restoreSlot(int32_t slot, std::vector<rt::Tensor> const&
             && convStates.size() <= static_cast<size_t>(mConfig.numRecurrentLayers),
         "Cached recurrent state contains more layers than the resident pool.");
 
-    auto validate = [](rt::Tensor const& tensor, nvinfer1::DataType type, rt::Coords const& shape, int64_t bytes,
+    auto validate = [](rt::Tensor const& tensor, trt_edgellm::DataType type, rt::Coords const& shape, int64_t bytes,
                         char const* kind) {
         check::check(tensor.getDeviceType() == DeviceType::kGPU && tensor.getDataType() == type
                 && tensor.getShape() == shape && tensor.getMemoryCapacity() >= bytes,
@@ -436,10 +431,11 @@ void MambaCacheManager::reshapeIntermediateStates(int32_t activeBatchSize, int32
         }
         else
         {
-            check::check(
-                mIntermediateRecurrentStates[i].reshape({activeBatchSize, seqLen, mConfig.recurrentStateNumHeads,
-                    mConfig.recurrentStateHeadDim, mConfig.recurrentStateSize}),
-                "Intermediate recurrent state reshape failed");
+            auto& stash = mIntermediateRecurrentStates[i];
+            rt::Coords activeShape = stash.getShape();
+            activeShape[0] = activeBatchSize;
+            activeShape[1] = seqLen;
+            check::check(stash.reshape(activeShape), "Intermediate recurrent state reshape failed");
         }
         check::check(mIntermediateConvStates[i].reshape({activeBatchSize, seqLen, mConfig.convDim, mConfig.convKernel}),
             "Intermediate conv state reshape failed");
@@ -510,7 +506,7 @@ void MambaCacheManager::scatterAcceptedLinearStates(
     }
 
     bool const useReplay = !mReplayUStates.empty();
-    int32_t const verifySize = static_cast<int32_t>(
+    int32_t const verifyTokenCount = static_cast<int32_t>(
         useReplay ? mReplayUStates[0].getShape()[1] : mIntermediateRecurrentStates[0].getShape()[1]);
     int32_t const convElements = mConfig.convDim * mConfig.convKernel;
     int32_t const activeBatchSize = static_cast<int32_t>(acceptLengths.getShape()[0]);
@@ -532,74 +528,23 @@ void MambaCacheManager::scatterAcceptedLinearStates(
     }
     else
     {
-        // GDN linear MTP: commit the accepted per-token recurrent snapshot via the batched scatter.
-        int32_t const recElements
-            = mConfig.recurrentStateNumHeads * mConfig.recurrentStateHeadDim * mConfig.recurrentStateSize;
-        kernel::mtpScatterRecurrentStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize, mConfig.maxBatchSize,
-            verifySize, recElements, acceptPtr, stateIndices.dataPointer<int32_t>(), stream,
-            mConfig.recurrentStateType == DataType::kHALF);
+        int32_t const hv = mConfig.recurrentStateNumHeads;
+        int32_t const dk = mConfig.recurrentStateHeadDim;
+        int32_t const dv = mConfig.recurrentStateSize;
+        ELLM_CHECK(mConfig.recurrentStateType == DataType::kFLOAT && dk == 128 && dv == 128,
+            "GDN prefix replay requires FP32 states with dk == dv == 128");
+        ELLM_CHECK(verifyTokenCount <= kernel::kGDN_TREE_CHUNK_MAX_ACCEPT,
+            "GDN prefix replay exceeds the supported accepted path length");
+        int32_t const h = (mConfig.convDim / dk - hv) / 2;
+        ELLM_CHECK(h > 0 && hv % h == 0, "GDN prefix replay has inconsistent k-head count");
+        size_t const stashBatchStrideBytes = kernel::gdnTreeVerifyRowBytes(h, hv, verifyTokenCount);
+        CUDA_CHECK(kernel::gdnTreeReplayCommitBatched(layerInfos, mConfig.numRecurrentLayers, stashBatchStrideBytes,
+            nullptr, acceptPtr, stateIndices.dataPointer<int32_t>(), activeBatchSize, mConfig.maxBatchSize,
+            verifyTokenCount, verifyTokenCount, h, hv, stream));
     }
     // Conv state: commit the accepted per-token snapshot via the batched scatter.
     kernel::mtpScatterConvStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize, mConfig.maxBatchSize,
-        verifySize, convElements, acceptPtr, stateIndices.dataPointer<int32_t>(), stream);
-}
-
-void MambaCacheManager::scatterAcceptedTreeStates(rt::Tensor const& acceptedStateNodeIds,
-    rt::Tensor const& acceptLengths, rt::Tensor const& stateIndices, cudaStream_t stream)
-{
-    if (mIntermediateRecurrentStates.empty())
-    {
-        return;
-    }
-
-    check::check(!mIntermediateConvStates.empty(), "Intermediate conv states are not allocated.");
-    check::check(mConfig.recurrentStateType == DataType::kFLOAT,
-        "Accepted tree recurrent state scatter supports FP32 recurrent states only.");
-    check::check(
-        mConfig.convStateType == DataType::kHALF, "Accepted tree conv state scatter supports FP16 conv states only.");
-    check::check(
-        acceptedStateNodeIds.getDeviceType() == DeviceType::kGPU, "acceptedStateNodeIds must be a GPU tensor.");
-    check::check(acceptLengths.getDeviceType() == DeviceType::kGPU, "acceptLengths must be a GPU tensor.");
-    check::check(
-        acceptedStateNodeIds.getDataType() == DataType::kINT32, "acceptedStateNodeIds must have INT32 data type.");
-    check::check(acceptLengths.getDataType() == DataType::kINT32, "acceptLengths must have INT32 data type.");
-    check::check(stateIndices.getDeviceType() == DeviceType::kGPU && stateIndices.getDataType() == DataType::kINT32,
-        "stateIndices must be a GPU INT32 tensor.");
-
-    auto const acceptedStateNodeIdsShape = acceptedStateNodeIds.getShape();
-    auto const acceptLengthsShape = acceptLengths.getShape();
-    check::check(
-        acceptedStateNodeIdsShape.getNumDims() == 2, "acceptedStateNodeIds must have shape [B, maxAcceptLen].");
-    check::check(acceptLengthsShape.getNumDims() == 1, "acceptLengths must have shape [B].");
-
-    int32_t const activeBatchSize = static_cast<int32_t>(acceptedStateNodeIdsShape[0]);
-    int32_t const maxAcceptLen = static_cast<int32_t>(acceptedStateNodeIdsShape[1]);
-    check::check(
-        acceptLengthsShape[0] == activeBatchSize, "acceptedStateNodeIds and acceptLengths batch sizes differ.");
-    check::check(stateIndices.getShape().getNumDims() == 1 && stateIndices.getShape()[0] == activeBatchSize,
-        "stateIndices must have shape [activeBatchSize].");
-    if (activeBatchSize == 0 || maxAcceptLen == 0)
-    {
-        return;
-    }
-
-    auto const intermediateShape = mIntermediateRecurrentStates[0].getShape();
-    check::check(intermediateShape[0] == activeBatchSize,
-        "Intermediate recurrent states must be reshaped to the active batch size before accepted tree scatter.");
-    int32_t const verifyTreeSize = static_cast<int32_t>(intermediateShape[1]);
-    int32_t const recElements
-        = mConfig.recurrentStateNumHeads * mConfig.recurrentStateHeadDim * mConfig.recurrentStateSize;
-    int32_t const convElements = mConfig.convDim * mConfig.convKernel;
-    auto const* const layerInfos = static_cast<kernel::MtpLayerInfo const*>(mDeviceMtpLayerInfos.rawPointer());
-    int32_t const* const acceptedStateNodeIdsPtr = acceptedStateNodeIds.dataPointer<int32_t>();
-    int32_t const* const acceptLengthsPtr = acceptLengths.dataPointer<int32_t>();
-
-    kernel::mtpScatterAcceptedTreeRecurrentStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize,
-        mConfig.maxBatchSize, verifyTreeSize, recElements, acceptedStateNodeIdsPtr, maxAcceptLen, acceptLengthsPtr,
-        stateIndices.dataPointer<int32_t>(), stream);
-    kernel::mtpScatterAcceptedTreeConvStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize,
-        mConfig.maxBatchSize, verifyTreeSize, convElements, acceptedStateNodeIdsPtr, maxAcceptLen, acceptLengthsPtr,
-        stateIndices.dataPointer<int32_t>(), stream);
+        verifyTokenCount, convElements, acceptPtr, stateIndices.dataPointer<int32_t>(), stream);
 }
 
 void MambaCacheManager::replayCommitAcceptedTreeStates(rt::Tensor const& acceptedStateNodeIds,
@@ -670,11 +615,8 @@ void MambaCacheManager::replayCommitAcceptedTreeStates(rt::Tensor const& accepte
     int32_t const h = (mConfig.convDim / dk - hv) / 2;
     check::check(h > 0 && hv % h == 0, "Replay commit: derived k-head count is inconsistent.");
 
-    // Stash rows sit at the head of each per-batch intermediate row; the
-    // stride is the (now unused) checkpoint row size. Must match the layout
-    // the chunk-form verify wrote in gatedDeltaNetPlugin.
-    size_t const stashBatchStrideBytes
-        = static_cast<size_t>(verifyTreeSize) * hv * static_cast<size_t>(dk) * dv * sizeof(float);
+    // The stash batch stride matches gatedDeltaNetPlugin's intermediate output row.
+    size_t const stashBatchStrideBytes = kernel::gdnTreeVerifyRowBytes(h, hv, verifyTreeSize);
 
     int32_t const* const idsPtr = acceptedStateNodeIds.dataPointer<int32_t>();
     int32_t const* const lensPtr = acceptLengths.dataPointer<int32_t>();
@@ -683,8 +625,7 @@ void MambaCacheManager::replayCommitAcceptedTreeStates(rt::Tensor const& accepte
         stashBatchStrideBytes, idsPtr, lensPtr, stateIndices.dataPointer<int32_t>(), activeBatchSize,
         mConfig.maxBatchSize, maxAcceptLen, verifyTreeSize, h, hv, stream));
 
-    // Conv states keep the checkpoint scatter (conv checkpoints remain valid
-    // in chunk mode — the conv plugin path is unchanged).
+    // Commit the conv snapshot at the final accepted predictor row.
     int32_t const convElements = mConfig.convDim * mConfig.convKernel;
     auto const* const layerInfos = static_cast<kernel::MtpLayerInfo const*>(mDeviceMtpLayerInfos.rawPointer());
     kernel::mtpScatterAcceptedTreeConvStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize,

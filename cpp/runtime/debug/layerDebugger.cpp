@@ -89,7 +89,7 @@ Tensor copyResidentRows(Tensor const& src, std::vector<ResidentRef> const& resid
         dims.push_back(s[d]);
         inner *= s[d];
     }
-    nvinfer1::DataType const dtype = src.getDataType();
+    trt_edgellm::DataType const dtype = src.getDataType();
     Tensor host(Coords(dims), DeviceType::kCPU, dtype, name);
     size_t const rowBytes = static_cast<size_t>(inner) * utils::getTypeSize(dtype);
     for (int32_t row = 0; row < activeBatchSize; ++row)
@@ -100,6 +100,25 @@ Tensor copyResidentRows(Tensor const& src, std::vector<ResidentRef> const& resid
         auto* destination = static_cast<char*>(host.rawPointer()) + static_cast<size_t>(row) * rowBytes;
         CUDA_CHECK(cudaMemcpyAsync(destination, source, rowBytes, cudaMemcpyDeviceToHost, stream));
     }
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    return host;
+}
+
+//! Split a token-major activation back into one row per sequence, which is the shape the goldens
+//! are written in. Entry-padded execution gives every sequence the same stride, so the split is a
+//! reshape and the copy stays contiguous.
+Tensor copyTokenMajorPerSequence(
+    Tensor const& src, int32_t activeBatchSize, std::string const& name, cudaStream_t stream)
+{
+    Coords const s = src.getShape();
+    ELLM_CHECK(s.getNumDims() == 2, "LayerDebugger: token-major activation must be rank 2");
+    ELLM_CHECK(activeBatchSize > 0 && s[0] % activeBatchSize == 0,
+        "LayerDebugger: token-major rows are not a whole number of sequences");
+    int64_t const queryWidth = s[0] / activeBatchSize;
+    trt_edgellm::DataType const dtype = src.getDataType();
+    Tensor host(Coords({activeBatchSize, queryWidth, s[1]}), DeviceType::kCPU, dtype, name);
+    size_t const bytes = static_cast<size_t>(s[0]) * static_cast<size_t>(s[1]) * utils::getTypeSize(dtype);
+    CUDA_CHECK(cudaMemcpyAsync(host.rawPointer(), src.rawPointer(), bytes, cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     return host;
 }
@@ -136,7 +155,7 @@ Tensor copyKVCacheAsHND(HybridCacheManager& cacheManager, KVPageTable const& ful
     int64_t const cap = static_cast<int64_t>(storage.logicalPagesPerSequence) * kTOKENS_PER_PAGE;
     int64_t const heads = storage.numKVHeads;
     int64_t const dim = storage.headDim;
-    nvinfer1::DataType const dtype = pool.getDataType();
+    trt_edgellm::DataType const dtype = pool.getDataType();
     size_t const elemSize = utils::getTypeSize(dtype);
     size_t const slotBytes = static_cast<size_t>(cap) * heads * dim * elemSize;
     size_t const rowBytes = static_cast<size_t>(dim) * elemSize;
@@ -147,7 +166,7 @@ Tensor copyKVCacheAsHND(HybridCacheManager& cacheManager, KVPageTable const& ful
     ELLM_CHECK(static_cast<int32_t>(residents.size()) >= activeBatchSize,
         "LayerDebugger: resident mapping is smaller than the active batch");
     Tensor staging(
-        {static_cast<int64_t>(2 * poolBytes)}, DeviceType::kCPU, nvinfer1::DataType::kINT8, name + ".staging");
+        {static_cast<int64_t>(2 * poolBytes)}, DeviceType::kCPU, trt_edgellm::DataType::kINT8, name + ".staging");
     std::byte* const kStage = static_cast<std::byte*>(staging.rawPointer());
     std::byte* const vStage = kStage + poolBytes;
     auto const* poolBase = static_cast<std::byte const*>(pool.rawPointer());
@@ -241,7 +260,7 @@ void LayerDebugger::dumpRound(HybridCacheManager& cacheManager, KVPageTable cons
     {
         Coords const shape = logits.getShape();
         int64_t const vocab = shape[shape.getNumDims() - 1];
-        nvinfer1::DataType const dtype = logits.getDataType();
+        trt_edgellm::DataType const dtype = logits.getDataType();
         Tensor logitsHost({activeBatchSize, vocab}, DeviceType::kCPU, dtype, prefix + "logits");
         size_t const bytes = static_cast<size_t>(activeBatchSize) * vocab * utils::getTypeSize(dtype);
         CUDA_CHECK(cudaMemcpy(logitsHost.rawPointer(), logits.rawPointer(), bytes, cudaMemcpyDeviceToHost));
@@ -278,9 +297,24 @@ void LayerDebugger::dumpRound(HybridCacheManager& cacheManager, KVPageTable cons
             cacheManager, pageTable, swaPageTable, layer, residentRefs, activeBatchSize, lp + "kv", stream));
     }
 
+    // ---- auxiliary conv states, named by the layer they sit on ----
+    for (int32_t auxIdx = 0; auxIdx < cacheManager.numAuxConvStates(); ++auxIdx)
+    {
+        int32_t const absLayer = cacheManager.auxConvStateConfig(auxIdx).absLayerIdx;
+        mTensors.push_back(copyResidentRows(cacheManager.getAuxConvState(auxIdx), residentRefs, activeBatchSize,
+            prefix + "layer_" + std::to_string(absLayer) + ".ngram_conv_state", stream));
+    }
+
+    // ---- the rows the n-gram injection gathered, which are an activation rather than state ----
+    if (mNgram != nullptr)
+    {
+        mTensors.push_back(
+            copyTokenMajorPerSequence(mNgram->rowMap(), activeBatchSize, prefix + "ple_row_map", stream));
+    }
+
     // ---- per-sequence valid lengths ----
     {
-        Tensor ctxLenHost({static_cast<int64_t>(activeBatchSize)}, DeviceType::kCPU, nvinfer1::DataType::kINT32,
+        Tensor ctxLenHost({static_cast<int64_t>(activeBatchSize)}, DeviceType::kCPU, trt_edgellm::DataType::kINT32,
             prefix + "context_lengths");
         int32_t* p = ctxLenHost.dataPointer<int32_t>();
         for (int32_t i = 0; i < activeBatchSize; ++i)
@@ -294,7 +328,7 @@ void LayerDebugger::dumpRound(HybridCacheManager& cacheManager, KVPageTable cons
     // ---- per-round generated token ids (for cross-side greedy divergence detection) ----
     if (generatedTokenIds != nullptr)
     {
-        Tensor genTokHost({static_cast<int64_t>(activeBatchSize)}, DeviceType::kCPU, nvinfer1::DataType::kINT32,
+        Tensor genTokHost({static_cast<int64_t>(activeBatchSize)}, DeviceType::kCPU, trt_edgellm::DataType::kINT32,
             prefix + "generated_token_ids");
         std::copy(generatedTokenIds, generatedTokenIds + activeBatchSize, genTokHost.dataPointer<int32_t>());
         mTensors.push_back(std::move(genTokHost));

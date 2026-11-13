@@ -125,10 +125,12 @@ def _build_grouped_conv_with_conservative_block_bound() -> PluginRunner:
         ("hidden", trt.float16, (-1, -1, hidden)),
         ("delta", trt.float16, (-1, -1, kernel, hidden // group)),
     ]
+    # A draft built with maxBatchSize >= 3 floors its rows / batch block axis
+    # to 0 at the min endpoint.
     profiles = {
-        "hidden": ((1, 1, hidden), (2, profile_block, hidden),
-                   (2, 2 * profile_block, hidden)),
-        "delta": ((1, 1, kernel, hidden // group), (2, profile_block, kernel,
+        "hidden": ((1, 0, hidden), (2, profile_block, hidden),
+                   (2, 4 * profile_block, hidden)),
+        "delta": ((1, 0, kernel, hidden // group), (2, profile_block, kernel,
                                                     hidden // group),
                   (2, 2 * profile_block, kernel, hidden // group)),
     }
@@ -160,6 +162,8 @@ def _grouped_conv_reference(hidden, residual=None):
 
 
 def test_grouped_dynamic_conv_accepts_conservative_profile_block_bound():
+    """A block-axis profile of 0 at min and above the block size at max builds
+    and runs; an oversized runtime block still fails."""
     batch, block, kernel, group, hidden_size = 2, 16, 2, 16, 32
     runner = _build_grouped_conv_with_conservative_block_bound()
     tensors = {

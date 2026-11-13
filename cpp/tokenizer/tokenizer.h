@@ -294,6 +294,13 @@ public:
         return mSpecialTokensEncoder;
     }
 
+    //! True when encode() prepends a word marker to text that does not start with a space
+    //! (Metaspace with a prepend scheme), so encoding a mid-word suffix does not reproduce its tokens.
+    bool prependsSpaceMarker() const noexcept
+    {
+        return mPreTokenizer && mPreTokenizer->prependsSpaceMarker();
+    }
+
 protected:
     /**
      * @brief Parse tokenizer.json to extract configuration

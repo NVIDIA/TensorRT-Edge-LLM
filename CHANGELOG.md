@@ -1,30 +1,49 @@
 # Release Notes
 
-## 0.11.1
+## 0.12.0
 
-### Frontend and models
+### Key features
 
-- Added [Nemotron 3.5 Bolt E4B](https://huggingface.co/nvidia/Nemotron-3.5-Bolt-E4B-BF16) with its [DFlash draft](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-DFlash)
-- Added the unified [`trtedge` CLI](docs/source/user_guide/getting_started/cli.md) for interactive chat, HTTP serving, direct engine builds, ONNX export, quantization, and model preparation
-- Added [interactive text chat](docs/source/user_guide/examples/interactive-chat.md) with streaming, conversation history, saved settings, and per-response timing metrics
-- Expanded DFlash2 checkpoint support for Qwen3.8 and Muse-Glimmer drafts
-- Added Gemma 4 12B DFlash draft export and quantization for [`deepseek-ai/dflash_gemma4_12b_block7`](https://huggingface.co/deepseek-ai/dflash_gemma4_12b_block7) and [`z-lab/gemma4-12B-it-DFlash`](https://huggingface.co/z-lab/gemma4-12B-it-DFlash)
+- Expanded opt-in, single-device in-flight batching with compact mixed prefill/decode execution, scheduling policies, per-request sampling and generation limits, and speculative decoding
+- Added Qwen3.8-Flash-Next support with cached per-layer embeddings, plus Nemotron-3.5-Bolt-74B-A9B support
+- Added EAGLE-4 and greedy-only Domino speculative decoding, LiLiCorr drafts for Nemotron-3.5-Bolt-74B-A9B, and JetSpec support for selected MoE models
 
-### Runtime and builds
+### Models and generation
 
-- Added Windows x64 source-build support with TensorRT RTX, including C++ engine building, inference, and unit tests
-- Added checkpoint-backed NVFP4-A16 MoE weight preparation and optional externalization of NVFP4-A16 LM-head weights
-- Added TensorRT RTX JIT-kernel caching to reduce repeated runtime initialization work
-- Improved CLI diagnostics, cancellation during checkpoint loading, and handling of read-only tokenizer caches and missing optional dependencies
-- Fixed CUDA 11.4 and Windows C++ unit-test compilation
+- Expanded compatible speculative-draft support across ONNX export and checkpoint-direct builds, and broadened direct-builder support for pre-quantized GPTQ, AutoRound, and compressed-tensors checkpoints
+- Added FP16 MiniMax-H3 text-to-video generation with stereo audio
+- Added experimental GR00T N1.7 FP16 policy inference for the LIBERO checkpoint and `libero_sim` embodiment
+- Added a checkpoint-direct pi0.5 engine builder and expanded Cosmos3 policy deployment guidance
+- Added MTP support for dense Qwen3 checkpoints and greedy parent-conditioned tree verification for DFlash2 drafts
+- Added jump-forward decoding for guided generation
 
-### Correctness fixes
+### Runtime and performance
 
-- Fixed Gemma 4 raw-prompt BOS handling, multimodal placeholder embeddings, audio prompts, FP8 KV-cache scaling, and INT4 AWQ calibration
-- Fixed DFlash version selection for paired engine builds and Muse-Glimmer chat-template handling of disabled thinking
-- Fixed DiffusionGemma padded prefill on FMHA-v2 targets, Qwen3-Omni audio configuration, and VLM LoRA decoder selection
-- Allowed Cosmos3 reasoning to start when optional policy-generation engines cannot be built
-- Fixed a TensorRT RTX FP8 fully connected fusion issue
+- Expanded context reuse to hybrid DFlash, JetSpec, DSpark, and Domino deployments, speculative requests with image or audio input, and Alpamayo paged action inference at TP=1
+- Added FP8 KV-cache storage support for Ampere, including Jetson Orin, with attention computed in FP16
+- Added separate prefill and decode scale tables for skip-softmax attention, plus deployment and calibration guidance
+- Added IQ2_XXS W2A16 MoE execution with architecture-specific kernel artifacts
+- Added NVFP4 token-embedding quantization and native lookup, plus FP8 per-layer embedding quantization
+
+### Installation and workflows
+
+- Migrated Python bindings to nanobind ABI3 for Python 3.10 and later
+- Replaced the previous Python extras with capability-specific `runtime`, `builder`, `onnx`, `quantize`, and `vocab` extras; moved the builder and server into `tensorrt_edgellm`
+- Updated PyTorch from 2.13.0 to 2.14.0 and Transformers from 5.14.1 to 5.17.0
+- Added the OpenAI-compatible `/v1/completions` endpoint and an HTTP benchmark CLI
+- Added Gemma 4 Flax checkpoint conversion and PhysicalAI-AV request preparation for Alpamayo-R1
+
+### Compatibility and fixes
+
+- Fixed Gemma 4 image-token budgets and calibrated input-scale loading for packed NVFP4 experts
+- Fixed checkpoint-direct builds for ModelOpt mixed-precision checkpoints containing FP8 embeddings and DSpark drafts with nested metadata
+- Removed the legacy system-prompt KV cache; use context-cache reuse for repeated prefixes
+- Fixed calibrated NVFP4 precision selection, quantized speculative-draft export, and Muse-Glimmer checkpoint loading
+- Fixed sliding-window context reuse by selecting full KV storage
+- Fixed assistant tool-call argument rendering and sampling for requests without an explicit seed
+- Fixed Qwen3-Omni FP8 KV-cache option validation and TensorRT-RTX engine targeting for the current GPU
+
+See [Limitations and Known Issues](docs/source/user_guide/getting_started/limitations.md) for affected configurations and workarounds.
 
 ## 0.11.0
 

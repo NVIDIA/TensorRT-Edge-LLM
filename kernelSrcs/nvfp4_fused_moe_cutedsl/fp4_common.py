@@ -1407,6 +1407,23 @@ def quantize_and_pack_16_fast(y_f32: cute.Tensor, inv_scale: Float32) -> Uint64:
 
 
 @cute.jit
+def load_global_scale(
+    scales: cute.Tensor,
+    expert_idx: Int32,
+    scales_are_reciprocal: cutlass.Constexpr[bool],
+    fast_math: cutlass.Constexpr[bool],
+) -> Float32:
+    """Load an activation scale in the direct ModelOpt convention."""
+    scale = scales[expert_idx].to(Float32)
+    if cutlass.const_expr(scales_are_reciprocal) and scale != Float32(0.0):
+        if cutlass.const_expr(fast_math):
+            scale = rcp_approx_ftz(scale)
+        else:
+            scale = Float32(1.0) / scale
+    return scale
+
+
+@cute.jit
 def quantize_block_fp4(
     values: cute.Tensor,
     max_abs: Float32,

@@ -19,6 +19,7 @@
 
 #include "common/checkMacros.h"
 #include "runtime/debug/layerDebugger.h"
+#include "sampler/sampling.h"
 
 #include <algorithm>
 
@@ -46,12 +47,21 @@ void exchangeExecutionRows(DecodingInferenceContext& context, size_t a, size_t b
     swap(context.batchIndexMapping[a], context.batchIndexMapping[b]);
     swap(context.thinkingDone[a], context.thinkingDone[b]);
     swap(context.guidedReasoningEnded[a], context.guidedReasoningEnded[b]);
+    swap(context.jumpForwardEnabled[a], context.jumpForwardEnabled[b]);
+    swap(context.pendingTokens[a], context.pendingTokens[b]);
+    swap(context.jumpForwardStats[a], context.jumpForwardStats[b]);
     swap(context.callbackEmittedTokenCounts[a], context.callbackEmittedTokenCounts[b]);
     swap(context.slotStreams[a], context.slotStreams[b]);
     swap(context.stopStringsPerSlot[a], context.stopStringsPerSlot[b]);
+    swap(context.samplingParams[a], context.samplingParams[b]);
     swap(context.samplingSeeds[a], context.samplingSeeds[b]);
+    swap(context.requestStableSampling[a], context.requestStableSampling[b]);
+    swap(context.maxGenerateLengths[a], context.maxGenerateLengths[b]);
+    swap(context.numLogprobsPerSlot[a], context.numLogprobsPerSlot[b]);
+    swap(context.ignoreEos[a], context.ignoreEos[b]);
     swap(context.acceptedDraftTokens[a], context.acceptedDraftTokens[b]);
     swap(context.proposedDraftTokens[a], context.proposedDraftTokens[b]);
+    swap(context.decodeRounds[a], context.decodeRounds[b]);
     swap(context.logitBiasPerSlot[a], context.logitBiasPerSlot[b]);
     swap(context.stepLogprobs[a], context.stepLogprobs[b]);
     if (!context.prunedPrefillTokens.empty())
@@ -74,12 +84,15 @@ DecodingInferenceContext::~DecodingInferenceContext() = default;
 
 int32_t DecodingInferenceContext::appendSlot(SlotSeed seed, SequenceIdentity identity)
 {
-    ELLM_CHECK(activeBatchSize > 0, "appendSlot joins a running batch; an empty one is built by initialize().");
     ELLM_CHECK(!seed.promptTokenIds.empty(), "appendSlot requires a non-empty prompt.");
     ELLM_CHECK(seed.prefillStart >= 0 && seed.prefillStart < static_cast<int32_t>(seed.promptTokenIds.size()),
         "appendSlot: the reused prefix must leave at least one token to prefill.");
     ELLM_CHECK(perSlotSizesConsistent(), "appendSlot found the batch already inconsistent.");
     ELLM_CHECK(identity.requestId != 0, "appendSlot requires a non-zero request ID.");
+    ELLM_CHECK(seed.maxGenerateLength > 0, "appendSlot: the sequence's generate budget must be positive.");
+    ELLM_CHECK(seed.numLogprobs >= 0 && seed.numLogprobs <= static_cast<int32_t>(kMaxLogprobsK),
+        "appendSlot: the sequence's logprobs width is out of range.");
+    ELLM_CHECK(seed.sampling.topK <= kMaxSamplingTopK, "appendSlot: the sequence's top-k is above the sampler's cap.");
     ELLM_CHECK(residentSlots.contains(identity.resident), "appendSlot requires a live reserved resident slot.");
     for (size_t slot = 0; slot < requestIds.size(); ++slot)
     {
@@ -100,19 +113,17 @@ int32_t DecodingInferenceContext::appendSlot(SlotSeed seed, SequenceIdentity ide
     }
 
     // The working history holds only what this batch must compute: everything from prefillStart
-    // on. Founder slots under a context cache are seeded the same way (setUpForPrefillExecution),
-    // so streaming offsets and generate-length math see one shape regardless of how a slot joined.
+    // on. Slots built at request start under a context cache are seeded the same way
+    // (setUpForPrefillExecution), so streaming offsets and generate-length math see one shape
+    // regardless of how a slot joined.
     size_t const promptLength = seed.promptTokenIds.size() - static_cast<size_t>(seed.prefillStart);
 
     std::vector<int32_t> rawInput = seed.promptTokenIds;
     std::vector<int32_t> workingTokens(seed.promptTokenIds.begin() + seed.prefillStart, seed.promptTokenIds.end());
-    rt::LogprobsSlot logprobs;
-    if (numLogprobs > 0)
-    {
-        logprobs.data.resize(stepLogprobs.front().data.size());
-    }
     SlotStreamState slotState;
     slotState.channel = seed.channel;
+    slotState.cancelToken = std::move(seed.cancelToken);
+    slotState.skipSpecialTokens = seed.skipSpecialTokens;
     slotState.sentTokenCount = promptLength;
     slotState.lastEmittedTokenCount = promptLength;
     slotState.maxStopLen = maxStopLen;
@@ -120,14 +131,21 @@ int32_t DecodingInferenceContext::appendSlot(SlotSeed seed, SequenceIdentity ide
     // All allocations precede the stream-channel attachment, which is the externally visible
     // commit point. Once attached, the prepared values below move into reserved storage without
     // allocating, so an admission either leaves the old batch intact or appends one full row.
+    rt::LogprobsSlot logprobs = makeLogprobsAccumulator(seed.maxGenerateLength, seed.numLogprobs);
     size_t const nextSize = static_cast<size_t>(activeBatchSize) + 1;
     systemPrompts.reserve(nextSize);
     rawBatchedInputIds.reserve(nextSize);
     tokenIds.reserve(nextSize);
     currentGenerateLengths.reserve(nextSize);
+    samplingParams.reserve(nextSize);
     samplingSeeds.reserve(nextSize);
+    requestStableSampling.reserve(nextSize);
+    maxGenerateLengths.reserve(nextSize);
+    numLogprobsPerSlot.reserve(nextSize);
+    ignoreEos.reserve(nextSize);
     acceptedDraftTokens.reserve(nextSize);
     proposedDraftTokens.reserve(nextSize);
+    decodeRounds.reserve(nextSize);
     effectivePrefillLengths.reserve(nextSize);
     prefillStartLengths.reserve(nextSize);
     committedLengths.reserve(nextSize);
@@ -137,6 +155,9 @@ int32_t DecodingInferenceContext::appendSlot(SlotSeed seed, SequenceIdentity ide
     batchIndexMapping.reserve(nextSize);
     thinkingDone.reserve(nextSize);
     guidedReasoningEnded.reserve(nextSize);
+    jumpForwardEnabled.reserve(nextSize);
+    pendingTokens.reserve(nextSize);
+    jumpForwardStats.reserve(nextSize);
     callbackEmittedTokenCounts.reserve(nextSize);
     slotStreams.reserve(nextSize);
     stopStringsPerSlot.reserve(nextSize);
@@ -155,10 +176,15 @@ int32_t DecodingInferenceContext::appendSlot(SlotSeed seed, SequenceIdentity ide
     rawBatchedInputIds.push_back(std::move(rawInput));
     tokenIds.push_back(std::move(workingTokens));
     currentGenerateLengths.push_back(0);
+    samplingParams.push_back(seed.sampling);
     samplingSeeds.push_back(seed.samplingSeed);
-    // Spec decode never takes admissions, but the counters are sized for every deployment.
+    requestStableSampling.push_back(static_cast<int8_t>(seed.requestStableSampling));
+    maxGenerateLengths.push_back(seed.maxGenerateLength);
+    numLogprobsPerSlot.push_back(seed.numLogprobs);
+    ignoreEos.push_back(static_cast<int8_t>(seed.ignoreEos));
     acceptedDraftTokens.push_back(0);
     proposedDraftTokens.push_back(0);
+    decodeRounds.push_back(0);
     effectivePrefillLengths.push_back(0);
     prefillStartLengths.push_back(seed.prefillStart);
     committedLengths.push_back(seed.prefillStart);
@@ -166,11 +192,15 @@ int32_t DecodingInferenceContext::appendSlot(SlotSeed seed, SequenceIdentity ide
     residentRefs.push_back(identity.resident);
     finishedStates.push_back(0);
     batchIndexMapping.push_back(seed.originalIndex);
-    // Reasoning trackers: a fresh slot has produced no tokens, so neither latch is set. Guided
-    // admission itself is refused upstream (the GuidedDecoder's matchers are slot-numbered and the
-    // seating swaps do not cover them), but the vectors stay rectangular either way.
+    // Reasoning trackers: a fresh slot has produced no tokens, so the thinking latch is not set.
+    // The grammar gate opens at once when the prompt already closed its reasoning block; a
+    // sequence without a grammar leaves the flag unused.
     thinkingDone.push_back(0);
-    guidedReasoningEnded.push_back(0);
+    guidedReasoningEnded.push_back(static_cast<int8_t>(seed.guidedReasoningEnded));
+    jumpForwardEnabled.push_back(static_cast<int8_t>(seed.jumpForward));
+    hasJumpForward = hasJumpForward || seed.jumpForward;
+    pendingTokens.push_back(0);
+    jumpForwardStats.push_back({});
 
     // Seeded to the prompt length so streaming and callbacks emit only generated tokens, exactly as
     // a slot set up at request start is seeded.
@@ -185,9 +215,6 @@ int32_t DecodingInferenceContext::appendSlot(SlotSeed seed, SequenceIdentity ide
     // again -- mirroring what eviction does after it compacts.
     logitBiasGpuDirty = hasLogitBias;
 
-    // Capacity is deployment-dependent (spec decode can accept several tokens per step), so it is
-    // inherited from a slot that was sized by the code that knows -- the reason this method refuses
-    // an empty batch.
     stepLogprobs.push_back(std::move(logprobs));
 
     // Conditional vector: sized only while visual-token pruning is active. Grown when present so a
@@ -200,6 +227,17 @@ int32_t DecodingInferenceContext::appendSlot(SlotSeed seed, SequenceIdentity ide
     ++activeBatchSize;
     ELLM_CHECK(perSlotSizesConsistent(), "appendSlot left the batch inconsistent; a vector was missed.");
     return activeBatchSize - 1;
+}
+
+void DecodingInferenceContext::checkRowSet(std::vector<int32_t> const& rows) const
+{
+    for (size_t index = 0; index < rows.size(); ++index)
+    {
+        int32_t const row = rows[index];
+        check::check(row >= 0 && row < activeBatchSize, "A row set names a row outside the active batch");
+        auto const end = rows.begin() + static_cast<std::ptrdiff_t>(index);
+        check::check(std::find(rows.begin(), end, row) == end, "A row set names a row twice");
+    }
 }
 
 void DecodingInferenceContext::swapExecutionRows(int32_t rowA, int32_t rowB)
@@ -234,15 +272,19 @@ bool DecodingInferenceContext::perSlotSizesConsistent() const noexcept
 {
     auto const expected = static_cast<size_t>(activeBatchSize);
     return systemPrompts.size() == expected && rawBatchedInputIds.size() == expected && tokenIds.size() == expected
-        && currentGenerateLengths.size() == expected && samplingSeeds.size() == expected
-        && acceptedDraftTokens.size() == expected && proposedDraftTokens.size() == expected
+        && currentGenerateLengths.size() == expected && samplingParams.size() == expected
+        && samplingSeeds.size() == expected && requestStableSampling.size() == expected
+        && maxGenerateLengths.size() == expected && numLogprobsPerSlot.size() == expected
+        && ignoreEos.size() == expected && acceptedDraftTokens.size() == expected
+        && proposedDraftTokens.size() == expected && decodeRounds.size() == expected
         && effectivePrefillLengths.size() == expected && prefillStartLengths.size() == expected
         && committedLengths.size() == expected && requestIds.size() == expected && residentRefs.size() == expected
         && finishedStates.size() == expected && batchIndexMapping.size() == expected && thinkingDone.size() == expected
-        && guidedReasoningEnded.size() == expected && callbackEmittedTokenCounts.size() == expected
-        && slotStreams.size() == expected && stopStringsPerSlot.size() == expected
-        && logitBiasPerSlot.size() == expected && stepLogprobs.size() == expected
-        && (prunedPrefillTokens.empty() || prunedPrefillTokens.size() == expected);
+        && guidedReasoningEnded.size() == expected && jumpForwardEnabled.size() == expected
+        && pendingTokens.size() == expected && jumpForwardStats.size() == expected
+        && callbackEmittedTokenCounts.size() == expected && slotStreams.size() == expected
+        && stopStringsPerSlot.size() == expected && logitBiasPerSlot.size() == expected
+        && stepLogprobs.size() == expected && (prunedPrefillTokens.empty() || prunedPrefillTokens.size() == expected);
 }
 
 void DecodingInferenceContext::initialize(int32_t batchSize, int32_t maxGenLength,
@@ -250,13 +292,21 @@ void DecodingInferenceContext::initialize(int32_t batchSize, int32_t maxGenLengt
     cudaStream_t cudaStream, int32_t residentCapacity)
 {
     int32_t const poolCapacity = residentCapacity == 0 ? batchSize : residentCapacity;
+    ELLM_CHECK(poolCapacity > 0,
+        "A decoding context needs at least one resident slot: an initial batch, or a stated resident capacity for "
+        "a batch that starts empty.");
     ELLM_CHECK(poolCapacity >= batchSize, "Resident slot pool cannot hold the initial batch");
     residentSlots.reset(poolCapacity);
     systemPrompts.resize(batchSize);
     rawBatchedInputIds.reserve(batchSize);
     tokenIds.resize(batchSize);
     currentGenerateLengths.resize(batchSize, 0);
-    samplingSeeds.resize(batchSize, kDefaultSamplingSeed);
+    samplingParams.assign(batchSize, RowSamplingParams{});
+    samplingSeeds.assign(batchSize, kDefaultSamplingSeed);
+    requestStableSampling.assign(batchSize, 0);
+    maxGenerateLengths.assign(batchSize, maxGenLength);
+    numLogprobsPerSlot.assign(batchSize, 0);
+    ignoreEos.assign(batchSize, 0);
     effectivePrefillLengths.resize(batchSize, 0);
     prefillStartLengths.resize(batchSize, 0);
     committedLengths.resize(batchSize, 0);
@@ -267,8 +317,13 @@ void DecodingInferenceContext::initialize(int32_t batchSize, int32_t maxGenLengt
     thinkingDone.resize(batchSize, 0);
     guidedReasoningEnded.clear();
     guidedReasoningEnded.resize(batchSize, 0);
+    jumpForwardEnabled.assign(batchSize, 0);
+    pendingTokens.assign(batchSize, 0);
+    jumpForwardStats.assign(batchSize, {});
+    hasJumpForward = false;
     acceptedDraftTokens.assign(batchSize, 0);
     proposedDraftTokens.assign(batchSize, 0);
+    decodeRounds.assign(batchSize, 0);
     slotStreams.clear();
     slotStreams.resize(batchSize);
     stopStringsPerSlot.clear();
@@ -298,18 +353,72 @@ void DecodingInferenceContext::initialize(int32_t batchSize, int32_t maxGenLengt
 
     completedBatches.clear();
 
-    // Initialize per-batch logprobs accumulator (populated only when numLogprobs > 0)
+    // Per-slot logprobs accumulators, allocated once each slot's width is known.
     stepLogprobs.clear();
     stepLogprobs.resize(batchSize);
+    logprobsStepOvershoot = 0;
 
     visualEmbeddings = visual;
     deepstackFeatures = deepstack;
+    imageContentDigests.clear();
     generationRound = 0;
-    maxGenerateLength = maxGenLength;
     diffusionMaxDenoisingSteps = 0;
     activeBatchSize = batchSize;
     loraWeightsName = loraName;
     stream = cudaStream;
+}
+
+RowSamplingParams DecodingInferenceContext::uniformSamplingParams() const
+{
+    if (activeBatchSize == 0)
+    {
+        return RowSamplingParams{};
+    }
+    RowSamplingParams const& shared = samplingParams.front();
+    for (int32_t slot = 1; slot < activeBatchSize; ++slot)
+    {
+        ELLM_CHECK(samplingParams[slot] == shared,
+            "This decoder takes one set of sampling parameters per batch, but the slots disagree.");
+    }
+    return shared;
+}
+
+int32_t DecodingInferenceContext::maxNumLogprobs() const noexcept
+{
+    int32_t widest = 0;
+    for (int32_t slot = 0; slot < activeBatchSize; ++slot)
+    {
+        widest = std::max(widest, numLogprobsPerSlot[slot]);
+    }
+    return widest;
+}
+
+int32_t DecodingInferenceContext::maxNumLogprobsForRows(std::vector<int32_t> const& rows) const noexcept
+{
+    int32_t widest = 0;
+    for (int32_t const row : rows)
+    {
+        widest = std::max(widest, numLogprobsPerSlot[static_cast<size_t>(row)]);
+    }
+    return widest;
+}
+
+rt::LogprobsSlot DecodingInferenceContext::makeLogprobsAccumulator(int32_t maxGenerateLength, int32_t numLogprobs) const
+{
+    rt::LogprobsSlot accumulator;
+    if (numLogprobs == 0)
+    {
+        return accumulator;
+    }
+    accumulator.data.assign(
+        static_cast<size_t>(maxGenerateLength + logprobsStepOvershoot) * static_cast<size_t>(numLogprobs), {});
+    return accumulator;
+}
+
+void DecodingInferenceContext::allocateLogprobsAccumulator(int32_t slot)
+{
+    ELLM_CHECK(slot >= 0 && slot < static_cast<int32_t>(stepLogprobs.size()), "allocateLogprobsAccumulator: bad slot.");
+    stepLogprobs[slot] = makeLogprobsAccumulator(maxGenerateLengths[slot], numLogprobsPerSlot[slot]);
 }
 
 void DecodingInferenceContext::initializeRaggedScratch(RaggedEngineContract const& contract)
@@ -318,6 +427,19 @@ void DecodingInferenceContext::initializeRaggedScratch(RaggedEngineContract cons
     completionSequences.reserve(static_cast<size_t>(contract.maxNumSequences));
     raggedBatchBuilder.emplace(contract);
     raggedBatchBuilder->reserve(raggedExecutionBatch);
+}
+
+void DecodingInferenceContext::initializeCompactScratch(RaggedEngineContract const& contract)
+{
+    ELLM_CHECK(contract.backend == TokenLayoutBackend::kNativeCompactRagged,
+        "Compact ragged scratch requires the compact token layout backend");
+    scheduledStep.sequences.reserve(static_cast<size_t>(contract.maxNumSequences));
+    completionSequences.reserve(static_cast<size_t>(contract.maxNumSequences));
+    compactMropeInitSlots.reserve(static_cast<size_t>(contract.maxNumSequences));
+    compactDecodeRows.reserve(static_cast<size_t>(contract.maxNumSequences));
+    compactSampledRows.reserve(static_cast<size_t>(contract.maxNumSequences));
+    compactBatchBuilder.emplace(contract);
+    compactBatchBuilder->reserve(raggedExecutionBatch);
 }
 
 } // namespace rt

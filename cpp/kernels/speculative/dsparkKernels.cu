@@ -16,12 +16,17 @@
  */
 
 #include "common/checkMacros.h"
+#include "common/counterRng.h"
 #include "common/cudaMacros.h"
+#include "forceAcceptanceKernels.h"
+#include "kernels/nvfp4A16BlackwellGemm/nvfp4A16BlackwellGemmRunner.h"
 #include "kernels/speculative/dsparkKernels.h"
 #include "kernels/speculative/speculativeKernelsUtils.h"
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
+#include <cstdint>
 #include <cub/cub.cuh>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -86,17 +91,9 @@ __device__ __forceinline__ float dsparkInvTemperature(float temperature)
     return (temperature < 1e-3F) ? 1.0F : 1.0F / temperature;
 }
 
-__device__ __forceinline__ uint64_t dsparkSplitMix64(uint64_t value)
-{
-    value += 0x9E3779B97F4A7C15ULL;
-    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    value = (value ^ (value >> 27)) * 0x94D049BB133111EBULL;
-    return value ^ (value >> 31);
-}
-
 __device__ __forceinline__ float dsparkUniformFromCounter(uint64_t seed, uint64_t offset, uint64_t counter)
 {
-    uint64_t const mixed = dsparkSplitMix64(seed ^ (offset + 0xD1B54A32D192ED03ULL * (counter + 1ULL)));
+    uint64_t const mixed = counter_rng::splitMix64(seed ^ (offset + 0xD1B54A32D192ED03ULL * (counter + 1ULL)));
     uint32_t const mantissa = static_cast<uint32_t>(mixed >> 40);
     return clampUniform(static_cast<float>(mantissa) * (1.0F / 16777216.0F));
 }
@@ -407,8 +404,8 @@ __device__ float dsparkReduceSum(float localSum)
 
 __global__ void dsparkBuildVerifyTokensKernel(int32_t const* __restrict__ lastAcceptedTokens, // [B]
     int32_t const* __restrict__ draftTokenIds,                                                // [B, draftStride]
-    int32_t* __restrict__ verifyTokenIds, // [B, verifyProposalLen + 1]
-    int32_t draftStride, int32_t verifyProposalLen, int32_t totalElements)
+    int32_t const* __restrict__ proposalLengths, int32_t* __restrict__ verifyTokenIds,
+    int32_t* __restrict__ acceptValidTokenCounts, int32_t draftStride, int32_t verifyProposalLen, int32_t totalElements)
 {
     int32_t const idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalElements)
@@ -422,6 +419,7 @@ __global__ void dsparkBuildVerifyTokensKernel(int32_t const* __restrict__ lastAc
     if (posIdx == 0)
     {
         verifyTokenIds[batchIdx * verifyLen] = lastAcceptedTokens[batchIdx];
+        acceptValidTokenCounts[batchIdx] = max(1, min(verifyProposalLen, proposalLengths[batchIdx])) + 1;
     }
     else
     {
@@ -456,36 +454,6 @@ __global__ void dsparkParallelArgmaxKernel(float const* __restrict__ baseLogits,
     {
         argmaxResults[posIdx] = blockMax.index != -1 ? blockMax.index : 0;
     }
-}
-
-__global__ void dsparkGreedyAcceptWalkKernel(int32_t const* __restrict__ argmaxResults, // [B, VFY]
-    int32_t const* __restrict__ draftTokenIds,                                          // [B, draftStride]
-    int32_t const* __restrict__ proposalLengths,                                        // [B]
-    int32_t* __restrict__ acceptedTokenIds,                                             // [B, VFY]
-    int32_t* __restrict__ acceptLength,                                                 // [B]
-    int32_t draftStride, int32_t verifyProposalLen)
-{
-    int32_t const batchIdx = blockIdx.x;
-    int32_t const verifyLen = verifyProposalLen + 1;
-    int32_t const* batchArgmax = argmaxResults + batchIdx * verifyLen;
-    int32_t const* batchDraft = draftTokenIds + batchIdx * draftStride;
-    int32_t* batchAccepted = acceptedTokenIds + batchIdx * verifyLen;
-
-    int32_t const rowProposalLen = max(1, min(verifyProposalLen, proposalLengths[batchIdx]));
-    int32_t acceptedDraft = 0;
-    for (int32_t i = 0; i < rowProposalLen; ++i)
-    {
-        if (batchArgmax[i] != batchDraft[i])
-        {
-            break;
-        }
-        batchAccepted[acceptedDraft] = batchDraft[i];
-        ++acceptedDraft;
-    }
-
-    // Base bonus token at the first rejected position, or after the selected prefix.
-    batchAccepted[acceptedDraft] = batchArgmax[acceptedDraft];
-    acceptLength[batchIdx] = acceptedDraft + 1;
 }
 
 __global__ void dsparkLogitsToProbabilitiesKernel(float const* __restrict__ logits, float* __restrict__ probabilities,
@@ -1281,6 +1249,98 @@ __global__ void dsparkSampleTopKRowsAndStoreKernel(float const* __restrict__ top
     }
 }
 
+__global__ void dequantizeW2Kernel(
+    uint8_t const* packed, uint8_t const* scales, float const* globalScale, half* dense, int64_t count)
+{
+    int64_t const index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < count)
+    {
+        float const levels[8]{0.0F, 0.5F, 1.0F, 1.5F, 2.0F, 3.0F, 4.0F, 6.0F};
+        uint8_t const code = (packed[index / 2] >> (4 * (index % 2))) & 15;
+        float const value = (code & 8) ? -levels[code & 7] : levels[code & 7];
+        uint8_t const scaleBits = scales[index / 16];
+        int32_t const exponent = (scaleBits >> 3) & 15;
+        int32_t const mantissa = scaleBits & 7;
+        float scale = exponent == 0 ? ldexpf(static_cast<float>(mantissa), -9)
+                                    : ldexpf(static_cast<float>(8 + mantissa), exponent - 10);
+        scale = (scaleBits & 127) == 127 ? __int_as_float(0x7fffffff) : scale;
+        scale = (scaleBits & 128) ? -scale : scale;
+        // Match export's FP32 block/global multiplication before the final FP16 rounding.
+        dense[index] = __float2half_rn(__fmul_rn(__fmul_rn(value, scale), globalScale[0]));
+    }
+}
+
+template <int32_t BytesPerKTile>
+__global__ void repackW2Kernel(uint8_t const* source, uint8_t* destination, int64_t count, int32_t kTiles)
+{
+    int64_t const index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < count)
+    {
+        int64_t const n = index / (kTiles * 128 * BytesPerKTile) * 128 + (index / BytesPerKTile) % 128;
+        int64_t const k = (index / (128 * BytesPerKTile)) % kTiles * BytesPerKTile + index % BytesPerKTile;
+        destination[index] = source[n * kTiles * BytesPerKTile + k];
+    }
+}
+
+__global__ void gatherW1Kernel(half const* w1, int32_t const* previous, uint64_t const* slots, half* activation,
+    int32_t step, int32_t proposalLen, int32_t rank)
+{
+    int32_t const batch = blockIdx.x;
+    int32_t const token = step == 0
+        ? previous[batch]
+        : static_cast<int32_t>(0xffffffffU - static_cast<uint32_t>(slots[batch * proposalLen + step - 1]));
+    for (int32_t k = threadIdx.x; k < rank; k += blockDim.x)
+    {
+        activation[batch * rank + k] = w1[static_cast<int64_t>(token) * rank + k];
+    }
+}
+
+__global__ void addAndSelectW2Kernel(half const* correction, float const* logits, unsigned long long* slots,
+    float* stacked, int64_t stackedBatchStride, int32_t step, int32_t proposalLen, int32_t vocabSize,
+    int32_t logitsStride, int32_t logitsOffset)
+{
+    __shared__ unsigned long long warpBest[8];
+    int32_t const batch = blockIdx.y;
+    unsigned long long best = 0ULL;
+#pragma unroll
+    for (int item = 0; item < 4; ++item)
+    {
+        int32_t const token = blockIdx.x * blockDim.x * 4 + threadIdx.x + item * blockDim.x;
+        if (token < vocabSize)
+        {
+            int64_t const index
+                = (static_cast<int64_t>(batch) * logitsStride + step + logitsOffset) * vocabSize + token;
+            float const value
+                = logits[index] + __half2float(correction[static_cast<int64_t>(batch) * vocabSize + token]);
+            if (stacked != nullptr)
+            {
+                stacked[static_cast<int64_t>(batch) * stackedBatchStride + token] = value;
+            }
+            uint32_t bits = __float_as_uint(value);
+            bits = (bits & 0x80000000U) ? ~bits : (bits | 0x80000000U);
+            best = max(
+                best, (static_cast<unsigned long long>(bits) << 32) | (0xffffffffU - static_cast<uint32_t>(token)));
+        }
+    }
+    for (int32_t delta = 16; delta > 0; delta >>= 1)
+    {
+        best = max(best, __shfl_down_sync(0xffffffffU, best, delta));
+    }
+    if (threadIdx.x % 32 == 0)
+    {
+        warpBest[threadIdx.x / 32] = best;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0)
+    {
+        for (int32_t warp = 1; warp < 8; ++warp)
+        {
+            best = max(best, warpBest[warp]);
+        }
+        atomicMax(slots + batch * proposalLen + step, best);
+    }
+}
+
 } // anonymous namespace
 
 int32_t dsparkMarkovPartialCount(int32_t vocabSize)
@@ -1289,7 +1349,8 @@ int32_t dsparkMarkovPartialCount(int32_t vocabSize)
 }
 
 void dsparkBuildVerifyTokens(rt::Tensor const& lastAcceptedTokens, rt::Tensor const& draftTokenIds,
-    rt::Tensor& verifyTokenIds, int32_t batchSize, int32_t draftStride, int32_t verifyProposalLen, cudaStream_t stream)
+    rt::Tensor const& proposalLengths, rt::Tensor& verifyTokenIds, rt::Tensor& acceptValidTokenCounts,
+    int32_t batchSize, int32_t draftStride, int32_t verifyProposalLen, cudaStream_t stream)
 {
     int32_t const verifyLen = verifyProposalLen + 1;
     int32_t const totalThreads = batchSize * verifyLen;
@@ -1298,30 +1359,22 @@ void dsparkBuildVerifyTokens(rt::Tensor const& lastAcceptedTokens, rt::Tensor co
 
     dsparkBuildVerifyTokensKernel<<<numBlocks, numThreads, 0, stream>>>(
         static_cast<int32_t const*>(lastAcceptedTokens.rawPointer()),
-        static_cast<int32_t const*>(draftTokenIds.rawPointer()), static_cast<int32_t*>(verifyTokenIds.rawPointer()),
-        draftStride, verifyProposalLen, totalThreads);
+        static_cast<int32_t const*>(draftTokenIds.rawPointer()), proposalLengths.dataPointer<int32_t>(),
+        static_cast<int32_t*>(verifyTokenIds.rawPointer()), acceptValidTokenCounts.dataPointer<int32_t>(), draftStride,
+        verifyProposalLen, totalThreads);
     CUDA_CHECK(cudaGetLastError());
 }
 
-void dsparkGreedyAccept(rt::Tensor const& baseLogits, rt::Tensor const& draftTokenIds,
-    rt::Tensor const& proposalLengths, rt::Tensor& acceptedTokenIds, rt::Tensor& acceptLength,
-    rt::Tensor& argmaxScratch, int32_t batchSize, int32_t draftStride, int32_t verifyProposalLen, int32_t vocabSize,
-    cudaStream_t stream)
+void dsparkSelectTargetTokens(rt::Tensor const& baseLogits, rt::Tensor& targetTokenIds, int32_t batchSize,
+    int32_t verifyLen, int32_t vocabSize, cudaStream_t stream)
 {
-    int32_t const verifyLen = verifyProposalLen + 1;
     int32_t const totalPositions = batchSize * verifyLen;
-    int32_t* argmaxResults = static_cast<int32_t*>(argmaxScratch.rawPointer());
+    int32_t* argmaxResults = static_cast<int32_t*>(targetTokenIds.rawPointer());
 
     static constexpr int32_t kGreedyAcceptArgmaxBlockSize = 256;
     dsparkParallelArgmaxKernel<kGreedyAcceptArgmaxBlockSize>
         <<<totalPositions, kGreedyAcceptArgmaxBlockSize, 0, stream>>>(
             static_cast<float const*>(baseLogits.rawPointer()), argmaxResults, totalPositions, vocabSize);
-    CUDA_CHECK(cudaGetLastError());
-
-    dsparkGreedyAcceptWalkKernel<<<batchSize, 1, 0, stream>>>(argmaxResults,
-        static_cast<int32_t const*>(draftTokenIds.rawPointer()),
-        static_cast<int32_t const*>(proposalLengths.rawPointer()), static_cast<int32_t*>(acceptedTokenIds.rawPointer()),
-        static_cast<int32_t*>(acceptLength.rawPointer()), draftStride, verifyProposalLen);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -1552,8 +1605,94 @@ void dsparkMarkovGreedyFusedStepFp8(rt::Tensor const& backboneLogits, rt::Tensor
         vocabSize, markovRank, logitsStride > 0 ? logitsStride : proposalLen, logitsOffset);
     CUDA_CHECK(cudaGetLastError());
 #else
-    check::check(false, "EDGELLM_DSPARK_W2_FP8 requires CUDA >= 11.8 (cuda_fp8.h unavailable).");
+    check::check(false, "FP8 DSpark W2 requires CUDA >= 11.8 (cuda_fp8.h unavailable).");
 #endif
+}
+
+void dsparkDequantizeW2(rt::Tensor const& packed, rt::Tensor const& scales, rt::Tensor const& globalScale,
+    rt::Tensor& dense, cudaStream_t stream)
+{
+    auto const shape = dense.getShape();
+    ELLM_CHECK(shape.getNumDims() == 2 && shape[0] > 0 && shape[1] > 0 && shape[1] % 16 == 0
+            && dense.getDataType() == trt_edgellm::DataType::kHALF
+            && packed.getDataType() == trt_edgellm::DataType::kUINT8
+            && scales.getDataType() == trt_edgellm::DataType::kUINT8
+            && globalScale.getDataType() == trt_edgellm::DataType::kFLOAT && globalScale.getShape().volume() == 1
+            && packed.getShape().volume() == shape.volume() / 2 && scales.getShape().volume() == shape.volume() / 16,
+        "Invalid NVFP4 W2 fallback tensors");
+    int64_t const count = shape.volume();
+    dequantizeW2Kernel<<<(count + 255) / 256, 256, 0, stream>>>(static_cast<uint8_t const*>(packed.rawPointer()),
+        static_cast<uint8_t const*>(scales.rawPointer()), static_cast<float const*>(globalScale.rawPointer()),
+        static_cast<half*>(dense.rawPointer()), count);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void dsparkRepackW2Tcgen5(rt::Tensor const& packed, rt::Tensor const& scales, rt::Tensor& opaquePacked,
+    rt::Tensor& opaqueScales, int32_t vocabSize, int32_t markovRank, cudaStream_t stream)
+{
+    ELLM_CHECK(vocabSize > 0 && vocabSize % 128 == 0 && markovRank == 512, "Unsupported TCGen5 W2 shape");
+    int64_t const weightBytes = static_cast<int64_t>(vocabSize) * markovRank / 2;
+    int64_t const scaleBytes = static_cast<int64_t>(vocabSize) * markovRank / 16;
+    ELLM_CHECK(packed.getDataType() == trt_edgellm::DataType::kUINT8
+            && scales.getDataType() == trt_edgellm::DataType::kUINT8
+            && opaquePacked.getDataType() == trt_edgellm::DataType::kUINT8
+            && opaqueScales.getDataType() == trt_edgellm::DataType::kUINT8,
+        "TCGen5 W2 repack requires byte tensors");
+    ELLM_CHECK(packed.getShape().volume() == weightBytes && opaquePacked.getShape().volume() == weightBytes
+            && scales.getShape().volume() == scaleBytes && opaqueScales.getShape().volume() == scaleBytes,
+        "TCGen5 W2 packed size mismatch");
+    repackW2Kernel<32><<<(weightBytes + 255) / 256, 256, 0, stream>>>(static_cast<uint8_t const*>(packed.rawPointer()),
+        static_cast<uint8_t*>(opaquePacked.rawPointer()), weightBytes, markovRank / 64);
+    repackW2Kernel<4><<<(scaleBytes + 255) / 256, 256, 0, stream>>>(static_cast<uint8_t const*>(scales.rawPointer()),
+        static_cast<uint8_t*>(opaqueScales.rawPointer()), scaleBytes, markovRank / 64);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void dsparkMarkovGreedyStepTcgen5(rt::Tensor const& backboneLogits, rt::Tensor const& markovW1,
+    rt::Tensor const& opaquePacked, rt::Tensor const& opaqueScales, rt::Tensor const& globalScale,
+    rt::Tensor const& firstPrevTokens, rt::Tensor& greedySlots, rt::Tensor& activation, rt::Tensor& correction,
+    rt::Tensor* stackedLogits, int32_t stackedDepthRow, int32_t batchSize, int32_t step, int32_t proposalLen,
+    int32_t vocabSize, int32_t markovRank, cudaStream_t stream, int32_t logitsStride, int32_t logitsOffset)
+{
+    using namespace trt_edgellm::kernels;
+    ELLM_CHECK(
+        batchSize > 0 && markovRank == 512 && vocabSize > 0 && vocabSize % 128 == 0, "Unsupported TCGen5 Markov shape");
+    ELLM_CHECK(step >= 0 && step < proposalLen && logitsOffset >= 0 && logitsStride >= proposalLen + logitsOffset,
+        "Invalid TCGen5 Markov proposal indexing");
+    ELLM_CHECK(activation.getDataType() == trt_edgellm::DataType::kHALF
+            && correction.getDataType() == trt_edgellm::DataType::kHALF
+            && activation.getShape().volume() >= static_cast<int64_t>(batchSize) * markovRank
+            && correction.getShape().volume() >= static_cast<int64_t>(batchSize) * vocabSize,
+        "Invalid TCGen5 W2 scratch buffers");
+    if (stackedLogits != nullptr)
+    {
+        ELLM_CHECK(stackedDepthRow >= 0 && stackedDepthRow <= proposalLen
+                && stackedLogits->getDataType() == trt_edgellm::DataType::kFLOAT,
+            "Invalid TCGen5 W2 stacked output");
+        // A previous request may have compacted the logical batch without shrinking its allocation.
+        ELLM_CHECK(stackedLogits->reshape({batchSize, proposalLen + 1, vocabSize}),
+            "Insufficient TCGen5 W2 stacked output capacity");
+    }
+    gatherW1Kernel<<<batchSize, 256, 0, stream>>>(static_cast<half const*>(markovW1.rawPointer()),
+        static_cast<int32_t const*>(firstPrevTokens.rawPointer()),
+        static_cast<uint64_t const*>(greedySlots.rawPointer()), static_cast<half*>(activation.rawPointer()), step,
+        proposalLen, markovRank);
+    Nvfp4A16BlackwellGemmParams const params{activation.rawPointer(), opaquePacked.rawPointer(),
+        opaqueScales.rawPointer(), static_cast<float const*>(globalScale.rawPointer()), correction.rawPointer(),
+        batchSize, vocabSize, markovRank, Nvfp4A16BlackwellDtype::kFp16};
+    CUDA_CHECK(Nvfp4A16BlackwellGemmRunner::run(params, nullptr, 0, stream));
+    float* stacked = nullptr;
+    int64_t stackedBatchStride = 0;
+    if (stackedLogits != nullptr)
+    {
+        stackedBatchStride = static_cast<int64_t>(proposalLen + 1) * vocabSize;
+        stacked = static_cast<float*>(stackedLogits->rawPointer()) + static_cast<int64_t>(stackedDepthRow) * vocabSize;
+    }
+    addAndSelectW2Kernel<<<dim3((vocabSize + 1023) / 1024, batchSize), 256, 0, stream>>>(
+        static_cast<half const*>(correction.rawPointer()), static_cast<float const*>(backboneLogits.rawPointer()),
+        static_cast<unsigned long long*>(greedySlots.rawPointer()), stacked, stackedBatchStride, step, proposalLen,
+        vocabSize, logitsStride, logitsOffset);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void dsparkFinalizeGreedyDraftTokens(
@@ -1626,8 +1765,11 @@ void dsparkSampleTopKRowsAndStore(rt::Tensor const& topKValues, rt::Tensor const
 void dsparkProbabilisticAccept(rt::Tensor const& targetProbabilities, rt::Tensor const& draftProbabilities,
     rt::Tensor const& draftTokenIds, rt::Tensor const& proposalLengths, rt::Tensor const& acceptUniforms,
     rt::Tensor& acceptedTokenIds, rt::Tensor& acceptLength, int32_t batchSize, int32_t draftStride,
-    int32_t verifyProposalLen, int32_t vocabSize, cudaStream_t stream)
+    int32_t verifyProposalLen, int32_t vocabSize, cudaStream_t stream, int32_t forcedAcceptanceLength)
 {
+    check::check(forcedAcceptanceLength == -1
+            || (forcedAcceptanceLength >= 1 && forcedAcceptanceLength <= verifyProposalLen + 1),
+        "Forced acceptance length must be -1 or in [1, verifyProposalLen + 1]");
     dsparkProbabilisticAcceptKernel<<<batchSize, 1, 0, stream>>>(
         static_cast<float const*>(targetProbabilities.rawPointer()),
         static_cast<float const*>(draftProbabilities.rawPointer()),
@@ -1636,6 +1778,14 @@ void dsparkProbabilisticAccept(rt::Tensor const& targetProbabilities, rt::Tensor
         static_cast<float const*>(acceptUniforms.rawPointer()), static_cast<int32_t*>(acceptedTokenIds.rawPointer()),
         static_cast<int32_t*>(acceptLength.rawPointer()), draftStride, verifyProposalLen, vocabSize);
     CUDA_CHECK(cudaGetLastError());
+    if (forcedAcceptanceLength > 0)
+    {
+        detail::launchForceSamplingAcceptance(targetProbabilities.dataPointer<float>(), nullptr,
+            draftTokenIds.dataPointer<int32_t>(), proposalLengths.dataPointer<int32_t>(),
+            acceptUniforms.dataPointer<float>(), acceptedTokenIds.dataPointer<int32_t>(), nullptr,
+            acceptLength.dataPointer<int32_t>(), batchSize, draftStride, verifyProposalLen + 1, vocabSize, nullptr,
+            forcedAcceptanceLength, stream);
+    }
 }
 
 } // namespace kernel

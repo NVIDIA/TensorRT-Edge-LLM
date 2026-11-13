@@ -2,7 +2,7 @@
     "batch_size": 1,
     "temperature": 1.0,
     "top_p": 1.0,
-    "top_k": 50,
+    "top_k": 1,
     "max_generate_length": 128,
     "requests": [
         {

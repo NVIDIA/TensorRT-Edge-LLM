@@ -18,6 +18,7 @@
 #include "multimodal/muse_glimmer/museGlimmerViTRunner.h"
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 #include "kernels/preprocessKernels/imageUtilKernels.h"
 #include <cmath>
@@ -267,10 +268,10 @@ bool MuseGlimmerViTRunner::allocateExtraBuffers(int64_t /*maxImageTokens*/)
     int64_t const maxTokens = mConfig.maxHW;
 
     mCuWindowSeqlens = rt::Tensor(
-        {maxTokens + 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "MuseGlimmerViTRunner::mCuWindowSeqlens");
+        {maxTokens + 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "MuseGlimmerViTRunner::mCuWindowSeqlens");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kCuWindowSeqlens, mCuWindowSeqlens.rawPointer());
-    mCuWindowSeqlensHost = rt::Tensor({maxTokens + 1}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32,
+    mCuWindowSeqlensHost = rt::Tensor({maxTokens + 1}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32,
         "MuseGlimmerViTRunner::mCuWindowSeqlensHost");
 
     if (mUseTrtNativeVitAttn)
@@ -278,7 +279,7 @@ bool MuseGlimmerViTRunner::allocateExtraBuffers(int64_t /*maxImageTokens*/)
         mHasKvLengthsWindow = isEngineInput(*mVisualEngine, binding_names::kKvLengthsWindow);
         if (mHasKvLengthsWindow)
         {
-            mKvLengthsWindow = rt::Tensor({maxTokens + 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32,
+            mKvLengthsWindow = rt::Tensor({maxTokens + 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32,
                 "MuseGlimmerViTRunner::mKvLengthsWindow");
             setTensorAddressStatus
                 &= mVisualContext->setTensorAddress(binding_names::kKvLengthsWindow, mKvLengthsWindow.rawPointer());
@@ -286,28 +287,28 @@ bool MuseGlimmerViTRunner::allocateExtraBuffers(int64_t /*maxImageTokens*/)
     }
 
     mWindowIndexHost = rt::Tensor(
-        {maxTokens}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "MuseGlimmerViTRunner::mWindowIndexHost");
+        {maxTokens}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64, "MuseGlimmerViTRunner::mWindowIndexHost");
     mWindowInverseHost = rt::Tensor(
-        {maxTokens}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "MuseGlimmerViTRunner::mWindowInverseHost");
+        {maxTokens}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64, "MuseGlimmerViTRunner::mWindowInverseHost");
     mWindowIndexDevice = rt::Tensor(
-        {maxTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "MuseGlimmerViTRunner::mWindowIndexDevice");
+        {maxTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "MuseGlimmerViTRunner::mWindowIndexDevice");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kWindowIndex, mWindowIndexDevice.rawPointer());
 
-    mReverseWindowIndexHost = rt::Tensor(
-        {maxTokens}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "MuseGlimmerViTRunner::mReverseWindowIndexHost");
-    mReverseWindowIndexDevice = rt::Tensor({maxTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64,
+    mReverseWindowIndexHost = rt::Tensor({maxTokens}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
+        "MuseGlimmerViTRunner::mReverseWindowIndexHost");
+    mReverseWindowIndexDevice = rt::Tensor({maxTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64,
         "MuseGlimmerViTRunner::mReverseWindowIndexDevice");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kReverseWindowIndex, mReverseWindowIndexDevice.rawPointer());
 
     // Fast-pos-embed inputs (4-tap bilinear gather over the learned position table).
     mFastPosEmbIdx = rt::Tensor(
-        {4, maxTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "MuseGlimmerViTRunner::mFastPosEmbIdx");
+        {4, maxTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "MuseGlimmerViTRunner::mFastPosEmbIdx");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kFastPosEmbIdx, mFastPosEmbIdx.rawPointer());
     mFastPosEmbWeight = rt::Tensor(
-        {4, maxTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "MuseGlimmerViTRunner::mFastPosEmbWeight");
+        {4, maxTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "MuseGlimmerViTRunner::mFastPosEmbWeight");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kFastPosEmbWeight, mFastPosEmbWeight.rawPointer());
 
@@ -345,20 +346,20 @@ bool MuseGlimmerViTRunner::bindExtraInputShapes()
 {
     bool setEngineIOStatus{true};
     setEngineIOStatus
-        &= mVisualContext->setInputShape(binding_names::kCuWindowSeqlens, mCuWindowSeqlens.getShape().getTRTDims());
+        &= mVisualContext->setInputShape(binding_names::kCuWindowSeqlens, toTrtDims(mCuWindowSeqlens.getShape()));
     if (mUseTrtNativeVitAttn && mHasKvLengthsWindow)
     {
         setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kKvLengthsWindow, mKvLengthsWindow.getShape().getTRTDims());
+            &= mVisualContext->setInputShape(binding_names::kKvLengthsWindow, toTrtDims(mKvLengthsWindow.getShape()));
     }
     setEngineIOStatus
-        &= mVisualContext->setInputShape(binding_names::kWindowIndex, mWindowIndexDevice.getShape().getTRTDims());
+        &= mVisualContext->setInputShape(binding_names::kWindowIndex, toTrtDims(mWindowIndexDevice.getShape()));
     setEngineIOStatus &= mVisualContext->setInputShape(
-        binding_names::kReverseWindowIndex, mReverseWindowIndexDevice.getShape().getTRTDims());
+        binding_names::kReverseWindowIndex, toTrtDims(mReverseWindowIndexDevice.getShape()));
     setEngineIOStatus
-        &= mVisualContext->setInputShape(binding_names::kFastPosEmbIdx, mFastPosEmbIdx.getShape().getTRTDims());
+        &= mVisualContext->setInputShape(binding_names::kFastPosEmbIdx, toTrtDims(mFastPosEmbIdx.getShape()));
     setEngineIOStatus
-        &= mVisualContext->setInputShape(binding_names::kFastPosEmbWeight, mFastPosEmbWeight.getShape().getTRTDims());
+        &= mVisualContext->setInputShape(binding_names::kFastPosEmbWeight, toTrtDims(mFastPosEmbWeight.getShape()));
     return setEngineIOStatus;
 }
 

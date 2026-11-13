@@ -52,6 +52,7 @@ Token-major export conventions
 """
 
 import itertools
+import logging
 from typing import List, Optional, Tuple
 
 import torch
@@ -59,22 +60,37 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ...config import (LAYER_ATTN, LAYER_MAMBA, LAYER_MLP, LAYER_MOE,
-                       QUANT_NVFP4_A16, MambaConfig, ModelConfig)
+                       QUANT_FP16, QUANT_IQ2_XXS, QUANT_NVFP4, QUANT_NVFP4_A16,
+                       MambaConfig, ModelConfig)
 from ..default.modeling_default import (OnnxSpec,
                                         _concat_hidden_in_provider_order)
-from ..linear import FP16Linear, make_linear
-from ..ops import (KV_PAGE_SIZE, attention_plugin, causal_conv1d,
-                   causal_conv1d_with_intermediate,
+from ..linear import FP8Linear, FP16Linear, Q8_0Linear, make_linear
+# yapf: disable
+from ..ops import (KV_PAGE_SIZE, TRT_DATATYPE_FP4, TRT_DATATYPE_FP8,
+                   TRT_MOE_ACT_RELU2, TRT_MOE_QUANT_DYNAMIC_DBLQ,
+                   TRT_MOE_QUANT_NONE, TRT_MOE_QUANT_STATIC, attention_plugin,
+                   causal_conv1d, causal_conv1d_with_intermediate,
+                   fp8_dequantize, fp8_quantize, fp16_moe_plugin_sigmoid,
+                   is_trt_native_moe_enabled, is_trt_native_moe_w4a4_enabled,
                    nvfp4_a16_blackwell_moe_plugin, nvfp4_a16_moe_plugin,
-                   nvfp4_moe_plugin, nvfp4_moe_plugin_geforce,
+                   nvfp4_act_qdq_moe, nvfp4_dequantize_moe,
+                   nvfp4_dequantize_moe_with_global_scale, nvfp4_moe_plugin,
+                   nvfp4_moe_plugin_geforce, trt_moe_fp16_nongated,
+                   trt_moe_w4a4_nongated, trt_moe_w4a8_nongated,
                    update_ssm_state, update_ssm_state_with_intermediate,
                    use_blackwell_nvfp4_a16_moe, use_geforce_nvfp4_moe)
+
+# yapf: enable
+
+logger = logging.getLogger(__name__)
 
 _NVFP4_ACTIVATION_RELU2 = 4
 _NVFP4_ROUTING_MODE_SIGMOID_GROUP_TOPK = 1
 _NVFP4_MOE_BACKEND_AUTO = 0
 _NVFP4_MOE_IO_DTYPE_FP16 = 1
 _NVFP4_MOE_MAX_ROUTED_ROWS_AUTO = 0
+# NVFP4 block size along the input (K) axis; TRT_BlockDequantize block_shape [1, 1, 16].
+_NVFP4_BLOCK_SIZE = 16
 
 
 def _stack_nvfp4_moe_input_scales(
@@ -125,11 +141,8 @@ class RMSNorm(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-def _make_flat_wrapper_mamba_ragged(model: nn.Module,
-                                    Na: int,
-                                    Nm: int,
-                                    tree_attention: bool,
-                                    tree_state: bool = True) -> nn.Module:
+def _make_flat_wrapper_mamba_ragged(model: nn.Module, Na: int, Nm: int,
+                                    tree_attention: bool) -> nn.Module:
     param_names = (
         ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
             "rope_rotary_cos_sin", "positions", "query_start_offsets",
@@ -139,11 +152,11 @@ def _make_flat_wrapper_mamba_ragged(model: nn.Module,
         ] + [f"conv_state_{i}"
              for i in range(Nm)] + [f"recurrent_state_{i}" for i in range(Nm)])
     if tree_attention:
-        param_names += ["attention_position_ids", "packed_attention_mask"]
-        if tree_state:
-            param_names += [
-                "tree_parent_ids", "tree_depths", "valid_tree_counts"
-            ]
+        param_names += [
+            "attention_position_ids", "packed_attention_mask",
+            "tree_parent_ids", "tree_depths", "valid_tree_counts",
+            "spec_verify_layout"
+        ]
     past_kv = "({},)".format(", ".join(f"past_key_values_{i}"
                                        for i in range(Na))) if Na else "()"
     conv = "({},)".format(", ".join(f"conv_state_{i}"
@@ -153,10 +166,11 @@ def _make_flat_wrapper_mamba_ragged(model: nn.Module,
     tree_kwargs = (", attention_position_ids=attention_position_ids"
                    ", packed_attention_mask=packed_attention_mask"
                    if tree_attention else "")
-    if tree_attention and tree_state:
-        tree_kwargs += (", tree_parent_ids=tree_parent_ids"
-                        ", tree_depths=tree_depths"
-                        ", valid_tree_counts=valid_tree_counts")
+    if tree_attention:
+        tree_kwargs += (
+            ", tree_parent_ids=tree_parent_ids"
+            ", spec_verify_layout=spec_verify_layout, tree_depths=tree_depths"
+            ", valid_tree_counts=valid_tree_counts")
     body = (
         f"    outputs = self._model.forward_ragged(\n"
         f"        inputs_embeds, {past_kv}, rope_rotary_cos_sin, positions, "
@@ -287,6 +301,42 @@ class MambaMixer(nn.Module):
         self.conv_kernel = mc.conv_kernel
         self._group_size = (mc.num_heads * mc.head_dim) // mc.n_groups
 
+    def prepare_for_export(self) -> None:
+        """Materialize FP8 partitions before tracing unsupported constant splits."""
+        if isinstance(self.in_proj, FP8Linear):
+            sizes = [
+                self.num_heads * self.head_dim, self.conv_dim, self.num_heads
+            ]
+            for name, weight in zip(
+                ("gate_weight", "conv_weight", "dt_weight"),
+                    self.in_proj.weight.split(sizes, dim=0)):
+                self.register_buffer(name,
+                                     weight.contiguous(),
+                                     persistent=False)
+
+    def _project_inputs(self, hidden_states: torch.Tensor):
+        sizes = [self.num_heads * self.head_dim, self.conv_dim, self.num_heads]
+        if not isinstance(self.in_proj, FP8Linear):
+            return self.in_proj(hidden_states).split(sizes, dim=-1)
+
+        hidden_states = self.in_proj.prepare_input(hidden_states)
+        weights = ((self.gate_weight, self.conv_weight,
+                    self.dt_weight) if hasattr(self, "gate_weight") else
+                   self.in_proj.weight.split(sizes, dim=0))
+        gate_weight, conv_weight, dt_weight = (fp8_dequantize(
+            weight, self.in_proj.weight_scale) for weight in weights)
+        biases = (self.in_proj.bias.to(torch.float16).split(sizes)
+                  if self.in_proj.bias is not None else (None, None, None))
+        gate = F.linear(hidden_states, gate_weight, biases[0])
+        dt = F.linear(hidden_states, dt_weight, biases[2])
+        # TRT can retain the fused GEMM's row stride for a split plugin input.
+        # A 1x1 projection gives the convolution plugin a dense channel buffer.
+        input_size = hidden_states.shape[-1]
+        conv = F.conv2d(hidden_states.reshape(-1, input_size, 1, 1),
+                        conv_weight.reshape(self.conv_dim, input_size, 1, 1),
+                        biases[1])
+        return gate, conv.reshape(*hidden_states.shape[:-1], self.conv_dim), dt
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -298,19 +348,16 @@ class MambaMixer(nn.Module):
         execution_phase_marker: Optional[torch.Tensor] = None,
         tree_parent_ids: Optional[torch.Tensor] = None,
         tree_depths: Optional[torch.Tensor] = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ):
         batch_size, seq_len, _ = hidden_states.shape
         d_inner = self.num_heads * self.head_dim
         d_state = self.n_groups * self.ssm_state_size
 
-        projected_states = self.in_proj(hidden_states)
-        # Split: [gate, BC conv path, dt]
-        gate, hidden_states_for_conv, dt = projected_states.split(
-            [d_inner, self.conv_dim, self.num_heads], dim=-1)
+        gate, hidden_states_for_conv, dt = self._project_inputs(hidden_states)
         dt = dt.clamp(-self._DT_CLAMP, self._DT_CLAMP)
 
-        # MTP spec-verify (mtp_base) path emits per-token conv/SSM state snapshots
-        # so the runtime can roll recurrent state back to the last accepted token.
+        # Verification keeps committed state read-only and emits conv snapshots plus recurrent replay data.
         if collect_intermediate_states:
             (hidden_states_for_conv, conv_state_out,
              intermediate_conv_state) = causal_conv1d_with_intermediate(
@@ -325,8 +372,8 @@ class MambaMixer(nn.Module):
                  groups=self.conv_dim,
                  execution_phase_marker=execution_phase_marker,
                  tree_parent_ids=tree_parent_ids,
+                 spec_verify_layout=spec_verify_layout,
                  tree_depths=tree_depths,
-                 use_ddtree_state=tree_parent_ids is not None,
              )
         else:
             hidden_states_for_conv, conv_state_out, _ = causal_conv1d(
@@ -371,8 +418,8 @@ class MambaMixer(nn.Module):
                  dt_softplus=1,
                  ngroups=self.n_groups,
                  tree_parent_ids=tree_parent_ids,
+                 spec_verify_layout=spec_verify_layout,
                  tree_depths=tree_depths,
-                 use_ddtree_state=tree_parent_ids is not None,
              )
         else:
             ssm_output, ssm_state_out = update_ssm_state(
@@ -411,11 +458,11 @@ class MambaMixer(nn.Module):
         collect_intermediate_states: bool = False,
         tree_parent_ids: Optional[torch.Tensor] = None,
         tree_depths: Optional[torch.Tensor] = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ):
         d_inner = self.num_heads * self.head_dim
         d_state = self.n_groups * self.ssm_state_size
-        gate, conv_input, dt = self.in_proj(hidden_states).split(
-            [d_inner, self.conv_dim, self.num_heads], dim=-1)
+        gate, conv_input, dt = self._project_inputs(hidden_states)
         dt = dt.clamp(-self._DT_CLAMP, self._DT_CLAMP)
         if collect_intermediate_states:
             conv_output, conv_state_out, intermediate_conv_state = causal_conv1d_with_intermediate(
@@ -433,8 +480,8 @@ class MambaMixer(nn.Module):
                 execution_phase_marker=execution_phase_marker,
                 context_sequence_count_carrier=context_sequence_count_carrier,
                 tree_parent_ids=tree_parent_ids,
+                spec_verify_layout=spec_verify_layout,
                 tree_depths=tree_depths,
-                use_ddtree_state=tree_parent_ids is not None,
             )
         else:
             conv_output, conv_state_out, _ = causal_conv1d(
@@ -469,8 +516,9 @@ class MambaMixer(nn.Module):
                  dt_softplus=1,
                  ngroups=self.n_groups,
                  tree_parent_ids=tree_parent_ids,
+                 spec_verify_layout=spec_verify_layout,
                  tree_depths=tree_depths,
-                 use_ddtree_state=tree_parent_ids is not None))
+             ))
         else:
             ssm_output, ssm_state_out = update_ssm_state(*common_args,
                                                          dt_softplus=1,
@@ -596,6 +644,47 @@ class NemotronHTopkRouter(nn.Module):
         return topk_indices, topk_weights
 
 
+def trt_native_sigmoid_group_topk_routing(
+        router_logits: torch.Tensor, e_score_correction_bias: torch.Tensor,
+        top_k: int, n_group: int, topk_group: int, norm_topk_prob: bool,
+        routed_scaling_factor: float) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Sigmoid group-top-k routing as graph ops, for the TRT-native MoE arm.
+
+    ``TRT_MoE`` consumes PRECOMPUTED routing (the MoE plugins take the raw
+    router logits and route inside the kernel), so the routing of
+    :class:`NemotronHTopkRouter` is materialised in the ONNX graph here, same
+    math, export-friendly ops: sigmoid scores, the correction bias added for
+    the expert CHOICE only, the group mask, top-k, the UNBIASED scores of the
+    chosen experts, optional renormalisation and ``routed_scaling_factor``.
+    The group stage is a no-op for ``n_group == 1`` (Nemotron-3-Nano) and is
+    skipped then. Returns ``(expert ids int32 [T, K], weights fp32 [T, K])``;
+    the weights stay fp32 because Myelin rejects fp16 scores.
+    """
+    scores = torch.sigmoid(router_logits.float())
+    # Plain [T, E] + [E] broadcast: an op on the bias buffer would be folded
+    # into an anonymous initializer by the exporter.
+    scores_for_choice = scores + e_score_correction_bias.float()
+    if n_group > 1:
+        num_tokens, num_experts = scores.shape
+        group_scores = scores_for_choice.view(num_tokens, n_group,
+                                              -1).topk(2,
+                                                       dim=-1)[0].sum(dim=-1)
+        group_idx = torch.topk(group_scores, k=topk_group, dim=-1)[1]
+        group_mask = torch.zeros_like(group_scores).scatter(1, group_idx, 1.0)
+        score_mask = group_mask.unsqueeze(-1).expand(
+            num_tokens, n_group,
+            num_experts // n_group).reshape(num_tokens, num_experts)
+        scores_for_choice = scores_for_choice.masked_fill(
+            score_mask == 0.0, 0.0)
+    topk_indices = torch.topk(scores_for_choice, k=top_k, dim=-1)[1]
+    topk_weights = scores.gather(1, topk_indices)
+    if norm_topk_prob:
+        topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) +
+                                       1e-20)
+    topk_weights = topk_weights * float(routed_scaling_factor)
+    return topk_indices.to(torch.int32), topk_weights
+
+
 # ---------------------------------------------------------------------------
 # NemotronHMoEMLP
 # ---------------------------------------------------------------------------
@@ -611,6 +700,12 @@ class NemotronHMoEMLP(nn.Module):
     The shared expert runs as a separate FP8/FP16 forward pass added to the
     plugin output.
 
+    With ``--trt-native-moe`` the routed experts go through TensorRT's native
+    ``TRT_MoE`` op instead (``IMoELayer`` non-gated form, kRELU2; FP16, W4A8
+    or, with ``--trt-native-moe-w4a4``, W4A4 = quantization_mode 2) and the
+    sigmoid group-top-k routing is computed in the graph; the shared expert
+    and the latent projections are unchanged.
+
     Submodule names match checkpoint keys:
         gate                     - NemotronHTopkRouter (weight + bias)
         experts.{j}.up_proj     - per-expert up projection (NVFP4)
@@ -621,6 +716,37 @@ class NemotronHMoEMLP(nn.Module):
 
     def __init__(self, config: ModelConfig, module_prefix: str) -> None:
         super().__init__()
+        if config.quant.quant_type not in (QUANT_FP16, QUANT_NVFP4,
+                                           QUANT_NVFP4_A16, QUANT_IQ2_XXS):
+            raise ValueError(
+                "Nemotron-H ONNX MoE supports unquantized (BF16/FP16), NVFP4 "
+                "W4A4 or NVFP4 W4A16 experts; W8A16 and FP8 experts are not "
+                "implemented")
+        # --trt-native-moe: routed experts through TensorRT's native TRT_MoE
+        # (IMoELayer::setWeights, the non-gated form, MoEActType::kRELU2)
+        # instead of a plugin, routing materialised in the graph. Unquantized
+        # experts take the FP16 form, NVFP4 experts the W4A8 form (or W4A4,
+        # quantization_mode 2, with --trt-native-moe-w4a4); NVFP4-A16 has no
+        # TRT_MoE form.
+        self._use_native_moe = is_trt_native_moe_enabled()
+        self._use_native_moe_w4a4 = is_trt_native_moe_w4a4_enabled()
+        if (self._use_native_moe_w4a4
+                and config.quant.quant_type != QUANT_NVFP4):
+            raise ValueError(
+                "--trt-native-moe-w4a4 requested but the Nemotron-H experts "
+                f"are {config.quant.quant_type!r}; the W4A4 TRT_MoE form "
+                "needs ModelOpt NVFP4 experts with quantized activations "
+                "(unquantized experts have only the FP16 form, and "
+                "--no-quantize-activations turns NVFP4 into NVFP4-A16, which "
+                "has no TRT_MoE form). Drop --trt-native-moe-w4a4 to export "
+                "the W4A8 form, or keep the activations quantized.")
+        if self._use_native_moe and config.quant.quant_type not in (
+                QUANT_FP16, QUANT_NVFP4):
+            raise ValueError(
+                "--trt-native-moe requested but the Nemotron-H experts are "
+                f"{config.quant.quant_type!r}; only unquantized (BF16/FP16) "
+                "and NVFP4 experts have a TRT_MoE form (NVFP4-A16 does not). "
+                "Drop the flag to export the MoE plugin path.")
         self.n_routed_experts = config.n_routed_experts
         self.num_experts_per_tok = config.num_experts_per_tok
         self.hidden_size = config.hidden_size
@@ -639,13 +765,18 @@ class NemotronHMoEMLP(nn.Module):
         # does not satisfy that (e.g. Nemotron-Nano H=2688), ``_prepare_for_export_impl``
         # picks ``hidden_size_alignment=256`` so the FC1 K and FC2 M axes get
         # zero-padded; ``forward`` then F.pads hidden_states and slices the
-        # plugin output. The SM100/101/110 path keeps the original H.
+        # plugin output. The SM100/101/103/110 path keeps the original H.
         self._padded_hidden_size = self.routed_hidden_size
         self.gate = NemotronHTopkRouter(config)
 
         # W4A16 experts go through an A16 MoE plugin: Marlin by default,
         # Nvfp4A16BlackwellMoePlugin for an explicit SM110 export target.
         self._is_a16 = config.quant.quant_type == QUANT_NVFP4_A16
+        # Unquantized (BF16/FP16) checkpoints have no quantization_config and
+        # therefore no weight_scale tensors, so neither NVFP4 repack applies.
+        # They route through the dense FP16 grouped-GEMM ``Fp16MoePlugin``
+        # (sigmoid group-top-k variant).
+        self._is_fp16 = config.quant.quant_type == QUANT_FP16
         # Latched in ``_prepare_for_export_a16``, re-checked in ``forward``.
         self._use_blackwell_a16_moe: Optional[bool] = None
         # ReLU2 (non-gated) FC1 padded to a 128 multiple (1856 -> 1920);
@@ -713,7 +844,10 @@ class NemotronHMoEMLP(nn.Module):
         return expert.down_proj(r * r)
 
     def prepare_for_export(self) -> None:
-        """Pack ModelOpt NVFP4 expert tensors for ``Nvfp4MoePlugin``."""
+        """Pack the expert tensors for the active MoE arm (plugin or TRT_MoE)."""
+        if self._use_native_moe:
+            self._prepare_for_export_native()
+            return
         self._prepare_for_export_impl()
 
     def _prepare_for_export_a16(self) -> None:
@@ -781,14 +915,208 @@ class NemotronHMoEMLP(nn.Module):
                     getattr(expert, proj)._buffers.pop(name, None)
         self._export_ready = True
 
+    def _prepare_for_export_fp16(self) -> None:
+        """Stack unquantized routed experts for ``Fp16MoePlugin``.
+
+        Nemotron-H experts are ReLU2 (non-gated): only ``up_proj``/``down_proj``
+        exist, so ``repack_fp16_moe_experts`` emits ``fc1 = [E, I, H]`` with no
+        gate rows and no up/gate interleave. ``I`` is zero-padded to a multiple
+        of 128 to satisfy the plugin's ``FC1_N % 128 == 0`` contract; the
+        padding is inert because ReLU2(0) = 0 and the matching FC2 columns are
+        zero.
+        """
+        from ...checkpoint.repacking import repack_fp16_moe_experts
+
+        fc1_weights, fc2_weights, padded_inter_size = repack_fp16_moe_experts(
+            self.experts,
+            self.routed_hidden_size,
+            self.moe_intermediate_size,
+            self.activation_type,
+        )
+        self._padded_moe_intermediate_size = padded_inter_size
+        self._padded_hidden_size = self.routed_hidden_size
+
+        device = self.gate.weight.device
+        self.register_buffer("fc1_weights",
+                             fc1_weights.to(device).contiguous())
+        self.register_buffer("fc2_weights",
+                             fc2_weights.to(device).contiguous())
+        self.register_buffer(
+            "_e_score_correction_bias_fp32",
+            self.gate.e_score_correction_bias.data.clone().to(
+                torch.float32).to(device))
+        # Drop the per-expert modules (their weights are nn.Parameters, not
+        # buffers, so ``_buffers.pop`` would not free them); forward uses the
+        # stacked buffers.
+        self.experts = nn.ModuleList()
+        self._export_ready = True
+
+    def _prepare_for_export_native(self) -> None:
+        """Stack the routed experts into TRT-native ``TRT_MoE`` buffers.
+
+        Non-gated ``IMoELayer`` form (``setWeights``): ``fc_up`` is
+        ``[E, H, I]`` and ``fc_down`` is ``[E, I, H]``, the HF weights
+        transposed, with no intermediate or hidden padding (the 128 / 256
+        paddings of the plugin repacks are plugin contracts; H=2688 and
+        I=1856 only need to be multiples of the NVFP4 block, 16).
+
+        Unquantized experts are stacked as FP16. NVFP4 experts keep their
+        FP4 codes and get one fp16 block scale that folds the E4M3 block scale
+        with the per-expert ``weight_scale_2`` (see
+        :func:`~tensorrt_edgellm.checkpoint.repacking.stack_nvfp4_moe_projection`);
+        the calibrated ModelOpt ``input_scale`` values become the static FP8
+        activation scales of the W4A8 form (``amax / 448 = input_scale * 6``).
+        The FC1 input is shared by all experts, so the LARGEST scale is used;
+        FC2 keeps a per-expert scale. The plugin arm instead quantizes the
+        activations per token to NVFP4 in the kernel (W4A4).
+
+        With ``--trt-native-moe-w4a4`` (W4A4, ``TRT_MoE`` quantization_mode
+        2) the NVFP4 experts keep separate block and global scales (E4M3 block
+        scales verbatim, fp16 per-expert ``weight_scale_2`` global) and the
+        activations are quantized dynamically to NVFP4 with ModelOpt's
+        ``input_scale`` VERBATIM as the second-level scale: the max over the
+        experts for the shared FC1 input, per expert for the FC2 input
+        (``TRT_MoE`` input 9). No ``* 6`` there; see
+        :meth:`_prepare_for_export_native_w4a4`.
+        """
+        device = self.gate.weight.device
+        if self._is_fp16:
+
+            def _stack_t(proj_name):
+                # nn.Linear weight is [out, in]; TRT_MoE wants [in, out].
+                tensors = [
+                    getattr(expert, proj_name).weight.data.t()
+                    for expert in self.experts
+                ]
+                return torch.stack(tensors,
+                                   dim=0).to(device=device,
+                                             dtype=torch.float16).contiguous()
+
+            self.register_buffer("fc_up_weights", _stack_t("up_proj"))
+            self.register_buffer("fc_down_weights", _stack_t("down_proj"))
+            logger.info(
+                "TRT_MoE FP16 (non-gated ReLU2): %d experts stacked: up %s, "
+                "down %s",
+                self.n_routed_experts, list(self.fc_up_weights.shape),
+                list(self.fc_down_weights.shape))
+        elif self._use_native_moe_w4a4:
+            self._prepare_for_export_native_w4a4(device)
+        else:
+            from ...checkpoint.repacking import stack_nvfp4_moe_projection
+
+            # ``nvfp4_<proj>_weight``: packed FP4 codes [E, out, in // 2]
+            # (int8; export.py reinterprets the initializer as FLOAT4E2M1 by
+            # this name suffix); ``nvfp4_<proj>_block_scale``: fp16
+            # [E, out, in // 16] with ``weight_scale_2`` folded in.
+            for proj in ("up", "down"):
+                weight, block_scale = stack_nvfp4_moe_projection(
+                    self.experts, f"{proj}_proj")
+                self.register_buffer(f"nvfp4_{proj}_weight",
+                                     weight.to(device).contiguous())
+                self.register_buffer(f"nvfp4_{proj}_block_scale",
+                                     block_scale.to(device).contiguous())
+
+            # Calibrated activation scales -> FP8 (amax/448 = input_scale*6).
+            input_gs, down_gs = _stack_nvfp4_moe_input_scales(self.experts)
+            act_scale = input_gs.max()
+            if not torch.allclose(
+                    input_gs, act_scale.expand_as(input_gs), rtol=1e-6,
+                    atol=0.0):
+                logger.warning(
+                    "TRT-native W4A8 MoE: per-expert FC1 input scales differ "
+                    "(min %.4g, max %.4g); using the max so the shared FP8 "
+                    "activation quantization saturates no expert",
+                    float(input_gs.min()), float(act_scale))
+            self.register_buffer("native_act_scale",
+                                 (act_scale * 6.0).to(device=device,
+                                                      dtype=torch.float16))
+            self.register_buffer("native_down_act_scale", (down_gs * 6.0).to(
+                device=device, dtype=torch.float32).contiguous())
+            logger.info(
+                "TRT_MoE W4A8 (non-gated ReLU2): %d NVFP4 experts; "
+                "act_scale=%.6g, down_act_scale[0:2]=%s",
+                self.n_routed_experts, float(self.native_act_scale),
+                self.native_down_act_scale[:2].tolist())
+
+        self.register_buffer(
+            "_e_score_correction_bias_fp32",
+            self.gate.e_score_correction_bias.data.clone().to(
+                torch.float32).to(device))
+        # Drop the per-expert modules (their weights are nn.Parameters, not
+        # buffers, so ``_buffers.pop`` would not free them); forward uses the
+        # stacked buffers.
+        self.experts = nn.ModuleList()
+        self._export_ready = True
+
+    def _prepare_for_export_native_w4a4(self, device: torch.device) -> None:
+        """Stack NVFP4 experts for the W4A4 ``TRT_MoE`` form (quantization_mode 2).
+
+        Weights keep separate scales: ``nvfp4_<proj>_weight`` (FP4 codes),
+        ``nvfp4_<proj>_block_scale_fp8`` (the E4M3 block scales verbatim) and
+        ``nvfp4_<proj>_global_scale`` (fp16 ``weight_scale_2`` per expert),
+        see :func:`~tensorrt_edgellm.checkpoint.repacking.stack_nvfp4_moe_projection_with_global_scale`.
+        The activation scales are ModelOpt's ``input_scale`` verbatim (no
+        ``* 6``, which is the FP8 convention of the W4A8 form): the max over
+        the experts for the shared FC1 input, rounded to an fp16-representable
+        value so the fp32 DynQ scale and the fp16 DQ scale agree, and the
+        per-expert FC2 scales as ``TRT_MoE`` input 9. The buffer names keep
+        the ``nvfp4_<proj>_weight`` suffix the FP4 reinterpretation keys on
+        and put "scale" into every scale buffer, which the export's dtype
+        passes skip and keep. Non-gated experts take no biases.
+        """
+        from ...checkpoint.repacking import \
+            stack_nvfp4_moe_projection_with_global_scale
+
+        for proj in ("up", "down"):
+            weight, block_scale, global_scale = (
+                stack_nvfp4_moe_projection_with_global_scale(
+                    self.experts, f"{proj}_proj"))
+            self.register_buffer(f"nvfp4_{proj}_weight",
+                                 weight.to(device).contiguous())
+            self.register_buffer(f"nvfp4_{proj}_block_scale_fp8",
+                                 block_scale.to(device).contiguous())
+            self.register_buffer(f"nvfp4_{proj}_global_scale",
+                                 global_scale.to(device).contiguous())
+
+        input_gs, down_gs = _stack_nvfp4_moe_input_scales(self.experts)
+        for name, scales in (("FC1", input_gs), ("FC2", down_gs)):
+            if not bool(torch.isfinite(scales).all() and (scales > 0).all()):
+                raise ValueError(
+                    f"TRT-native W4A4 MoE: {name} input_scale must be finite "
+                    f"and positive for every expert, got {scales.tolist()}")
+        act_dblq = input_gs.max()
+        if not torch.allclose(
+                input_gs, act_dblq.expand_as(input_gs), rtol=1e-6, atol=0.0):
+            logger.warning(
+                "TRT-native W4A4 MoE: per-expert FC1 input scales differ "
+                "(min %.4g, max %.4g); using the max so the shared NVFP4 "
+                "block scales saturate for no expert", float(input_gs.min()),
+                float(act_dblq))
+        # fp32 copy for TRT_FP4DynamicQuantize, fp16 copy (a Cast in the
+        # graph) for the block-scale DQ: one fp16-representable value.
+        act_dblq = act_dblq.to(torch.float16).to(torch.float32)
+        self.register_buffer("native_act_dblq_scale",
+                             act_dblq.to(device=device).contiguous())
+        self.register_buffer(
+            "native_down_act_scale",
+            down_gs.to(device=device, dtype=torch.float32).contiguous())
+        logger.info(
+            "TRT_MoE W4A4 (non-gated ReLU2, quantization_mode 2): %d NVFP4 "
+            "experts; act_dblq_scale=%.6g, down_act_scale[0:2]=%s",
+            self.n_routed_experts, float(self.native_act_dblq_scale),
+            self.native_down_act_scale[:2].tolist())
+
     def _prepare_for_export_impl(self) -> None:
-        """Pack ModelOpt NVFP4 expert tensors for the active NVFP4 MoE plugin."""
+        """Pack the expert tensors for the active MoE plugin."""
+        if self._is_fp16:
+            self._prepare_for_export_fp16()
+            return
         if self._is_a16:
             self._prepare_for_export_a16()
             return
         from ...checkpoint.repacking import repack_nvfp4_moe_experts
 
-        # SM12x NvFP4MoEPluginGeforce requires H % 256 == 0; the SM100/101/110 path only needs
+        # SM12x NvFP4MoEPluginGeforce requires H % 256 == 0; the SM100/101/103/110 path only needs
         # the kernel's regular alignment (the repack helper accepts H as-is
         # when ``hidden_size_alignment=1``).
         hidden_size_alignment = 256 if use_geforce_nvfp4_moe() else 1
@@ -829,13 +1157,134 @@ class NemotronHMoEMLP(nn.Module):
                 torch.float32).to(device))
         self._export_ready = True
 
+    def _native_moe_forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """TRT-native (OOTB) MoE: routing in the graph, non-gated ``TRT_MoE`` experts.
+
+        IMoELayer needs rank-3 ``[B, S, *]`` tensors while the token-major
+        export hands the block ``[T, H]``; the layer is defined per token
+        with no cross-token reduction, so all T tokens are wrapped as one
+        sequence ``[1, T, H]`` / ``[1, T, K]`` and the output reshaped back
+        (same as the Qwen3 native arm). The shared expert is added on top of
+        the routed output exactly as in the plugin paths.
+        """
+        if not self._export_ready:
+            raise RuntimeError(
+                "NemotronHMoEMLP TRT-native forward requires "
+                "prepare_for_export first (no stacked expert buffers)")
+        hidden_flat = hidden_states.reshape(-1, self.hidden_size)
+        num_tokens = hidden_flat.shape[0]
+        router_logits = F.linear(hidden_flat, self.gate.weight).float()
+        selected_experts, scores = trt_native_sigmoid_group_topk_routing(
+            router_logits, self._e_score_correction_bias_fp32,
+            self.num_experts_per_tok, self.gate.n_group, self.gate.topk_group,
+            bool(self.gate.norm_topk_prob),
+            float(self.gate.routed_scaling_factor))
+        selected_experts = selected_experts.reshape(1, num_tokens,
+                                                    self.num_experts_per_tok)
+        scores = scores.reshape(1, num_tokens, self.num_experts_per_tok)
+
+        routed_hidden_states = self.fc1_latent_proj(hidden_flat)
+        hidden3 = routed_hidden_states.reshape(1, num_tokens,
+                                               self.routed_hidden_size)
+        if self._is_fp16:
+            routed = trt_moe_fp16_nongated(
+                hidden3,
+                selected_experts,
+                scores,
+                self.fc_up_weights,
+                self.fc_down_weights,
+                TRT_MOE_ACT_RELU2,
+                TRT_MOE_QUANT_NONE,
+            )
+        elif self._use_native_moe_w4a4:
+            # W4A4 (quantization_mode 2): NVFP4 dynamic Q/DQ of the FC1
+            # input, NVFP4 weight DQ with per-expert global scales
+            # ([E, out, in] -> [E, in, out] for TRT_MoE's layout), per-expert
+            # fp32 FC2 dblq at input 9.
+            hidden3 = nvfp4_act_qdq_moe(hidden3, self.native_act_dblq_scale)
+            up_w = nvfp4_dequantize_moe_with_global_scale(
+                self.nvfp4_up_weight, self.nvfp4_up_block_scale_fp8,
+                self.nvfp4_up_global_scale, _NVFP4_BLOCK_SIZE).transpose(1, 2)
+            down_w = nvfp4_dequantize_moe_with_global_scale(
+                self.nvfp4_down_weight, self.nvfp4_down_block_scale_fp8,
+                self.nvfp4_down_global_scale,
+                _NVFP4_BLOCK_SIZE).transpose(1, 2)
+            routed = trt_moe_w4a4_nongated(
+                hidden3,
+                selected_experts,
+                scores,
+                up_w,
+                down_w,
+                self.native_down_act_scale,
+                TRT_MOE_ACT_RELU2,
+                TRT_MOE_QUANT_DYNAMIC_DBLQ,
+                TRT_DATATYPE_FP4,
+                TRT_DATATYPE_FP8,  # dyn_q_output_scale_dtype: FP8 block scales
+            )
+        else:
+            # Static FP8 Q/DQ of the FC1 input with the calibrated scale, NVFP4
+            # weight DQ ([E, out, in] -> [E, in, out] for TRT_MoE's layout):
+            # up [E, I, H] -> [E, H, I], down [E, H, I] -> [E, I, H].
+            hidden3 = fp8_dequantize(
+                fp8_quantize(hidden3, self.native_act_scale),
+                self.native_act_scale)
+            up_w = nvfp4_dequantize_moe(self.nvfp4_up_weight,
+                                        self.nvfp4_up_block_scale,
+                                        _NVFP4_BLOCK_SIZE).transpose(1, 2)
+            down_w = nvfp4_dequantize_moe(self.nvfp4_down_weight,
+                                          self.nvfp4_down_block_scale,
+                                          _NVFP4_BLOCK_SIZE).transpose(1, 2)
+            routed = trt_moe_w4a8_nongated(
+                hidden3,
+                selected_experts,
+                scores,
+                up_w,
+                down_w,
+                self.native_down_act_scale,
+                TRT_MOE_ACT_RELU2,
+                TRT_MOE_QUANT_STATIC,
+                TRT_DATATYPE_FP8,
+            )
+        routed = routed.reshape(routed_hidden_states.shape)
+        moe_out = self.fc2_latent_proj(routed).reshape(hidden_states.shape)
+        return moe_out + self._expert_forward(self.shared_experts,
+                                              hidden_states)
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if self._use_native_moe:
+            return self._native_moe_forward(hidden_states)
+
         # Router logits are computed from the original hidden states. When
         # moe_latent_size is set, only the routed expert payload is projected
         # down into latent space.
         router_logits = F.linear(hidden_states.view(-1, self.hidden_size),
                                  self.gate.weight).float()
         routed_hidden_states = self.fc1_latent_proj(hidden_states)
+
+        if self._is_fp16:
+            # Dense FP16 grouped GEMM. Same sigmoid-group-topk routing as the
+            # NVFP4 paths (hence the ``_sigmoid`` variant), ReLU2 ungated FC1,
+            # and no hidden-size padding: only the intermediate axis is padded.
+            moe_out = fp16_moe_plugin_sigmoid(
+                router_logits,
+                routed_hidden_states,
+                self.fc1_weights,
+                self.fc2_weights,
+                self._e_score_correction_bias_fp32,
+                self.n_routed_experts,
+                self.num_experts_per_tok,
+                self.routed_hidden_size,
+                self._padded_moe_intermediate_size,
+                self.activation_type,
+                self.gate.n_group,
+                self.gate.topk_group,
+                int(bool(self.gate.norm_topk_prob)),
+                float(self.gate.routed_scaling_factor),
+                self.max_routed_rows,
+            )
+            moe_out = self.fc2_latent_proj(moe_out)
+            return moe_out + self._expert_forward(self.shared_experts,
+                                                  hidden_states)
 
         if self._is_a16:
             use_blackwell = use_blackwell_nvfp4_a16_moe()
@@ -920,7 +1369,7 @@ class NemotronHMoEMLP(nn.Module):
 
         # Nemotron-H uses ReLU2 (non-gated) FC1, so the up-only weight tensor
         # has the same row layout under both plugins; only the plugin op name
-        # differs between SM100/101/110 ``Nvfp4MoePlugin`` and SM12x
+        # differs between SM100/101/103/110 ``Nvfp4MoePlugin`` and SM12x
         # ``NvFP4MoEPluginGeforce``.
         moe_op = (nvfp4_moe_plugin_geforce
                   if use_geforce_nvfp4_moe() else nvfp4_moe_plugin)
@@ -1033,9 +1482,7 @@ class NemotronHAttentionMixer(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size, seq_len, _ = hidden_states.shape
 
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        qkv = self.project_qkv(hidden_states)
 
         # Tree attention is used by the MTP draft (constructor flag) and by the
         # mtp_base variant of the base model (mask + pos_id supplied at call time).
@@ -1051,7 +1498,7 @@ class NemotronHAttentionMixer(nn.Module):
             "attention_scale": self.attention_scale,
             "enable_context_mask_selector": False,
             "enable_vision_block_attention": False,
-            "skip_softmax_scale_factor": 0.0,
+            "skip_softmax_prefill_input": 0,
         }
         if enable_tree:
             kwargs["attention_mask"] = attention_mask
@@ -1061,13 +1508,21 @@ class NemotronHAttentionMixer(nn.Module):
         kwargs["qkv_scales"] = getattr(self, "_qkv_scales_float",
                                        [1.0, 1.0, 1.0])
         attn_output, present_key_value = attention_plugin(
-            torch.cat([query_states, key_states, value_states],
-                      dim=-1), past_key_value, context_lengths,
-            rope_rotary_cos_sin, kvcache_start_index, kv_page_table, **kwargs)
+            qkv, past_key_value, context_lengths, rope_rotary_cos_sin,
+            kvcache_start_index, kv_page_table, **kwargs)
 
         attn_output = attn_output.reshape(batch_size, seq_len,
                                           self.num_heads * self.head_dim)
         return self.o_proj(attn_output), present_key_value
+
+    def project_qkv(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Return Q, K and V packed along the last axis."""
+        return torch.cat([
+            self.q_proj(hidden_states),
+            self.k_proj(hidden_states),
+            self.v_proj(hidden_states)
+        ],
+                         dim=-1)
 
     def forward_ragged(
         self,
@@ -1088,13 +1543,9 @@ class NemotronHAttentionMixer(nn.Module):
         tree_parent_ids: Optional[torch.Tensor] = None,
         tree_depths: Optional[torch.Tensor] = None,
         valid_tree_counts: Optional[torch.Tensor] = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        qkv = torch.cat([
-            self.q_proj(hidden_states),
-            self.k_proj(hidden_states),
-            self.v_proj(hidden_states)
-        ],
-                        dim=-1)
+        qkv = self.project_qkv(hidden_states)
         kwargs: dict = {
             "num_q_heads": self.num_heads,
             "num_kv_heads": self.num_kv_heads,
@@ -1105,7 +1556,7 @@ class NemotronHAttentionMixer(nn.Module):
             "attention_scale": self.attention_scale,
             "enable_context_mask_selector": False,
             "enable_vision_block_attention": False,
-            "skip_softmax_scale_factor": 0.0,
+            "skip_softmax_prefill_input": 0,
             "qkv_scales": getattr(self, "_qkv_scales_float", [1.0, 1.0, 1.0]),
             "query_start_offsets": query_start_offsets,
             "attention_sequence_lengths": attention_sequence_lengths,
@@ -1136,6 +1587,8 @@ class NemotronHDecoderLayer(nn.Module):
         mixer   - MambaMixer | NemotronHMLP | NemotronHAttentionMixer
     """
 
+    attention_class = NemotronHAttentionMixer
+
     def __init__(self, config: ModelConfig, layer_idx: int,
                  layer_type: str) -> None:
         super().__init__()
@@ -1149,12 +1602,14 @@ class NemotronHDecoderLayer(nn.Module):
         elif layer_type == LAYER_MLP:
             self.mixer = NemotronHMLP(config, module_prefix)
         elif layer_type == LAYER_MOE:
-            self.mixer = NemotronHMoEMLP(config, module_prefix)
+            self.mixer = self._make_moe(config, module_prefix)
         elif layer_type == LAYER_ATTN:
-            self.mixer = NemotronHAttentionMixer(config, layer_idx,
-                                                 module_prefix)
+            self.mixer = self.attention_class(config, layer_idx, module_prefix)
         else:
             raise ValueError(f"Unknown layer type: {layer_type!r}")
+
+    def _make_moe(self, config: ModelConfig, module_prefix: str) -> nn.Module:
+        return NemotronHMoEMLP(config, module_prefix)
 
     def forward(
         self,
@@ -1168,13 +1623,14 @@ class NemotronHDecoderLayer(nn.Module):
         # Mamba-specific (ignored by Attention/MLP/MoE layers)
         conv_state: Optional[torch.Tensor] = None,
         ssm_state: Optional[torch.Tensor] = None,
-        # MTP spec-verify (mtp_base) — tree attention + per-token recurrent snapshots.
+        # Recurrent verification emits conv snapshots and replay data.
         collect_intermediate_states: bool = False,
         execution_phase_marker: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         attention_pos_id: Optional[torch.Tensor] = None,
         tree_parent_ids: Optional[torch.Tensor] = None,
         tree_depths: Optional[torch.Tensor] = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ):
         residual = hidden_states
         normed = self.norm(hidden_states)
@@ -1190,6 +1646,7 @@ class NemotronHDecoderLayer(nn.Module):
                      collect_intermediate_states=True,
                      execution_phase_marker=execution_phase_marker,
                      tree_parent_ids=tree_parent_ids,
+                     spec_verify_layout=spec_verify_layout,
                      tree_depths=tree_depths)
                 return (residual + mixer_out, conv_state_out, ssm_state_out,
                         inter_conv, replay_da, replay_u, replay_b, replay_dt)
@@ -1225,6 +1682,7 @@ class NemotronHDecoderLayer(nn.Module):
                     "collect_intermediate_states", False),
                 tree_parent_ids=kwargs.get("tree_parent_ids"),
                 tree_depths=kwargs.get("tree_depths"),
+                spec_verify_layout=kwargs.get("spec_verify_layout"),
             )
             return (residual + outputs[0], ) + outputs[1:]
         if self.layer_type in (LAYER_MLP, LAYER_MOE):
@@ -1268,12 +1726,15 @@ class NemotronHBackbone(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([
-            NemotronHDecoderLayer(config, layer_idx=i, layer_type=lt)
-            for i, lt in enumerate(config.layer_types)
-        ])
+        self.layers = nn.ModuleList(self._make_layers(config))
         self.norm_f = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.layer_types: List[str] = config.layer_types
+
+    def _make_layers(self, config: ModelConfig) -> List[nn.Module]:
+        return [
+            NemotronHDecoderLayer(config, layer_idx=i, layer_type=lt)
+            for i, lt in enumerate(config.layer_types)
+        ]
 
     def forward(
         self,
@@ -1292,6 +1753,7 @@ class NemotronHBackbone(nn.Module):
         tree_parent_ids: Optional[torch.Tensor] = None,
         tree_depths: Optional[torch.Tensor] = None,
         dflash_target_layer_ids: Optional[List[int]] = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ):
         hidden_states = inputs_embeds
         present_key_values_list: List[torch.Tensor] = []
@@ -1322,6 +1784,7 @@ class NemotronHBackbone(nn.Module):
                          collect_intermediate_states=True,
                          execution_phase_marker=execution_phase_marker,
                          tree_parent_ids=tree_parent_ids,
+                         spec_verify_layout=spec_verify_layout,
                          tree_depths=tree_depths,
                      )
                     intermediate_conv_states_list.append(inter_conv)
@@ -1401,6 +1864,7 @@ class NemotronHBackbone(nn.Module):
         tree_depths: Optional[torch.Tensor] = None,
         valid_tree_counts: Optional[torch.Tensor] = None,
         dflash_target_layer_ids: Optional[List[int]] = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ):
         hidden_states = inputs_embeds
         present_key_values = []
@@ -1431,6 +1895,7 @@ class NemotronHBackbone(nn.Module):
             attention_position_ids=attention_position_ids,
             packed_attention_mask=packed_attention_mask,
             tree_parent_ids=tree_parent_ids,
+            spec_verify_layout=spec_verify_layout,
             tree_depths=tree_depths,
             valid_tree_counts=valid_tree_counts,
         )
@@ -1503,10 +1968,20 @@ class NemotronHCausalLM(nn.Module):
     RECURRENT_STATE_DTYPE = torch.float16
     CONV_STATE_DTYPE = torch.float16
 
+    # The TRT-native MoE arm adds the fp32 routing bias to the fp32 sigmoid
+    # scores in the graph. The export's generic dtype-fix pass downgrades fp32
+    # initializers to FP16 unless told otherwise; this keeps the ones feeding
+    # an element-wise op whose other input is FP32 (the exporter can fold the
+    # bias into an anonymous initializer, so a name pattern would not catch
+    # it). Without it the Add sees Float and Half, which TensorRT rejects. The
+    # plugin arms feed the same buffer to a plugin input the pass keeps FP32.
+    match_fp32_elementwise_initializers = True
+    backbone_class = NemotronHBackbone
+
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
-        self.backbone = NemotronHBackbone(config)
+        self.backbone = self.backbone_class(config)
         self.lm_head = make_linear(config,
                                    config.hidden_size,
                                    config.vocab_size,
@@ -1540,6 +2015,9 @@ class NemotronHCausalLM(nn.Module):
         for layer in self.backbone.layers:
             if hasattr(layer.mixer, 'prepare_for_export'):
                 layer.mixer.prepare_for_export()
+        for module in self.modules():
+            if isinstance(module, Q8_0Linear):
+                module.prepare_for_export()
         return self._token_major_onnx_export_spec()
 
     def _token_major_onnx_export_spec(self) -> OnnxSpec:
@@ -1558,11 +2036,6 @@ class NemotronHCausalLM(nn.Module):
             getattr(config, "mtp_base", False)
             or getattr(config, "dflash_base", False)
             or getattr(config, "dspark_base", False))
-        tree_state = bool(
-            getattr(config, "dflash_base", False)
-            or getattr(config, "mtp_tree_base", False)
-            or getattr(config, "dflash_tree_base", False)
-            or getattr(config, "dspark_tree_base", False))
         inputs_embeds = torch.zeros(physical_tokens,
                                     config.hidden_size,
                                     dtype=torch.float16,
@@ -1716,22 +2189,24 @@ class NemotronHCausalLM(nn.Module):
             args += (attention_position_ids, packed_attention_mask)
             input_names += ["attention_position_ids", "packed_attention_mask"]
             all_shapes.extend([{0: tokens}, {0: tokens, 1: packed_width}])
-            if tree_state:
-                tree_parent_ids = torch.full((physical_tokens, ),
-                                             -1,
-                                             dtype=torch.int32,
-                                             device=device)
-                tree_depths = torch.zeros(physical_tokens,
-                                          dtype=torch.int32,
-                                          device=device)
-                valid_tree_counts = query_lengths.clone()
-                args += (tree_parent_ids, tree_depths, valid_tree_counts)
-                input_names += [
-                    "tree_parent_ids", "tree_depths", "valid_tree_counts"
-                ]
-                all_shapes.extend([{0: tokens}, {0: tokens}, {0: sequences}])
-        wrapped = _make_flat_wrapper_mamba_ragged(self, Na, Nm, spec,
-                                                  tree_state)
+            tree_parent_ids = torch.full((physical_tokens, ),
+                                         -1,
+                                         dtype=torch.int32,
+                                         device=device)
+            tree_depths = torch.zeros(physical_tokens,
+                                      dtype=torch.int32,
+                                      device=device)
+            valid_tree_counts = query_lengths.clone()
+            args += (tree_parent_ids, tree_depths, valid_tree_counts)
+            input_names += [
+                "tree_parent_ids", "tree_depths", "valid_tree_counts"
+            ]
+            all_shapes.extend([{0: tokens}, {0: tokens}, {0: sequences}])
+            args += (torch.empty(2, dtype=torch.int32, device=device), )
+            input_names += ["spec_verify_layout"]
+            all_shapes.append(
+                {0: torch.export.Dim("spec_verify_layout_len", min=0, max=2)})
+        wrapped = _make_flat_wrapper_mamba_ragged(self, Na, Nm, spec)
         wrapped.eval()
         return OnnxSpec(wrapped=wrapped,
                         args=args,
@@ -1761,6 +2236,7 @@ class NemotronHCausalLM(nn.Module):
         tree_parent_ids: Optional[torch.Tensor] = None,
         tree_depths: Optional[torch.Tensor] = None,
         valid_tree_counts: Optional[torch.Tensor] = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ) -> Tuple:
         mtp_base = bool(getattr(self.config, "mtp_base", False))
         dflash_base = bool(getattr(self.config, "dflash_base", False))
@@ -1789,6 +2265,7 @@ class NemotronHCausalLM(nn.Module):
             attention_position_ids=attention_position_ids,
             packed_attention_mask=packed_attention_mask,
             tree_parent_ids=tree_parent_ids,
+            spec_verify_layout=spec_verify_layout,
             tree_depths=tree_depths,
             valid_tree_counts=valid_tree_counts,
             dflash_target_layer_ids=target_layer_ids)
@@ -1818,6 +2295,7 @@ class NemotronHCausalLM(nn.Module):
         execution_phase_marker: Optional[torch.Tensor] = None,
         tree_parent_ids: Optional[torch.Tensor] = None,
         tree_depths: Optional[torch.Tensor] = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ) -> Tuple:
         mtp_base = bool(getattr(self.config, "mtp_base", False))
         dflash_base = bool(getattr(self.config, "dflash_base", False))
@@ -1845,6 +2323,7 @@ class NemotronHCausalLM(nn.Module):
                  attention_mask=attention_mask,
                  attention_pos_id=attention_pos_id,
                  tree_parent_ids=tree_parent_ids,
+                 spec_verify_layout=spec_verify_layout,
                  tree_depths=tree_depths,
                  dflash_target_layer_ids=dflash_target_ids,
              )

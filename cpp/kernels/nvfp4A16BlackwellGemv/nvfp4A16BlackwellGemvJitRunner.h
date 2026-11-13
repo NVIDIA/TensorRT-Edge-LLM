@@ -55,7 +55,6 @@ public:
 
 private:
     Nvfp4A16BlackwellGemvJitKey mKey{};
-    Nvfp4A16BlackwellGemvJitDigest mDigest{};
     std::shared_ptr<Nvfp4A16BlackwellGemvLoadedModule> mLoadedModule;
 };
 

@@ -17,9 +17,8 @@
 
 #include "action/cosmos3Kernels.h"
 #include "common/checkMacros.h"
+#include "common/counterRng.h"
 #include "common/cudaUtils.h"
-
-#include <curand_kernel.h>
 
 namespace trt_edgellm
 {
@@ -59,11 +58,9 @@ __global__ void normalNoiseFillKernel(float* out, int64_t numElems, uint64_t see
     {
         return;
     }
-    // Counter-based Philox keyed on the element index: reproducible for a given (seed, offset)
+    // Counter-based hash keyed on the element index: reproducible for a given (seed, offset)
     // independent of the launch configuration.
-    curandStatePhilox4_32_10_t state;
-    curand_init(seed, static_cast<uint64_t>(i), offset, &state);
-    out[i] = curand_normal(&state);
+    out[i] = counter_rng::normalFromBits(counter_rng::counterBits(seed, offset, static_cast<uint64_t>(i)));
 }
 
 __global__ void buildMRopePositionsKernel(float* positions, int32_t batch, int32_t genLen, int32_t numVideoTokens,

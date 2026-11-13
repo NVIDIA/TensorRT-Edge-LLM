@@ -75,7 +75,6 @@ public:
 
 private:
     Nvfp4A16BlackwellMoeJitKey mKey{};
-    Nvfp4A16BlackwellMoeJitDigest mDigest{};
     std::shared_ptr<Nvfp4A16BlackwellMoeLoadedModule> mLoadedModule;
 };
 

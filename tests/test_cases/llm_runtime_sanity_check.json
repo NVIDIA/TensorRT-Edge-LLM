@@ -29,10 +29,9 @@
                 },
                 {
                     "role": "user",
-                    "content": "Why are repeated prompts useful when validating system prompt KV cache reuse?"
+                    "content": "Why are repeated prompts useful when validating context cache prefix reuse?"
                 }
-            ],
-            "save_system_prompt_kv_cache": true
+            ]
         },
         {
             "messages": [
@@ -42,7 +41,7 @@
                 },
                 {
                     "role": "user",
-                    "content": "Why are repeated prompts useful when validating system prompt KV cache reuse?"
+                    "content": "Why are repeated prompts useful when validating context cache prefix reuse?"
                 }
             ]
         },
@@ -90,8 +89,7 @@
                     "role": "user",
                     "content": "How should a runtime verify that reused prompt state does not change model outputs?"
                 }
-            ],
-            "save_system_prompt_kv_cache": true
+            ]
         },
         {
             "messages": [
@@ -131,8 +129,7 @@
                     "role": "user",
                     "content": "Name three symptoms of context-length mismatches in an inference runtime."
                 }
-            ],
-            "save_system_prompt_kv_cache": true
+            ]
         },
         {
             "messages": [
@@ -170,10 +167,9 @@
                 },
                 {
                     "role": "user",
-                    "content": "What should be checked before saving a system prompt KV cache for later reuse?"
+                    "content": "What should be checked before publishing a prefix to the context cache for later reuse?"
                 }
-            ],
-            "save_system_prompt_kv_cache": true
+            ]
         },
         {
             "messages": [
@@ -183,7 +179,7 @@
                 },
                 {
                     "role": "user",
-                    "content": "What should be checked before saving a system prompt KV cache for later reuse?"
+                    "content": "What should be checked before publishing a prefix to the context cache for later reuse?"
                 }
             ]
         },
@@ -247,8 +243,7 @@
                     "role": "user",
                     "content": "Describe a runtime bug caused by stale batch-dependent state."
                 }
-            ],
-            "save_system_prompt_kv_cache": true
+            ]
         },
         {
             "messages": [

@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include "kernels/compactPhase/compactPhaseSupport.h"
 #include "kernels/decodeAttentionKernels/decoderXQAJitCompiler.h"
 
 #include <NvInferRuntime.h>
@@ -43,6 +44,9 @@ enum class ContextFMHABackend
     kCUTE_DSL_FMHA_V2
 };
 
+//! Compact input-slot indices of one plugin instance; defined with the plugin implementation.
+struct AttentionInputLayout;
+
 //! \brief TensorRT plugin for attention operations (V3 — IPluginV3).
 //!
 //! This plugin implements efficient attention mechanisms including context attention (prefill)
@@ -67,11 +71,14 @@ public:
     //! \param[in] slidingWindowSize Sliding window size (-1 = no sliding window)
     //! \param[in] qkvScales Optional [q, k, v] FP8 dequant scales (required when enableFp8KVCache)
     //! \param[in] attentionScale Optional absolute QK^T multiplier; defaults to 1/sqrt(headSize)
+    //! \param[in] externalKVPrefix Append a read-only prefix pool/table; main KV input/output is FP16 action scratch
+    //! \param[in] fp8KVPrefix Prefix is E4M3 FP8; qkvScales K/V entries apply only to prefix loads
     //! \param[in] supportsBoundedKVCache Whether the engine supports runtime-selectable bounded O(W) KV storage
     AttentionPlugin(std::string const& name, int32_t numQHeads, int32_t numKVHeads, int32_t headSize,
         int32_t supportsSpecDecode, int32_t enableFp8KVCache, int32_t enableVisionBlockAttention,
         int32_t enableContextMaskSelector, bool supportsBoundedKVCache = false, int32_t slidingWindowSize = -1,
-        std::vector<float> const& qkvScales = {}, std::optional<float> attentionScale = std::nullopt);
+        std::vector<float> const& qkvScales = {}, std::optional<float> attentionScale = std::nullopt,
+        int32_t tpSize = 1, int32_t externalKVPrefix = 0, int32_t fp8KVPrefix = 0);
     AttentionPlugin(std::string const& name, nvinfer1::PluginFieldCollection const* fc);
 
     AttentionPlugin() = delete;
@@ -150,11 +157,60 @@ private:
     int32_t enqueueImpl(nvinfer1::PluginTensorDesc const* inputDesc, nvinfer1::PluginTensorDesc const* outputDesc,
         void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream);
 
+    //! Phase 8: prefill rows [0, T_p) through ragged paged FMHA, decode rows [T_p, T) through enqueueDecodeRows.
+    int32_t enqueueCompactImpl(nvinfer1::PluginTensorDesc const* inputDesc,
+        nvinfer1::PluginTensorDesc const* outputDesc, void const* const* inputs, void* const* outputs, void* workspace,
+        cudaStream_t stream);
+
+    //! Decode rows of one enqueue: B sequences of S rows each. Phase 3 passes the whole step, phase 8 views of its
+    //! decode suffix.
+    struct DecodeRows
+    {
+        rt::Tensor const& packedQKV;       //!< [B, S, Hq or Hq + 2 * Hkv, D]
+        rt::Tensor const& ropeCosSin;      //!< [B, S, rotaryDim], token-aligned
+        rt::Tensor const& sequenceLengths; //!< [B] KV lengths after this step
+        rt::Tensor const& positionIds;     //!< [B, S] tree or explicit positions; empty otherwise
+        rt::Tensor& treeMask;              //!< [B, S, maskWords] for tree decoding; empty otherwise
+        rt::Tensor& kvCache;               //!< Donor input pool for shared-KV layers, the output pool otherwise
+        rt::Tensor& output;                //!< [B, S, Hq, D]
+        int32_t const* queryLengths;       //!< [B], read by tree decoding only
+        int32_t const* pageTable;          //!< [B, 2, maxPagesPerSeq]
+        int32_t maxPagesPerSeq;
+        half const* qNormGamma;
+        half const* kNormGamma;
+        float const* attentionSinks;
+        //! skip_softmax_decode_scale as flattened (bin, S) pairs; nullptr or len < 2 runs dense.
+        int32_t const* skipSoftmaxDecodeScaleTable;
+        int32_t skipSoftmaxDecodeScaleTableLen;
+        bool explicitPositionIds;
+    };
+
+    //! Input-slot layout implied by this instance's static fields.
+    AttentionInputLayout inputLayout() const noexcept;
+
+    //! Decode emission of phase 3 and of the phase 8 decode rows: RoPE and KV write, then CTM or XQA.
+    int32_t enqueueDecodeRows(DecodeRows const& rows, bool tree, std::byte* alignedWorkspacePtr, cudaStream_t stream);
+
+    //! Ragged paged FMHA backend for compact prefill rows; kNONE when no runner covers this layer.
+    ContextFMHABackend selectCompactPrefillBackend() const noexcept;
+
+    //! Whether phase 8 runs for this layer given its packed QKV width @p qkvWidth (attentionCompactSupport); never for
+    //! a two-pool external-prefix layer. getWorkspaceSize() reserves the compact workspace exactly when it holds.
+    bool supportsCompactPhase(int64_t qkvWidth) const noexcept;
+
+    //! This layer's kernel-deciding configuration, shared with the runtime's compact capability check.
+    AttentionLayerTraits layerTraits(bool qOnlyInput = false) const noexcept;
+
+    //! This layer's name and shape for error logs (describePluginLayer).
+    std::string describeLayer() const;
+
     //! Whether the paged CuTe DSL D512 bidirectional-mask prefill kernel is available.
     bool canUseCuteDslBidirectionalForPrefill() const noexcept;
 
     //! Validate that a vision-block prefill backend and XQA decode backend are available.
     void enforceVisionBlockKernelSupport() const;
+
+    //! Validate Ampere's FP8-storage/FP16-compute prefill and decode contract.
 
     //! Resolve one qk_norm gamma engine-weight input to a device pointer
     //! (nullptr when absent).
@@ -195,10 +251,12 @@ protected:
     int32_t mEnableContiguousQuerySwa{};
     //! Whether a learned per-query-head attention sink is supplied as an engine-weight input.
     int32_t mEnableAttentionSink{};
-    //! Datatype of QKV and KV cache. Only supports FP16 as of now.
+    //! QKV datatype is FP16; KV cache storage precision is configured separately.
     nvinfer1::DataType const mDataType{nvinfer1::DataType::kHALF};
     int32_t mSMVersion; //!< CUDA SM version
 
+    int32_t mExternalKVPrefix{}; //!< Read an independent prefix without modifying it
+    int32_t mFp8KVPrefix{};      //!< Prefix pool precision; the writable action pool remains FP16
     int32_t mEnableFp8KVCache{}; //!< Whether FP8 KV cache is enabled
     //! Whether the optional runtime context-mask selector input is present. Shape [0] keeps default causal/sliding
     //! context attention; shape [batch] selects padding/non-causal context attention. The tensor value is ignored.
@@ -221,9 +279,13 @@ protected:
     //! of swa_kv_cache_mode selects bounded or full storage for the engine instance.
     bool mSupportsBoundedKVCache{false};
 
-    //! Skip-softmax (BLASST) calibrated scale factor S (0 = disabled); see
-    //! resolveSkipSoftmaxScaleFactor — the kernel derives per-seq log2(S / seqlen_kv).
-    float mSkipSoftmaxScaleFactor{};
+    //! Tensor-parallel world size of the rank this layer was exported for; TP>1 decodes on XQA on every SM.
+    int32_t mTpSize{1};
+
+    //! Whether the skip_softmax_prefill_scale / skip_softmax_decode_scale table inputs are wired; set only
+    //! when that phase deploys a skip-softmax (BLASST) table. The tables' runtime contents drive the kernel.
+    int32_t mSkipSoftmaxPrefillInput{};
+    int32_t mSkipSoftmaxDecodeInput{};
 
     ContextFMHABackend mContextFMHABackend{ContextFMHABackend::kNONE};
 
@@ -233,6 +295,8 @@ protected:
     //! Serialized form of mXqaJitKernels. Held as a member because getFieldsToSerialize
     //! hands TensorRT a pointer into it.
     std::vector<uint8_t> mXqaJitBlob;
+    //! Context-owned counters with a stable address for all captured batch shapes. Not serialized or cloned.
+    rt::Tensor mXqaSemaphores;
     //! Whether FMHA context kernels are available for this configuration.
     bool mCanImplementFMHA{true};
 
@@ -245,6 +309,28 @@ protected:
     //! Whether the selected CuTe DSL backend supports a dense PADDING context
     //! kernel for runtime-selected non-causal DiffusionGemma denoise attention.
     bool mCanImplementPaddingFMHA{false};
+
+    //! Plugin-owned split-K arrival counters for the CTM decode kernel, zeroed at allocation and
+    //! self-resetting across launches. Allocated once at the profile-max size so the address stays
+    //! valid for every CUDA graph captured from this context. They cannot live in the TensorRT
+    //! workspace, which other layers overwrite between enqueues.
+    int32_t* mCtmSemaphores{nullptr};
+    size_t mCtmSemaphoreElems{};
+    //! Element count at the profile's max batch and query length; fixed in configurePlugin and serialized.
+    //! Zero means the engine predates the field and must be rebuilt.
+    int32_t mCtmSemaphoreCapacityElems{};
+    //! Blackwell (SM100/101/103/110) at TP=1: the CTM kernels are the only decode backend; the engine carries no
+    //! XQA blobs.
+    bool mCtmDecodeOnly{false};
+
+    //! \returns true when this layer's static configuration routes vanilla decode to the CTM kernel.
+    bool useCtmDecode() const noexcept;
+    //! \returns true when this layer's static configuration routes tree (spec-decode) decode to the CTM kernel.
+    bool useCtmTreeDecode() const noexcept;
+    //! int32 element count both CTM decode modules need for this batch and per-sequence query length.
+    size_t ctmSemaphoreElems(int32_t batchSize, int32_t qSeqLen) const noexcept;
+    bool allocateCtmSemaphores() noexcept;
+    void releaseCtmSemaphores() noexcept;
 
     //! INT32 representation of mSupportsBoundedKVCache kept alive for TensorRT plugin serialization.
     int32_t mSupportsBoundedKVCacheToSerialize{};

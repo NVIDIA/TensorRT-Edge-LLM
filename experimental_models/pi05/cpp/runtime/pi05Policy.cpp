@@ -445,8 +445,8 @@ Pi05Policy::Pi05Policy(std::string const& engineDir, cudaStream_t stream)
     // Sized once for every slot the contract declares, not per call; a request that leaves an
     // optional one out reshapes it down. The host half is pinned because the upload is async.
     std::vector<int64_t> const shape{numCameras(), 3, cfg.imageSize, cfg.imageSize};
-    mPixelValues = rt::Tensor(shape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "pi05::pixelValues");
-    mPixelValuesHost = rt::Tensor(shape, rt::DeviceType::kCPU, nvinfer1::DataType::kHALF, "pi05::pixelValuesHost");
+    mPixelValues = rt::Tensor(shape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "pi05::pixelValues");
+    mPixelValuesHost = rt::Tensor(shape, rt::DeviceType::kCPU, trt_edgellm::DataType::kHALF, "pi05::pixelValuesHost");
 }
 
 Pi05Policy::~Pi05Policy() = default;
@@ -727,7 +727,7 @@ void Pi05Policy::validatePixelValues(rt::Tensor const& pixelValues) const
             + std::to_string(mContract.imageWidth) + "]");
     }
     validateViewCount(static_cast<int32_t>(shape[0]));
-    if (pixelValues.getDataType() != nvinfer1::DataType::kHALF)
+    if (pixelValues.getDataType() != trt_edgellm::DataType::kHALF)
     {
         throw std::invalid_argument(
             "pi0.5 pixel values must be FLOAT16; the visual engine reads them as fp16 "

@@ -20,6 +20,7 @@
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
 #include "common/cudaUtils.h"
+#include "common/identityHash.h"
 #include "common/inputLimits.h"
 #include "common/logger.h"
 #include "common/mathUtils.h"
@@ -29,21 +30,30 @@
 #include "kernels/embeddingKernels/embeddingKernels.h"
 #include "kernels/posEncoding/applyRopeWriteKV.h"
 #include "kernels/posEncoding/initializeCosSinCache.h"
+#include "kernels/preprocessKernels/imageUtilKernels.h"
 #include "kernels/speculative/batchEvictKernels.h"
 #include "multimodal/common/multimodalRunner.h"
 #include "multimodal/qwen2/qwenViTRunner.h"
+#include "multimodal/qwen3/qwen3vlViTRunner.h"
 #include "profiling/nvtx_wrapper.h"
 #include "profiling/timer.h"
+#include "runtime/config/compactCapability.h"
+#include "runtime/contextCacheRequest.h"
 #include "runtime/debug/layerDebugger.h"
 #include "runtime/decoding/decoderRegistry.h"
 #include "runtime/decoding/decoderUtils.h"
 #include "runtime/decoding/requestStableRng.h"
+#include "runtime/deviceFailure.h"
+#include "runtime/embedding/pleIoBudget.h"
+#include "runtime/exec/engineExecutor.h"
 #include "runtime/exec/rtxRuntimeCache.h"
+#include "runtime/imageUtils.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/managedKVCacheRequest.h"
+#include "runtime/runtimeSession.h"
 #include "runtime/state/boundedSwaKVPageManager.h"
-#include "runtime/state/contextCache/blockHash.h"
 #include "runtime/state/contextCache/contextCacheCoordinator.h"
+#include "runtime/state/kvPageTable.h"
 #include "sampler/sampling.h"
 #include <algorithm>
 #include <cinttypes>
@@ -71,133 +81,62 @@ namespace
 constexpr int32_t kPrefillProfile{0};
 constexpr int32_t kDecodeProfile{1};
 
+//! Restores the base cache manager's batch on scope exit: a compact step materializes the step's
+//! sequence count into it, while admission and eviction require it to match the context's.
+struct CacheBatchRestore
+{
+    rt::HybridCacheManager& cacheManager;
+    int32_t batch;
+    ~CacheBatchRestore() noexcept
+    {
+        cacheManager.restoreActiveBatchSize(batch);
+    }
+};
+
 } // namespace
 
 namespace rt
 {
 
-namespace
-{
-bool needsCachedBlockDraftTreeHybridBindings(DeploymentConfig const& deployment)
-{
-    if (!deployment.specConfig.has_value() || deployment.base.numLinearAttnLayers == 0)
-    {
-        return false;
-    }
-    SpecDecodeMode const mode = deployment.specDecodeMode();
-    return mode == SpecDecodeMode::kDFlash
-        || (mode == SpecDecodeMode::kJetSpec && deployment.specConfig->draftingTopK > 1);
-}
-
-void validateCachedBlockDraftTreeMetadataBindings(
-    DeploymentConfig const& deployment, EngineExecutor const& baseExecutor)
-{
-    if (!deployment.specConfig.has_value() || !isCachedBlockDraftMode(deployment.specDecodeMode()))
-    {
-        return;
-    }
-
-    char const* modeName = specDecodeModeName(deployment.specDecodeMode());
-    char const* treeBaseFlag
-        = deployment.specDecodeMode() == SpecDecodeMode::kJetSpec ? "--jetspec-tree-base" : "--dflash-base";
-
-    bool const hasTreeParentIds = baseExecutor.hasIOTensor(binding_names::kTreeParentIds);
-    bool const hasTreeDepths = baseExecutor.hasIOTensor(binding_names::kTreeDepths);
-    bool const hasTreeMetadata = hasTreeParentIds || hasTreeDepths;
-    if (hasTreeMetadata)
-    {
-        ELLM_CHECK(hasTreeParentIds && hasTreeDepths,
-            std::string(modeName) + " tree-base engine must expose both INT32 tree metadata bindings '"
-                + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths + "'.");
-        ELLM_CHECK(baseExecutor.getBindingDataType(binding_names::kTreeParentIds) == DataType::kINT32
-                && baseExecutor.getBindingDataType(binding_names::kTreeDepths) == DataType::kINT32,
-            std::string(modeName) + " tree-base engine tree metadata bindings must be INT32: '"
-                + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths + "'.");
-    }
-
-    if (!needsCachedBlockDraftTreeHybridBindings(deployment))
-    {
-        return;
-    }
-
-    ELLM_CHECK(hasTreeParentIds && hasTreeDepths,
-        std::string(modeName) + " hybrid base engine requires INT32 tree metadata bindings '"
-            + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths
-            + "'. Re-export the base model with " + treeBaseFlag + ", then rebuild spec_base.engine.");
-}
-
-void validateMtpTreeMetadataBindings(DeploymentConfig const& deployment, EngineExecutor const& baseExecutor)
-{
-    if (!deployment.specConfig.has_value() || deployment.specDecodeMode() != SpecDecodeMode::kMTP
-        || deployment.base.numLinearAttnLayers == 0)
-    {
-        return;
-    }
-
-    bool const hasTreeParentIds = baseExecutor.hasIOTensor(binding_names::kTreeParentIds);
-    bool const hasTreeDepths = baseExecutor.hasIOTensor(binding_names::kTreeDepths);
-    bool const usesDDTree = deployment.specConfig->draftingTopK > 1;
-    ELLM_CHECK(hasTreeParentIds == hasTreeDepths,
-        std::string("MTP tree-base engine must expose both INT32 tree metadata bindings '")
-            + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths + "'.");
-    if (hasTreeParentIds)
-    {
-        ELLM_CHECK(baseExecutor.getBindingDataType(binding_names::kTreeParentIds) == DataType::kINT32
-                && baseExecutor.getBindingDataType(binding_names::kTreeDepths) == DataType::kINT32,
-            std::string("MTP tree-base engine tree metadata bindings must be INT32: '") + binding_names::kTreeParentIds
-                + "' and '" + binding_names::kTreeDepths + "'.");
-    }
-    ELLM_CHECK(usesDDTree == hasTreeParentIds,
-        usesDDTree ? "Hybrid MTP DDTree requires a tree-base engine. Rebuild with --tree-base before using "
-                     "--specDraftTopK > 1."
-                   : "Hybrid MTP base engine was built with --tree-base, but runtime is configured for linear MTP. "
-                     "Use --specDraftTopK > 1, or rebuild without --tree-base.");
-}
-
-} // namespace
-
-LLMRankRuntime::LLMRankRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
-    std::unordered_map<std::string, std::string> const& loraWeightsMap,
-    std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream, ParallelMapping const& mapping,
+LLMRankRuntime::LLMRankRuntime(DeploymentOptions const& options, cudaStream_t stream, ParallelMapping const& mapping,
     tokenizer::Tokenizer& tokenizer, chat_template::ChatTemplate const& chatTemplate,
-    ContextCacheConfig const& contextCacheConfig, std::string const& checkpointDir,
-    std::string const& draftCheckpointDir, std::optional<std::filesystem::path> const& runtimeCachePath)
+    std::shared_ptr<PleIoBudget> pleIoBudget)
+    : mPleIoBudget(pleIoBudget ? std::move(pleIoBudget) : std::make_shared<PleIoBudget>())
 {
-    initializeFromEngineDir(engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig, stream, mapping, tokenizer,
-        chatTemplate, contextCacheConfig, checkpointDir, draftCheckpointDir, runtimeCachePath);
+    initializeFromEngineDir(options, stream, mapping, tokenizer, chatTemplate);
 }
 
-LLMRankRuntime::LLMRankRuntime(ModelArtifacts&& artifacts, std::string const& engineDir,
-    std::string const& multimodalEngineDir, std::unordered_map<std::string, std::string> const& loraWeightsMap,
-    std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream, ParallelMapping const& mapping,
-    tokenizer::Tokenizer& tokenizer, chat_template::ChatTemplate const& chatTemplate,
-    ContextCacheConfig const& contextCacheConfig)
+LLMRankRuntime::LLMRankRuntime(ModelArtifacts&& artifacts, DeploymentOptions const& options, cudaStream_t stream,
+    ParallelMapping const& mapping, tokenizer::Tokenizer& tokenizer, chat_template::ChatTemplate const& chatTemplate,
+    std::shared_ptr<PleIoBudget> pleIoBudget)
+    : mPleIoBudget(pleIoBudget ? std::move(pleIoBudget) : std::make_shared<PleIoBudget>())
 {
-    initializeCommon(std::move(artifacts), engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig, stream,
-        mapping, tokenizer, chatTemplate, contextCacheConfig);
+    artifacts.validateDeploymentOptions(options);
+    initializeCommon(std::move(artifacts), options, stream, mapping, tokenizer, chatTemplate);
 }
 
 LLMRankRuntime::~LLMRankRuntime()
 {
-    if (mContextCache != nullptr && mContextCache->shutdown() != ContextCacheCoordinatorStatus::kOk)
-    {
-        LOG_ERROR("Context-cache shutdown could not prove stream quiescence.");
-        std::terminate();
-    }
     if (mBoundedSwaKVPageManager != nullptr && mBoundedSwaKVPageManager->shutdown() != SwaKVCacheStatus::kOk)
     {
         LOG_ERROR("SWA KV-cache shutdown could not prove stream quiescence.");
         std::terminate();
     }
+    if (mContextCache != nullptr && mContextCache->shutdown() != ContextCacheCoordinatorStatus::kOk)
+    {
+        LOG_ERROR("Context-cache shutdown could not prove stream quiescence.");
+        std::terminate();
+    }
 }
 
-void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::string const& multimodalEngineDir,
-    std::unordered_map<std::string, std::string> const& loraWeightsMap,
-    std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream, ParallelMapping const& mapping,
-    tokenizer::Tokenizer& tokenizer, chat_template::ChatTemplate const& chatTemplate,
-    ContextCacheConfig const& contextCacheConfig, std::string const& checkpointDir,
-    std::string const& draftCheckpointDir, std::optional<std::filesystem::path> const& runtimeCachePath)
+void LLMRankRuntime::initializeFromEngineDir(DeploymentOptions const& options, cudaStream_t stream,
+    ParallelMapping const& mapping, tokenizer::Tokenizer& tokenizer, chat_template::ChatTemplate const& chatTemplate)
 {
+    auto const& engineDir = options.engineDir;
+    auto const& draftingConfig = options.draftingConfig;
+    auto const& checkpointDir = options.checkpointDir;
+    auto const& draftCheckpointDir = options.draftCheckpointDir;
+    auto const& runtimeCachePath = options.runtimeCachePath;
     int32_t const tensorParallelSize = mapping.tensorParallelSize;
     int32_t const tensorParallelRank = mapping.tensorParallelRank;
     int32_t const worldSize = mapping.worldSize;
@@ -229,9 +168,9 @@ void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::
     }
     else
     {
-        artifacts.embedding = loadEmbeddingTable(engineRoot / "embedding.safetensors", stream);
+        artifacts.embedding
+            = loadEmbeddingTable(engineRoot / "embedding.safetensors", stream, options.offloadEmbedding);
     }
-    artifacts.pleEmbedding = artifacts.weights.takePleEmbedding();
 
     // Parse engine configurations and attach user drafting. The bundle factory
     // performs cross-engine consistency and drafting-vs-capacity checks.
@@ -243,7 +182,7 @@ void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::
         = createDeploymentConfig(baseConfigPath, draftConfigPath, draftingConfig, globalRank, worldSize);
     // EngineExecutor captures the active KV-pool geometry in its tensor registry.
     // Select the immutable runtime policy before constructing that registry.
-    artifacts.deployment.selectSwaKVCacheMode(contextCacheConfig.enabled);
+    artifacts.deployment.selectSwaKVCacheMode(options.contextCacheConfig.enabled);
     artifacts.deployment.runtimeCachePath = runtimeCachePath;
     if (draftingConfig.has_value() && artifacts.deployment.specDecodeMode() == SpecDecodeMode::kMTP)
     {
@@ -268,8 +207,9 @@ void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::
         std::optional<int32_t> const specDecodeBaseOutputHiddenDim = artifacts.deployment.specConfig.has_value()
             ? std::optional<int32_t>{artifacts.deployment.specConfig->baseOutputHiddenDim}
             : std::nullopt;
-        artifacts.baseExecutor = EngineExecutor::createForLLM(
-            baseEnginePath, artifacts.deployment.base, specDecodeBaseOutputHiddenDim, runtimeCache);
+        artifacts.baseExecutor
+            = EngineExecutor::createForLLM(baseEnginePath, artifacts.deployment.base, specDecodeBaseOutputHiddenDim,
+                runtimeCache, EngineRefitOptions{artifacts.weights.takeRefitWeights(), stream});
     }
     catch (std::exception const& e)
     {
@@ -280,14 +220,12 @@ void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::
 
     artifacts.weights.validateAgainstEngine(*artifacts.baseExecutor, "base");
     validateAgainstEngine(artifacts.deployment.base, *artifacts.baseExecutor, "base");
-    validateCachedBlockDraftTreeMetadataBindings(artifacts.deployment, *artifacts.baseExecutor);
-    validateMtpTreeMetadataBindings(artifacts.deployment, *artifacts.baseExecutor);
+    validateRecurrentVerifyMetadataBindings(artifacts.deployment, *artifacts.baseExecutor);
 
     // Validate the draft engine ABI before its sidecar geometry is used to allocate
     // physical cache resources. Ownership is transferred to the selected decoder.
     if (draftingConfig.has_value())
     {
-        artifacts.draftExecutor = decoder_utils::loadDraftEngine(engineRoot, artifacts.deployment, runtimeCache);
         std::filesystem::path const draftConfig = engineRoot / "draft_config.json";
         if (artifacts.deployment.specDecodeMode() == SpecDecodeMode::kMTP)
         {
@@ -298,6 +236,8 @@ void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::
             artifacts.draftWeights.load(
                 engineRoot, draftConfig, stream, artifacts.draftCheckpointDir, artifacts.checkpointDir);
         }
+        artifacts.draftExecutor = decoder_utils::loadDraftEngine(engineRoot, artifacts.deployment, runtimeCache,
+            EngineRefitOptions{artifacts.draftWeights.takeRefitWeights(), stream});
         std::string const draftLabel
             = std::string{specDecodeModeName(artifacts.deployment.specDecodeMode())} + " draft";
         artifacts.draftWeights.validateAgainstEngine(*artifacts.draftExecutor, draftLabel);
@@ -318,18 +258,33 @@ void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::
         artifacts.vocabMap = std::move(vocabMapTensors[0]);
     }
 
-    initializeCommon(std::move(artifacts), engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig, stream,
-        mapping, tokenizer, chatTemplate, contextCacheConfig);
+    initializeCommon(std::move(artifacts), options, stream, mapping, tokenizer, chatTemplate);
 }
 
-void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string const& engineDir,
-    std::string const& multimodalEngineDir, std::unordered_map<std::string, std::string> const& loraWeightsMap,
-    std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream, ParallelMapping const& mapping,
-    tokenizer::Tokenizer& tokenizer, chat_template::ChatTemplate const& chatTemplate,
-    ContextCacheConfig const& contextCacheConfig)
+void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, DeploymentOptions const& options, cudaStream_t stream,
+    ParallelMapping const& mapping, tokenizer::Tokenizer& tokenizer, chat_template::ChatTemplate const& chatTemplate)
 {
+    auto const& engineDir = options.engineDir;
+    auto const& multimodalEngineDir = options.multimodalEngineDir;
+    auto const& loraWeightsMap = options.loraWeightsMap;
+    auto const draftingConfig = artifacts.deployment.draftingConfig();
+    auto const& contextCacheConfig = options.contextCacheConfig;
+    auto const& pleConfig = options.pleConfig;
     ELLM_CHECK(artifacts.baseExecutor != nullptr, "Model artifacts require a base engine executor.");
-    validateDsparkTreeMetadataBindings(artifacts.deployment, *artifacts.baseExecutor);
+    validateRecurrentVerifyMetadataBindings(artifacts.deployment, *artifacts.baseExecutor);
+
+    ELLM_CHECK(options.benchmark.maxDecodeRounds >= 0
+            && (options.benchmark.forcedAcceptanceLength == -1 || options.benchmark.forcedAcceptanceLength > 0),
+        "Invalid benchmark round or acceptance budget");
+    ELLM_CHECK(!options.benchmark.enabled() || mapping.tensorParallelSize == 1,
+        "Benchmark execution controls currently require single-device execution");
+    ELLM_CHECK(!options.benchmark.enabled() || !contextCacheConfig.enabled,
+        "Benchmark execution controls require context reuse disabled");
+    ELLM_CHECK(options.benchmark.forcedAcceptanceLength < 0 || artifacts.deployment.draft.has_value(),
+        "Forced acceptance requires a speculative deployment");
+    mBenchmarkOptions = options.benchmark;
+    mProfilingTimer->setGpuTimingEnabled(options.benchmark.gpuTiming);
+    selectProfilingTimer();
 
     mMapping = mapping;
     mTokenizer = &tokenizer;
@@ -346,10 +301,10 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
     ExternalWeightManager preparedWeights = std::move(artifacts.weights);
     std::unique_ptr<EngineExecutor> draftExecutor = std::move(artifacts.draftExecutor);
     ExternalWeightManager draftWeights = std::move(artifacts.draftWeights);
-    auto pleEmbedding = std::move(artifacts.pleEmbedding);
     auto vocabMap = std::move(artifacts.vocabMap);
 
-    // The same engine uses bounded SWA pages when they save memory and its full KV profile otherwise or for reuse.
+    // The same engine uses bounded SWA pages whenever the active runtime mode supports them and the reduced pool
+    // saves memory.
     mDeployment.selectSwaKVCacheMode(contextCacheConfig.enabled);
     if (mDeployment.base.supportsBoundedSwaKVCache())
     {
@@ -448,12 +403,12 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
     //     batch-eviction mapping). Strategy-specific tensors are owned by strategies.
     // -----------------------------------------------------------------------
     int32_t const effectiveMaxProposalSize = hasDraft ? mDeployment.effectiveMaxDraftProposalSize() : 1;
-    int32_t const effectiveDraftTopK = hasDraft ? draftingConfig->draftingTopK : 1;
+    int32_t const effectiveDraftTopK = hasDraft ? mDeployment.specConfig->draftTopK : 1;
     int32_t const diffusionCanvasLen
         = mDeployment.base.isDiffusionBackbone ? std::max(1, mDeployment.base.diffusionCanvasLength) : 1;
-    int32_t const maxInputLength = hasDraft
-        ? std::max(mDeployment.base.maxSupportedInputLength, mDeployment.draft->maxSupportedInputLength)
-        : std::max(mDeployment.base.maxSupportedInputLength, diffusionCanvasLen);
+    int32_t const maxInputLength = hasDraft ? std::max({mDeployment.base.maxSupportedInputLength,
+                                                  mDeployment.draft->maxSupportedInputLength, effectiveMaxProposalSize})
+                                            : std::max(mDeployment.base.maxSupportedInputLength, diffusionCanvasLen);
     int32_t const diffusionSamplingSize = mMaxRuntimeBatchSize * diffusionCanvasLen;
     int32_t const maxSamplingSize = hasDraft ? std::max(mMaxRuntimeBatchSize * effectiveMaxProposalSize,
                                                    mMaxRuntimeBatchSize * effectiveDraftTopK * effectiveDraftTopK)
@@ -468,25 +423,31 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
     // 1 GiB for B=4, canvas=256, vocab=262144 with no runtime consumer.
     size_t const vanillaSamplingWorkspaceSize = mDeployment.base.isDiffusionBackbone
         ? 0U
-        : getTopKtopPSamplingWorkspaceSize(vanillaSamplingRows, mDeployment.base.outputVocabSize,
-              SamplingParams(vanillaSamplingRows, mDeployment.base.outputVocabSize, 1.0f, 0, 0.9f));
+        : getRowSamplingWorkspaceSize(vanillaSamplingRows, mDeployment.base.outputVocabSize);
     bool const isDSparkDraft = hasDraft && mDeployment.specDecodeMode() == SpecDecodeMode::kDSpark;
     bool const isDFlash2Draft = hasDraft && mDeployment.draft->dflashVersion == DFlashVersion::kV2;
     constexpr int32_t kDSparkMaxSparseTopK = 128;
     bool const isLinearBlockDraft = hasDraft
         && (isCachedBlockDraftMode(mDeployment.specDecodeMode())
             || mDeployment.specDecodeMode() == SpecDecodeMode::kDSpark);
-    int32_t const draftSamplingRows = isLinearBlockDraft ? mMaxRuntimeBatchSize * mDeployment.specConfig->verifySize
-                                                         : mMaxRuntimeBatchSize * effectiveDraftTopK;
+    int32_t const draftSamplingRows = isLinearBlockDraft
+        ? mMaxRuntimeBatchSize * mDeployment.specConfig->verifyTokenCount
+        : mMaxRuntimeBatchSize * effectiveDraftTopK;
     int32_t const draftSamplingTopK
         = isLinearBlockDraft ? (isDSparkDraft ? kDSparkMaxSparseTopK : 1) : effectiveDraftTopK;
-    size_t const dsparkBaseTopKWorkspaceSize = (isDSparkDraft || isDFlash2Draft)
-        ? getSelectAllTopKWorkspaceSize(mMaxRuntimeBatchSize * mDeployment.specConfig->verifySize,
+    // A DFlash2 draft emits selector support instead of logits, so no draft tokens are selected from this workspace.
+    size_t const draftTopKWorkspaceSize = isDFlash2Draft
+        ? 0
+        : getSelectAllTopKWorkspaceSize(draftSamplingRows, mDeployment.draft->outputVocabSize, draftSamplingTopK);
+    // Only the DFlash2 chain verifies with target sparse/dense probabilities.
+    bool const isDFlash2ChainDraft = isDFlash2Draft && mDeployment.specConfig->draftTopK == 1;
+    size_t const dsparkBaseTopKWorkspaceSize = (isDSparkDraft || isDFlash2ChainDraft)
+        ? getSelectAllTopKWorkspaceSize(mMaxRuntimeBatchSize * mDeployment.specConfig->verifyTokenCount,
               mDeployment.base.outputVocabSize, kDSparkMaxSparseTopK)
         : 0;
-    size_t const dflash2TopPWorkspaceSize = isDFlash2Draft
+    size_t const dflash2TopPWorkspaceSize = isDFlash2ChainDraft
         ? getTopPProbabilitiesWorkspaceSize(
-              mMaxRuntimeBatchSize * mDeployment.specConfig->verifySize, mDeployment.base.outputVocabSize)
+              mMaxRuntimeBatchSize * mDeployment.specConfig->verifyTokenCount, mDeployment.base.outputVocabSize)
         : 0;
     // DiffusionGemma logprobs require B*canvasLen rows, which is a GiB-scale log-softmax workspace for 26B.
     // Keep that allocation off the default serving path and grow it lazily only for numLogprobs requests.
@@ -498,8 +459,7 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
     size_t const maxSamplingWorkspaceSize = hasDraft
         ? std::max({vanillaSamplingWorkspaceSize,
               getSelectAllTopKWorkspaceSize(vanillaSamplingRows, mDeployment.base.outputVocabSize, 1),
-              getSelectAllTopKWorkspaceSize(draftSamplingRows, mDeployment.draft->outputVocabSize, draftSamplingTopK),
-              dsparkBaseTopKWorkspaceSize, dflash2TopPWorkspaceSize, logprobsWorkspaceSize})
+              draftTopKWorkspaceSize, dsparkBaseTopKWorkspaceSize, dflash2TopPWorkspaceSize, logprobsWorkspaceSize})
         : std::max(vanillaSamplingWorkspaceSize, logprobsWorkspaceSize);
     check::check(maxSamplingWorkspaceSize <= static_cast<size_t>(std::numeric_limits<int64_t>::max()),
         "Sampling workspace size exceeds tensor dimension range");
@@ -516,8 +476,9 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
             = rt::Tensor({maxSamplingSize}, rt::DeviceType::kGPU, DataType::kINT32, "LLMRankRuntime::mSamplingIndices");
         mSamplingScores
             = rt::Tensor({maxSamplingSize}, rt::DeviceType::kGPU, DataType::kFLOAT, "LLMRankRuntime::mSamplingScores");
-        mSamplingUniforms = rt::Tensor(
-            {mMaxRuntimeBatchSize}, rt::DeviceType::kGPU, DataType::kFLOAT, "LLMRankRuntime::mSamplingUniforms");
+        int64_t const samplingRowBytes = static_cast<int64_t>(mMaxRuntimeBatchSize * sizeof(SamplingRow));
+        mSamplingRows
+            = rt::Tensor({samplingRowBytes}, rt::DeviceType::kGPU, DataType::kINT8, "LLMRankRuntime::mSamplingRows");
         allocateLogitBias(mLogitBias, mMaxRuntimeBatchSize);
 
         // Batch mapping tensor for batch eviction.
@@ -539,8 +500,8 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
             {maxSamplingSize}, rt::DeviceType::kCPU, DataType::kINT32, "LLMRankRuntime::mHostSelectedTokenIds");
         mHostOutputSpaceIds = rt::Tensor(
             {maxSamplingSize}, rt::DeviceType::kCPU, DataType::kINT32, "LLMRankRuntime::mHostOutputSpaceIds");
-        mHostSamplingUniforms = rt::Tensor(
-            {mMaxRuntimeBatchSize}, rt::DeviceType::kCPU, DataType::kFLOAT, "LLMRankRuntime::mHostSamplingUniforms");
+        mHostSamplingRows = rt::Tensor({static_cast<int64_t>(mMaxRuntimeBatchSize * sizeof(SamplingRow))},
+            rt::DeviceType::kCPU, DataType::kINT8, "LLMRankRuntime::mHostSamplingRows");
         mHostReuseKVCacheLengths = rt::Tensor(
             {mMaxRuntimeBatchSize}, rt::DeviceType::kCPU, DataType::kINT32, "LLMRankRuntime::mHostReuseKVCacheLengths");
         // Pre-allocate multimodal indices tensor (used for audio/vision embedding lookup).
@@ -559,11 +520,21 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
         LOG_ERROR("Failed to allocate runtime tensors: %s", e.what());
         throw std::runtime_error("Failed to allocate runtime tensors: " + std::string(e.what()));
     }
-    if (mDeployment.base.pleEnabled)
+    ELLM_CHECK(pleConfig.residency != PleResidency::kCACHED
+            || (mDeployment.base.usesPlePool() && mapping.tensorParallelSize == 1
+                && !mDeployment.base.isDiffusionBackbone),
+        "Cached PLE currently requires a PLE-enabled engine with single-device decoding");
+    if (mDeployment.base.gemmaPleEnabled)
     {
-        int32_t const maxPleSeqLen = std::max(maxInputLength, std::max(1, mDeployment.base.maxVerifyTreeSize));
-        mGemma4Ple = std::make_unique<Gemma4EmbeddingPreprocessor>(std::filesystem::path(engineDir), mDeployment.base,
-            mMaxRuntimeBatchSize, maxPleSeqLen, mBaseTensorMap, stream, std::move(pleEmbedding));
+        int32_t const maxPleSeqLen = mDeployment.base.maxQueryLength;
+        mGemma4Ple = std::make_unique<Gemma4EmbeddingPreprocessor>(mDeployment.base, mMaxRuntimeBatchSize, maxPleSeqLen,
+            mBaseTensorMap, stream, pleConfig, mCheckpointDir, mPleIoBudget);
+    }
+    if (mDeployment.base.ngramEnabled())
+    {
+        int32_t const maxNgramSeqLen = std::max(maxInputLength, std::max(1, mDeployment.base.maxSpecVerifyTokens));
+        mQwen4ExpNgram = std::make_unique<Qwen4ExpNgramPreprocessor>(mDeployment.base, mMaxRuntimeBatchSize,
+            maxNgramSeqLen, mBaseTensorMap, stream, pleConfig, mCheckpointDir, mPleIoBudget);
     }
     LOG_INFO("Runtime tensors successfully allocated.");
 
@@ -580,7 +551,8 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
     // -----------------------------------------------------------------------
     // 12. Guided decoding. Needs the tokenizer and the reduced-vocab map above.
     // -----------------------------------------------------------------------
-    int32_t const guidedMaxRowsPerSlot = mDeployment.specConfig.has_value() ? mDeployment.specConfig->verifySize : 1;
+    int32_t const guidedMaxRowsPerSlot
+        = mDeployment.specConfig.has_value() ? mDeployment.specConfig->jumpVerifyTokenCount : 1;
     mGuidedDecoder.initialize(mMaxRuntimeBatchSize, guidedMaxRowsPerSlot, mDeployment.base.outputVocabSize,
         mDeployment.base.vocabSize, mTokenizer, mBaseVocabMappingTable, stream);
 
@@ -588,6 +560,11 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
     // 13. Decoding strategies.
     // -----------------------------------------------------------------------
     buildDecodingRuntimeContext();
+    if (mDeployment.specConfig.has_value())
+    {
+        mDecodingRuntimeContext->specPleStaging = SpecPleStaging(
+            *mDecodingRuntimeContext, mDeployment.specConfig->maxVerifyTokens, mDeployment.specConfig->verifyLayout);
+    }
     mDecoderRegistry = std::make_unique<DecoderRegistry>(*mDecodingRuntimeContext,
         DecoderRegistryInit{std::filesystem::path(engineDir), draftingConfig, std::move(draftExecutor),
             std::move(draftWeights), stream});
@@ -595,6 +572,8 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
     // -----------------------------------------------------------------------
     // 14. Optional multimodal runners.
     // -----------------------------------------------------------------------
+    mVisionRunner = std::move(artifacts.visionRunner);
+    mAudioRunner = std::move(artifacts.audioRunner);
     if (!multimodalEngineDir.empty())
     {
         // A missing engine file means the deployment simply has no such
@@ -614,8 +593,14 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
             return runner;
         };
 
-        mAudioRunner = loadRunner(multimodalEngineDir + "/audio", "audio_encoder.engine", "Audio");
-        mVisionRunner = loadRunner(multimodalEngineDir + "/visual", "visual.engine", "Visual");
+        if (!mAudioRunner)
+        {
+            mAudioRunner = loadRunner(multimodalEngineDir + "/audio", "audio_encoder.engine", "Audio");
+        }
+        if (!mVisionRunner)
+        {
+            mVisionRunner = loadRunner(multimodalEngineDir + "/visual", "visual.engine", "Visual");
+        }
         if (!mVisionRunner)
         {
             mVisionRunner = loadRunner(multimodalEngineDir, "visual.engine", "Vision");
@@ -624,23 +609,17 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
         // At least one multimodal runner must be available
         ELLM_CHECK(mAudioRunner || mVisionRunner, "No valid multimodal engine found in " + multimodalEngineDir);
 
-        // Try to load action expert from multimodalEngineDir/action
-        try
+        std::string const actionDir = multimodalEngineDir + "/action";
+        if (std::filesystem::exists(std::filesystem::path(actionDir) / "action.engine"))
         {
-            std::string actionDir = multimodalEngineDir + "/action";
-            LOG_INFO("Attempting to load Action runner from %s", actionDir.c_str());
-            auto actionRunner = std::make_unique<Alpamayo1ActionRunner>(actionDir, mCheckpointDir.string(), stream,
-                mSharedResources->cacheManagers[0]->getKVCacheManager().getConfig());
-            auto const& basePageTable = *mSharedResources->kvPageTables[0];
-            auto actionKvBatchCollector = std::make_unique<ActionKvBatchCollector>(
-                mMaxRuntimeBatchSize, basePageTable.maxPagesPerSeq(), basePageTable.numPages());
-            mActionRunner = std::move(actionRunner);
-            mActionKvBatchCollector = std::move(actionKvBatchCollector);
+            ELLM_CHECK(mapping.worldSize == mapping.tensorParallelSize,
+                "Alpamayo action multi-device inference currently supports tensor parallelism only");
+            ELLM_CHECK(!mDeployment.base.ropeConfig.yarn.has_value(),
+                "Alpamayo action runner does not support YaRN RoPE scaling");
+            mActionRunner = std::make_unique<Alpamayo1ActionRunner>(actionDir, mCheckpointDir.string(), stream,
+                mSharedResources->cacheManagers[0]->getKVCacheManager().getConfig(), mapping.tensorParallelSize,
+                mapping.tensorParallelRank, mDeployment.base.kvCacheScales);
             LOG_INFO("Alpamayo 1 action expert loaded.");
-        }
-        catch (std::exception const& e)
-        {
-            LOG_INFO("Failed to load Action runner from %s: %s", (multimodalEngineDir + "/action").c_str(), e.what());
         }
 
         // Validate that the action engine's max KV cache capacity matches the LLM engine's.
@@ -656,9 +635,25 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
         }
     }
 
+    RopeConfig const& baseRope = mDeployment.base.ropeConfig;
+    if (baseRope.type == RopeType::kMRope && baseRope.yarn.has_value())
+    {
+        // Media rows go into the same MRoPE table as text rows, so they use PipelineIO's YaRN frequencies.
+        for (MultimodalRunner* runner : {mVisionRunner.get(), mAudioRunner.get()})
+        {
+            if (runner != nullptr)
+            {
+                runner->setMropeYarnFrequencies(mPipelineIO->mropeInvFreq, baseRope.yarn->mscale);
+            }
+        }
+    }
+
+    initializeVisionDataParallel();
+
     if (contextCacheConfig.enabled)
     {
-        ELLM_CHECK(mActionRunner == nullptr, "Context reuse cannot be enabled with action runners.");
+        ELLM_CHECK(mActionRunner == nullptr || mapping.tensorParallelSize == 1,
+            "Context reuse cannot be enabled with tensor-parallel action runners.");
         ELLM_CHECK(!mSharedResources->cacheManagers.empty()
                 && mSharedResources->cacheManagers.size() == mSharedResources->kvPageTables.size()
                 && mSharedResources->cacheManagers.size() <= 2,
@@ -667,30 +662,43 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
             = mSharedResources->cacheManagers.size() == 2 ? mSharedResources->cacheManagers[1].get() : nullptr;
         KVPageTable* const draftPageTable
             = mSharedResources->kvPageTables.size() == 2 ? mSharedResources->kvPageTables[1].get() : nullptr;
-        ContextCachePhysicalResources cacheResources{
-            *mSharedResources->cacheManagers[0], *mSharedResources->kvPageTables[0], draftCache, draftPageTable};
+        KVPageTable* const swaPageTable = needsBoundedSwaPageManager ? mSharedResources->getSwaKVPageTable(0) : nullptr;
+        ContextCachePhysicalResources cacheResources{*mSharedResources->cacheManagers[0],
+            *mSharedResources->kvPageTables[0], draftCache, draftPageTable, swaPageTable};
         ELLM_CHECK(contextCacheDeploymentProfile.has_value(), "Context-cache deployment was not validated");
         mContextCache = std::make_unique<ContextCacheCoordinator>(
             contextCacheConfig, mDeployment, *contextCacheDeploymentProfile, cacheResources, stream);
 
-        mHybridMtpContextReuseDeployment
+        mHybridSpecContextReuseDeployment
             = contextCacheDeploymentProfile->isHybrid() && contextCacheDeploymentProfile->isSpeculative();
-        if (contextCacheDeploymentProfile->isHybrid() && contextCacheDeploymentProfile->isSpeculative())
+        if (mHybridSpecContextReuseDeployment)
         {
-            rt::Coords const bhShape = mPipelineIO->baseHiddenStates.getShape();
-            mBoundaryFoldScratch = rt::Tensor({bhShape[1], bhShape[2]}, rt::DeviceType::kGPU,
-                mPipelineIO->baseHiddenStates.getDataType(), "LLMRankRuntime::mBoundaryFoldScratch");
-            mBoundaryFoldMaxRows = math::cast<int32_t>(bhShape[1]);
+            mSpecFutureDependencyTokens = contextCacheDeploymentProfile->specReuseContract->futureDependencyTokens;
+            if (mSpecFutureDependencyTokens > 0)
+            {
+                rt::Coords const bhShape = mPipelineIO->baseHiddenStates.getShape();
+                mBoundaryFoldScratch = rt::Tensor({bhShape[1], bhShape[2]}, rt::DeviceType::kGPU,
+                    mPipelineIO->baseHiddenStates.getDataType(), "LLMRankRuntime::mBoundaryFoldScratch");
+                mBoundaryFoldMaxRows = math::cast<int32_t>(bhShape[1]);
+            }
         }
     }
-    else if (needsBoundedSwaPageManager)
+    if (mActionRunner)
+    {
+        auto const& basePageTable = *mSharedResources->kvPageTables[0];
+        mActionKvBatchCollector
+            = std::make_unique<ActionKvBatchCollector>(mMaxRuntimeBatchSize, basePageTable.maxPagesPerSeq(),
+                basePageTable.numPages(), mContextCache ? &mContextCache->manager() : nullptr);
+    }
+    if (needsBoundedSwaPageManager)
     {
         ELLM_CHECK(mSharedResources->cacheManagers.size() == 1 && mSharedResources->kvPageTables.size() == 1,
             "Bounded SWA supports one vanilla base cache");
         KVPageTable* const swaPageTable = mSharedResources->getSwaKVPageTable(0);
         ELLM_CHECK(swaPageTable != nullptr, "Bounded SWA requires an independent sparse page table");
-        mBoundedSwaKVPageManager = std::make_unique<BoundedSwaKVPageManager>(
-            *mSharedResources->cacheManagers[0], *mSharedResources->kvPageTables[0], *swaPageTable, stream);
+        mBoundedSwaKVPageManager = std::make_unique<BoundedSwaKVPageManager>(*mSharedResources->cacheManagers[0],
+            *mSharedResources->kvPageTables[0], *swaPageTable, stream, BoundedSwaKVPageManager::StreamSynchronizer{},
+            contextCacheConfig.enabled);
     }
 
     // -----------------------------------------------------------------------
@@ -705,8 +713,8 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
     int64_t const actionContextMemorySize = mActionRunner ? mActionRunner->getRequiredContextMemorySize() : 0;
     int64_t const sharedContextMemorySize = std::max({baseContextMemorySize, strategyContextMemorySize,
         visionContextMemorySize, audioContextMemorySize, actionContextMemorySize});
-    mSharedExecContextMemory = rt::Tensor({sharedContextMemorySize}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8,
-        "LLMRankRuntime::mSharedExecContextMemory");
+    mSharedExecContextMemory = rt::Tensor({sharedContextMemorySize}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kUINT8, "LLMRankRuntime::mSharedExecContextMemory");
     mBaseExecutor->setContextMemory(mSharedExecContextMemory);
     if (mDecoderRegistry)
     {
@@ -739,6 +747,14 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
         mEncoderEmbeddingCache = std::make_unique<EncoderEmbeddingCache>(budgetBytes);
         LOG_INFO("Encoder embedding cache initialized with %zu MiB budget.",
             static_cast<size_t>(budgetBytes / (1024 * 1024)));
+    }
+
+    // Row-digest scratch: only a deployment that can compute image content digests needs it.
+    if (mVisionRunner && (mContextCache || mEncoderEmbeddingCache))
+    {
+        mImageDigestRows = rt::Tensor(
+            {limits::multimodal::kMaxImageDigestRows, static_cast<int64_t>(sizeof(kernel::ImageRowDigest))},
+            rt::DeviceType::kCPU, DataType::kUINT8, "LLMRankRuntime::mImageDigestRows");
     }
 }
 
@@ -794,15 +810,105 @@ void LLMRankRuntime::buildDecodingRuntimeContext()
         *mSharedResources->cacheManagers[0], *mPipelineIO, [this](InferenceDims const& dims, cudaStream_t stream) {
             return captureBaseGraphWithLoraFanout(dims, stream);
         }};
-    PreprocessResources preprocessResources{
-        *mStepPreparer, *mEmbeddingPre, mEmbedding, mIdsInput, mDeepstack.get(), mGemma4Ple.get()};
+    PreprocessResources preprocessResources{*mStepPreparer, *mEmbeddingPre, mEmbedding, mIdsInput, mDeepstack.get(),
+        mGemma4Ple.get(), mQwen4ExpNgram.get()};
     SamplingBuffers sampling{mSamplingWorkspace, mSamplingIndices, mSamplingScores, mBaseVocabMappingTable,
-        mHostDecoderTokenIds, mHostSelectedTokenIds, mHostOutputSpaceIds, mSamplingUniforms, mHostSamplingUniforms};
+        mHostDecoderTokenIds, mHostSelectedTokenIds, mHostOutputSpaceIds, mSamplingRows, mHostSamplingRows};
     LogprobsBuffers logprobs{
         mDeviceLogprobsValues, mDeviceLogprobsIndices, mHostLogprobsValues, mHostLogprobsIndices, mGatheredLogits};
     mDecodingRuntimeContext.reset(
         new DecodingRuntimeContext{mDeployment, mMaxRuntimeBatchSize, mCheckpointDir, mDraftCheckpointDir,
             baseResources, preprocessResources, *mTokenizer, mLogitBias, mGuidedDecoder, sampling, logprobs});
+    mDecodingRuntimeContext->benchmark = &mBenchmarkOptions;
+
+    // Zero disables jump-forward on the decoders that read the bound (jumpForwardRequested). A catch-up row carries
+    // the sampled token plus the jump: it must fit one context-chunk row and, for bounded SWA's one spare page, one KV
+    // page.
+    mDecodingRuntimeContext->chunkMaxJumpTokens
+        = std::max(0, std::min(mDeployment.base.maxQueryLength - 1, kTOKENS_PER_PAGE - 1));
+    mDecodingRuntimeContext->maxJumpTokens
+        = mDeployment.specDecodeMode() == SpecDecodeMode::kNONE ? 0 : mDeployment.specConfig->maxJumpTokens;
+}
+
+bool LLMRankRuntime::jumpForwardRequested(GuidedDecodingParams const& params, DecodingStrategy const& strategy,
+    bool nonGreedySampling, bool inFlightBatching) const noexcept
+{
+    if (!params.jumpForward)
+    {
+        return false;
+    }
+    struct Refusal
+    {
+        JumpForwardRefusal reason;
+        char const* unsupported;
+    };
+    std::optional<Refusal> refusal;
+    if (mDeployment.specDecodeMode() == SpecDecodeMode::kNONE || strategy.kind() == DecodingStrategyKind::kVanilla)
+    {
+        // The vanilla decoder catches up on a context chunk, on a speculative deployment's fallback as well.
+        if (mDeployment.base.isDiffusionBackbone)
+        {
+            refusal = Refusal{JumpForwardRefusal::kDiffusionBackbone, "diffusion backbones"};
+        }
+        else if (mDeployment.base.useVisionBidirectionalAttention)
+        {
+            // The catch-up step is a text context chunk, which vision-block attention does not accept mid-sequence.
+            refusal = Refusal{JumpForwardRefusal::kVisionBlockAttention, "vision-block attention"};
+        }
+        else if (mDecodingRuntimeContext == nullptr || mDecodingRuntimeContext->chunkMaxJumpTokens <= 0)
+        {
+            refusal
+                = Refusal{JumpForwardRefusal::kSingleTokenChunk, "engines whose context chunk holds a single token"};
+        }
+    }
+    else if (inFlightBatching)
+    {
+        refusal = Refusal{JumpForwardRefusal::kSpeculativeInFlightBatching,
+            "speculative decoders under in-flight batching (the blocking request path serves it)"};
+    }
+    else if (nonGreedySampling && strategy.capabilities().supportsLosslessSampling)
+    {
+        refusal = Refusal{JumpForwardRefusal::kNonGreedySampling, "non-greedy sampling under speculative decoding"};
+    }
+    else if (mDecodingRuntimeContext == nullptr || mDecodingRuntimeContext->maxJumpTokens <= 0)
+    {
+        refusal = Refusal{JumpForwardRefusal::kNoVerifyHeadroom,
+            "speculative engines without verify headroom (tree drafting needs max_spec_verify_tokens above the verify "
+            "token count, chain drafting at least the chain width)"};
+    }
+    if (!refusal.has_value())
+    {
+        return true;
+    }
+    auto const logged = static_cast<size_t>(refusal->reason);
+    if (!mJumpForwardRefusalsLogged.test(logged))
+    {
+        mJumpForwardRefusalsLogged.set(logged);
+        LOG_WARNING("Jump-forward is not supported on %s; guided requests run without it.", refusal->unsupported);
+    }
+    return false;
+}
+
+void LLMRankRuntime::prepareJumpForwardExecution(DecodingStrategy const& strategy, cudaStream_t stream)
+{
+    mGuidedDecoder.prepareJumpForward();
+    // Only the vanilla decoder catches up on a context chunk.
+    if (mJumpForwardContextPrepared || strategy.kind() != DecodingStrategyKind::kVanilla)
+    {
+        return;
+    }
+    mJumpForwardContextPrepared = true;
+    try
+    {
+        if (!mBaseExecutor->dedicateContextChunkContext(kPrefillProfile, stream))
+        {
+            LOG_WARNING("Jump-forward catch-up steps keep the shared execution context: no dedicated context");
+        }
+    }
+    catch (std::exception const& error)
+    {
+        LOG_WARNING("Jump-forward catch-up steps keep the shared execution context: %s", error.what());
+    }
 }
 
 void LLMRankRuntime::setActionNoiseSeed(int32_t seed) noexcept
@@ -912,16 +1018,18 @@ bool LLMRankRuntime::synchronizeCancellationStates(DecodingInferenceContext& con
 }
 
 LLMRankRuntime::GenerationSession::GenerationSession(LLMRankRuntime& runtime, DecodingInferenceContext& context,
-    DecodingStrategy& strategy, ManagedKVCacheRequest* managedRequest, LLMGenerationRequest const& request,
-    DecodingKvHeadroom const& kvHeadroom, cudaStream_t stream, bool boundarySchedulingActive)
+    DecodingStrategy& strategy, ManagedKVCacheRequest* managedRequest, DecodingKvHeadroom const& kvHeadroom,
+    DecodingKvHeadroom const& jumpForwardKvHeadroom, cudaStream_t stream, bool synchronizeCancellation,
+    std::vector<bool> actionSlots)
     : mRuntime(runtime)
     , mContext(context)
-    , mStrategy(strategy)
+    , mStrategy(&strategy)
     , mManagedRequest(managedRequest)
-    , mRequest(request)
     , mKvHeadroom(kvHeadroom)
+    , mJumpForwardKvHeadroom(jumpForwardKvHeadroom)
     , mStream(stream)
-    , mBoundarySchedulingActive(boundarySchedulingActive)
+    , mSynchronizeCancellation(synchronizeCancellation)
+    , mActionSlots(std::move(actionSlots))
     // The same lookups the grammar gate uses (reasoningEndMarkers), so both agree on which token
     // ends the block.
     , mEndOfChannelId(reasoningEndMarkers(*runtime.mTokenizer)[0])
@@ -929,8 +1037,7 @@ LLMRankRuntime::GenerationSession::GenerationSession(LLMRankRuntime& runtime, De
     , mStartOfChannelId(reasoningStartMarkers(*runtime.mTokenizer)[0])
     , mStartOfThinkId(reasoningStartMarkers(*runtime.mTokenizer)[1])
     , mHasActionRequest(runtime.mActionRunner != nullptr
-          && std::any_of(request.requests.begin(), request.requests.end(),
-              [](auto const& req) { return req.pastTrajectory.has_value(); }))
+          && std::any_of(mActionSlots.begin(), mActionSlots.end(), [](bool action) { return action; }))
 {
     // Alpamayo 1 marks the start of the trajectory block with a dedicated token.
     if (mRuntime.mActionRunner && mRuntime.mActionRunner->getModelType() == action::ActionModelType::ALPAMAYO1)
@@ -939,13 +1046,14 @@ LLMRankRuntime::GenerationSession::GenerationSession(LLMRankRuntime& runtime, De
     }
 
     // Few-layer-validation / fixed-output perf: when EDGELLM_IGNORE_EOS is set, suppress
-    // EOS-based termination so the run produces exactly maxGenerateLength tokens. This also
+    // EOS-based termination so every run produces exactly maxGenerateLength tokens. This also
     // applies to multi-token accept paths such as DiffusionGemma canvas commit; otherwise EOS
-    // inside a canvas can truncate a fixed-output block.
+    // inside a canvas can truncate a fixed-output block. A single request asks for the same
+    // through its own ignoreEos, which lands on its slot (context.ignoreEos).
     char const* const ignoreEosValue = std::getenv("EDGELLM_IGNORE_EOS");
-    mIgnoreEos
+    mIgnoreEosForAllSlots
         = ignoreEosValue != nullptr && std::string(ignoreEosValue) != "0" && std::string(ignoreEosValue) != "false";
-    if (mIgnoreEos)
+    if (mIgnoreEosForAllSlots)
     {
         LOG_INFO("EDGELLM_IGNORE_EOS set: ignoring EOS; running to maxGenerateLength.");
     }
@@ -954,19 +1062,57 @@ LLMRankRuntime::GenerationSession::GenerationSession(LLMRankRuntime& runtime, De
     // destructor takes it back out again.
     mContext.shouldStopAfterAcceptedToken = [this](int32_t batchIdx, int32_t tokenId) {
         updateThinkingDoneForToken(batchIdx, tokenId);
-        bool isEos = !mIgnoreEos && mRuntime.mTokenizer->isEosToken(tokenId);
-        if (isEos && mRequest.enableThinking && tokenId != mRuntime.mTokenizer->getEosId()
+        bool isEos = !ignoresEos(batchIdx) && mRuntime.mTokenizer->isEosToken(tokenId);
+        if (isEos && mContext.enableThinking && tokenId != mRuntime.mTokenizer->getEosId()
             && !mContext.thinkingDone[batchIdx])
         {
             isEos = false;
         }
-        return isEos || mContext.currentGenerateLengths[batchIdx] >= mContext.maxGenerateLength;
+        return isEos || mContext.currentGenerateLengths[batchIdx] >= mContext.generateBudget(batchIdx);
     };
+}
+
+bool LLMRankRuntime::GenerationSession::ignoresEos(int32_t row) const noexcept
+{
+    return mIgnoreEosForAllSlots || mContext.ignoreEos[static_cast<size_t>(row)] != 0;
 }
 
 LLMRankRuntime::GenerationSession::~GenerationSession()
 {
     mContext.shouldStopAfterAcceptedToken = {};
+}
+
+bool LLMRankRuntime::GenerationSession::isActionSlot(int32_t batchIdx) const noexcept
+{
+    if (!mHasActionRequest)
+    {
+        return false;
+    }
+    int32_t const originalIndex = mContext.batchIndexMapping[static_cast<size_t>(batchIdx)];
+    return originalIndex >= 0 && static_cast<size_t>(originalIndex) < mActionSlots.size()
+        && mActionSlots[static_cast<size_t>(originalIndex)];
+}
+
+LLMRankRuntime::SteppedGeneration::~SteppedGeneration() noexcept
+{
+    // Drain failures while request buffers and cache ownership are still alive. Successful requests already drained.
+    if (!completed)
+    {
+        mFailure.drainFailedRequest(mStream);
+    }
+    mHostTokenStorage = std::move(context.raggedExecutionBatch.hostTokenIds);
+    if (actionKvCollector != nullptr)
+    {
+        try
+        {
+            actionKvCollector->releaseMaterialized(context.stream);
+        }
+        catch (...)
+        {
+            LOG_ERROR("Action KV cleanup could not prove stream quiescence.");
+            std::terminate();
+        }
+    }
 }
 
 bool LLMRankRuntime::GenerationSession::finished() const
@@ -988,7 +1134,7 @@ bool LLMRankRuntime::GenerationSession::finished() const
 
 void LLMRankRuntime::GenerationSession::updateThinkingDoneForToken(int32_t batchIdx, int32_t tokenId)
 {
-    if (!mRequest.enableThinking || mContext.thinkingDone[batchIdx])
+    if (!mContext.enableThinking || mContext.thinkingDone[batchIdx])
     {
         return;
     }
@@ -1004,26 +1150,75 @@ void LLMRankRuntime::GenerationSession::updateThinkingDoneForToken(int32_t batch
     }
 }
 
-void LLMRankRuntime::GenerationSession::updateThinkingDone()
+void LLMRankRuntime::GenerationSession::updateThinkingDoneForSlot(int32_t batchIdx)
 {
-    if (!mRequest.enableThinking && !mContext.hasGuidedDecoding)
+    if ((!mContext.enableThinking && !mContext.hasGuidedDecoding) || mContext.tokenIds[batchIdx].empty())
     {
         return;
     }
+    int32_t const tokenId = mContext.tokenIds[batchIdx].back();
+    updateThinkingDoneForToken(batchIdx, tokenId);
+
+    // Deliberately outside updateThinkingDoneForToken: that one returns early once
+    // `thinkingDone` latches, and the end marker would then never be observed.
+    if (mContext.hasGuidedDecoding && (tokenId == mEndOfChannelId || tokenId == mEndOfThinkId))
+    {
+        mContext.guidedReasoningEnded[batchIdx] = 1;
+    }
+}
+
+void LLMRankRuntime::GenerationSession::updateThinkingDone()
+{
     for (int32_t i = 0; i < mContext.activeBatchSize; ++i)
     {
-        if (mContext.tokenIds[i].empty())
-        {
-            continue;
-        }
-        int32_t const tokenId = mContext.tokenIds[i].back();
-        updateThinkingDoneForToken(i, tokenId);
+        updateThinkingDoneForSlot(i);
+    }
+}
 
-        // Deliberately outside updateThinkingDoneForToken: that one returns early once
-        // `thinkingDone` latches, and the end marker would then never be observed.
-        if (mContext.hasGuidedDecoding && (tokenId == mEndOfChannelId || tokenId == mEndOfThinkId))
+void LLMRankRuntime::GenerationSession::updateFinishState(int32_t batchIdx)
+{
+    int32_t const i = batchIdx;
+    auto& s = mContext.slotStreams[i];
+    s.profiler.recordGeneration(mContext.currentGenerateLengths[i]);
+    // terminalReason is set for all slots; non-streaming slots surface it via
+    // BatchResult.terminalReason -> response.finishReasons.
+    if (!mContext.finishedStates[i]) // Respect first-writer-wins (cancel may have fired).
+    {
+        if (isActionSlot(i))
         {
-            mContext.guidedReasoningEnded[i] = 1;
+            if (mContext.tokenIds[i].size() > 1 && mTrajFutureStartId >= 0
+                && mContext.tokenIds[i][mContext.tokenIds[i].size() - 2] == mTrajFutureStartId)
+            {
+                mContext.finishedStates[i] = 1;
+                s.terminalReason = FinishReason::kEndId;
+                LOG_DEBUG("Batch %d finished, reason: traj_future_start", i);
+            }
+        }
+        else if (!ignoresEos(i) && !mContext.tokenIds[i].empty())
+        {
+            // Check EOS (supports multiple EOS tokens, e.g. Gemma4 [1, 106]).
+            // In thinking mode, suppress secondary EOS until thinking is complete.
+            // ignoresEos() bypasses EOS entirely to force a fixed-length run.
+            auto const lastToken = mContext.tokenIds[i].back();
+            bool isEos = mRuntime.mTokenizer->isEosToken(lastToken);
+            if (isEos && mContext.enableThinking && lastToken != mRuntime.mTokenizer->getEosId()
+                && !mContext.thinkingDone[i])
+            {
+                isEos = false;
+            }
+            if (isEos)
+            {
+                mContext.finishedStates[i] = 1;
+                s.terminalReason = FinishReason::kEndId;
+                LOG_DEBUG("Batch %d finished, reason: EOS", i);
+            }
+        }
+        // Check max length
+        if (!mContext.finishedStates[i] && mContext.currentGenerateLengths[i] >= mContext.generateBudget(i))
+        {
+            mContext.finishedStates[i] = 1;
+            s.terminalReason = FinishReason::kLength;
+            LOG_DEBUG("Batch %d finished, total tokens=%d, reason: max_length", i, mContext.currentGenerateLengths[i]);
         }
     }
 }
@@ -1032,72 +1227,29 @@ void LLMRankRuntime::GenerationSession::updateFinishStates()
 {
     for (int32_t i = 0; i < mContext.activeBatchSize; ++i)
     {
-        mContext.slotStreams[i].profiler.recordGeneration(mContext.currentGenerateLengths[i]);
-        if (mContext.finishedStates[i])
-        {
-            continue; // Respect first-writer-wins (cancel may have fired).
-        }
-        auto& s = mContext.slotStreams[i];
-        // terminalReason is set for all slots; non-streaming slots surface it via
-        // BatchResult.terminalReason -> response.finishReasons.
-        if (mHasActionRequest && mContext.batchIndexMapping[i] < static_cast<int32_t>(mRequest.requests.size())
-            && mRequest.requests[static_cast<size_t>(mContext.batchIndexMapping[i])].pastTrajectory.has_value())
-        {
-            if (mContext.tokenIds[i].size() > 1 && mTrajFutureStartId >= 0
-                && mContext.tokenIds[i][mContext.tokenIds[i].size() - 2] == mTrajFutureStartId)
-            {
-                mContext.finishedStates[i] = 1;
-                s.terminalReason = FinishReason::kEndId;
-                LOG_DEBUG("Batch %d finished, reason: traj_future_start", i);
-                continue;
-            }
-        }
-        else
-        {
-            // Check EOS (supports multiple EOS tokens, e.g. Gemma4 [1, 106]).
-            // In thinking mode, suppress secondary EOS until thinking is complete.
-            // EDGELLM_IGNORE_EOS bypasses EOS entirely to force a fixed-length run.
-            if (!mIgnoreEos && !mContext.tokenIds[i].empty())
-            {
-                auto const lastToken = mContext.tokenIds[i].back();
-                bool isEos = mRuntime.mTokenizer->isEosToken(lastToken);
-                if (isEos && mRequest.enableThinking && lastToken != mRuntime.mTokenizer->getEosId()
-                    && !mContext.thinkingDone[i])
-                {
-                    isEos = false;
-                }
-                if (isEos)
-                {
-                    mContext.finishedStates[i] = 1;
-                    s.terminalReason = FinishReason::kEndId;
-                    LOG_DEBUG("Batch %d finished, reason: EOS", i);
-                    continue;
-                }
-            }
-        }
-        // Check max length
-        if (mContext.currentGenerateLengths[i] >= mContext.maxGenerateLength)
-        {
-            mContext.finishedStates[i] = 1;
-            s.terminalReason = FinishReason::kLength;
-            LOG_DEBUG("Batch %d finished, total tokens=%d, reason: max_length", i, mContext.currentGenerateLengths[i]);
-            continue;
-        }
+        updateFinishState(i);
     }
+}
 
-    // Stop-string override pass — runs after EOS/length so it can override
-    // kEndId/kLength (user-relevant cause). Cancel/error still win because
-    // decodePerSlot skipped the match when those reasons were latched.
+void LLMRankRuntime::GenerationSession::applyStopMatch(int32_t batchIdx)
+{
+    auto& s = mContext.slotStreams[batchIdx];
+    // After EOS/length so a stop string overrides kEndId/kLength (the user-relevant cause).
+    // Cancel/error still win because decodeSlot skipped the match when those reasons were latched.
+    if (s.stopMatchedThisIter && s.terminalReason != FinishReason::kCancelled
+        && s.terminalReason != FinishReason::kError)
+    {
+        mContext.finishedStates[batchIdx] = 1;
+        s.terminalReason = FinishReason::kStopWords;
+        LOG_DEBUG("Batch %d finished, reason: stop_words", batchIdx);
+    }
+}
+
+void LLMRankRuntime::GenerationSession::applyStopMatches()
+{
     for (int32_t i = 0; i < mContext.activeBatchSize; ++i)
     {
-        auto& s = mContext.slotStreams[i];
-        if (s.stopMatchedThisIter && s.terminalReason != FinishReason::kCancelled
-            && s.terminalReason != FinishReason::kError)
-        {
-            mContext.finishedStates[i] = 1;
-            s.terminalReason = FinishReason::kStopWords;
-            LOG_DEBUG("Batch %d finished, reason: stop_words", i);
-        }
+        applyStopMatch(i);
     }
 }
 
@@ -1109,7 +1261,7 @@ bool LLMRankRuntime::GenerationSession::performBatchEvictAndSnapshot()
             mRuntime.mSharedResources->cacheManagers[0]->getKVCacheLengths(), mContext.finishedStates,
             mContext.batchIndexMapping, mContext.residentRefs, mContext.stream);
     }
-    bool const status = mRuntime.performBatchEvict(mContext, mStrategy, mManagedRequest);
+    bool const status = mRuntime.performBatchEvict(mContext, *mStrategy, mManagedRequest);
     if (status && mHasActionRequest)
     {
         mRuntime.mActionKvBatchCollector->completeCapture();
@@ -1117,32 +1269,35 @@ bool LLMRankRuntime::GenerationSession::performBatchEvictAndSnapshot()
     return status;
 }
 
+void LLMRankRuntime::GenerationSession::rebindStrategy(DecodingStrategy& strategy)
+{
+    ELLM_CHECK(mContext.activeBatchSize == 0, "rebindStrategy: a strategy changes only between fills of the batch.");
+    mStrategy = &strategy;
+}
+
 bool LLMRankRuntime::GenerationSession::primeFromPrefill()
 {
+    mRuntime.selectProfilingTimer();
 
-    // Post-prefill per-iter pipeline:
-    //   cancel → decode (emitDelta + stop match) → finalize (EOS/length/stop) → emit
     // DiffusionGemma prefill writes prompt KV only and does not produce a generated token.
     if (!mRuntime.mDeployment.base.isDiffusionBackbone)
     {
         applyCancellationToFinishStates(mContext);
-        if ((!mRequest.streamChannels.empty() || mBoundarySchedulingActive)
-            && !mRuntime.synchronizeCancellationStates(mContext))
+        if (mSynchronizeCancellation && !mRuntime.synchronizeCancellationStates(mContext))
         {
             LOG_ERROR("Failed to synchronize cancellation state across parallel ranks after prefill.");
             return false;
         }
-        decodePerSlot(mContext, *mRuntime.mTokenizer);
-
         updateThinkingDone();
-
         updateFinishStates();
+        decodePerSlot(mContext, *mRuntime.mTokenizer);
+        applyStopMatches();
         emitChunks(mContext, *mRuntime.mTokenizer);
 
         // Managed page rows can be compacted without moving physical KV. Keep the unmanaged lifecycle unchanged;
         // Qwen-style MTP cannot compact its recurrent draft state after partial prefill eviction.
         bool const supportsPartialPrefillEviction
-            = (mManagedRequest != nullptr && mStrategy.kind() != DecodingStrategyKind::kMTP) || mHasActionRequest;
+            = (mManagedRequest != nullptr && mStrategy->kind() != DecodingStrategyKind::kMTP) || mHasActionRequest;
         if (mContext.activeBatchSize > 0 && (supportsPartialPrefillEviction || finished()))
         {
             bool const batchEvictStatus = performBatchEvictAndSnapshot();
@@ -1158,33 +1313,49 @@ bool LLMRankRuntime::GenerationSession::primeFromPrefill()
 
 bool LLMRankRuntime::GenerationSession::advance()
 {
+    mRuntime.selectProfilingTimer();
+    gTimer.setRound(mContext.generationRound);
+    TIME_STAGE("decode_round", mContext.stream);
     // Observe any consumer cancels at the top of the iteration so they land
     // first in the per-slot terminalReason latch.
     applyCancellationToFinishStates(mContext);
-    if ((!mRequest.streamChannels.empty() || mBoundarySchedulingActive)
-        && !mRuntime.synchronizeCancellationStates(mContext))
+    if (mSynchronizeCancellation && !mRuntime.synchronizeCancellationStates(mContext))
     {
         LOG_ERROR("Failed to synchronize cancellation state across parallel ranks.");
         return false;
     }
 
-    if (mManagedRequest != nullptr && !mManagedRequest->prepareDecodeStep(mContext, mKvHeadroom))
+    if (mManagedRequest != nullptr
+        && !mManagedRequest->prepareDecodeStep(mContext, mKvHeadroom, mJumpForwardKvHeadroom))
     {
         return false;
     }
 
-    if (!mStrategy.decodeStep(mContext))
+    if (!mStrategy->decodeStep(mContext))
     {
-        LOG_ERROR("Failed to decode tokens with %s decoding strategy.", mStrategy.name());
+        LOG_ERROR("Failed to decode tokens with %s decoding strategy.", mStrategy->name());
         return false;
     }
 
-    // Per-iter pipeline: decode -> finalize finish state -> emit chunks.
-    decodePerSlot(mContext, *mRuntime.mTokenizer);
     updateThinkingDone();
+    // Terminal tokens must bypass the stream interval and flush pending UTF-8 bytes.
     updateFinishStates();
+    decodePerSlot(mContext, *mRuntime.mTokenizer);
+    applyStopMatches();
+    if (mRuntime.mBenchmarkOptions.maxDecodeRounds > 0
+        && mContext.generationRound + 1 >= mRuntime.mBenchmarkOptions.maxDecodeRounds)
+    {
+        for (int32_t i = 0; i < mContext.activeBatchSize; ++i)
+        {
+            if (!mContext.finishedStates[i])
+            {
+                mContext.finishedStates[i] = 1;
+                mContext.slotStreams[i].terminalReason = FinishReason::kLength;
+            }
+        }
+    }
 
-    std::vector<int32_t> const& commonMaterializedStateLengths = mStrategy.commonMaterializedStateLengths();
+    std::vector<int32_t> const& commonMaterializedStateLengths = mStrategy->commonMaterializedStateLengths();
     if (mManagedRequest != nullptr && !mManagedRequest->completeDecodeStep(mContext, commonMaterializedStateLengths))
     {
         return false;
@@ -1193,6 +1364,10 @@ bool LLMRankRuntime::GenerationSession::advance()
 
     emitTokenCallbacks(mContext);
     mContext.generationRound += 1;
+    for (int32_t i = 0; i < mContext.activeBatchSize; ++i)
+    {
+        ++mContext.decodeRounds[static_cast<size_t>(i)];
+    }
 
     // Perform batch eviction after all old-slot progress and terminal publication are complete.
     if (!performBatchEvictAndSnapshot())
@@ -1203,67 +1378,26 @@ bool LLMRankRuntime::GenerationSession::advance()
     return true;
 }
 
-AdmitDecision LLMRankRuntime::GenerationSession::admitSequence(SlotSeed seed)
-{
-    // The scheduler keeps guided founders alone (founder-only gate), so this is an invariant, not
-    // a refusal -- but it must fire before the lease below, or a violation would strand leased
-    // pages the batch never owned a slot for.
-    ELLM_CHECK(!mContext.hasGuidedDecoding, "A guided batch cannot take an admission.");
-
-    // The three admission stages, each with its own commit semantics: the intent touched nothing
-    // resident, the reservation is refusable and leaves the batch untouched, and seating commits
-    // at appendSlot -- see the stage declarations for the exact boundaries.
-    RequestId const requestId = static_cast<RequestId>(seed.originalIndex) + 1;
-    AdmissionIntent intent{std::move(seed), requestId, std::nullopt};
-    if (AdmitDecision const reserved = reserveAdmission(intent); reserved != AdmitDecision::kAdmitted)
-    {
-        return reserved;
-    }
-    return seatAdmission(std::move(intent));
-}
-
 AdmitDecision LLMRankRuntime::GenerationSession::reserveAdmission(AdmissionIntent& intent)
 {
     SlotSeed& seed = intent.seed;
-    // Media under an active visual-token pruner is founder-only (see buildAdmissionIntent): the
-    // seated prefill would skip pruning and diverge from the founding path. Nothing was seated, so
-    // a transient refusal leaves the batch untouched and the head founds its own batch.
-    if (seed.admissionRefusedFounderOnly)
+    // A speculative strategy's draft writes ahead of the committed length in its own KV cache too.
+    std::vector<int32_t> const promptLength{static_cast<int32_t>(seed.promptTokenIds.size())};
+    ELLM_CHECK(seed.maxGenerateLength > 0
+            && clampMaxGenerateLengthForKVCapacity(promptLength, seed.maxGenerateLength,
+                   mRuntime.mDeployment.base.maxKVCacheCapacity, mKvHeadroom.baseExtraTokens)
+                == seed.maxGenerateLength
+            && (mKvHeadroom.draftExtraTokens == 0
+                || clampMaxGenerateLengthForKVCapacity(promptLength, seed.maxGenerateLength,
+                       mRuntime.mDeployment.draft->maxKVCacheCapacity, mKvHeadroom.draftExtraTokens)
+                    == seed.maxGenerateLength),
+        "reserveAdmission: the sequence's generate budget must already fit the KV capacity behind its prompt.");
+
+    // The batch both engines can run bounds the residents, whatever the resident pool holds.
+    if (mContext.activeBatchSize >= mRuntime.maxBatchSize())
     {
         return AdmitDecision::kNoCapacity;
     }
-    // The batch's generate budget was clamped from the founders' prompt lengths; a longer joiner
-    // prompt shrinks what the KV pool can carry for it. Refusing as transient is self-healing:
-    // the head waits, and once the batch turns over it founds the next one, where handleRequest
-    // clamps the budget to its own prompt.
-    std::vector<int32_t> const joinerLength{static_cast<int32_t>(seed.promptTokenIds.size())};
-    if (clampMaxGenerateLengthForKVCapacity(joinerLength, mContext.maxGenerateLength,
-            mRuntime.mDeployment.base.maxKVCacheCapacity, mKvHeadroom.baseExtraTokens)
-        < mContext.maxGenerateLength)
-    {
-        return AdmitDecision::kNoCapacity;
-    }
-
-    std::vector<int32_t> mediaTokenIds;
-    if (mManagedRequest != nullptr)
-    {
-        // Under a context cache the joiner leases its pages -- possibly sharing a published
-        // prefix -- before it owns a slot, so a refused lease leaves the batch untouched. Media
-        // travels into the admission so its per-position hash keys the pages: a media prefix must
-        // not be reachable from a text lookup over the same token ids.
-        // Deployment-derived, exactly like the founder path builds it: the hash keys media runs
-        // by position in this list, and a joiner keyed differently from the founder would never
-        // share a published prefix over the same tokens.
-        if (mRuntime.mDeployment.base.imageTokenId >= 0)
-        {
-            mediaTokenIds.push_back(mRuntime.mDeployment.base.imageTokenId);
-        }
-        if (mRuntime.mDeployment.base.audioTokenId >= 0)
-        {
-            mediaTokenIds.push_back(mRuntime.mDeployment.base.audioTokenId);
-        }
-    }
-
     intent.resident = mContext.residentSlots.acquire();
     if (!intent.resident.has_value())
     {
@@ -1276,8 +1410,14 @@ AdmitDecision LLMRankRuntime::GenerationSession::reserveAdmission(AdmissionInten
         ContextCacheRequest::AdmitSequenceStatus status;
         try
         {
+            // Under a context cache the sequence leases its pages -- possibly sharing a published
+            // prefix -- before it owns a slot, so a refused lease leaves the batch untouched. Media
+            // travels into the admission so its per-position hash keys the pages: a media prefix
+            // must not be reachable from a text lookup over the same token ids, and every sequence
+            // keys media runs by the same deployment-derived placeholder list.
             status = mManagedRequest->admitSequence(seed.promptTokenIds, mContext.loraWeightsName, mKvHeadroom,
-                prefillStart, *intent.resident, mContext.stream, mediaTokenIds, seed.imageBuffers, seed.audioBuffers);
+                prefillStart, *intent.resident, mContext.stream, intent.lookupPolicy, intent.commitPolicy,
+                mRuntime.mediaTokenIds(), seed.imageContentDigests, seed.audioBuffers);
         }
         catch (...)
         {
@@ -1292,20 +1432,94 @@ AdmitDecision LLMRankRuntime::GenerationSession::reserveAdmission(AdmissionInten
             ELLM_CHECK(mContext.residentSlots.release(*intent.resident), "Reserved resident identity became stale");
             intent.resident.reset();
             return AdmitDecision::kNoCapacity;
+        case ContextCacheRequest::AdmitSequenceStatus::kOverlongPrefill:
+            ELLM_CHECK(mContext.residentSlots.release(*intent.resident), "Reserved resident identity became stale");
+            intent.resident.reset();
+            seed.prefillStart = prefillStart;
+            return AdmitDecision::kOverlongPrefill;
         case ContextCacheRequest::AdmitSequenceStatus::kFailed:
             ELLM_CHECK(mContext.residentSlots.release(*intent.resident), "Reserved resident identity became stale");
             intent.resident.reset();
             return AdmitDecision::kFailed;
         }
     }
+
+    // The sequence's row in the batch of every cache manager the strategy drives (base, and draft for a speculative
+    // strategy), with the KV length of its reused prefix, is the last reservation: from here each manager's batch
+    // follows the context's, so a seat retired before its prefill is a row the eviction's compaction drops like any
+    // other. A throw here is a device failure: the rows, the lease and the identity are given back and the caller
+    // reports the session lost.
+    size_t const cacheCount = mRuntime.activeCacheManagerCount(*mStrategy);
+    for (size_t cacheIndex = 0; cacheIndex < cacheCount; ++cacheIndex)
+    {
+        ELLM_CHECK(
+            mRuntime.mSharedResources->cacheManagers[cacheIndex]->getActiveBatchSize() == mContext.activeBatchSize,
+            "reserveAdmission: a cache manager's batch disagrees with the context's.");
+    }
+    try
+    {
+        for (size_t cacheIndex = 0; cacheIndex < cacheCount; ++cacheIndex)
+        {
+            HybridCacheManager& cacheManager = *mRuntime.mSharedResources->cacheManagers[cacheIndex];
+            cacheManager.appendSequence(seed.prefillStart, mContext.stream);
+            if (mManagedRequest == nullptr)
+            {
+                // Without a context cache nothing restores this slot's recurrent and convolution
+                // state before the sequence's first forward, and the kernels read whatever the slot
+                // holds as the state before its first token. The eviction clears a retired slot, but
+                // a session closed with residents (a failed one) never evicts them, so the admission
+                // clears the slot it takes: a sequence starts from empty state whatever the slot's
+                // previous life left there, as the blocking path's cold prefill does
+                // (setUpForPrefillExecution). Under a context cache the coordinator owns this state
+                // (it restores a snapshot or clears at eviction).
+                cacheManager.clearResidentSlot(intent.resident->slot, mContext.stream);
+            }
+        }
+    }
+    catch (...)
+    {
+        releaseReservation(intent);
+        throw;
+    }
     return AdmitDecision::kAdmitted;
 }
 
-AdmitDecision LLMRankRuntime::GenerationSession::seatAdmission(AdmissionIntent intent)
+void LLMRankRuntime::GenerationSession::releaseReservation(AdmissionIntent& intent)
 {
-    // The fused path: seat and immediately run the seated prefill. The stepped control plane
-    // calls the two halves as separate operations instead.
-    return prefillSeated(seatSlot(std::move(intent)));
+    ELLM_CHECK(intent.resident.has_value(), "releaseReservation requires a reserved resident identity.");
+    // The manager rows, where they were taken, are the batch's last; dropping them is a size change.
+    size_t const cacheCount = mRuntime.activeCacheManagerCount(*mStrategy);
+    for (size_t cacheIndex = 0; cacheIndex < cacheCount; ++cacheIndex)
+    {
+        mRuntime.mSharedResources->cacheManagers[cacheIndex]->setActiveBatchSize(mContext.activeBatchSize);
+    }
+    bool const cacheRetracted = mManagedRequest == nullptr || mManagedRequest->retractSequenceAdmission();
+    bool const residentReleased = mContext.residentSlots.release(*intent.resident);
+    intent.resident.reset();
+    if (!cacheRetracted || !residentReleased)
+    {
+        LOG_ERROR("Failed to fully release an admission reservation (cache=%d, resident=%d).",
+            static_cast<int32_t>(cacheRetracted), static_cast<int32_t>(residentReleased));
+    }
+}
+
+void LLMRankRuntime::GenerationSession::stageReservedMedia(AdmissionIntent const& intent)
+{
+    ELLM_CHECK(intent.resident.has_value(), "stageReservedMedia requires a reserved resident identity.");
+    CompactMediaReservation* const reservation = mRuntime.mCompactMedia.get();
+    ELLM_CHECK(reservation != nullptr || !intent.deferredMedia.has_value(),
+        "stageReservedMedia: a deferred media intent needs the compact media reservation.");
+    if (reservation == nullptr)
+    {
+        return;
+    }
+    int32_t const slot = intent.resident->slot;
+    reservation->release(slot);
+    if (intent.deferredMedia.has_value())
+    {
+        mRuntime.encodeDeferredAdmissionMedia(*intent.deferredMedia, intent.seed.imageContentDigests, slot,
+            intent.seed.promptTokenIds, intent.seed.prefillStart, mStream);
+    }
 }
 
 LLMRankRuntime::GenerationSession::PendingSeat LLMRankRuntime::GenerationSession::seatSlot(AdmissionIntent intent)
@@ -1320,135 +1534,489 @@ LLMRankRuntime::GenerationSession::PendingSeat LLMRankRuntime::GenerationSession
     pending.mediaPayload.audioEmbeddings = seed.audioEmbeddings;
     pending.mediaPayload.deepstackFeatures = seed.deepstackFeatures;
     pending.hasMedia = seed.visualEmbeddings.has_value() || seed.audioEmbeddings.has_value();
-    int32_t slot = -1;
+    pending.lookupPolicy = intent.lookupPolicy;
+    pending.replayTailLength = intent.replayTailLength;
+    int32_t row = -1;
     try
     {
-        slot = mContext.appendSlot(std::move(seed), SequenceIdentity{intent.requestId, *intent.resident});
-        mContext.slotStreams[static_cast<size_t>(slot)].skipSpecialTokens = mRequest.skipSpecialTokens;
+        // The logprobs buffers grow here, after every check and reservation has passed, so a
+        // refused admission never pays for a reallocation; a failure is a seat failure like any other.
+        if (seed.numLogprobs > 0)
+        {
+            mRuntime.ensureLogprobsCapacity(
+                mRuntime.mMaxRuntimeBatchSize * mRuntime.mDeployment.maxAcceptedTokensPerRound(), seed.numLogprobs);
+        }
+        row = mContext.appendSlot(std::move(seed), SequenceIdentity{intent.requestId, *intent.resident});
     }
     catch (...)
     {
-        // The lease exists but no slot ever did: retract so the coordinator's sequences stay
-        // aligned with the batch, then let the scheduler's catch turn the throw into a rejection.
-        bool const cacheRetracted = mManagedRequest == nullptr || mManagedRequest->retractSequenceAdmission();
-        bool const residentReleased = mContext.residentSlots.release(*intent.resident);
-        if (!cacheRetracted || !residentReleased)
-        {
-            LOG_ERROR("Failed to fully roll back a seated admission (cache=%d, resident=%d).",
-                static_cast<int32_t>(cacheRetracted), static_cast<int32_t>(residentReleased));
-        }
+        // The reservations exist but no slot ever did: give them back so the coordinator's
+        // sequences and the cache manager's batch stay aligned with the context, then let the
+        // scheduler's catch turn the throw into a rejection.
+        releaseReservation(intent);
         throw;
     }
 
-    pending.slot = slot;
+    mStrategy->appendRow(row);
+    pending.row = row;
     return pending;
+}
+
+void LLMRankRuntime::GenerationSession::abortSeatedAdmission(int32_t row)
+{
+    ELLM_CHECK(mManagedRequest == nullptr || mManagedRequest->abortSequenceAdmission(row),
+        "Failed to safely abort the seated sequence-admission transaction");
+}
+
+void LLMRankRuntime::GenerationSession::retireSeatUnprefilled(int32_t row)
+{
+    ELLM_CHECK(row >= 0 && row < mContext.activeBatchSize && mContext.finishedStates[static_cast<size_t>(row)] != 0,
+        "retireSeatUnprefilled: the seat must be a live row already marked finished.");
+    abortSeatedAdmission(row);
+    emitChunk(mContext, row, *mRuntime.mTokenizer);
+}
+
+void LLMRankRuntime::GenerationSession::buildCompactSchedule(
+    std::vector<CompactRow> const& rows, std::vector<int32_t>& mropeInitSlots, std::vector<int32_t>& decodeRows)
+{
+    mContext.scheduledStep.id = mContext.nextStepId++;
+    mContext.scheduledStep.sequences.clear();
+    for (CompactRow const& entry : rows)
+    {
+        size_t const row = static_cast<size_t>(entry.row);
+        std::vector<int32_t> const& tokens = mContext.tokenIds[row];
+        ELLM_CHECK(mContext.pendingTokens[row] <= 1,
+            "A compact step feeds one lookahead token per decode row; a pending jump-forward run is caught up first.");
+        int32_t const pastLength = mContext.committedLengths[row];
+        bool const context = entry.work == SequenceWork::kContext;
+        // The working history starts at the reused prefix, so a chunk's tokens sit at its
+        // committed length minus that prefix; a decode row feeds its newest token.
+        int32_t const begin
+            = context ? pastLength - mContext.prefillStartLengths[row] : static_cast<int32_t>(tokens.size()) - 1;
+        bool const sample = !context
+            || pastLength + entry.queryLength == static_cast<int32_t>(mContext.rawBatchedInputIds[row].size());
+        mContext.scheduledStep.sequences.push_back(
+            ScheduledSequence{SequenceIdentity{mContext.requestIds[row], mContext.residentRefs[row]}, entry.work,
+                entry.queryLength, pastLength,
+                HostTokenRange{tokens.data(), static_cast<int32_t>(tokens.size()), begin, entry.queryLength}, sample});
+        if (context && entry.firstChunk)
+        {
+            auto& slot = mContext.slotStreams[row];
+            slot.profiler.beginPrefill(slot.channel && slot.channel->getCollectMetrics());
+            // A media sequence's MRope row was written for its whole prompt at admission.
+            int32_t const residentSlot = mContext.residentRefs[row].slot;
+            if (mRuntime.mCompactMedia == nullptr || !mRuntime.mCompactMedia->holds(residentSlot))
+            {
+                mropeInitSlots.push_back(residentSlot);
+            }
+        }
+        if (!context)
+        {
+            decodeRows.push_back(entry.row);
+        }
+    }
+    mRuntime.mPipelineIO->waitForStepHostStaging();
+    mContext.compactBatchBuilder->buildInto(mContext.scheduledStep, mContext.raggedExecutionBatch);
+}
+
+bool LLMRankRuntime::GenerationSession::settlePromptAdmissions(
+    std::vector<CompactRow> const& rows, bool& publishedPrefix)
+{
+    if (mManagedRequest == nullptr)
+    {
+        return true;
+    }
+    for (CompactRow const& entry : rows)
+    {
+        if (entry.work != SequenceWork::kContext)
+        {
+            continue;
+        }
+        size_t const row = static_cast<size_t>(entry.row);
+        int32_t const promptLength = static_cast<int32_t>(mContext.rawBatchedInputIds[row].size());
+        if (!mManagedRequest->completeSequenceAdmissionDeviceWork(entry.row))
+        {
+            return false;
+        }
+        if (mContext.committedLengths[row] < promptLength)
+        {
+            if (!mManagedRequest->advanceSequenceAdmission(entry.row, mContext.committedLengths[row]))
+            {
+                return false;
+            }
+            continue;
+        }
+        // Cancellation wins over publication: a sequence cancelled while its final chunk ran
+        // leaves through this step's eviction without publishing its prompt.
+        applyCancellationToFinishState(mContext, entry.row);
+        bool const resolved = mContext.finishedStates[row] != 0
+            ? mManagedRequest->abortSequenceAdmission(entry.row)
+            : mManagedRequest->finalizeSequenceAdmission(entry.row, mContext.tokenIds[row].back(), promptLength);
+        if (!resolved)
+        {
+            return false;
+        }
+        publishedPrefix = publishedPrefix || mContext.finishedStates[row] == 0;
+    }
+    return true;
+}
+
+void LLMRankRuntime::GenerationSession::applyBenchmarkRoundLimit(int32_t row)
+{
+    if (mRuntime.mBenchmarkOptions.maxDecodeRounds > 0
+        && mContext.generationRound + 1 >= mRuntime.mBenchmarkOptions.maxDecodeRounds
+        && !mContext.finishedStates[static_cast<size_t>(row)])
+    {
+        mContext.finishedStates[static_cast<size_t>(row)] = 1;
+        mContext.slotStreams[static_cast<size_t>(row)].terminalReason = FinishReason::kLength;
+    }
+}
+
+bool LLMRankRuntime::GenerationSession::finishSampledRows(std::vector<CompactRow> const& rows)
+{
+    bool hasDecodeRow = false;
+    for (int32_t const executionRow : mContext.raggedExecutionBatch.logitsToSequence)
+    {
+        CompactRow const& entry = rows[static_cast<size_t>(executionRow)];
+        int32_t const row = entry.row;
+        if (entry.work == SequenceWork::kContext)
+        {
+            mContext.slotStreams[static_cast<size_t>(row)].profiler.finishPrefill(
+                mContext.currentGenerateLengths[static_cast<size_t>(row)]);
+        }
+        else
+        {
+            hasDecodeRow = true;
+        }
+        applyCancellationToFinishState(mContext, row);
+        updateThinkingDoneForSlot(row);
+        updateFinishState(row);
+        decodeSlot(mContext, row, *mRuntime.mTokenizer);
+        applyStopMatch(row);
+        if (entry.work == SequenceWork::kDecode)
+        {
+            applyBenchmarkRoundLimit(row);
+        }
+    }
+    return hasDecodeRow;
+}
+
+bool LLMRankRuntime::GenerationSession::executeCompactStep(
+    std::vector<CompactRow> const& rows, bool& publishedPrefix, bool& compactRefused)
+{
+    mRuntime.selectProfilingTimer();
+    TIME_STAGE("compact_step", mContext.stream);
+    ELLM_CHECK(!rows.empty(), "executeCompactStep: a step names at least one row.");
+    ELLM_CHECK(mContext.compactBatchBuilder.has_value(), "executeCompactStep: the compact builder is not configured.");
+    publishedPrefix = false;
+    compactRefused = false;
+
+    PipelineIO& io = *mRuntime.mPipelineIO;
+    std::vector<int32_t>& mropeInitSlots = mContext.compactMropeInitSlots;
+    std::vector<int32_t>& decodeRows = mContext.compactDecodeRows;
+    mropeInitSlots.clear();
+    decodeRows.clear();
+    RaggedExecutionBatch const& batch = mContext.raggedExecutionBatch;
+    auto const isFinalChunk = [this](CompactRow const& entry) {
+        size_t const row = static_cast<size_t>(entry.row);
+        return entry.work == SequenceWork::kContext
+            && mContext.committedLengths[row] + entry.queryLength
+            == static_cast<int32_t>(mContext.rawBatchedInputIds[row].size());
+    };
+
+    {
+        NVTX_SCOPED_RANGE(nvtx_compact_build, "COMPACT_BUILD", nvtx_colors::BLUE);
+        buildCompactSchedule(rows, mropeInitSlots, decodeRows);
+        // Every compact step pairs a decode-subset prepare with its completion: only the decode rows
+        // grow pages, and every other row -- a prompt chunk, a resident the plan leaves out -- holds.
+        // Each prompt chunk opens its admission chunk; the first one restores the sequence's snapshot.
+        if (mManagedRequest != nullptr)
+        {
+            if (!mManagedRequest->prepareDecodeStep(mContext, mKvHeadroom, decodeRows))
+            {
+                return false;
+            }
+            for (CompactRow const& entry : rows)
+            {
+                if (entry.work == SequenceWork::kContext && !mManagedRequest->prepareSequenceAdmission(entry.row))
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    StepId const stepId = mContext.scheduledStep.id;
+
+    HybridCacheManager& cacheManager = *mRuntime.mSharedResources->cacheManagers[0];
+    {
+        CacheBatchRestore const restore{cacheManager, mContext.activeBatchSize};
+        CompactForwardStatus forward = CompactForwardStatus::kOk;
+        {
+            NVTX_SCOPED_RANGE(nvtx_compact_enqueue, "COMPACT_ENQUEUE", nvtx_colors::BLUE);
+            forward = mRuntime.runCompactForward(mContext, mropeInitSlots);
+        }
+        if (forward == CompactForwardStatus::kEnqueueRefused)
+        {
+            // The layers before the refusing one already advanced recurrent and convolution state in place, so the
+            // step cannot be replayed; only the steps that follow can avoid phase 8.
+            CompactCapability refused;
+            refused.reason
+                = "a plugin refused compact execution at runtime (see the plugin's ERROR log, which "
+                  "identifies the layer by kind and shape)";
+            LOG_ERROR(
+                "Compact execution disabled for this runtime: %s. The step's residents fail; later sessions "
+                "serve single-cohort steps.",
+                refused.reason.c_str());
+            mRuntime.mCompactCapability = std::move(refused);
+            compactRefused = true;
+            return false;
+        }
+        if (forward != CompactForwardStatus::kOk)
+        {
+            LOG_ERROR("Failed to execute the base model for a compact step.");
+            return false;
+        }
+        if (mManagedRequest != nullptr)
+        {
+            for (CompactRow const& entry : rows)
+            {
+                if (isFinalChunk(entry) && !mManagedRequest->enqueueSequenceAdmissionCapture(entry.row))
+                {
+                    return false;
+                }
+            }
+        }
+        mContext.completionSequences.clear();
+        for (CompactRow const& entry : rows)
+        {
+            size_t const row = static_cast<size_t>(entry.row);
+            mContext.completionSequences.push_back(CompletionSequence{
+                mContext.requestIds[row], mContext.residentRefs[row], mContext.committedLengths[row]});
+        }
+        mContext.raggedExecutionBatch.validateCommitSnapshot(stepId, mContext.completionSequences);
+        cacheManager.commitSequenceLength(io.contextLengths, mContext.stream);
+    }
+    for (CompactRow const& entry : rows)
+    {
+        size_t const row = static_cast<size_t>(entry.row);
+        mContext.committedLengths[row] += entry.queryLength;
+        if (entry.work == SequenceWork::kContext)
+        {
+            mContext.effectivePrefillLengths[row] += entry.queryLength;
+        }
+    }
+
+    // Logits row r belongs to execution row logitsToSequence[r]; the placeholder rows after them have no
+    // owner and are never sampled, so a step of non-final chunks only advances its sequences.
+    std::vector<int32_t>& sampledRows = mContext.compactSampledRows;
+    sampledRows.clear();
+    for (int32_t const executionRow : batch.logitsToSequence)
+    {
+        sampledRows.push_back(rows[static_cast<size_t>(executionRow)].row);
+    }
+    {
+        NVTX_SCOPED_RANGE(nvtx_compact_sample, "COMPACT_SAMPLE", nvtx_colors::BLUE);
+        check::check(sampledRows.empty()
+                || io.outputLogits.reshape(
+                    {static_cast<int64_t>(sampledRows.size()), mRuntime.mDeployment.base.outputVocabSize}),
+            "Compact sampled-logits reshape failed");
+        if (!sampledRows.empty()
+            && !decoder_utils::enqueueSamplingForRows(
+                *mRuntime.mDecodingRuntimeContext, mContext, io.outputLogits, sampledRows, mContext.stream))
+        {
+            return false;
+        }
+        CUDA_CHECK(cudaStreamSynchronize(mContext.stream));
+    }
+
+    NVTX_SCOPED_RANGE(nvtx_compact_commit, "COMPACT_COMMIT", nvtx_colors::BLUE);
+    decoder_utils::commitSampledRows(*mRuntime.mDecodingRuntimeContext, mContext, sampledRows);
+    if (!settlePromptAdmissions(rows, publishedPrefix))
+    {
+        return false;
+    }
+    bool const hasDecodeRow = finishSampledRows(rows);
+    // After the finish decisions, so a decode row that finished here publishes its history, and
+    // before the chunks go out, so a consumer that sees its sequence finish finds that history
+    // published (the order advance() keeps).
+    if (mManagedRequest != nullptr
+        && !mManagedRequest->completeDecodeStep(mContext, mStrategy->commonMaterializedStateLengths()))
+    {
+        return false;
+    }
+    for (int32_t const executionRow : batch.logitsToSequence)
+    {
+        int32_t const row = rows[static_cast<size_t>(executionRow)].row;
+        emitChunk(mContext, row, *mRuntime.mTokenizer);
+        emitTokenCallbackForSlot(mContext, row);
+    }
+    if (hasDecodeRow)
+    {
+        mContext.generationRound += 1;
+    }
+    for (CompactRow const& compactRow : rows)
+    {
+        if (compactRow.work == SequenceWork::kDecode)
+        {
+            ++mContext.decodeRounds[static_cast<size_t>(compactRow.row)];
+        }
+    }
+
+    if (!performBatchEvictAndSnapshot())
+    {
+        LOG_ERROR("Failed to perform batch eviction.");
+        return false;
+    }
+    return true;
 }
 
 AdmitDecision LLMRankRuntime::GenerationSession::prefillSeated(PendingSeat pending)
 {
-    int32_t const slot = pending.slot;
-    ELLM_CHECK(slot > 0 && slot < mContext.activeBatchSize, "prefillSeated: the pending seat is not a live slot.");
+    mRuntime.selectProfilingTimer();
+    int32_t const row = pending.row;
+    ELLM_CHECK(row >= 0 && row < mContext.activeBatchSize, "prefillSeated: the pending seat is not a live row.");
 
-    if (!mRuntime.prefillSlotInPlace(
-            mContext, slot, pending.prefillStart, pending.hasMedia ? &pending.mediaPayload : nullptr))
-    {
-        // The seating was already unwound by prefillSlotInPlace. The slot stays, terminal from
-        // birth, so the ordinary eviction files its (empty, kError) result and the batch never
-        // holds a live slot with no KV behind it -- and, under a context cache, retires the lease.
-        mContext.finishedStates[static_cast<size_t>(slot)] = 1;
-        mContext.slotStreams[static_cast<size_t>(slot)].terminalReason = FinishReason::kError;
+    bool admissionClosed = false;
+    auto failAdmission = [&]() -> AdmitDecision {
+        admissionClosed = true;
+        mContext.finishedStates[static_cast<size_t>(row)] = 1;
+        mContext.slotStreams[static_cast<size_t>(row)].terminalReason = FinishReason::kError;
+        abortSeatedAdmission(row);
         return AdmitDecision::kFailed;
+    };
+
+    try
+    {
+        if (mManagedRequest != nullptr && !mManagedRequest->prepareSequenceAdmission(row))
+        {
+            return failAdmission();
+        }
+        if (!mRuntime.prefillSlotInPlace(mContext, *mStrategy, row, pending.prefillStart,
+                pending.hasMedia ? &pending.mediaPayload : nullptr, mManagedRequest, pending.lookupPolicy,
+                pending.replayTailLength))
+        {
+            return failAdmission();
+        }
+        // A speculative draft holds the prompt but the position the next decode step takes (seatRow).
+        std::vector<int32_t> const& commonLengths = mStrategy->commonMaterializedStateLengths();
+        std::optional<int32_t> const commonLength = static_cast<size_t>(row) < commonLengths.size()
+            ? std::optional<int32_t>{commonLengths[static_cast<size_t>(row)]}
+            : std::nullopt;
+        if (mManagedRequest != nullptr
+            && !mManagedRequest->finalizeSequenceAdmission(
+                row, mContext.tokenIds[static_cast<size_t>(row)].back(), pending.rawInputLength, commonLength))
+        {
+            return failAdmission();
+        }
+        admissionClosed = true;
     }
-    if (mManagedRequest != nullptr
-        && !mManagedRequest->finalizeSequenceAdmission(
-            slot, mContext.tokenIds[static_cast<size_t>(slot)].back(), pending.rawInputLength))
+    catch (...)
     {
-        mContext.finishedStates[static_cast<size_t>(slot)] = 1;
-        mContext.slotStreams[static_cast<size_t>(slot)].terminalReason = FinishReason::kError;
-        return AdmitDecision::kFailed;
+        std::exception_ptr const error = std::current_exception();
+        if (!admissionClosed)
+        {
+            try
+            {
+                static_cast<void>(failAdmission());
+            }
+            catch (std::exception const& abortError)
+            {
+                LOG_ERROR("Failed to abort a throwing seated admission: %s", abortError.what());
+            }
+            catch (...)
+            {
+                LOG_ERROR("Failed to abort a throwing seated admission with an unknown error.");
+            }
+        }
+        std::rethrow_exception(error);
     }
 
-    // The seated prefill's lookahead token passes through the same per-token pipeline the
-    // founder's first token did in primeFromPrefill. Without this, the next step's finish pass
-    // only ever sees the token decoded after it: a first-token EOS would be decoded straight
-    // past, and the thinking latch -- keyed to the first generated token -- would never fire.
-    int32_t const lookaheadToken = mContext.tokenIds[static_cast<size_t>(slot)].back();
-    updateThinkingDoneForToken(slot, lookaheadToken);
-    if (!mContext.finishedStates[static_cast<size_t>(slot)])
-    {
-        bool isEos = !mIgnoreEos && mRuntime.mTokenizer->isEosToken(lookaheadToken);
-        if (isEos && mRequest.enableThinking && lookaheadToken != mRuntime.mTokenizer->getEosId()
-            && !mContext.thinkingDone[static_cast<size_t>(slot)])
-        {
-            isEos = false;
-        }
-        if (isEos)
-        {
-            mContext.finishedStates[static_cast<size_t>(slot)] = 1;
-            mContext.slotStreams[static_cast<size_t>(slot)].terminalReason = FinishReason::kEndId;
-        }
-        else if (mContext.currentGenerateLengths[static_cast<size_t>(slot)] >= mContext.maxGenerateLength)
-        {
-            mContext.finishedStates[static_cast<size_t>(slot)] = 1;
-            mContext.slotStreams[static_cast<size_t>(slot)].terminalReason = FinishReason::kLength;
-        }
-    }
+    // The seated prefill's lookahead token takes the per-token pipeline a decode step runs over
+    // the batch, for this one row and in the same order: cancellation, the thinking latch and
+    // the reasoning gate, the finish decision, detokenization and stop matching, the stop-string
+    // override, the chunk to the row's channel and the token callback. One path for every
+    // produced token: a sequence whose first token is already terminal (EOS, or a budget of one)
+    // is finished -- and its streaming consumer told so -- right here, instead of being evicted
+    // with a channel nobody ever finishes; and a sequence that goes on has its first token on the
+    // wire before its first decode step, as a request on the blocking path does after
+    // primeFromPrefill.
+    applyCancellationToFinishState(mContext, row);
+    updateThinkingDoneForSlot(row);
+    updateFinishState(row);
+    decodeSlot(mContext, row, *mRuntime.mTokenizer);
+    applyStopMatch(row);
+    emitChunk(mContext, row, *mRuntime.mTokenizer);
+    emitTokenCallbackForSlot(mContext, row);
     return AdmitDecision::kAdmitted;
 }
 
-AdmitDecision LLMRankRuntime::GenerationSession::admitRequest(
-    LLMGenerationRequest const& request, int32_t originalIndex, RequestId requestId)
-{
-    AdmissionIntent intent = buildAdmissionIntent(request, originalIndex, requestId);
-    if (AdmitDecision const reserved = reserveAdmission(intent); reserved != AdmitDecision::kAdmitted)
-    {
-        return reserved;
-    }
-    return seatAdmission(std::move(intent));
-}
-
 LLMRankRuntime::GenerationSession::AdmissionIntent LLMRankRuntime::GenerationSession::buildAdmissionIntent(
-    LLMGenerationRequest const& request, int32_t originalIndex, RequestId requestId)
+    LLMGenerationRequest const& request, int32_t originalIndex, RequestId requestId, bool deferMediaEncoders,
+    DecodingStrategy const& strategy)
 {
-    ELLM_CHECK(request.requests.size() == 1, "admitRequest admits one sequence at a time.");
+    mRuntime.selectProfilingTimer();
+    ELLM_CHECK(request.requests.size() == 1, "admission takes one sequence at a time.");
     auto const& item = request.requests.front();
     ELLM_CHECK(!item.pastTrajectory.has_value(),
-        "admitRequest cannot take an action request; trajectory execution founds its own batch.");
+        "admission cannot take an action request; trajectory execution runs on the blocking path.");
+
+    // The request's cache policies ride into its lease as the sequence's own. The lookup policy
+    // is decided below, once the media preprocess has computed the image identities: an
+    // image without one would key on the media token alone, every image's placeholder, so such a
+    // request bypasses the lookup the way the blocking path does (ContextCacheRequest::lookupPolicyFor).
+    auto const lookupPolicy = [&](SlotSeed const& seed) {
+        return ContextCacheRequest::lookupPolicyFor(
+            request, /*outputThinkerEmbeddings=*/false, mRuntime.mediaTokenIds(), {seed.imageContentDigests});
+    };
 
     SlotSeed seed;
     seed.originalIndex = originalIndex;
     seed.stopStrings = item.stopStrings;
-    seed.logitBias = item.logitBias;
-    // Same fallback chain handleRequest resolves for founding slots: the item's own seed, then the
-    // request-level one, then the default.
-    seed.samplingSeed = item.samplingSeed.value_or(request.samplingSeed.value_or(kDefaultSamplingSeed));
+    // The same full-to-reduced vocabulary translation the blocking path applies in prepareLogitBias:
+    // the sampler indexes the output vocabulary, and a raw full-vocabulary id would bias the wrong
+    // token on a reduced-vocabulary engine.
+    seed.logitBias = normalizeLogitBias(mRuntime.mLogitBias, item.logitBias, originalIndex);
+    seed.skipSpecialTokens = request.skipSpecialTokens;
+    // The sequence's own decoding settings; the budget is settled by the caller once the prompt
+    // length is known, and the logprobs buffers are sized at the seat (seatSlot).
+    seed.sampling = rowSamplingParamsFor(request);
+    seed.samplingSeed = resolveSamplingSeed(request, item);
+    seed.requestStableSampling
+        = usesRequestStableSampling(request, item, strategy.capabilities().supportsLosslessSampling);
+    seed.numLogprobs = mRuntime.clampLogprobsWidth(request.numLogprobs);
+    seed.ignoreEos = request.ignoreEos;
+    seed.jumpForward = item.guidedDecoding.has_value()
+        && mRuntime.jumpForwardRequested(*item.guidedDecoding, strategy,
+            shouldUseNonGreedySampling(request.temperature, request.topK, request.topP), /*inFlightBatching=*/true);
+    if (seed.jumpForward)
+    {
+        mRuntime.prepareJumpForwardExecution(strategy, mStream);
+    }
     if (!request.streamChannels.empty())
     {
         seed.channel = request.streamChannels.front();
     }
 
+    std::optional<LLMGenerationRequest> deferredMedia;
     bool const hasMedia = !item.imageBuffers.empty() || !item.audioBuffers.empty();
     if (hasMedia)
     {
         ELLM_CHECK((item.imageBuffers.empty() || mRuntime.mVisionRunner != nullptr)
                 && (item.audioBuffers.empty() || mRuntime.mAudioRunner != nullptr),
-            "admitRequest: the request carries media this deployment has no encoder for.");
-        // Visual-token pruning runs only in the founding prefill (it gates on an empty base KV),
-        // so a media joiner would silently skip it and generate a different answer than the same
-        // request founding a batch. Under a pruner, media is founder-only: mark the seed so
-        // reserveAdmission refuses as transient (kNoCapacity) before the encoder preprocess runs,
-        // and the head waits to found its own batch once the resident one drains.
-        if (mRuntime.mVisualPruner != nullptr)
-        {
-            seed.admissionRefusedFounderOnly = true;
-            return AdmissionIntent{std::move(seed), requestId, std::nullopt};
-        }
-        seed.imageBuffers = item.imageBuffers;
+            "admission: the request carries media this deployment has no encoder for.");
+        // Visual-token pruning gates on an empty base KV, so a media sequence seated beside other
+        // residents would silently skip it and generate a different answer than the same request
+        // run by itself. Under a pruner, media runs alone: the seed says so, and the session admits
+        // it only into an empty session (RuntimeSession::requiresExclusiveAdmission is how the
+        // scheduler learns this before it decides to admit). Media whose token layout only its encoder
+        // determines cannot be deferred, so in a compact session it runs alone, single-cohort, the same way.
+        seed.requiresExclusiveSession
+            = mRuntime.mVisualPruner != nullptr || (deferMediaEncoders && mRuntime.mediaLayoutNeedsEncoder(request));
         seed.audioBuffers = item.audioBuffers;
 
         // A single-sequence view of the request for the request-level preprocess. The chat
         // formatting happens here, same as the text path below, so the media-token expansion
-        // inside the preprocess sees the exact prompt the founder path would have seen.
+        // inside the preprocess sees the exact prompt the blocking path would have seen.
         LLMGenerationRequest single;
         single.requests = {item};
         single.applyChatTemplate = request.applyChatTemplate;
@@ -1456,14 +2024,23 @@ LLMRankRuntime::GenerationSession::AdmissionIntent LLMRankRuntime::GenerationSes
         single.enableThinking = request.enableThinking;
         LLMGenerationRequest::FormattedRequest formatted;
         ELLM_CHECK(mRuntime.mChatTemplate->apply(item, formatted, chat_template::ChatTemplate::optionsFrom(request)),
-            "admitRequest: chat template failed.");
+            "admission: chat template failed.");
         single.formattedRequests = {formatted};
         seed.systemPrompt = formatted.formattedSystemPrompt;
 
-        ELLM_CHECK(
-            mRuntime.preprocessAdmissionMedia(single, seed, mStream), "admitRequest: multimodal preprocessing failed.");
+        if (deferMediaEncoders && mRuntime.mCompactMedia != nullptr && !seed.requiresExclusiveSession)
+        {
+            ELLM_CHECK(mRuntime.preprocessDeferredAdmissionMedia(single, seed, mStream),
+                "admission: multimodal preprocessing failed.");
+            deferredMedia = std::move(single);
+        }
+        else
+        {
+            ELLM_CHECK(mRuntime.preprocessAdmissionMedia(single, seed, mStream),
+                "admission: multimodal preprocessing failed.");
+        }
     }
-    // The same tokenization the founding request went through, so an admitted prompt is not a
+    // The same tokenization a blocking request goes through, so an admitted prompt is not a
     // second dialect of the same input.
     else if (!request.preTokenizedInputIds.empty() && !request.preTokenizedInputIds.front().empty())
     {
@@ -1473,13 +2050,43 @@ LLMRankRuntime::GenerationSession::AdmissionIntent LLMRankRuntime::GenerationSes
     {
         LLMGenerationRequest::FormattedRequest formatted;
         ELLM_CHECK(mRuntime.mChatTemplate->apply(item, formatted, chat_template::ChatTemplate::optionsFrom(request)),
-            "admitRequest: chat template failed.");
+            "admission: chat template failed.");
         seed.promptTokenIds = mRuntime.mTokenizer->encode(formatted.formattedCompleteRequest, false);
         seed.systemPrompt = formatted.formattedSystemPrompt;
     }
-    ELLM_CHECK(!seed.promptTokenIds.empty(), "admitRequest: the prompt tokenized to nothing.");
+    ELLM_CHECK(!seed.promptTokenIds.empty(), "admission: the prompt tokenized to nothing.");
+    // Under a context cache the lease keys every media run by its content, so a prompt whose
+    // placeholders name more media than the request supplies cannot be leased. Checked here, as a
+    // refusal that modifies nothing, rather than inside the reservation, where the same check is
+    // a session loss that takes every resident down with this one request.
+    if (mManagedRequest != nullptr)
+    {
+        MediaPlaceholderCounts const placeholders
+            = countMediaPlaceholders(seed.promptTokenIds, mRuntime.mediaTokenIds());
+        if (placeholders.images > seed.imageContentDigests.size() || placeholders.audios > seed.audioBuffers.size())
+        {
+            throw std::invalid_argument("admission: the prompt carries " + std::to_string(placeholders.images)
+                + " image and " + std::to_string(placeholders.audios) + " audio placeholder run(s), but the request "
+                + "supplies " + std::to_string(seed.imageContentDigests.size()) + " image(s) and "
+                + std::to_string(seed.audioBuffers.size()) + " audio clip(s).");
+        }
+    }
 
-    return AdmissionIntent{std::move(seed), requestId, std::nullopt};
+    // The request's policy with everything that forces bypass applied, narrowed by the sequence's
+    // own when it has one -- the two levels the blocking path's ContextCacheRequest::begin resolves.
+    ContextCacheLookupPolicy const policy
+        = ContextCacheRequest::sequenceLookupPolicy(lookupPolicy(seed), item.contextCacheLookupPolicy);
+    // The tail a Hybrid+spec checkpoint stops before, derived here when the request asks for it, as the request
+    // coordinator derives it for a blocking request. A media prompt stops at its last media run instead.
+    int32_t replayTailLength = std::max(0, request.contextCacheReplayTailLength);
+    if (request.contextCacheReplayTailLength < 0 && mManagedRequest != nullptr
+        && mRuntime.mHybridSpecContextReuseDeployment && !hasMedia && policy != ContextCacheLookupPolicy::kBypass)
+    {
+        replayTailLength = deriveContextCacheReplayTailLength(
+            *mRuntime.mChatTemplate, *mRuntime.mTokenizer, request, seed.promptTokenIds);
+    }
+    return AdmissionIntent{std::move(seed), requestId, std::nullopt, policy, request.contextCacheCommitPolicy,
+        replayTailLength, std::move(deferredMedia)};
 }
 
 LLMGenerationResponse LLMRankRuntime::GenerationSession::materializeResult(
@@ -1490,12 +2097,21 @@ LLMGenerationResponse LLMRankRuntime::GenerationSession::materializeResult(
     int32_t const generateLength = std::min(result.generateLength, totalLength);
 
     response.outputIds.emplace_back(result.tokenIds.end() - generateLength, result.tokenIds.end());
-    response.outputTexts.push_back(mRuntime.mTokenizer->decode(response.outputIds.front(), mRequest.skipSpecialTokens));
+    response.outputTexts.push_back(mRuntime.mTokenizer->decode(response.outputIds.front(), result.skipSpecialTokens));
     response.logprobs.push_back(result.logprobs);
     response.finishReasons.push_back(result.terminalReason);
     response.inputTokenCounts.push_back(static_cast<int32_t>(result.rawBatchedInputIds.size()));
+    response.reusedInputTokenCounts.push_back(reusedPromptTokens(static_cast<int32_t>(result.rawBatchedInputIds.size()),
+        result.effectivePrefillLength, result.prunedPrefillTokens));
+    if (mStrategy->isSpeculative())
+    {
+        response.specVerifyCounts.push_back(result.actualIterations);
+        response.specAcceptanceLengths.push_back(result.actualIterations > 0
+                ? static_cast<float>(result.generateLength) / static_cast<float>(result.actualIterations)
+                : 0.0F);
+    }
 
-    // The same final stop-string trim the founding request's assembly applies: one-shot decode can
+    // The same final stop-string trim the blocking path's assembly applies: one-shot decode can
     // surface a stop that the incremental streaming matcher straddled across piece boundaries.
     if (!stopStrings.empty())
     {
@@ -1539,16 +2155,7 @@ bool LLMRankRuntime::preprocessAdmissionMedia(LLMGenerationRequest const& reques
     // so a batch-1 temporary context absorbs them all without touching the resident batch. The
     // encoders themselves write their own output buffers, which is exactly what the seed hands on
     // to the seated prefill -- nothing else runs them before it consumes the references.
-    OptionalOutputTensor mropeOverride = std::nullopt;
-    if (mDeployment.base.ropeConfig.type == RopeType::kMRope)
-    {
-        if (mAdmissionMropeStage.isEmpty())
-        {
-            mAdmissionMropeStage = rt::Tensor({1, mDeployment.base.maxKVCacheCapacity, mDeployment.base.rotaryDim},
-                rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "LLMRankRuntime::admissionMropeStage");
-        }
-        mropeOverride = OptionalOutputTensor{std::ref(mAdmissionMropeStage)};
-    }
+    OptionalOutputTensor const mropeOverride = admissionMropeStage();
 
     DecodingInferenceContext tempContext;
     tempContext.initialize(1, 1, std::nullopt, {}, std::string{}, stream);
@@ -1564,12 +2171,352 @@ bool LLMRankRuntime::preprocessAdmissionMedia(LLMGenerationRequest const& reques
     seed.visualEmbeddings = tempContext.visualEmbeddings;
     seed.audioEmbeddings = tempContext.audioEmbeddings;
     seed.deepstackFeatures = tempContext.deepstackFeatures;
+    // The sequence keys its media positions on these identities; an image without one makes the
+    // sequence bypass the cache lookup (ContextCacheRequest::lookupPolicyFor), as it would have at
+    // request start.
+    if (!tempContext.imageContentDigests.empty())
+    {
+        seed.imageContentDigests = std::move(tempContext.imageContentDigests.front());
+    }
+    return true;
+}
+
+OptionalOutputTensor LLMRankRuntime::admissionMropeStage()
+{
+    if (mDeployment.base.ropeConfig.type != RopeType::kMRope)
+    {
+        return std::nullopt;
+    }
+    if (mAdmissionMropeStage.isEmpty())
+    {
+        mAdmissionMropeStage = rt::Tensor({1, mDeployment.base.maxKVCacheCapacity, mDeployment.base.rotaryDim},
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "LLMRankRuntime::admissionMropeStage");
+    }
+    return OptionalOutputTensor{std::ref(mAdmissionMropeStage)};
+}
+
+bool LLMRankRuntime::mediaLayoutNeedsEncoder(LLMGenerationRequest const& request) const noexcept
+{
+    return mVisionRunner != nullptr && mVisionRunner->tokenLayoutNeedsEncoder(request);
+}
+
+bool LLMRankRuntime::preprocessDeferredAdmissionMedia(
+    LLMGenerationRequest const& request, SlotSeed& seed, cudaStream_t stream)
+{
+    ELLM_CHECK(request.requests.size() == 1 && request.formattedRequests.size() == 1,
+        "A deferred media admission preprocesses one formatted sequence.");
+    auto const& item = request.requests.front();
+    bool const hasVision = !item.imageBuffers.empty();
+    bool const hasAudio = !item.audioBuffers.empty();
+    NVTX_SCOPED_RANGE(nvtx_multimodal, "MULTIMODAL_ADMISSION_PREPROCESS", nvtx_colors::ORANGE);
+    // Several admissions run back to back at one step boundary. The encoders rewrite pinned host staging buffers
+    // that uploads of the previous admission's encoder run, still queued on the stream, read.
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    // The digests key the encoder embedding cache after the reservation and the context-cache lease in it.
+    if (hasVision && (mEncoderEmbeddingCache != nullptr || mContextCache != nullptr))
+    {
+        std::vector<std::vector<Hash128>> digests = buildImageContentDigests(request, stream);
+        if (!digests.empty())
+        {
+            seed.imageContentDigests = std::move(digests.front());
+        }
+    }
+
+    OptionalOutputTensor const mropeOut = admissionMropeStage();
+    std::vector<std::vector<int32_t>> batchedInputIds;
+    if (hasAudio && !mAudioRunner->preprocess(request, batchedInputIds, mTokenizer, mropeOut, stream))
+    {
+        LOG_ERROR("Audio preprocessing failed. This request cannot be handled.");
+        return false;
+    }
+    if (hasVision
+        && !mVisionRunner->preprocess(
+            request, batchedInputIds, mTokenizer, mropeOut, stream, /*imageOnly=*/false, /*skipEncoderWork=*/true))
+    {
+        LOG_ERROR("Vision text preprocessing failed. This request cannot be handled.");
+        return false;
+    }
+    ELLM_CHECK(batchedInputIds.size() == 1 && !batchedInputIds.front().empty(),
+        "Admission media preprocess produced no tokens");
+    seed.promptTokenIds = std::move(batchedInputIds.front());
+    return true;
+}
+
+void LLMRankRuntime::encodeDeferredAdmissionMedia(LLMGenerationRequest const& request,
+    std::vector<Hash128> const& imageDigests, int32_t slot, std::vector<int32_t> const& promptTokenIds,
+    int32_t prefillStart, cudaStream_t stream)
+{
+    ELLM_CHECK(mCompactMedia != nullptr, "A deferred media admission needs the compact media reservation.");
+    auto const& item = request.requests.front();
+    bool const hasVision = !item.imageBuffers.empty();
+    bool const hasAudio = !item.audioBuffers.empty();
+    NVTX_SCOPED_RANGE(nvtx_multimodal, "MULTIMODAL_ADMISSION_ENCODE", nvtx_colors::ORANGE);
+    CompactMediaReservation::Sources sources;
+
+    if (hasAudio)
+    {
+        std::vector<Hash128> audioHashes;
+        if (mEncoderEmbeddingCache != nullptr)
+        {
+            for (auto const& audio : item.audioBuffers)
+            {
+                if (!audio.pcm || audio.pcm->numSamples() <= 0)
+                {
+                    LOG_WARNING(
+                        "A clip of this request carries no PCM samples to identify it by; the encoder embedding cache "
+                        "skips the request.");
+                    audioHashes.clear();
+                    break;
+                }
+                rt::Tensor const& samples = *audio.pcm->samples;
+                auto const* rawPtr = reinterpret_cast<char const*>(samples.dataPointer<float>());
+                size_t const rawBytes = static_cast<size_t>(audio.pcm->numSamples()) * sizeof(float);
+                audioHashes.push_back(hashOpaqueIdentity(std::string_view(rawPtr, rawBytes), stream, false));
+            }
+        }
+        std::vector<std::reference_wrapper<rt::Tensor const>> cachedAudio;
+        for (Hash128 const& hash : audioHashes)
+        {
+            auto const entry = mEncoderEmbeddingCache->lookup(hash);
+            if (!entry)
+            {
+                cachedAudio.clear();
+                break;
+            }
+            cachedAudio.push_back(std::cref(entry->get()));
+        }
+        rt::Tensor& output = mAudioRunner->getOutputEmbedding();
+        if (!cachedAudio.empty())
+        {
+            LOG_INFO("Encoder embedding cache HIT for all %zu audio clips — skipping audio encoder execution",
+                cachedAudio.size());
+            int64_t byteOffset = 0;
+            for (auto const& entry : cachedAudio)
+            {
+                int64_t const bytes = entry.get().getMemoryCapacity();
+                CUDA_CHECK(cudaMemcpyAsync(static_cast<char*>(output.rawPointer()) + byteOffset,
+                    entry.get().rawPointer(), bytes, cudaMemcpyDeviceToDevice, stream));
+                byteOffset += bytes;
+            }
+        }
+        else
+        {
+            ELLM_CHECK(mAudioRunner->infer(stream), "Audio inference failed. This request cannot be handled.");
+            auto const& tokenLengths = mAudioRunner->getLastMediaTokenLengths();
+            if (!audioHashes.empty() && tokenLengths.size() == audioHashes.size())
+            {
+                int64_t const hiddenSize = output.getShape()[1];
+                size_t const typeSize = rt::utils::getTypeSize(output.getDataType());
+                int64_t byteOffset = 0;
+                for (size_t index = 0; index < audioHashes.size(); ++index)
+                {
+                    int64_t const numTokens = tokenLengths[index];
+                    mEncoderEmbeddingCache->storeSlice(audioHashes[index],
+                        static_cast<char const*>(output.rawPointer()) + byteOffset, numTokens, hiddenSize,
+                        output.getDataType(), stream);
+                    byteOffset += numTokens * hiddenSize * static_cast<int64_t>(typeSize);
+                }
+            }
+        }
+        sources.audio = &output;
+    }
+
+    if (hasVision)
+    {
+        rt::Tensor& output = mVisionRunner->getOutputEmbedding();
+        auto const features = mVisionRunner->getDeepstackFeatures();
+        bool restored = mEncoderEmbeddingCache != nullptr && !imageDigests.empty()
+            && std::all_of(imageDigests.begin(), imageDigests.end(),
+                [this](Hash128 const& digest) { return mEncoderEmbeddingCache->lookupEntry(digest).has_value(); });
+        if (restored)
+        {
+            restored = mEncoderEmbeddingCache->tryRestore(
+                imageDigests, mVisionRunner->getLastMediaTokenLengths(), output, features, stream);
+        }
+        if (restored)
+        {
+            LOG_INFO(
+                "Encoder embedding cache HIT for all %zu images — skipping ViT encoder execution", imageDigests.size());
+        }
+        else
+        {
+            // The intent stage prepared the text and MRope; only the pixel work and the encoder remain.
+            std::vector<std::vector<int32_t>> unusedInputIds;
+            ELLM_CHECK(mVisionRunner->preprocess(
+                           request, unusedInputIds, mTokenizer, std::nullopt, stream, /*imageOnly=*/true),
+                "Vision preprocessing failed. This request cannot be handled.");
+            ELLM_CHECK(mVisionRunner->infer(stream), "Vision inference failed. This request cannot be handled.");
+            auto const& tokenLengths = mVisionRunner->getLastMediaTokenLengths();
+            if (mEncoderEmbeddingCache != nullptr && !imageDigests.empty()
+                && tokenLengths.size() == imageDigests.size())
+            {
+                int64_t const hiddenSize = output.getShape()[1];
+                size_t const typeSize = rt::utils::getTypeSize(output.getDataType());
+                int64_t tokenOffset = 0;
+                for (size_t index = 0; index < imageDigests.size(); ++index)
+                {
+                    int64_t const numTokens = tokenLengths[index];
+                    mEncoderEmbeddingCache->storeSlice(imageDigests[index],
+                        static_cast<char const*>(output.rawPointer())
+                            + tokenOffset * hiddenSize * static_cast<int64_t>(typeSize),
+                        numTokens, hiddenSize, output.getDataType(), stream, features, tokenOffset);
+                    tokenOffset += numTokens;
+                }
+            }
+        }
+        sources.image = &output;
+        sources.deepstack.assign(features.begin(), features.end());
+    }
+
+    LLMEngineConfig const& base = mDeployment.base;
+    mCompactMedia->stage(slot, promptTokenIds, prefillStart, base.imageTokenId, base.audioTokenId, sources, stream);
+    if (base.ropeConfig.type == RopeType::kMRope)
+    {
+        // Written once for the whole prompt and its generation; no later step rewrites the row.
+        ELLM_CHECK(!mAdmissionMropeStage.isEmpty(), "The admission MRope stage is missing.");
+        copyMropeRowToResidentSlot(mAdmissionMropeStage.rawPointer(), slot, stream);
+    }
+}
+
+void LLMRankRuntime::copyMropeRowToResidentSlot(void const* source, int32_t slot, cudaStream_t stream)
+{
+    LLMEngineConfig const& base = mDeployment.base;
+    ELLM_CHECK(slot >= 0 && slot < base.recurrentPoolRows, "MRoPE resident row is out of range.");
+    check::check(mPipelineIO->mropeCosSin.reshape({base.recurrentPoolRows, base.maxKVCacheCapacity, base.rotaryDim}),
+        "Resident MRoPE cache reshape failed");
+    size_t const rowBytes
+        = static_cast<size_t>(base.maxKVCacheCapacity) * static_cast<size_t>(base.rotaryDim) * sizeof(float);
+    CUDA_CHECK(cudaMemcpyAsync(
+        static_cast<char*>(mPipelineIO->mropeCosSin.rawPointer()) + static_cast<size_t>(slot) * rowBytes, source,
+        rowBytes, cudaMemcpyDeviceToDevice, stream));
+}
+
+void LLMRankRuntime::prepareCompactMediaReservation()
+{
+    if (mVisionRunner == nullptr && mAudioRunner == nullptr)
+    {
+        return;
+    }
+    LLMEngineConfig const& base = mDeployment.base;
+    if (mCompactMedia != nullptr)
+    {
+        for (int32_t slot = 0; slot < mCompactMedia->shape().slots; ++slot)
+        {
+            mCompactMedia->release(slot);
+        }
+        return;
+    }
+    // A slot never embeds more media rows than one context step computes (promptLength - prefillStart <= S_in),
+    // nor more image rows than the vision encoder produces for one request.
+    CompactMediaReservation::Shape shape;
+    shape.slots = base.recurrentPoolRows;
+    shape.hiddenSize = base.hiddenSize;
+    if (mVisionRunner != nullptr)
+    {
+        int64_t const rowBytes = static_cast<int64_t>(base.hiddenSize) * static_cast<int64_t>(sizeof(half));
+        int64_t const encoderRows = mVisionRunner->getOutputEmbedding().getMemoryCapacity() / rowBytes;
+        shape.imageRowsPerSlot
+            = static_cast<int32_t>(std::min<int64_t>(base.maxSupportedInputLength, std::max<int64_t>(encoderRows, 1)));
+        shape.deepstackLayers = mDeepstack != nullptr ? base.numDeepstackFeatures : 0;
+    }
+    if (mAudioRunner != nullptr)
+    {
+        // Audio runners may reallocate their output per request, so only the input length bounds the rows.
+        shape.audioRowsPerSlot = base.maxSupportedInputLength;
+    }
+    std::string const layout
+        = format::fmtstr("%d slots x (%d image rows x (1 + %d deepstack layers) + %d audio rows) x %d hidden FP16",
+            shape.slots, shape.imageRowsPerSlot, shape.deepstackLayers, shape.audioRowsPerSlot, shape.hiddenSize);
+    int64_t const rows = static_cast<int64_t>(shape.slots)
+        * (static_cast<int64_t>(shape.imageRowsPerSlot) * (1 + shape.deepstackLayers) + shape.audioRowsPerSlot);
+    double const mebibytes
+        = static_cast<double>(rows * shape.hiddenSize * static_cast<int64_t>(sizeof(half))) / (1024.0 * 1024.0);
+    try
+    {
+        mCompactMedia = std::make_unique<CompactMediaReservation>(shape);
+    }
+    catch (std::exception const& error)
+    {
+        throw std::runtime_error(
+            format::fmtstr("the compact multimodal reservation (%s = %.2f MiB) could not be "
+                           "allocated: %s",
+                layout.c_str(), mebibytes, error.what()));
+    }
+    LOG_INFO("Compact multimodal reservation: %s = %.2f MiB.", layout.c_str(), mebibytes);
+}
+
+bool LLMRankRuntime::prepareCompactExecution(cudaStream_t stream)
+{
+    std::string failure;
+    std::exception_ptr thrown;
+    try
+    {
+        prepareCompactMediaReservation();
+        // Compact steps with prompt rows run on profile 0 between profile-1 decode steps; a context of their own
+        // spares each such step TensorRT's profile-switch cost. Without one the original context serves them.
+        constexpr int64_t kWithContextSequences = 1;
+        mBaseExecutor->dedicateCompactContext(compactStepProfileIndex(kWithContextSequences), stream);
+        return true;
+    }
+    catch (std::exception const& error)
+    {
+        failure = error.what();
+        thrown = std::current_exception();
+    }
+    // A failed allocation leaves the device usable; a stream in error does not.
+    if (streamInError(stream))
+    {
+        std::rethrow_exception(thrown);
+    }
+    // The failed call's error must not be reported by the next kernel launch's error check.
+    static_cast<void>(cudaGetLastError());
+    mCompactMedia.reset();
+    CompactCapability unavailable;
+    unavailable.reason = "the resources of compact execution could not be allocated: " + failure;
+    LOG_WARNING("Compact execution unavailable: %s; serving single-cohort steps.", unavailable.reason.c_str());
+    mCompactCapability = std::move(unavailable);
+    return false;
+}
+
+bool LLMRankRuntime::uploadCompactMediaIndices(RaggedExecutionBatch const& batch, cudaStream_t stream)
+{
+    int32_t const tokens = batch.shape.physicalTokens;
+    int64_t const indexBytes = static_cast<int64_t>(tokens) * static_cast<int64_t>(sizeof(int32_t));
+    ELLM_CHECK(mHostMultimodalIndices.getMemoryCapacity() >= indexBytes
+            && mMultimodalIndices.getMemoryCapacity() >= indexBytes,
+        "Compact media indices exceed the multimodal index buffers.");
+    check::check(mHostMultimodalIndices.reshape({1, tokens}), "Tensor reshape failed");
+    check::check(mMultimodalIndices.reshape({1, tokens}), "Tensor reshape failed");
+    int32_t* const hostIndices = mHostMultimodalIndices.dataPointer<int32_t>();
+    bool anyMedia = false;
+    for (int32_t sequence = 0; sequence < batch.shape.numSequences; ++sequence)
+    {
+        size_t const index = static_cast<size_t>(sequence);
+        int32_t* const rows = hostIndices + batch.queryStartOffsets[index];
+        int32_t const length = batch.queryLengths[index];
+        if (batch.sequenceWorks[index] == SequenceWork::kContext)
+        {
+            anyMedia = mCompactMedia->mapSlice(batch.stateIndices[index], batch.pastLengths[index], length, rows)
+                || anyMedia;
+        }
+        else
+        {
+            std::fill(rows, rows + length, -1);
+        }
+    }
+    if (!anyMedia)
+    {
+        return false;
+    }
+    CUDA_CHECK(cudaMemcpyAsync(mMultimodalIndices.rawPointer(), hostIndices,
+        static_cast<size_t>(tokens) * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+    mPipelineIO->recordStepHostUploads(stream);
     return true;
 }
 
 bool LLMRankRuntime::supportsSeatedAdmission() const noexcept
 {
-    if (mDeployment.draft.has_value() || mDeployment.base.isDiffusionBackbone)
+    if (mDeployment.base.isDiffusionBackbone)
     {
         return false;
     }
@@ -1586,29 +2533,45 @@ bool LLMRankRuntime::supportsSeatedAdmission() const noexcept
     return true;
 }
 
-int32_t LLMRankRuntime::maxBatchSize() const noexcept
+size_t LLMRankRuntime::activeCacheManagerCount(DecodingStrategy const& strategy) const noexcept
 {
-    return mSharedResources->cacheManagers[0]->getKVCacheManager().getConfig().maxBatchSize;
+    return strategy.isSpeculative() ? mSharedResources->cacheManagers.size() : 1U;
 }
 
-bool LLMRankRuntime::prefillSlotInPlace(
-    DecodingInferenceContext& context, int32_t slot, int32_t prefillStart, SlotSeed const* mediaPayload)
+int32_t LLMRankRuntime::maxBatchSize() const noexcept
 {
-    ELLM_CHECK(slot > 0 && slot < context.activeBatchSize, "prefillSlotInPlace: slot must be a non-zero live slot.");
-    ELLM_CHECK(!mDeployment.draft.has_value(),
-        "prefillSlotInPlace: speculative deployments carry draft-side state with no batch-one projection yet.");
+    // The base and draft engines' common ceiling (DeploymentConfig::maxRuntimeBatchSize): a speculative batch runs
+    // both, and every runtime buffer is sized to it.
+    return mMaxRuntimeBatchSize;
+}
+
+bool LLMRankRuntime::prefillSlotInPlace(DecodingInferenceContext& context, DecodingStrategy& strategy, int32_t row,
+    int32_t prefillStart, SlotSeed const* mediaPayload, ManagedKVCacheRequest* managedKVCacheRequest,
+    ContextCacheLookupPolicy lookupPolicy, int32_t replayTailLength)
+{
+    ELLM_CHECK(row >= 0 && row < context.activeBatchSize, "prefillSlotInPlace: row must be a live execution row.");
     ELLM_CHECK(mContextCache != nullptr || prefillStart == 0,
         "prefillSlotInPlace: a reused prefix requires the context cache that leased its pages.");
     ELLM_CHECK(!mDeployment.base.isDiffusionBackbone,
         "prefillSlotInPlace: the diffusion prefill contract differs and has not been carried over.");
-    ELLM_CHECK(!context.hasGuidedDecoding,
-        "prefillSlotInPlace: the GuidedDecoder's matcher state has no admission projection, so a guided batch "
-        "cannot take an admission.");
+    // The GuidedDecoder's matchers are numbered by execution row and the row swap below does not
+    // move them, so a constrained sequence runs only as the batch's sole row -- where the swap is
+    // the identity and its matcher stays on row zero.
+    ELLM_CHECK(!context.hasGuidedDecoding || context.activeBatchSize == 1,
+        "prefillSlotInPlace: a grammar-constrained batch cannot take an admission beside its resident.");
 
-    auto& cacheManager = *mSharedResources->cacheManagers[0];
     int32_t const fullBatch = context.activeBatchSize;
-    ELLM_CHECK(context.committedLengths[static_cast<size_t>(slot)] == prefillStart,
+    ELLM_CHECK(context.committedLengths[static_cast<size_t>(row)] == prefillStart,
         "The admitted sequence's committed length does not match its reserved prefix.");
+    // Every cache manager the strategy drives swaps the sequence's row to row zero: a draft cache's lengths persist
+    // across steps, so every other row's must be kept.
+    auto const& cacheManagers = mSharedResources->cacheManagers;
+    size_t const cacheCount = activeCacheManagerCount(strategy);
+    for (size_t cacheIndex = 0; cacheIndex < cacheCount; ++cacheIndex)
+    {
+        ELLM_CHECK(cacheManagers[cacheIndex]->getActiveBatchSize() == fullBatch,
+            "prefillSlotInPlace: a cache manager's batch disagrees with the context's.");
+    }
 
     OptionalInputTensor savedVisual = context.visualEmbeddings;
     OptionalInputTensor savedAudio = context.audioEmbeddings;
@@ -1634,12 +2597,15 @@ bool LLMRankRuntime::prefillSlotInPlace(
         check::check(mPipelineIO->mropeActiveCosSin.reshape(shape), "Active MRope scratch reshape failed.");
     }
 
-    context.swapExecutionRows(0, slot);
+    context.swapExecutionRows(0, row);
+    size_t swappedManagers = 0;
     struct ProjectionGuard
     {
         DecodingInferenceContext& context;
-        HybridCacheManager& cacheManager;
-        int32_t slot;
+        std::vector<std::unique_ptr<HybridCacheManager>> const& cacheManagers;
+        size_t cacheCount;
+        size_t const& swappedManagers;
+        int32_t row;
         int32_t fullBatch;
         OptionalInputTensor savedVisual;
         OptionalInputTensor savedAudio;
@@ -1647,14 +2613,41 @@ bool LLMRankRuntime::prefillSlotInPlace(
         ~ProjectionGuard() noexcept
         {
             context.activeBatchSize = fullBatch;
-            cacheManager.restoreActiveBatchSize(fullBatch);
-            context.restoreExecutionRows(0, slot);
+            for (size_t cacheIndex = 0; cacheIndex < cacheCount; ++cacheIndex)
+            {
+                cacheManagers[cacheIndex]->restoreActiveBatchSize(fullBatch);
+                if (cacheIndex < swappedManagers)
+                {
+                    // Self-inverse, and the batch is whole again. A device that cannot take the swap back has
+                    // lost every row's execution length, which nothing past this point could detect.
+                    try
+                    {
+                        cacheManagers[cacheIndex]->swapExecutionRows(0, row, context.stream);
+                    }
+                    catch (...)
+                    {
+                        std::terminate();
+                    }
+                }
+            }
+            context.restoreExecutionRows(0, row);
             context.visualEmbeddings = std::move(savedVisual);
             context.audioEmbeddings = std::move(savedAudio);
             context.deepstackFeatures = std::move(savedDeepstack);
         }
-    } projection{context, cacheManager, slot, fullBatch, std::move(savedVisual), std::move(savedAudio),
-        std::move(savedDeepstack)};
+    } projection{context, cacheManagers, cacheCount, swappedManagers, row, fullBatch, std::move(savedVisual),
+        std::move(savedAudio), std::move(savedDeepstack)};
+    for (size_t cacheIndex = 0; cacheIndex < cacheCount; ++cacheIndex)
+    {
+        cacheManagers[cacheIndex]->swapExecutionRows(0, row, context.stream);
+        ++swappedManagers;
+    }
+    // The base prefill narrows the base manager to its one row itself (materializeExecutionLengths); a draft
+    // manager is narrowed here, for the strategy's draft prefill.
+    for (size_t cacheIndex = 1; cacheIndex < cacheCount; ++cacheIndex)
+    {
+        cacheManagers[cacheIndex]->setActiveBatchSize(1);
+    }
 
     context.visualEmbeddings = std::move(projectedVisual);
     context.audioEmbeddings = std::move(projectedAudio);
@@ -1668,62 +2661,336 @@ bool LLMRankRuntime::prefillSlotInPlace(
             mAdmissionMropeStage.getMemoryCapacity(), cudaMemcpyDeviceToDevice, context.stream));
     }
 
-    return runBaseModelPrefill(context, /*contextCacheRequest=*/nullptr, /*sampleOutput=*/true);
+    // A Hybrid+spec sequence that looks up or publishes its prompt runs the blocking path's endpoint-reuse prefill as
+    // a batch of one: the boundary fold on a hit, the volatile-tail split, and the checkpoint publication once the
+    // draft has seated the prompt.
+    bool const hybridSpecEndpointReuse = managedKVCacheRequest != nullptr && managedKVCacheRequest->hasContextReuse()
+        && shouldUseHybridSpecEndpointReuse(strategy.kind(), mHybridSpecContextReuseDeployment,
+            lookupPolicy != ContextCacheLookupPolicy::kBypass, lookupPolicy != ContextCacheLookupPolicy::kBypass);
+    if (!hybridSpecEndpointReuse)
+    {
+        if (!runBaseModelPrefill(context, managedKVCacheRequest, /*sampleOutput=*/true, /*admissionSequenceIndex=*/row))
+        {
+            return false;
+        }
+        return strategy.seatRow(context, row);
+    }
+    struct EndpointReuseScope
+    {
+        DecodingInferenceContext& context;
+        bool savedEndpointReuse;
+        int32_t savedReplayTailLength;
+        ~EndpointReuseScope()
+        {
+            context.hybridSpecEndpointReuse = savedEndpointReuse;
+            context.contextCacheReplayTailLength = savedReplayTailLength;
+        }
+    };
+    bool prefilled = false;
+    int32_t const pastLength = context.committedLengths[0];
+    {
+        EndpointReuseScope const scope{context, context.hybridSpecEndpointReuse, context.contextCacheReplayTailLength};
+        context.hybridSpecEndpointReuse = true;
+        // A media prompt publishes at the end of its last media run, as on the blocking path.
+        context.contextCacheReplayTailLength = mediaPayload != nullptr
+                && (mediaPayload->visualEmbeddings.has_value() || mediaPayload->audioEmbeddings.has_value())
+            ? mediaReplayTailLength(context.rawBatchedInputIds[0])
+            : replayTailLength;
+        prefilled = runHybridSpecPrefill(context, strategy, *managedKVCacheRequest, row);
+    }
+    if (prefilled)
+    {
+        // A volatile tail splits the prompt into two base forwards; the step record still describes the one context
+        // step the caller scheduled, from the sequence's reused prefix over the whole tail.
+        ELLM_CHECK(context.scheduledStep.sequences.size() == 1, "A seated prefill records one sequence.");
+        ScheduledSequence& record = context.scheduledStep.sequences.front();
+        std::vector<int32_t> const& tokens = context.tokenIds[0];
+        record.pastLength = pastLength;
+        record.queryLength = context.committedLengths[0] - pastLength;
+        record.queryTokens = HostTokenRange{tokens.data(), static_cast<int32_t>(tokens.size()), 0, record.queryLength};
+    }
+    // The prefill synchronized after its last base forward, which covers the checkpoint restore the admission's
+    // chunk opened with.
+    return prefilled && managedKVCacheRequest->completeSequenceAdmissionDeviceWork(row);
+}
+
+std::string LLMRankRuntime::compactPreconditionFailure(DecodingInferenceContext const& context) const
+{
+    LLMEngineConfig const& base = mDeployment.base;
+    if (mDeployment.draft.has_value() || base.isDiffusionBackbone)
+    {
+        return "speculative and diffusion deployments run single-cohort steps";
+    }
+#if IS_TRT_RTX
+    return "TensorRT-RTX engines may run on a GPU other than the one they were built for";
+#endif
+    if (base.maxSupportedBatchSize < 2)
+    {
+        return "compact steps pair prompt rows with decode rows, which needs maxBatchSize >= 2; the engine's "
+               "maxBatchSize is "
+            + std::to_string(base.maxSupportedBatchSize);
+    }
+    if (base.useVisionBidirectionalAttention)
+    {
+        return "image tokens attend bidirectionally within an image (vision-block attention), which compact steps "
+               "cannot split across chunks";
+    }
+    // Compact steps embed media rows from the slot reservations, which hold FP16 decoder-width rows.
+    auto const decoderRows = [&base](MultimodalRunner& runner) {
+        Tensor const& output = runner.getOutputEmbedding();
+        return output.getDataType() == trt_edgellm::DataType::kHALF && output.getShape().getNumDims() == 2
+            && output.getShape()[1] == base.hiddenSize;
+    };
+    if (mVisionRunner != nullptr && !decoderRows(*mVisionRunner))
+    {
+        return "the vision encoder's output rows are not FP16 rows of the decoder's hidden size";
+    }
+    if (mAudioRunner != nullptr && !decoderRows(*mAudioRunner))
+    {
+        return "the audio encoder's output rows are not FP16 rows of the decoder's hidden size";
+    }
+    // Admission staging copies one deepstack feature per decoder deepstack input; a mispaired bundle would refuse
+    // every image request at staging.
+    if (mVisionRunner != nullptr)
+    {
+        size_t const encoderLayers = mVisionRunner->getDeepstackFeatures().size();
+        if (encoderLayers != static_cast<size_t>(base.numDeepstackFeatures))
+        {
+            return "the vision encoder produces " + std::to_string(encoderLayers)
+                + " deepstack feature layers but the decoder engine takes " + std::to_string(base.numDeepstackFeatures);
+        }
+    }
+    if (mQwen4ExpNgram != nullptr)
+    {
+        return "compact steps do not drive the n-gram embedding preprocessor of this model, whose row map assumes "
+               "entry-padded token rows";
+    }
+    if (mGemma4Ple != nullptr)
+    {
+        // One compact step gathers the PLE rows of up to T_max = B x S_in tokens, which may span several prompts.
+        int64_t const stepRows = std::min(base.plePool.rowCount, static_cast<int64_t>(base.maxPhysicalTokens));
+        int64_t const capacity = mGemma4Ple->distinctRowCapacity();
+        if (capacity < stepRows)
+        {
+            return "the per-layer embedding cache maps " + std::to_string(capacity)
+                + " distinct rows per step (its cache slots less the zero slot), fewer than the "
+                + std::to_string(stepRows)
+                + " one compact step can need (the smaller of the PLE table's rows and the engine's B x S_in tokens); "
+                  "compact steps need at least "
+                + std::to_string(stepRows + 1) + " PLE cache slots or resident PLE storage";
+        }
+    }
+    if (base.usesBoundedSwaKVCache())
+    {
+        return "compact steps do not support bounded sliding-window KV storage";
+    }
+    if (context.layerDebugger != nullptr)
+    {
+        return "the layer debugger dumps single-cohort steps only";
+    }
+    // Steps with prompt rows run on the prefill profile and decode-only subsets on the decode profile
+    // (compactStepProfileIndex).
+    for (auto const& [profile, name] : {std::pair{kPrefillProfile, "prefill"}, std::pair{kDecodeProfile, "decode"}})
+    {
+        nvinfer1::Dims maxPhase{};
+        try
+        {
+            maxPhase = mBaseExecutor->getProfileShape(
+                binding_names::kExecutionPhaseMarker, profile, nvinfer1::OptProfileSelector::kMAX);
+        }
+        catch (std::exception const&)
+        {
+            maxPhase.nbDims = 0;
+        }
+        if (maxPhase.nbDims != 1 || maxPhase.d[0] < static_cast<int64_t>(ExecutionPhase::kMixedPrefillDecode))
+        {
+            return std::string("the engine's ") + name + " profile does not admit compact execution";
+        }
+    }
+    return {};
+}
+
+LLMRankRuntime::CompactCapability LLMRankRuntime::resolveCompactCapability(
+    DecodingInferenceContext const& context) const
+{
+    CompactCapability capability;
+    capability.reason = compactPreconditionFailure(context);
+    if (!capability.reason.empty())
+    {
+        LOG_INFO("Compact execution unavailable: %s.", capability.reason.c_str());
+        return capability;
+    }
+    int32_t const sm = getSMVersion();
+    capability.reason = compactExecutionGap(mDeployment.base, sm);
+    // The plugins size the compact workspace at build time; only the builder's report says that they all reserved it.
+    if (capability.reason.empty() && !mDeployment.base.compactExecution)
+    {
+        capability.reason
+            = "the engine was not built for compact execution (builder_config.compact_execution in its "
+              "config.json is not true); the builder writes that field when every compact-capable layer reserved "
+              "its compact workspace at build, and its log names the layers that did not";
+    }
+    capability.compact = capability.reason.empty();
+    if (capability.compact)
+    {
+        LOG_INFO("Compact execution supported on SM%d.", sm);
+    }
+    else
+    {
+        LOG_WARNING("Compact execution unavailable: %s; serving single-cohort steps.", capability.reason.c_str());
+    }
+    return capability;
+}
+
+LLMRankRuntime::CompactForwardStatus LLMRankRuntime::runCompactForward(
+    DecodingInferenceContext& context, std::vector<int32_t> const& mropeInitSlots)
+{
+    LLMEngineConfig const& base = mDeployment.base;
+    RaggedExecutionBatch const& batch = context.raggedExecutionBatch;
+    RaggedStepShape const& shape = batch.shape;
+    int32_t const tokens = shape.physicalTokens;
+    int32_t const sequences = shape.numSequences;
+
+    check::check(mIdsInput.reshape({1, tokens}), "Tensor reshape failed");
+    CUDA_CHECK(cudaMemcpyAsync(mIdsInput.rawPointer(), batch.hostTokenIds.rawPointer(),
+        static_cast<size_t>(tokens) * sizeof(int32_t), cudaMemcpyHostToDevice, context.stream));
+    int32_t* const hostQueryLengths = mPipelineIO->hostContextLengths.dataPointer<int32_t>();
+    check::check(mPipelineIO->hostContextLengths.reshape({sequences}), "Tensor reshape failed");
+    std::copy(batch.queryLengths.begin(), batch.queryLengths.end(), hostQueryLengths);
+    mPipelineIO->recordStepHostUploads(context.stream);
+
+    check::check(mPipelineIO->inputsEmbeds.reshape({1, tokens, base.hiddenSize}), "Tensor reshape failed");
+    bool const mediaStep = mCompactMedia != nullptr && uploadCompactMediaIndices(batch, context.stream);
+    if (mediaStep)
+    {
+        Tensor const& image = mCompactMedia->imageRows();
+        Tensor const& audio = mCompactMedia->audioRows();
+        mEmbeddingPre->embed(mIdsInput, image.isEmpty() ? OptionalInputTensor{} : OptionalInputTensor{std::cref(image)},
+            audio.isEmpty() ? OptionalInputTensor{} : OptionalInputTensor{std::cref(audio)}, *mPipelineIO,
+            context.stream, OptionalInputTensor{std::cref(mMultimodalIndices)});
+    }
+    else
+    {
+        mEmbeddingPre->embed(mIdsInput, std::nullopt, std::nullopt, *mPipelineIO, context.stream);
+    }
+    if (mDeepstack != nullptr)
+    {
+        // The token-major deepstack inputs carry the media rows' features and zeros elsewhere (decode and text
+        // rows); the shared zero target covers only decode-step shapes.
+        if (mediaStep)
+        {
+            mEmbeddingPre->prepareDeepstack(mIdsInput, mCompactMedia->deepstackRows(), *mPipelineIO, context.stream);
+        }
+        else
+        {
+            mEmbeddingPre->prepareDeepstack(mIdsInput, OptionalInputTensors{}, *mPipelineIO, context.stream);
+        }
+    }
+    if (mGemma4Ple != nullptr)
+    {
+        mGemma4Ple->embedPacked(mIdsInput, context.stream, &batch.hostTokenIds);
+    }
+
+    if (base.ropeConfig.type == RopeType::kMRope && !mropeInitSlots.empty())
+    {
+        // Text-only rows are identical, so one row is built and copied into each new resident row.
+        prepareTextOnlyMRope(*mPipelineIO, base, 1, context.stream);
+        for (int32_t const slot : mropeInitSlots)
+        {
+            copyMropeRowToResidentSlot(mPipelineIO->mropeActiveCosSin.rawPointer(), slot, context.stream);
+        }
+    }
+    prepareRaggedExecutionBindings(*mPipelineIO, *mSharedResources, base, batch, /*kvCacheIndex=*/0, context.stream);
+
+    check::check(mPipelineIO->inputsEmbeds.reshape({tokens, base.hiddenSize}), "Compact embedding reshape failed");
+    check::check(
+        mPipelineIO->outputHiddenStates.isEmpty() || mPipelineIO->outputHiddenStates.reshape({tokens, base.hiddenSize}),
+        "Compact hidden-state output reshape failed");
+    check::check(
+        mPipelineIO->outputLogits.reshape({shape.numLogits, base.outputVocabSize}), "Compact logits reshape failed");
+    if (mDeepstack != nullptr)
+    {
+        for (Tensor& deepstack : mPipelineIO->deepstackEmbeds)
+        {
+            check::check(deepstack.reshape({tokens, base.hiddenSize}), "Compact deepstack reshape failed");
+        }
+        mDeepstack->useRealFeatures(mBaseTensorMap);
+    }
+    mStepPreparer->prepare(
+        InferencePhase::kPrefill, sequences, *mSharedResources->cacheManagers[0], *mPipelineIO, context.stream);
+    mPipelineIO->recordStepHostUploads(context.stream);
+
+    int32_t const profile = compactStepProfileIndex(shape.numContextSequences);
+    InferenceDims const dims = base.compactDims(sequences, tokens, shape.numContextSequences, shape.numLogits);
+    timer::TimerSession const forward
+        = gTimer.startForward("base", dims.batch, dims.seqLen, dims.selectLen, context.stream);
+    if (!mBaseExecutor->prepare(profile, dims, mBaseTensorMap, context.stream))
+    {
+        return CompactForwardStatus::kPrepareFailed;
+    }
+    if (mBaseExecutor->execute(context.stream))
+    {
+        return CompactForwardStatus::kOk;
+    }
+    // A plugin refusing phase 8 returns before it launches any work.
+    return enqueueFailedOnDevice(context.stream) ? CompactForwardStatus::kDeviceFailed
+                                                 : CompactForwardStatus::kEnqueueRefused;
 }
 
 bool LLMRankRuntime::runGenerationLoop(DecodingInferenceContext& context, DecodingStrategy& decodingStrategy,
     ManagedKVCacheRequest* managedRequest, LLMGenerationRequest const& request, DecodingKvHeadroom const& kvHeadroom,
-    cudaStream_t stream, GenerationBoundaryHook const& boundaryHook)
+    DecodingKvHeadroom const& jumpForwardKvHeadroom, cudaStream_t stream)
 {
-    GenerationSession session(
-        *this, context, decodingStrategy, managedRequest, request, kvHeadroom, stream, static_cast<bool>(boundaryHook));
+    // The consensus must run whenever a channel can be cancelled: the request streams.
+    bool const synchronizeCancellation = !request.streamChannels.empty();
+    std::vector<bool> actionSlots;
+    if (mActionRunner != nullptr)
+    {
+        actionSlots.reserve(request.requests.size());
+        for (auto const& item : request.requests)
+        {
+            actionSlots.push_back(item.pastTrajectory.has_value());
+        }
+    }
+    GenerationSession session(*this, context, decodingStrategy, managedRequest, kvHeadroom, jumpForwardKvHeadroom,
+        stream, synchronizeCancellation, std::move(actionSlots));
     if (!session.primeFromPrefill())
     {
         return false;
     }
     while (!session.finished())
     {
-        // Before the step, not after: an admission's seated prefill must land before the decode
-        // pass that first carries the new sequence.
-        if (boundaryHook)
-        {
-            boundaryHook(session);
-        }
         if (!session.advance())
         {
             return false;
         }
     }
-    // Once more after the loop: a sequence that finished on the last step has a result to harvest,
-    // and without this call it would surface in the founding caller's response instead.
-    if (boundaryHook)
-    {
-        boundaryHook(session);
-    }
     return true;
 }
 
 bool LLMRankRuntime::handleRequest(LLMGenerationRequest const& request, LLMGenerationResponse& response,
-    cudaStream_t stream, bool outputThinkerEmbeddings, TokenBroadcastFn tokenBroadcast, int32_t parallelRank,
-    GenerationBoundaryHook const& boundaryHook)
+    cudaStream_t stream, bool outputThinkerEmbeddings, TokenBroadcastFn tokenBroadcast, VisionGatherFn visionGather,
+    int32_t parallelRank)
 {
-    std::unique_ptr<SteppedGeneration> generation
-        = beginGeneration(request, response, stream, outputThinkerEmbeddings, std::move(tokenBroadcast), parallelRank);
+    std::unique_ptr<SteppedGeneration> generation = beginGeneration(request, response, stream, outputThinkerEmbeddings,
+        std::move(tokenBroadcast), std::move(visionGather), parallelRank);
     if (generation == nullptr)
     {
         return false;
     }
     if (!runGenerationLoop(generation->context, *generation->strategy, generation->managedRequest(), request,
-            generation->kvHeadroom, stream, boundaryHook))
+            generation->kvHeadroom, generation->jumpForwardKvHeadroom, stream))
     {
         return false;
     }
-    return finishGeneration(*generation, request, response, stream);
+    bool const succeeded = finishGeneration(*generation, request, response, stream);
+    generation->completed = succeeded;
+    return succeeded;
 }
 
 std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGeneration(LLMGenerationRequest const& request,
     LLMGenerationResponse& response, cudaStream_t stream, bool outputThinkerEmbeddings, TokenBroadcastFn tokenBroadcast,
-    int32_t parallelRank, RequestId founderRequestId)
+    VisionGatherFn visionGather, int32_t parallelRank)
 {
     bool expected = false;
     if (!mHandleRequestInProgress.compare_exchange_strong(
@@ -1732,9 +2999,17 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
         LOG_ERROR("Overlapping requests on one runtime are not supported.");
         return nullptr;
     }
-    auto generation = std::make_unique<SteppedGeneration>(mHandleRequestInProgress, mHostRaggedTokenIds);
+    auto generation
+        = std::make_unique<SteppedGeneration>(mHandleRequestInProgress, mHostRaggedTokenIds, mDeviceFailure, stream);
+    if (!unavailableReason().empty())
+    {
+        return nullptr;
+    }
+    selectProfilingTimer();
+    gTimer.beginRequest();
 
     mTokenBroadcast = std::move(tokenBroadcast);
+    mVisionGather = std::move(visionGather);
     mParallelRank = parallelRank;
     if (mDecodingRuntimeContext)
     {
@@ -1760,7 +3035,9 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
     response.outputTrajectories.clear();
     response.finishReasons.clear();
     response.inputTokenCounts.clear();
+    response.reusedInputTokenCounts.clear();
     response.specVerifyCounts.clear();
+    response.decodeRoundCounts.clear();
     response.specAcceptanceLengths.clear();
 
     int32_t const activeBatchSize = static_cast<int32_t>(request.requests.size());
@@ -1771,10 +3048,9 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
         return nullptr;
     }
 
-    if (mContextCache != nullptr && request.saveSystemPromptKVCache)
+    if (getProfilingEnabled())
     {
-        LOG_ERROR("Legacy system-prompt KV-cache capture cannot be combined with context reuse.");
-        return nullptr;
+        gTimer.reserve(256, activeBatchSize);
     }
 
     if (!validateStreamingSubmission(request))
@@ -1785,6 +3061,10 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
     generation->strategy = &mDecoderRegistry->select(request);
     DecodingStrategy& decodingStrategy = *generation->strategy;
     bool const enableSpecDecode = decodingStrategy.isSpeculative();
+    ELLM_CHECK(mBenchmarkOptions.forcedAcceptanceLength < 0 || enableSpecDecode,
+        "Forced acceptance cannot run a vanilla decoder or a speculative fallback");
+    ELLM_CHECK(mBenchmarkOptions.forcedAcceptanceLength < 0 || !hasGuidedDecoding(request),
+        "Forced acceptance cannot be combined with guided decoding");
     generation->enableSpecDecode = enableSpecDecode;
     // DSpark implements the paper-equivalent probabilistic verifier and can keep non-greedy sampling params.
     // Other speculative decoders still run greedy-compatible verification.
@@ -1819,15 +3099,17 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
     DecodingInferenceContext& context = generation->context;
     context.initialize(activeBatchSize, maxGenerateLength, std::nullopt, rt::OptionalInputTensors{}, loraWeightsName,
         stream, mDeployment.base.recurrentPoolRows);
-    if (founderRequestId != 0)
-    {
-        ELLM_CHECK(activeBatchSize == 1, "Stepped execution requires a single-sequence founder.");
-        context.requestIds.front() = founderRequestId;
-    }
     context.initializeRaggedScratch(RaggedEngineContract{TokenLayoutBackend::kEntryPaddedCompatibility,
         mDeployment.base.maxNumSequences, mDeployment.base.maxQueryLength, mDeployment.base.maxPhysicalTokens,
         mDeployment.base.recurrentPoolRows, /* mixedStepSupported = */ false});
     context.layerDebugger = LayerDebugger::fromEnv();
+    ELLM_CHECK(mBenchmarkOptions.forcedAcceptanceLength < 0 || context.layerDebugger == nullptr
+            || !context.layerDebugger->hasForcedTokens(),
+        "Forced acceptance cannot be combined with teacher forcing");
+    if (context.layerDebugger != nullptr)
+    {
+        context.layerDebugger->setNgramPreprocessor(mQwen4ExpNgram.get());
+    }
     bool const supportsMultimodalInput
         = (mAudioRunner != nullptr) || (mVisionRunner != nullptr) || (mActionRunner != nullptr);
 
@@ -1888,6 +3170,7 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
             actionSlots.push_back(slot.pastTrajectory.has_value());
         }
         mActionKvBatchCollector->beginRequest(actionSlots, ropeDeltas);
+        generation->actionKvCollector = mActionKvBatchCollector.get();
     }
 
     // Only the cache-miss suffix reaches a prefill call, so maxInputLen is checked in
@@ -1910,20 +3193,16 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
     // Lossless speculative decoders keep non-greedy parameters. Requests outside a decoder's exact support
     // are routed to the default decoder before this point.
     bool const forceGreedySpecDecode = enableSpecDecode && !losslessSamplingSpecDecode;
-    context.temperature = forceGreedySpecDecode ? 1.0f : request.temperature;
-    context.topP = forceGreedySpecDecode ? 1.0f : request.topP;
-    context.topK = forceGreedySpecDecode ? 0 : request.topK;
-    bool const hasExplicitSamplingSeed = request.samplingSeed.has_value()
-        || std::any_of(request.requests.begin(), request.requests.end(),
-            [](LLMGenerationRequest::Request const& slot) { return slot.samplingSeed.has_value(); });
-    context.useRequestStableSampling
-        = shouldUseRequestStableSampling(losslessSamplingSpecDecode, hasExplicitSamplingSeed);
-    context.samplingSeeds.resize(activeBatchSize);
+    // A batch built at request start gives every slot the request's scalars.
+    RowSamplingParams const sampling = forceGreedySpecDecode ? RowSamplingParams{} : rowSamplingParamsFor(request);
+    context.samplingParams.assign(activeBatchSize, sampling);
     for (int32_t i = 0; i < activeBatchSize; ++i)
     {
-        context.samplingSeeds[i]
-            = request.requests[i].samplingSeed.value_or(request.samplingSeed.value_or(kDefaultSamplingSeed));
+        context.samplingSeeds[i] = resolveSamplingSeed(request, request.requests[i]);
+        context.requestStableSampling[i]
+            = static_cast<int8_t>(usesRequestStableSampling(request, request.requests[i], losslessSamplingSpecDecode));
     }
+    context.ignoreEos.assign(activeBatchSize, static_cast<int8_t>(request.ignoreEos));
     context.proposalSampling = request.proposalSampling;
     context.diffusionMaxDenoisingSteps = request.diffusionMaxDenoisingSteps;
     context.outputThinkerEmbeddings = outputThinkerEmbeddings;
@@ -1962,6 +3241,12 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
             if (mGuidedDecoder.prepareSlot(i, *slotGuide, failReason))
             {
                 context.hasGuidedDecoding = true;
+                if (jumpForwardRequested(
+                        *slotGuide, decodingStrategy, hasNonGreedySampling, /*inFlightBatching=*/false))
+                {
+                    context.jumpForwardEnabled[i] = 1;
+                    context.hasJumpForward = true;
+                }
                 continue;
             }
             LOG_ERROR("Request %d: failed to compile the %s guide: %s", i, guideTypeName(slotGuide->type),
@@ -1969,25 +3254,19 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
             context.finishedStates[i] = 1;
             context.slotStreams[i].terminalReason = FinishReason::kError;
         }
-    }
-
-    if (request.numLogprobs > static_cast<int32_t>(kMaxLogprobsK))
-    {
-        LOG_WARNING("numLogprobs %d exceeds maximum %d; clamping.", request.numLogprobs, kMaxLogprobsK);
-    }
-    context.numLogprobs = std::min(request.numLogprobs, static_cast<int32_t>(kMaxLogprobsK));
-    if (context.numLogprobs > 0)
-    {
-        int32_t const logprobsRows = activeBatchSize * mDeployment.maxAcceptedTokensPerRound();
-        ensureLogprobsCapacity(logprobsRows, context.numLogprobs);
-
-        // Spec-decode verify may accept more than 1 token in one step, overshooting maxGenerateLength.
-        int32_t const overshoot = mDeployment.maxAcceptedTokensPerRound() - 1;
-        for (auto& slot : context.stepLogprobs)
+        if (context.hasJumpForward)
         {
-            slot.data.resize(static_cast<size_t>(context.maxGenerateLength + overshoot) * context.numLogprobs);
-            slot.numSteps = 0;
+            prepareJumpForwardExecution(decodingStrategy, stream);
         }
+    }
+
+    int32_t const numLogprobs = clampLogprobsWidth(request.numLogprobs);
+    context.numLogprobsPerSlot.assign(activeBatchSize, numLogprobs);
+    // Spec-decode verify may accept more than 1 token in one step, overshooting the budget.
+    context.logprobsStepOvershoot = mDeployment.maxAcceptedTokensPerRound() - 1;
+    if (numLogprobs > 0)
+    {
+        ensureLogprobsCapacity(activeBatchSize * mDeployment.maxAcceptedTokensPerRound(), numLogprobs);
     }
 
     // Forward per-slot stop strings and cache the longest length to avoid
@@ -2007,61 +3286,30 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
         context.slotStreams[i].skipSpecialTokens = request.skipSpecialTokens;
     }
 
-    generation->kvHeadroom = decodingStrategy.requiredKvHeadroom();
+    DecodingKvHeadroomPolicy const headroomPolicy = decodingStrategy.kvHeadroom();
+    generation->kvHeadroom = headroomPolicy.plain;
+    generation->jumpForwardKvHeadroom = context.hasJumpForward ? headroomPolicy.jumpForward : headroomPolicy.plain;
     DecodingKvHeadroom const& kvHeadroom = generation->kvHeadroom;
+    DecodingKvHeadroom const& jumpForwardKvHeadroom = generation->jumpForwardKvHeadroom;
     DecodingTokenStateContract const tokenStateContract = decodingStrategy.tokenStateContract();
     ContextCacheCommitPolicy const contextCacheCommitPolicy = request.contextCacheCommitPolicy;
     ELLM_CHECK(
         kvHeadroom.baseExtraTokens > 0 && kvHeadroom.draftExtraTokens >= 0, "Decoder returned invalid KV headroom");
     ELLM_CHECK(!enableSpecDecode || kvHeadroom.draftExtraTokens == 0 || mDeployment.draft.has_value(),
         "Decoder requested draft KV headroom without a draft engine");
-
-    // In production, the system-prompt KV cache is saved during warm-up.
-    // We disable profiling here to make benchmarking closer to production inference result.
-    bool profilingEnabled = getProfilingEnabled();
-    if (profilingEnabled)
-    {
-        setProfilingEnabled(false);
-    }
-
-    // Generate system prompt KVCache for each sequence in the batch
-    if (request.saveSystemPromptKVCache)
-    {
-        for (int32_t i = 0; i < activeBatchSize; ++i)
-        {
-            bool const saveCacheStatus = genAndSaveSystemPromptKVCache(context, i);
-            if (!saveCacheStatus)
-            {
-                LOG_WARNING(
-                    "Failed to save system prompt KVCache for request %d in batch. "
-                    "Continue to handle the request without saving the system prompt KVCache.",
-                    i);
-            }
-        }
-    }
-
-    if (profilingEnabled)
-    {
-        setProfilingEnabled(true);
-    }
-
-    // Collect valid media placeholder token IDs for content-addressed cache hashing.
-    std::vector<int32_t> mediaTokenIds;
-    if (mDeployment.base.imageTokenId >= 0)
-    {
-        mediaTokenIds.push_back(mDeployment.base.imageTokenId);
-    }
-    if (mDeployment.base.audioTokenId >= 0)
-    {
-        mediaTokenIds.push_back(mDeployment.base.audioTokenId);
-    }
+    ELLM_CHECK(jumpForwardKvHeadroom.baseExtraTokens >= kvHeadroom.baseExtraTokens
+            && jumpForwardKvHeadroom.draftExtraTokens >= kvHeadroom.draftExtraTokens
+            && (jumpForwardKvHeadroom.draftExtraTokens == 0) == (kvHeadroom.draftExtraTokens == 0),
+        "Decoder returned invalid jump-forward KV headroom");
 
     std::optional<ManagedKVCacheRequest>& managedKVCacheRequest = generation->managedKVCacheRequest;
+    // The deployment's media placeholder list keys media runs in the cache and locates the media tail below.
+    std::vector<int32_t> const mediaTokens = mediaTokenIds();
     if (mContextCache != nullptr || mBoundedSwaKVPageManager != nullptr)
     {
         std::optional<ManagedKVCacheRequest> admitted = ManagedKVCacheRequest::begin(mContextCache.get(),
             mBoundedSwaKVPageManager.get(), request, context, decodingStrategy.isSpeculative(), kvHeadroom,
-            tokenStateContract, contextCacheCommitPolicy, mediaTokenIds);
+            tokenStateContract, contextCacheCommitPolicy, mediaTokens);
         if (!admitted.has_value())
         {
             return nullptr;
@@ -2128,45 +3376,120 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
         clampedMaxGenerateLength = clampMaxGenerateLengthForKVCapacity(residentInputLengths, clampedMaxGenerateLength,
             mDeployment.draft->maxKVCacheCapacity, kvHeadroom.draftExtraTokens);
     }
-    if (clampedMaxGenerateLength != context.maxGenerateLength)
+    if (mBenchmarkOptions.maxDecodeRounds > 0)
     {
-        context.maxGenerateLength = clampedMaxGenerateLength;
-        LOG_WARNING("Reduce max generation length to %d", context.maxGenerateLength);
+        int64_t const perRound = mBenchmarkOptions.forcedAcceptanceLength > 0
+            ? static_cast<int64_t>(mBenchmarkOptions.forcedAcceptanceLength)
+            : mDeployment.maxAcceptedTokensPerRound();
+        int64_t const requiredOutput = (mDeployment.base.isDiffusionBackbone ? 0 : 1)
+            + static_cast<int64_t>(mBenchmarkOptions.maxDecodeRounds) * perRound;
+        ELLM_CHECK(clampedMaxGenerateLength >= requiredOutput,
+            "Fixed-round benchmark requires output and KV headroom for every complete decode round");
     }
-    if (context.maxGenerateLength <= 0)
+    if (clampedMaxGenerateLength != request.maxGenerateLength)
+    {
+        LOG_WARNING("Reduce max generation length to %d", clampedMaxGenerateLength);
+    }
+    if (clampedMaxGenerateLength <= 0)
     {
         LOG_ERROR("Insufficient KV cache capacity for generation for this request.");
         return nullptr;
     }
+    if (getProfilingEnabled())
+    {
+        int64_t const draftSteps = mDeployment.specConfig.has_value() ? mDeployment.specConfig->draftSteps : 0;
+        int64_t samplesPerRound
+            = std::max<int64_t>(activeBatchSize, mDeployment.specConfig.has_value() ? 32 + 4 * draftSteps : 8);
+        if (mDeployment.base.isDiffusionBackbone)
+        {
+            int64_t const maxDenoisingSteps = request.diffusionMaxDenoisingSteps > 0
+                ? std::min(request.diffusionMaxDenoisingSteps, mDeployment.base.diffusionMaxDenoisingSteps)
+                : mDeployment.base.diffusionMaxDenoisingSteps;
+            samplesPerRound = std::max(samplesPerRound, 8 + 2 * maxDenoisingSteps);
+        }
+        int64_t const rounds = mBenchmarkOptions.maxDecodeRounds > 0
+            ? std::min<int64_t>(mBenchmarkOptions.maxDecodeRounds, clampedMaxGenerateLength)
+            : clampedMaxGenerateLength;
+        ELLM_CHECK(static_cast<uint64_t>(rounds)
+                <= (std::numeric_limits<size_t>::max() - 256) / static_cast<uint64_t>(samplesPerRound),
+            "Profiling request exceeds timing storage capacity");
+        gTimer.reserve(256 + static_cast<size_t>(rounds) * static_cast<size_t>(samplesPerRound), activeBatchSize);
+    }
+    context.maxGenerateLengths.assign(activeBatchSize, clampedMaxGenerateLength);
+    // A slot that runs with jump-forward keeps its wider headroom behind its own prompt; the other slots keep the
+    // budget computed above.
+    for (int32_t i = 0; context.hasJumpForward && i < activeBatchSize; ++i)
+    {
+        if (context.jumpForwardEnabled[i] == 0)
+        {
+            continue;
+        }
+        std::vector<int32_t> const promptLength{residentInputLengths[i]};
+        int32_t budget = clampMaxGenerateLengthForKVCapacity(promptLength, context.maxGenerateLengths[i],
+            mDeployment.base.maxKVCacheCapacity, jumpForwardKvHeadroom.baseExtraTokens);
+        if (jumpForwardKvHeadroom.draftExtraTokens > 0)
+        {
+            budget = clampMaxGenerateLengthForKVCapacity(
+                promptLength, budget, mDeployment.draft->maxKVCacheCapacity, jumpForwardKvHeadroom.draftExtraTokens);
+        }
+        if (budget <= 0)
+        {
+            LOG_ERROR("Insufficient KV cache capacity for jump-forward generation for request %d.", i);
+            return nullptr;
+        }
+        if (budget < context.maxGenerateLengths[i])
+        {
+            context.maxGenerateLengths[i] = budget;
+            LOG_WARNING("Reduce max generation length to %d for request %d (jump-forward KV headroom)", budget, i);
+        }
+    }
+    for (int32_t i = 0; i < activeBatchSize; ++i)
+    {
+        context.allocateLogprobsAccumulator(i);
+    }
 
-    // Hybrid+MTP endpoint reuse recomputes the successor-dependent boundary draft slot from a saved base hidden state,
+    // Hybrid+spec endpoint reuse recomputes the successor-dependent boundary draft slot from a saved base hidden state,
     // so a checkpoint reuses across turns regardless of the token that follows it. Enabled only when the request looks
-    // up or publishes state (not a bypass request) and the deployment is MTP over a hybrid base.
+    // up or publishes state (not a bypass request) and the deployment uses speculative decoding over a hybrid base.
     bool const requestCacheEnabled = managedRequest != nullptr && managedRequest->hasContextReuse()
         && request.contextCacheLookupPolicy != ContextCacheLookupPolicy::kBypass && !request.generateAudio
         && !context.outputThinkerEmbeddings;
-    bool const hybridMtpContextReuse = shouldUseHybridMtpEndpointReuse(
-        decodingStrategy.kind(), mHybridMtpContextReuseDeployment, requestCacheEnabled, requestCacheEnabled);
-    if (hybridMtpContextReuse)
+    bool const hybridSpecContextReuse = shouldUseHybridSpecEndpointReuse(
+        decodingStrategy.kind(), mHybridSpecContextReuseDeployment, requestCacheEnabled, requestCacheEnabled);
+    bool const textOnly = !context.visualEmbeddings.has_value() && !context.audioEmbeddings.has_value();
+    bool const hybridSpecTextReuse = hybridSpecContextReuse && textOnly;
+    bool const hybridSpecMediaReuse = hybridSpecContextReuse && !textOnly;
+    if (hybridSpecTextReuse || hybridSpecMediaReuse)
     {
-        bool const textOnly = !context.visualEmbeddings.has_value() && !context.audioEmbeddings.has_value();
-        if (context.activeBatchSize != 1 || !textOnly || request.recurrentCaptureInterval != 0
+        if (request.recurrentCaptureInterval != 0
             || request.contextCacheCommitPolicy != ContextCacheCommitPolicy::kPrefillStateOnly)
         {
-            LOG_ERROR(
-                "Hybrid MTP context reuse requires a text-only batch of one, endpoint-only capture, and "
-                "PREFILL_STATE_ONLY commit policy");
+            LOG_ERROR("Hybrid spec context reuse requires endpoint-only capture and PREFILL_STATE_ONLY commit policy");
+            return nullptr;
+        }
+        if (hybridSpecMediaReuse && context.activeBatchSize != 1)
+        {
+            LOG_ERROR("Hybrid spec media context reuse requires batch size 1 (per-slot media tail not implemented)");
             return nullptr;
         }
     }
 
     // Prefill from the base model; subsequent iterations are delegated to the selected strategy.
     bool prefillStatus;
-    if (hybridMtpContextReuse)
+    if (hybridSpecTextReuse)
     {
-        context.hybridMtpEndpointReuse = true;
+        context.hybridSpecEndpointReuse = true;
         context.contextCacheReplayTailLength = request.contextCacheReplayTailLength;
-        prefillStatus = runHybridMtpPrefill(context, decodingStrategy, *managedRequest);
+        prefillStatus = runHybridSpecPrefill(context, decodingStrategy, *managedRequest);
+    }
+    else if (hybridSpecMediaReuse)
+    {
+        context.hybridSpecEndpointReuse = true;
+        int32_t const mediaTailLength = mediaReplayTailLength(context.rawBatchedInputIds[0]);
+        context.contextCacheReplayTailLength = mediaTailLength;
+        LOG_DEBUG("hybridSpecMediaReuse: mediaTailLength=%d inputLen=%zu imageTokenId=%d mediaTokenIds.size=%zu",
+            mediaTailLength, context.rawBatchedInputIds[0].size(), mDeployment.base.imageTokenId, mediaTokens.size());
+        prefillStatus = runHybridSpecPrefill(context, decodingStrategy, *managedRequest);
     }
     else
     {
@@ -2220,6 +3543,35 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
     return generation;
 }
 
+std::unique_ptr<RuntimeSession> LLMRankRuntime::openSession(cudaStream_t stream, SessionOptions options)
+{
+    bool expected = false;
+    if (!mHandleRequestInProgress.compare_exchange_strong(
+            expected, true, std::memory_order_acquire, std::memory_order_relaxed))
+    {
+        LOG_ERROR("Cannot open a runtime session while a request is being served on this runtime.");
+        return nullptr;
+    }
+    // The session's guard releases the latch on every exit from here on, including a failed open.
+    std::unique_ptr<RankRuntimeSession> session(new RankRuntimeSession(*this, stream, options.allowCompactExecution));
+    if (!unavailableReason().empty())
+    {
+        return nullptr;
+    }
+    if (!supportsSeatedAdmission())
+    {
+        LOG_ERROR(
+            "This deployment cannot seat sequences into a running batch, so it cannot host a runtime session; serve "
+            "it through the blocking handleRequest path.");
+        return nullptr;
+    }
+    if (!session->open())
+    {
+        return nullptr;
+    }
+    return session;
+}
+
 bool LLMRankRuntime::finishGeneration(SteppedGeneration& generation, LLMGenerationRequest const& request,
     LLMGenerationResponse& response, cudaStream_t stream)
 {
@@ -2260,7 +3612,7 @@ bool LLMRankRuntime::finishGeneration(SteppedGeneration& generation, LLMGenerati
     {
         int32_t rawPromptLength = static_cast<int32_t>(batchResult.rawBatchedInputIds.size());
         int32_t computedLength = batchResult.effectivePrefillLength;
-        totalReusedTokens += (rawPromptLength - computedLength - batchResult.prunedPrefillTokens);
+        totalReusedTokens += reusedPromptTokens(rawPromptLength, computedLength, batchResult.prunedPrefillTokens);
         totalComputedTokens += computedLength;
         totalPrunedTokens += batchResult.prunedPrefillTokens;
         totalGeneratedTokens += batchResult.generateLength;
@@ -2288,12 +3640,15 @@ bool LLMRankRuntime::finishGeneration(SteppedGeneration& generation, LLMGenerati
     response.outputTrajectories.resize(context.completedBatches.size());
     response.finishReasons.resize(context.completedBatches.size(), FinishReason::kNotFinished);
     response.inputTokenCounts.assign(context.completedBatches.size(), 0);
+    response.reusedInputTokenCounts.assign(context.completedBatches.size(), 0);
     response.specVerifyCounts.assign(context.completedBatches.size(), 0);
+    response.decodeRoundCounts.assign(context.completedBatches.size(), 0);
     response.specAcceptanceLengths.assign(context.completedBatches.size(), 0.0F);
 
     // Add outputs from completed batches (using saved original indices)
     for (auto const& [originalIdx, batchResult] : context.completedBatches)
     {
+        response.decodeRoundCounts[originalIdx] = batchResult.actualIterations;
         int32_t genLength = batchResult.generateLength;
 
         // Log acceptance metrics for evicted batch
@@ -2324,6 +3679,9 @@ bool LLMRankRuntime::finishGeneration(SteppedGeneration& generation, LLMGenerati
         response.finishReasons[originalIdx] = batchResult.terminalReason;
         // Prompt length after chat templating and media expansion (OpenAI usage).
         response.inputTokenCounts[originalIdx] = static_cast<int32_t>(batchResult.rawBatchedInputIds.size());
+        response.reusedInputTokenCounts[originalIdx]
+            = reusedPromptTokens(static_cast<int32_t>(batchResult.rawBatchedInputIds.size()),
+                batchResult.effectivePrefillLength, batchResult.prunedPrefillTokens);
         if (enableSpecDecode)
         {
             response.specVerifyCounts[originalIdx] = batchResult.actualIterations;
@@ -2360,10 +3718,24 @@ bool LLMRankRuntime::finishGeneration(SteppedGeneration& generation, LLMGenerati
 
     if (hasActionRequest)
     {
-        rt::ActionKvBatchView const actionKvBatch = mActionKvBatchCollector->materialize(stream);
         rt::HybridCacheManager const& kvcache = *mSharedResources->cacheManagers[0];
-        std::vector<std::vector<rt::FutureTrajectoryPoint>> trajectories
-            = mActionRunner->sampleTrajectory(stream, kvcache, actionKvBatch);
+        rt::ActionKvBatchView const actionKvBatch = mActionKvBatchCollector->materialize(stream);
+        std::vector<std::vector<rt::FutureTrajectoryPoint>> trajectories;
+        try
+        {
+            trajectories = mActionRunner->sampleTrajectory(stream, kvcache, actionKvBatch);
+        }
+        catch (...)
+        {
+            mActionKvBatchCollector->releaseMaterialized(stream);
+            throw;
+        }
+        mActionKvBatchCollector->releaseMaterialized(stream);
+        if (!mActionRunner->isRoot())
+        {
+            ELLM_CHECK(trajectories.empty(), "Non-root action rank unexpectedly produced trajectories");
+            return true;
+        }
         if (trajectories.size() != static_cast<size_t>(actionKvBatch.batchSize))
         {
             LOG_ERROR("Alpamayo1ActionRunner trajectory sampling failed.");
@@ -2386,6 +3758,46 @@ bool LLMRankRuntime::finishGeneration(SteppedGeneration& generation, LLMGenerati
     }
 
     return true;
+}
+
+uint64_t LLMRankRuntime::resolveSamplingSeed(
+    LLMGenerationRequest const& request, LLMGenerationRequest::Request const& item) noexcept
+{
+    if (item.samplingSeed.has_value())
+    {
+        return *item.samplingSeed;
+    }
+    if (request.samplingSeed.has_value())
+    {
+        return *request.samplingSeed;
+    }
+    return kDefaultSamplingSeed;
+}
+
+bool LLMRankRuntime::usesRequestStableSampling(LLMGenerationRequest const& request,
+    LLMGenerationRequest::Request const& item, bool losslessSamplingSpecDecode) noexcept
+{
+    return item.samplingSeed.has_value() || request.samplingSeed.has_value() || losslessSamplingSpecDecode;
+}
+
+int32_t LLMRankRuntime::clampLogprobsWidth(int32_t requested) noexcept
+{
+    if (requested > static_cast<int32_t>(kMaxLogprobsK))
+    {
+        LOG_WARNING("numLogprobs %d exceeds maximum %d; clamping.", requested, kMaxLogprobsK);
+    }
+    // A negative width means disabled, like zero.
+    return std::max(0, std::min(requested, static_cast<int32_t>(kMaxLogprobsK)));
+}
+
+int64_t LLMRankRuntime::clampSamplingTopK(int64_t requested) noexcept
+{
+    if (requested > kMaxSamplingTopK)
+    {
+        LOG_WARNING("topK %" PRId64 " exceeds the sampler's maximum %d; clamping.", requested, kMaxSamplingTopK);
+        return kMaxSamplingTopK;
+    }
+    return requested;
 }
 
 bool LLMRankRuntime::validateRequestConfig(LLMGenerationRequest const& request)
@@ -2418,7 +3830,19 @@ bool LLMRankRuntime::validateRequestConfig(LLMGenerationRequest const& request)
         return false;
     }
     bool const gemma4MtpTree = mDeployment.specDecodeMode() == SpecDecodeMode::kGemma4MTP
-        && mDeployment.specConfig.has_value() && mDeployment.specConfig->draftingTopK > 1;
+        && mDeployment.specConfig.has_value() && mDeployment.specConfig->draftTopK > 1;
+    // The sampler's domain: rejected here rather than thrown from inside a step, where it would fail
+    // every resident. Top-k has no upper bound here; rowSamplingParamsFor clamps it.
+    if (!std::isfinite(request.temperature) || request.temperature < 0.0F)
+    {
+        LOG_ERROR("temperature must be finite and non-negative; got %f.", static_cast<double>(request.temperature));
+        return false;
+    }
+    if (!std::isfinite(request.topP) || request.topP <= 0.0F || request.topP > 1.0F)
+    {
+        LOG_ERROR("topP must be in (0, 1]; got %f.", static_cast<double>(request.topP));
+        return false;
+    }
     if (gemma4MtpTree && shouldUseNonGreedySampling(request.temperature, request.topK, request.topP))
     {
         LOG_ERROR(
@@ -2495,12 +3919,111 @@ bool LLMRankRuntime::validateRequestConfig(LLMGenerationRequest const& request)
         LOG_ERROR("Request contains trajectory history input, but this runtime does not have an action runner.");
         return false;
     }
-    if (mDeployment.base.useVisionBidirectionalAttention && request.saveSystemPromptKVCache)
+
+    return true;
+}
+
+std::vector<std::vector<Hash128>> LLMRankRuntime::buildImageContentDigests(
+    LLMGenerationRequest const& request, cudaStream_t stream)
+{
+    // Every image in the request gets its own range of mImageDigestRows, so all of their kernels can be
+    // launched back-to-back and drained with one sync instead of one sync per image.
+    std::vector<std::vector<rt::imageUtils::ImageDigestLaunch>> launches(request.requests.size());
+    int64_t rowOffset = 0;
+    for (size_t seqIdx = 0; seqIdx < request.requests.size(); ++seqIdx)
     {
-        LOG_ERROR("System-prompt KV-cache reuse is not supported with Gemma4 vision bidirectional attention.");
+        auto const& images = request.requests[seqIdx].imageBuffers;
+        launches[seqIdx].reserve(images.size());
+        for (size_t imageIdx = 0; imageIdx < images.size(); ++imageIdx)
+        {
+            try
+            {
+                launches[seqIdx].push_back(
+                    rt::imageUtils::launchImageContentDigest(images[imageIdx], mImageDigestRows, rowOffset, stream));
+                rowOffset += launches[seqIdx].back().rowCount;
+            }
+            catch (std::exception const& error)
+            {
+                // launchImageContentDigest also throws when this request's images together outgrow
+                // limits::multimodal::kMaxImageDigestRows, the capacity of mImageDigestRows.
+                LOG_WARNING(
+                    "Image %zu of request %zu has no content identity (%s); the encoder embedding cache "
+                    "and the context cache both skip this request.",
+                    imageIdx, seqIdx, error.what());
+                return {};
+            }
+        }
+    }
+
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    std::vector<std::vector<Hash128>> digests(request.requests.size());
+    for (size_t seqIdx = 0; seqIdx < request.requests.size(); ++seqIdx)
+    {
+        digests[seqIdx].reserve(launches[seqIdx].size());
+        for (auto const& launch : launches[seqIdx])
+        {
+            digests[seqIdx].push_back(rt::imageUtils::finishImageContentDigest(launch, mImageDigestRows));
+        }
+    }
+    return digests;
+}
+
+void LLMRankRuntime::initializeVisionDataParallel()
+{
+    constexpr int32_t kTpSize{2};
+    if (mMapping.tensorParallelSize != kTpSize || !mVisionRunner
+        || mVisionRunner->getModelType() != multimodal::ModelType::QWEN3_VL)
+    {
+        return;
+    }
+
+    auto* qwenVision = static_cast<rt::Qwen3VLViTRunner*>(mVisionRunner.get());
+    qwenVision->initializeDataParallel();
+}
+
+bool LLMRankRuntime::runJointVisionDataParallel(LLMGenerationRequest const& request, VisionDpPlan const& plan,
+    DecodingInferenceContext& context, std::vector<std::vector<int32_t>>& batchedInputIds, cudaStream_t stream,
+    OptionalOutputTensor mropeCosSinOut)
+{
+    constexpr int32_t kTpSize{2};
+    int32_t const rank = mMapping.tensorParallelRank;
+    ELLM_CHECK(rank >= 0 && rank < kTpSize, "Joint-image vision data parallelism requires a valid TP2 rank.");
+
+    auto const& images = request.requests.front().imageBuffers;
+    size_t const localBegin = rank == 0 ? 0 : plan.splitIndex;
+    size_t const localEnd = rank == 0 ? plan.splitIndex : images.size();
+    auto* qwenVision = static_cast<rt::Qwen3VLViTRunner*>(mVisionRunner.get());
+    int64_t const outputTokenOffset = rank == 0 ? 0 : plan.tokenCounts[0];
+    if (!qwenVision->preprocessDataParallel(request, rank, plan, batchedInputIds, mTokenizer, mropeCosSinOut, stream)
+        || !qwenVision->infer(stream, outputTokenOffset))
+    {
+        LOG_ERROR("Joint-image vision data-parallel execution failed on rank %d.", rank);
         return false;
     }
 
+    auto const [rank0Tokens, rank1Tokens] = plan.tokenCounts;
+    auto const& outputs = qwenVision->getOutputTensors();
+    {
+        TIME_STAGE(metrics::StageNames::kVISION_GATHER, stream);
+        for (auto const& output : outputs)
+        {
+            if (!gatherVisionTensor(output.get(), plan.tokenCounts, rank, mVisionGather, stream))
+            {
+                return false;
+            }
+        }
+    }
+
+    context.deepstackFeatures.reserve(outputs.size() - 1);
+    for (size_t index = 1; index < outputs.size(); ++index)
+    {
+        context.deepstackFeatures.emplace_back(std::cref(outputs[index].get()));
+    }
+    LOG_INFO(
+        "Joint-image vision DP: rank %d encoded images [%zu, %zu), split %zu+%zu, "
+        "gathered token shards %ld+%ld",
+        rank, localBegin, localEnd, plan.splitIndex, images.size() - plan.splitIndex, rank0Tokens, rank1Tokens);
     return true;
 }
 
@@ -2514,6 +4037,11 @@ bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& req
         request.requests.begin(), request.requests.end(), [](auto const& req) { return !req.imageBuffers.empty(); });
     bool const hasTrajectoryHistory = std::any_of(request.requests.begin(), request.requests.end(),
         [](auto const& req) { return req.pastTrajectory.has_value(); });
+    VisionDpPlan const* const visionDpPlan = hasVision && !hasAudio && !hasTrajectoryHistory
+            && mMapping.tensorParallelSize == 2 && mVisionGather && mVisionRunner
+            && mVisionRunner->getModelType() == multimodal::ModelType::QWEN3_VL
+        ? static_cast<rt::QwenViTRunner*>(mVisionRunner.get())->planDataParallel(request)
+        : nullptr;
 
     // Clear request-scoped multimodal state up front so previous requests cannot leak through reused runtime members.
     context.visualEmbeddings = std::nullopt;
@@ -2522,6 +4050,13 @@ bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& req
     // Treat multimodal indices as request-scoped state. Only request paths that explicitly rebuild
     // mMultimodalIndices for the current request should observe a non-empty tensor downstream.
     check::check(mMultimodalIndices.reshape({0}), "Tensor reshape failed");
+
+    // Ahead of the encoders, which is where the embedding cache reads them to decide whether the ViT
+    // runs at all. The context cache reads the same table later, at admission.
+    if (hasVision && (mEncoderEmbeddingCache != nullptr || mContextCache != nullptr))
+    {
+        context.imageContentDigests = buildImageContentDigests(request, stream);
+    }
 
     // Mark multimodal preprocessing and inference for NVTX profiling
     NVTX_SCOPED_RANGE(nvtx_multimodal, "MULTIMODAL_PROCESSING", nvtx_colors::ORANGE);
@@ -2584,6 +4119,9 @@ bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& req
             }
             if (!hashable)
             {
+                LOG_WARNING(
+                    "A clip of this request carries no PCM samples to identify it by; the encoder "
+                    "embedding cache skips the request.");
                 audioHashes.clear();
             }
         }
@@ -2659,10 +4197,19 @@ bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& req
                 }
             }
         }
+        context.audioEmbeddings = std::cref(mAudioRunner->getOutputEmbedding());
     }
 
+    // Joint-image DP bypasses the encoder cache so every rank executes the same visual collectives.
+    if (visionDpPlan != nullptr)
+    {
+        if (!runJointVisionDataParallel(request, *visionDpPlan, context, batchedInputIds, stream, mropeCosSinOut))
+        {
+            return false;
+        }
+    }
     // Process vision inputs (if present)
-    if (hasVision && mVisionRunner)
+    else if (hasVision && mVisionRunner)
     {
         bool visionCacheHit = false;
         bool visionTextPreprocessed = false;
@@ -2670,33 +4217,18 @@ bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& req
 
         if (mEncoderEmbeddingCache)
         {
-            bool hashable = true;
-            for (auto const& req : request.requests)
+            // Flattened in the order the digests were built, which is the order the encoder lays its
+            // output embeddings out in; an empty table keeps the request out of the lookup and store below.
+            for (auto const& sequenceDigests : context.imageContentDigests)
             {
-                for (auto const& img : req.imageBuffers)
-                {
-                    // The key is the pixel bytes, so every image in the request has to be readable on
-                    // the host; one that is not drops the whole request out of the cache below.
-                    if (img.buffer != nullptr && img.buffer->getDeviceType() == rt::DeviceType::kCPU
-                        && !img.buffer->isEmpty())
-                    {
-                        auto const* rawPtr = reinterpret_cast<char const*>(img.buffer->dataPointer<unsigned char>());
-                        size_t const rawBytes = static_cast<size_t>(img.addressedBytes());
-                        imageHashes.push_back(hashOpaqueIdentity(std::string_view(rawPtr, rawBytes), stream, false));
-                    }
-                    else
-                    {
-                        hashable = false;
-                    }
-                }
-            }
-            if (!hashable)
-            {
-                imageHashes.clear();
+                imageHashes.insert(imageHashes.end(), sequenceDigests.begin(), sequenceDigests.end());
             }
         }
 
-        bool allHit = mEncoderEmbeddingCache && !imageHashes.empty();
+        // A hit lays the prompt out without the encoder, which a request whose layout the encoder determines
+        // cannot take.
+        bool allHit
+            = mEncoderEmbeddingCache && !imageHashes.empty() && !mVisionRunner->tokenLayoutNeedsEncoder(request);
         if (allHit)
         {
             for (auto const& h : imageHashes)
@@ -2765,6 +4297,12 @@ bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& req
                 }
             }
         }
+        auto const features = mVisionRunner->getDeepstackFeatures();
+        context.deepstackFeatures.assign(features.begin(), features.end());
+    }
+    if (hasVision && mVisionRunner)
+    {
+        context.visualEmbeddings = std::cref(mVisionRunner->getOutputEmbedding());
     }
 
     // Process action inputs (if present)
@@ -2790,21 +4328,6 @@ bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& req
         }
     }
 
-    // Get embeddings from independent runners — gate on request having multimodal data,
-    // not just runner existence, to avoid leaking stale embeddings from previous requests.
-    rt::OptionalInputTensor visionEmbeddings
-        = (hasVision && mVisionRunner) ? std::optional{std::ref(mVisionRunner->getOutputEmbedding())} : std::nullopt;
-    rt::OptionalInputTensor audioEmbeddings
-        = (hasAudio && mAudioRunner) ? std::optional{std::ref(mAudioRunner->getOutputEmbedding())} : std::nullopt;
-    context.visualEmbeddings = visionEmbeddings;
-    context.deepstackFeatures.clear();
-    if (hasVision && mVisionRunner)
-    {
-        auto const features = mVisionRunner->getDeepstackFeatures();
-        context.deepstackFeatures.assign(features.begin(), features.end());
-    }
-    context.audioEmbeddings = audioEmbeddings;
-
     // Populate system prompts and raw input IDs from batchedInputIds
     for (int32_t i = 0; i < activeBatchSize; ++i)
     {
@@ -2815,67 +4338,149 @@ bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& req
     return true;
 }
 
-bool LLMRankRuntime::runHybridMtpPrefill(
-    DecodingInferenceContext& context, DecodingStrategy& strategy, ManagedKVCacheRequest& managedKVCacheRequest)
+int32_t LLMRankRuntime::mediaReplayTailLength(std::vector<int32_t> const& inputIds) const
 {
-    // Adapted from reference llmInferenceRuntime.cpp::runHybridMtpPrefill (:2515-2702). The reference reads
+    std::vector<int32_t> const mediaTokens = mediaTokenIds();
+    int32_t tailLength = 0;
+    if (!mediaTokens.empty())
+    {
+        for (auto it = inputIds.rbegin(); it != inputIds.rend(); ++it)
+        {
+            if (std::find(mediaTokens.begin(), mediaTokens.end(), *it) != mediaTokens.end())
+            {
+                break;
+            }
+            ++tailLength;
+        }
+    }
+    return tailLength;
+}
+
+bool LLMRankRuntime::runHybridSpecPrefill(DecodingInferenceContext& context, DecodingStrategy& strategy,
+    ManagedKVCacheRequest& managedKVCacheRequest, int32_t seatedRow)
+{
+    // Adapted from reference llmInferenceRuntime.cpp::runHybridSpecPrefill (:2515-2702). The reference reads
     // context.sequenceCacheStates + mHybridSnapshotStorage directly; on this target the cache lifecycle is owned by the
     // coordinator, so publication/restore go through the adapter and the reuse length comes from the admission plan.
     // The fold (row shift + boundary-hidden restore + boundary-token prepend) runs here in the runtime, exactly as in
     // the reference, because the coordinator is only reachable from the runtime side (not from MTPDecoder).
-    ELLM_CHECK(context.activeBatchSize == 1, "Hybrid MTP endpoint prefill requires one combined cache sequence");
-
-    int32_t const reuseLength = managedKVCacheRequest.reuseTokenLength(0);
-    int32_t const inputLength = math::cast<int32_t>(context.rawBatchedInputIds[0].size());
+    //
+    // Batch >= 1 is supported for the non-volatile-tail path: each slot independently resolves its reuse plan (cold vs
+    // hot) and the base + draft prefills are batched across all slots. Volatile-tail two-chunk prefill remains batch-1.
+    int32_t const batchSize = context.activeBatchSize;
     int32_t const replayTailLength = context.contextCacheReplayTailLength;
-    int32_t const suffixLenOrig = context.effectivePrefillLengths[0];
-    LOG_DEBUG("Hybrid+MTP prefill: inputLength=%d reuseLength=%d basePrefill=%d", inputLength, reuseLength,
-        inputLength - reuseLength);
+
+    // Volatile-tail two-chunk prefill interleaves per-slot token manipulation with base/draft prefill calls. Batching
+    // those branches requires dynamic per-slot scheduling; restrict to batch == 1 until that is needed.
+    ELLM_CHECK(batchSize >= 1, "Hybrid spec endpoint prefill requires at least one sequence");
+    // A sequence seated into a running batch runs as row zero of a batch-one projection (prefillSlotInPlace); the
+    // cache knows it by its row in the full batch.
+    bool const seated = seatedRow >= 0;
+    ELLM_CHECK(!seated || batchSize == 1, "A seated Hybrid+spec prefill runs as a batch of one");
+    auto const sequenceIndex = [&](int32_t slot) { return seated ? seatedRow : slot; };
+    if (batchSize > 1 && replayTailLength > 0)
+    {
+        LOG_ERROR("Hybrid spec prefill with volatile generation-prompt tail requires batch size 1");
+        return false;
+    }
+
+    // Per-slot reuse plan.
+    std::vector<int32_t> reuseLengths(static_cast<size_t>(batchSize));
+    std::vector<int32_t> inputLengths(static_cast<size_t>(batchSize));
+    std::vector<int32_t> suffixLensOrig(static_cast<size_t>(batchSize));
+    for (int32_t s = 0; s < batchSize; ++s)
+    {
+        reuseLengths[s] = managedKVCacheRequest.reuseTokenLength(sequenceIndex(s));
+        inputLengths[s] = math::cast<int32_t>(context.rawBatchedInputIds[s].size());
+        suffixLensOrig[s] = context.effectivePrefillLengths[s];
+        LOG_DEBUG("Hybrid+spec prefill slot %d: inputLength=%d reuseLength=%d basePrefill=%d", s, inputLengths[s],
+            reuseLengths[s], inputLengths[s] - reuseLengths[s]);
+    }
 
     int32_t const boundaryHiddenDim = mDeployment.specConfig->baseOutputHiddenDim;
     size_t const rowBytes
         = static_cast<size_t>(boundaryHiddenDim) * rt::utils::getTypeSize(mPipelineIO->baseHiddenStates.getDataType());
 
-    // Run the (folded) draft prefill through the strategy's initialize-for-generation override. Resetting the guard
-    // lets it run again where the reference re-invokes prepareFirstDecodeStep (mirrors ref :2560/:2626). The final
-    // invocation leaves speculativeDraftPrefillComplete = true so the outer initializeForGeneration and decode round 0
-    // both skip it. Driving a re-run through a guard flag is a workaround for DecodingStrategy having no explicit
-    // "run the draft prefill now" entry point.
-    auto runFoldedDraftPrefill = [&]() -> bool {
+    // When the boundary fold re-strides slot data to a wider pitch, this holds the new per-slot stride so that
+    // foldBoundaryHiddenForSlot addresses slots correctly in the 2D layout. Zero means no re-stride was performed.
+    int32_t foldSlotStride = 0;
+
+    // Run the (folded) draft prefill of a chunk that ends before the prompt does (the stable predecessor of a
+    // volatile tail). A blocking request goes through the strategy's initialize-for-generation override: resetting
+    // the guard lets it run again where the reference re-invokes prepareFirstDecodeStep (mirrors ref :2560/:2626).
+    // Driving a re-run through a guard flag is a workaround for DecodingStrategy having no explicit "run the draft
+    // prefill now" entry point. A seated sequence has one: DecodingStrategy::prefillSeatedChunk.
+    auto runChunkDraftPrefill = [&]() -> bool {
+        if (seated)
+        {
+            return strategy.prefillSeatedChunk(context);
+        }
         context.speculativeDraftPrefillComplete = false;
         return strategy.initializeForGeneration(context);
     };
-
-    // Shift baseHiddenStates' first chunkLength rows down by one and restore the reused checkpoint's boundary hidden
-    // into row 0, so the draft prefill sees [base_hidden[boundary], base_hidden[boundary+1 ..]]. Writing chunkLength+1
-    // rows needs one spare row over the chunk itself; that invariant is local to this fold, so check it here rather
-    // than relying on engine-level sizing of baseHiddenStates.
-    auto foldBoundaryHiddenIntoRow0 = [&](int32_t chunkLength) -> bool {
-        ELLM_CHECK(chunkLength + 1 <= mBoundaryFoldMaxRows,
-            "Hybrid+MTP boundary fold needs one row beyond the prefill chunk in baseHiddenStates");
-        check::check(
-            mPipelineIO->baseHiddenStates.reshape({chunkLength + 1, boundaryHiddenDim}), "Tensor reshape failed");
-        CUDA_CHECK(cudaMemcpyAsync(mBoundaryFoldScratch.rawPointer(), mPipelineIO->baseHiddenStates.rawPointer(),
-            static_cast<size_t>(chunkLength) * rowBytes, cudaMemcpyDeviceToDevice, context.stream));
-        CUDA_CHECK(cudaMemcpyAsync(static_cast<std::byte*>(mPipelineIO->baseHiddenStates.rawPointer()) + rowBytes,
-            mBoundaryFoldScratch.rawPointer(), static_cast<size_t>(chunkLength) * rowBytes, cudaMemcpyDeviceToDevice,
-            context.stream));
-        return managedKVCacheRequest.restoreHybridMtpBoundaryHidden(0, mPipelineIO->baseHiddenStates, 0);
+    // The draft prefill of the prompt's last chunk. The blocking invocation leaves speculativeDraftPrefillComplete =
+    // true so the outer initializeForGeneration and decode round 0 both skip it; a seated sequence is seated by it.
+    auto runFinalDraftPrefill
+        = [&]() -> bool { return seated ? strategy.seatRow(context, seatedRow) : runChunkDraftPrefill(); };
+    // A hit restores the draft's paged state only up to reuseLength - futureDependencyTokens: the fold rewrites the
+    // boundary positions, so the draft cache length of each folded slot starts there.
+    auto rewindDraftToBoundary = [&](std::vector<int32_t> const& foldedSlots) {
+        if (mSpecFutureDependencyTokens == 0)
+        {
+            return;
+        }
+        check::check(mPipelineIO->hostContextLengths.reshape({batchSize}), "Tensor reshape failed");
+        check::check(mPipelineIO->contextLengths.reshape({batchSize}), "Tensor reshape failed");
+        int32_t* rewind = mPipelineIO->hostContextLengths.dataPointer<int32_t>();
+        std::fill_n(rewind, batchSize, 0);
+        for (int32_t const slot : foldedSlots)
+        {
+            rewind[slot] = -mSpecFutureDependencyTokens;
+        }
+        CUDA_CHECK(cudaMemcpyAsync(mPipelineIO->contextLengths.rawPointer(), rewind,
+            static_cast<size_t>(batchSize) * sizeof(int32_t), cudaMemcpyHostToDevice, context.stream));
+        mPipelineIO->recordStepHostUploads(context.stream);
+        mSharedResources->cacheManagers[1]->commitSequenceLength(mPipelineIO->contextLengths, context.stream);
     };
+
+    // Per-slot boundary fold: shift baseHiddenStates rows within one batch slot by +1 and restore the reused
+    // checkpoint's boundary hidden into the slot's first row. After runBaseModelPrefill the tensor is 2D
+    // [batchSize * maxSeqLen, hiddenDim]; each slot occupies maxSeqLen contiguous rows starting at
+    // (slot * maxSeqLen). For a 3D tensor [batch, seq, hidden] the stride is shape[1] instead.
+    auto foldBoundaryHiddenForSlot = [&](int32_t slot, int32_t chunkLength) -> bool {
+        ELLM_CHECK(chunkLength + 1 <= mBoundaryFoldMaxRows,
+            "Hybrid+spec boundary fold needs one row beyond the prefill chunk in baseHiddenStates");
+        auto const& shape = mPipelineIO->baseHiddenStates.getShape();
+        int32_t const seqDim = (shape.getNumDims() == 3) ? shape[1]
+            : (foldSlotStride > 0)                       ? foldSlotStride
+                                                         : *std::max_element(context.effectivePrefillLengths.begin(),
+                                                               context.effectivePrefillLengths.begin() + batchSize);
+        int32_t const slotStartRow = slot * seqDim;
+        size_t const slotOffset = static_cast<size_t>(slotStartRow) * rowBytes;
+        auto* slotBase = static_cast<std::byte*>(mPipelineIO->baseHiddenStates.rawPointer()) + slotOffset;
+        CUDA_CHECK(cudaMemcpyAsync(mBoundaryFoldScratch.rawPointer(), slotBase,
+            static_cast<size_t>(chunkLength) * rowBytes, cudaMemcpyDeviceToDevice, context.stream));
+        CUDA_CHECK(cudaMemcpyAsync(slotBase + rowBytes, mBoundaryFoldScratch.rawPointer(),
+            static_cast<size_t>(chunkLength) * rowBytes, cudaMemcpyDeviceToDevice, context.stream));
+        return managedKVCacheRequest.restoreHybridSpecBoundaryHidden(
+            sequenceIndex(slot), mPipelineIO->baseHiddenStates, slotStartRow);
+    };
+
+    // --- Volatile-tail branches (batch size 1, guarded above) ---
 
     // The generation-prompt tail is volatile when the chat template appends tokens that the next turn's render of the
     // same history does not reproduce (for example Qwen3's `<think>\n\n</think>\n\n` under enable_thinking=false).
     // Those tokens must not enter the published checkpoint, so the prefill splits into a stable predecessor chunk plus
     // a replayed tail. The shared native chat-template renderer computes the tail before dispatching to ranks.
-    bool const hasVolatileTail = replayTailLength > 0 && suffixLenOrig > replayTailLength;
+    bool const hasVolatileTail = batchSize == 1 && replayTailLength > 0 && suffixLensOrig[0] > replayTailLength;
 
     // Cold sequence with a volatile generation-prompt tail: publish the checkpoint at the STABLE boundary
     // predecessorLength = inputLength - replayTailLength (two-chunk prefill), not at the full inputLength (ref :2534).
-    if (reuseLength == 0 && hasVolatileTail)
+    if (reuseLengths[0] == 0 && hasVolatileTail)
     {
         std::vector<int32_t> const completeSuffix = context.tokenIds[0];
-        int32_t const predecessorLength = inputLength - replayTailLength;
-        int32_t const predecessorChunkLength = suffixLenOrig - replayTailLength;
+        int32_t const predecessorLength = inputLengths[0] - replayTailLength;
+        int32_t const predecessorChunkLength = suffixLensOrig[0] - replayTailLength;
         auto const replayBegin = completeSuffix.end() - replayTailLength;
 
         // Chunk 1: base prefill of the predecessor [0, predecessorLength), no sampling.
@@ -2889,12 +4494,12 @@ bool LLMRankRuntime::runHybridMtpPrefill(
         CUDA_CHECK(cudaStreamSynchronize(context.stream));
         // Provide the boundary's next token so the predecessor draft prefill covers the boundary slot, then publish.
         context.tokenIds[0].push_back(*replayBegin);
-        if (!runFoldedDraftPrefill())
+        if (!runChunkDraftPrefill())
         {
             return false;
         }
-        if (!managedKVCacheRequest.publishHybridMtpEndpoint(
-                0, predecessorLength, mPipelineIO->baseHiddenStates, context.effectivePrefillLengths[0] - 1))
+        if (!managedKVCacheRequest.publishHybridSpecEndpoint(sequenceIndex(0), predecessorLength,
+                mPipelineIO->baseHiddenStates, context.effectivePrefillLengths[0] - 1))
         {
             return false;
         }
@@ -2907,24 +4512,27 @@ bool LLMRankRuntime::runHybridMtpPrefill(
             return false;
         }
         int32_t const sampledToken = context.tokenIds[0].back();
-        if (!runFoldedDraftPrefill())
+        if (!runFinalDraftPrefill())
         {
             return false;
         }
         context.tokenIds[0] = completeSuffix;
         context.tokenIds[0].push_back(sampledToken);
-        context.effectivePrefillLengths[0] = suffixLenOrig;
+        context.pendingTokens[0] = 1;
+        context.effectivePrefillLengths[0] = suffixLensOrig[0];
         return true;
     }
 
     // Hit sequence with a volatile tail: publish at the stable predecessorLength like the cold path, but first
-    // reconstruct the reused checkpoint's boundary draft slot via the consume-side fold (ref :2581).
-    if (reuseLength > 0 && hasVolatileTail)
+    // reconstruct the reused checkpoint's boundary draft slot via the consume-side fold (ref :2581) when
+    // futureDependencyTokens > 0. When 0, the draft prefill runs directly without a fold.
+    if (reuseLengths[0] > 0 && hasVolatileTail)
     {
         std::vector<int32_t> const completeSuffix = context.tokenIds[0];
-        int32_t const predecessorLength = inputLength - replayTailLength;
-        int32_t const predecessorChunkLength = suffixLenOrig - replayTailLength;
+        int32_t const predecessorLength = inputLengths[0] - replayTailLength;
+        int32_t const predecessorChunkLength = suffixLensOrig[0] - replayTailLength;
         auto const replayBegin = completeSuffix.end() - replayTailLength;
+        bool const needsFold = mSpecFutureDependencyTokens > 0;
 
         // Chunk 1: base prefill of the predecessor [reuseLength, predecessorLength), no sampling.
         context.tokenIds[0].assign(completeSuffix.begin(), replayBegin);
@@ -2935,28 +4543,55 @@ bool LLMRankRuntime::runHybridMtpPrefill(
         }
         CUDA_CHECK(cudaStreamSynchronize(context.stream));
 
-        // Fold the reused checkpoint's boundary hidden into the predecessor draft prefill, reconstructing the reused
-        // draft slot [reuseLength-1] (ref :2602-2621).
-        if (!foldBoundaryHiddenIntoRow0(predecessorChunkLength))
+        if (needsFold)
+        {
+            int32_t const foldedLen = predecessorChunkLength + 1;
+            auto const& shape = mPipelineIO->baseHiddenStates.getShape();
+            if (shape.getNumDims() == 3 && shape[1] < foldedLen)
+            {
+                ELLM_CHECK(mPipelineIO->baseHiddenStates.reshape({shape[0], foldedLen, shape[2]}),
+                    "Failed to reshape baseHiddenStates for volatile-tail boundary fold");
+            }
+            else if (shape.getNumDims() == 2 && shape[0] < foldedLen)
+            {
+                ELLM_CHECK(mPipelineIO->baseHiddenStates.reshape({foldedLen, shape[1]}),
+                    "Failed to reshape baseHiddenStates for volatile-tail boundary fold");
+            }
+            if (!foldBoundaryHiddenForSlot(0, predecessorChunkLength))
+            {
+                return false;
+            }
+            int32_t const boundaryToken = context.rawBatchedInputIds[0][static_cast<size_t>(reuseLengths[0] - 1)];
+            context.tokenIds[0].insert(context.tokenIds[0].begin(), boundaryToken);
+            context.effectivePrefillLengths[0] = foldedLen;
+            rewindDraftToBoundary({0});
+        }
+        context.prefillStartLengths[0] = reuseLengths[0] - 1;
+        if (!runChunkDraftPrefill())
         {
             return false;
         }
-
-        int32_t const boundaryToken = context.rawBatchedInputIds[0][static_cast<size_t>(reuseLength - 1)];
-        context.tokenIds[0].insert(context.tokenIds[0].begin(), boundaryToken);
-        context.effectivePrefillLengths[0] = predecessorChunkLength + 1;
-        context.prefillStartLengths[0] = reuseLength - 1;
-        if (!runFoldedDraftPrefill())
+        if (!managedKVCacheRequest.publishHybridSpecEndpoint(sequenceIndex(0), predecessorLength,
+                mPipelineIO->baseHiddenStates, context.effectivePrefillLengths[0] - 1))
         {
             return false;
         }
-        if (!managedKVCacheRequest.publishHybridMtpEndpoint(
-                0, predecessorLength, mPipelineIO->baseHiddenStates, context.effectivePrefillLengths[0] - 1))
+        if (needsFold)
         {
-            return false;
+            auto const& shape = mPipelineIO->baseHiddenStates.getShape();
+            if (shape.getNumDims() == 3 && shape[1] != predecessorChunkLength)
+            {
+                ELLM_CHECK(mPipelineIO->baseHiddenStates.reshape({shape[0], predecessorChunkLength, shape[2]}),
+                    "Failed to restore baseHiddenStates shape after volatile-tail boundary fold");
+            }
+            else if (shape.getNumDims() == 2 && shape[0] != predecessorChunkLength)
+            {
+                ELLM_CHECK(mPipelineIO->baseHiddenStates.reshape({predecessorChunkLength, shape[1]}),
+                    "Failed to restore baseHiddenStates shape after volatile-tail boundary fold");
+            }
+            context.tokenIds[0].erase(context.tokenIds[0].begin());
+            context.effectivePrefillLengths[0] = predecessorChunkLength;
         }
-        context.tokenIds[0].erase(context.tokenIds[0].begin());
-        context.effectivePrefillLengths[0] = predecessorChunkLength;
 
         // Chunk 2: replay the volatile tail [predecessorLength, inputLength) with sampling, then restore bookkeeping.
         context.tokenIds[0].assign(replayBegin, completeSuffix.end());
@@ -2966,76 +4601,162 @@ bool LLMRankRuntime::runHybridMtpPrefill(
             return false;
         }
         int32_t const sampledToken = context.tokenIds[0].back();
-        if (!runFoldedDraftPrefill())
+        if (!runFinalDraftPrefill())
         {
             return false;
         }
         context.tokenIds[0] = completeSuffix;
         context.tokenIds[0].push_back(sampledToken);
-        context.effectivePrefillLengths[0] = suffixLenOrig;
+        context.pendingTokens[0] = 1;
+        context.effectivePrefillLengths[0] = suffixLensOrig[0];
         return true;
     }
 
-    // Base prefill of the suffix (the full prompt when cold). Reuses base KV [0, reuseLength) and samples the first
-    // output token, appending it to tokenIds (ref :2646).
+    // --- Non-volatile-tail path (batch >= 1): mixed cold/hot slots ---
+
+    // Base prefill of the suffix (the full prompt when cold, reuse-truncated suffix when hot). Batched across all
+    // slots; the engine handles variable effective lengths via padding.
     if (!runBaseModelPrefill(context, /*managedKVCacheRequest=*/nullptr, /*sampleOutput=*/true))
     {
         return false;
     }
 
-    if (reuseLength == 0)
+    // On a hit the restore path reused draft KV only up to reuseLength - futureDependencyTokens. When
+    // futureDependencyTokens > 0 (MTP, EAGLE), fold the boundary hidden into the suffix draft prefill as a *context*
+    // position so the single draft prefill covers the successor-dependent slot. When futureDependencyTokens == 0
+    // (DFlash, JetSpec, DSpark), no fold is needed — the draft prefill runs directly on the suffix.
+    bool const anySlotHot
+        = std::any_of(reuseLengths.begin(), reuseLengths.begin() + batchSize, [](int32_t r) { return r > 0; });
+    bool const needsBoundaryFold = mSpecFutureDependencyTokens > 0 && anySlotHot;
+
+    // The fold shifts each hot slot's rows by +1 and inserts the boundary hidden at row 0. Compute the post-fold
+    // max length first and widen the tensor so that every slot's stride includes the extra row. Without this, a hot
+    // slot whose suffix equals the pre-fold maximum would write one row past the slot boundary.
+    if (needsBoundaryFold)
     {
-        // Cold sequence: no reused checkpoint boundary to fold in (ref :2651).
-        if (!runFoldedDraftPrefill())
+        int32_t foldedMaxLen = 0;
+        for (int32_t s = 0; s < batchSize; ++s)
+        {
+            int32_t const len = context.effectivePrefillLengths[s] + (reuseLengths[s] > 0 ? 1 : 0);
+            foldedMaxLen = std::max(foldedMaxLen, len);
+        }
+        auto const& shape = mPipelineIO->baseHiddenStates.getShape();
+        int32_t const oldSlotStride = (shape.getNumDims() == 3)
+            ? shape[1]
+            : *std::max_element(
+                  context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.begin() + batchSize);
+
+        if (shape.getNumDims() == 3 && shape[1] < foldedMaxLen)
+        {
+            ELLM_CHECK(mPipelineIO->baseHiddenStates.reshape({shape[0], foldedMaxLen, shape[2]}),
+                "Failed to reshape baseHiddenStates for boundary fold");
+        }
+        else if (shape.getNumDims() == 2 && shape[0] < batchSize * foldedMaxLen)
+        {
+            ELLM_CHECK(mPipelineIO->baseHiddenStates.reshape({batchSize * foldedMaxLen, shape[1]}),
+                "Failed to reshape baseHiddenStates for boundary fold");
+        }
+
+        // The reshape above only widens the tensor metadata — the underlying buffer is unchanged, so slot data is
+        // still packed at the old stride. When the stride increases and there are multiple batches, re-stride the
+        // slot data back-to-front so that each slot occupies foldedMaxLen contiguous rows. Without this, the +1
+        // row shift in foldBoundaryHiddenForSlot for the first hot slot would overwrite the next slot's data.
+        if (foldedMaxLen > oldSlotStride && batchSize > 1)
+        {
+            auto* base = static_cast<std::byte*>(mPipelineIO->baseHiddenStates.rawPointer());
+            for (int32_t s = batchSize - 1; s >= 1; --s)
+            {
+                size_t const srcOffset = static_cast<size_t>(s) * oldSlotStride * rowBytes;
+                size_t const dstOffset = static_cast<size_t>(s) * foldedMaxLen * rowBytes;
+                int32_t const validRows = context.effectivePrefillLengths[s];
+                if (validRows > 0)
+                {
+                    // Source and destination may overlap (stride difference is typically 1 row), so bounce through
+                    // the scratch buffer which is already sized to hold mBoundaryFoldMaxRows rows.
+                    CUDA_CHECK(cudaMemcpyAsync(mBoundaryFoldScratch.rawPointer(), base + srcOffset,
+                        static_cast<size_t>(validRows) * rowBytes, cudaMemcpyDeviceToDevice, context.stream));
+                    CUDA_CHECK(cudaMemcpyAsync(base + dstOffset, mBoundaryFoldScratch.rawPointer(),
+                        static_cast<size_t>(validRows) * rowBytes, cudaMemcpyDeviceToDevice, context.stream));
+                }
+            }
+        }
+        foldSlotStride = foldedMaxLen;
+    }
+
+    // Fold boundary hidden and prepend boundary token for each hot slot that needs it.
+    std::vector<int32_t> foldedSlots;
+    for (int32_t s = 0; s < batchSize; ++s)
+    {
+        if (reuseLengths[s] == 0 || !needsBoundaryFold)
+        {
+            continue;
+        }
+        int32_t const suffixLen = context.effectivePrefillLengths[s];
+        if (!foldBoundaryHiddenForSlot(s, suffixLen))
         {
             return false;
         }
-        if (!managedKVCacheRequest.publishHybridMtpEndpoint(
-                0, inputLength, mPipelineIO->baseHiddenStates, context.effectivePrefillLengths[0] - 1))
+        int32_t const boundaryToken = context.rawBatchedInputIds[s][static_cast<size_t>(reuseLengths[s] - 1)];
+        context.tokenIds[s].insert(context.tokenIds[s].begin(), boundaryToken);
+        context.effectivePrefillLengths[s] = suffixLen + 1;
+        foldedSlots.push_back(s);
+    }
+    for (int32_t s = 0; s < batchSize; ++s)
+    {
+        if (reuseLengths[s] > 0)
+        {
+            context.prefillStartLengths[s] = reuseLengths[s] - 1;
+        }
+    }
+    if (!foldedSlots.empty())
+    {
+        rewindDraftToBoundary(foldedSlots);
+    }
+
+    if (!runFinalDraftPrefill())
+    {
+        return false;
+    }
+
+    // Publish per-slot endpoints. baseHiddenStates is 2D ragged [activeBatchSize * maxSeqLen, hiddenDim], so the
+    // physical row for slot s is (s * maxSeqLen + effectivePrefillLengths[s] - 1).
+    int32_t const maxSeqLen = *std::max_element(
+        context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.begin() + batchSize);
+    for (int32_t s = 0; s < batchSize; ++s)
+    {
+        int32_t const physicalRow = s * maxSeqLen + context.effectivePrefillLengths[s] - 1;
+        if (!managedKVCacheRequest.publishHybridSpecEndpoint(
+                sequenceIndex(s), inputLengths[s], mPipelineIO->baseHiddenStates, physicalRow))
         {
             return false;
         }
-        return true;
     }
 
-    // On a hit the restore path reused draft KV only up to reuseLength-1. Fold the boundary into the suffix draft
-    // prefill as a *context* position: prepend the checkpoint's saved base boundary hidden (base_hidden[reuseLength-1])
-    // and token[reuseLength-1] so the single draft prefill covers [reuseLength-1, inputLength) and writes a correct,
-    // successor-aware boundary KV (ref :2662-2701).
-    int32_t const suffixLen = context.effectivePrefillLengths[0];
-
-    // Shift the base suffix hidden states [0, suffixLen) down one row and place the restored boundary hidden state at
-    // row 0, giving the draft [base_hidden[reuseLength-1], base_hidden[reuseLength..inputLength)].
-    if (!foldBoundaryHiddenIntoRow0(suffixLen))
+    // Restore fold bookkeeping for hot slots and undo the baseHiddenStates reshape.
+    if (needsBoundaryFold)
     {
-        return false;
+        int32_t const restoredMaxLen = *std::max_element(suffixLensOrig.begin(), suffixLensOrig.end());
+        auto const& shape = mPipelineIO->baseHiddenStates.getShape();
+        if (shape.getNumDims() == 3 && shape[1] != restoredMaxLen)
+        {
+            ELLM_CHECK(mPipelineIO->baseHiddenStates.reshape({shape[0], restoredMaxLen, shape[2]}),
+                "Failed to restore baseHiddenStates shape after boundary fold");
+        }
+        for (int32_t s = 0; s < batchSize; ++s)
+        {
+            if (reuseLengths[s] == 0)
+            {
+                continue;
+            }
+            context.tokenIds[s].erase(context.tokenIds[s].begin());
+            context.effectivePrefillLengths[s] = suffixLensOrig[s];
+        }
     }
-
-    // Prepend token[reuseLength-1] and extend the prefill length by one. runDraftModelPrefill pairs draft slot k with
-    // (baseHiddenStates[k], tokenIds[k+1]); with the shifted hidden states and this prepend, draft slot reuseLength-1+k
-    // consumes (base_hidden[reuseLength-1+k], token[reuseLength+k]) as required.
-    int32_t const boundaryToken = context.rawBatchedInputIds[0][static_cast<size_t>(reuseLength - 1)];
-    context.tokenIds[0].insert(context.tokenIds[0].begin(), boundaryToken);
-    context.effectivePrefillLengths[0] = suffixLen + 1;
-    context.prefillStartLengths[0] = reuseLength - 1;
-    if (!runFoldedDraftPrefill())
-    {
-        return false;
-    }
-    // Publish while effectivePrefillLengths still reflects the folded prefill (the boundary-hidden capture reads the
-    // last shifted row), then restore the suffix-only execution bookkeeping for the decode loop.
-    if (!managedKVCacheRequest.publishHybridMtpEndpoint(
-            0, inputLength, mPipelineIO->baseHiddenStates, context.effectivePrefillLengths[0] - 1))
-    {
-        return false;
-    }
-    context.tokenIds[0].erase(context.tokenIds[0].begin());
-    context.effectivePrefillLengths[0] = suffixLen;
     return true;
 }
 
-bool LLMRankRuntime::runBaseModelPrefill(
-    DecodingInferenceContext& context, ManagedKVCacheRequest* managedKVCacheRequest, bool sampleOutput)
+bool LLMRankRuntime::runBaseModelPrefill(DecodingInferenceContext& context,
+    ManagedKVCacheRequest* managedKVCacheRequest, bool sampleOutput, int32_t admissionSequenceIndex)
 {
     TIME_STAGE(metrics::StageNames::kLLM_PREFILL, context.stream);
     NVTX_SCOPED_RANGE(nvtx_base_prefill,
@@ -3266,21 +4987,45 @@ bool LLMRankRuntime::runBaseModelPrefill(
         mIdsInput, context.visualEmbeddings, context.audioEmbeddings, *mPipelineIO, context.stream, precomputedIndices);
 
     mEmbeddingPre->prepareDeepstack(mIdsInput, context.deepstackFeatures, *mPipelineIO, context.stream);
-    if (mGemma4Ple)
+    if (mQwen4ExpNgram)
     {
-        mGemma4Ple->embed(mIdsInput, context.stream);
+        for (int32_t i = 0; i < activeBatchSize; ++i)
+        {
+            // The hash reaches back past this call's first token, into a reused prefix or an earlier chunk.
+            // Both are still in the request; the batch's past length says where this call starts.
+            auto const& requestTokens = context.rawBatchedInputIds[i];
+            mQwen4ExpNgram->seedHistory(batch.stateIndices[static_cast<size_t>(i)], requestTokens.data(),
+                batch.pastLengths[static_cast<size_t>(i)]);
+        }
     }
-
     // Visual-token pruning compacts the assembled embeddings before the engine runs, pruning each
-    // request in the batch independently. The coordinator currently rejects multi-device pruning,
-    // and setVisualPrunerConfig excludes action execution.
-    if (mVisualPruner && executionKVAllEmpty && !mDeployment.base.isDiffusionBackbone
+    // request in the batch independently. Bounded SWA context records use the raw token position as
+    // their logical endpoint, so keep that endpoint aligned with the executed prefill until pruned
+    // media spans can be represented in the cached SWA state.
+    bool const boundedSwaContextReuse = managedKVCacheRequest != nullptr && managedKVCacheRequest->hasContextReuse()
+        && managedKVCacheRequest->hasBoundedSwa();
+    // The coordinator currently rejects multi-device pruning, and setVisualPrunerConfig excludes action execution.
+    if (mVisualPruner && !boundedSwaContextReuse && executionKVAllEmpty && !mDeployment.base.isDiffusionBackbone
         && !context.outputThinkerEmbeddings && context.layerDebugger == nullptr)
     {
+        // The pruner reports one count per row it executed, and it sizes its output to that. The
+        // context's per-slot vector is wider than that under a seated prefill: the batch-one
+        // projection executes one row of a batch that keeps every other slot's entry, and the
+        // projection's restore swaps the executed row's entry back into its slot. So the pruner
+        // writes its own vector, and only the executed rows are copied into the context's, which
+        // grows to the batch on the first prune and is never shrunk by one.
+        std::vector<int32_t> prunedTokensPerRow;
         int32_t const newMaxLen = mVisualPruner->pruneBatchForPrefill(context.tokenIds, *mPipelineIO,
-            context.effectivePrefillLengths, inputIdsLength, context.prunedPrefillTokens, context.stream);
-        bool const anyPruned = std::any_of(
-            context.prunedPrefillTokens.begin(), context.prunedPrefillTokens.end(), [](int32_t n) { return n > 0; });
+            context.effectivePrefillLengths, inputIdsLength, prunedTokensPerRow, context.stream);
+        ELLM_CHECK(static_cast<int32_t>(prunedTokensPerRow.size()) == activeBatchSize,
+            "Visual-token pruning reported a different number of rows than the prefill executes.");
+        if (context.prunedPrefillTokens.size() < static_cast<size_t>(activeBatchSize))
+        {
+            context.prunedPrefillTokens.resize(static_cast<size_t>(activeBatchSize), 0);
+        }
+        std::copy(prunedTokensPerRow.begin(), prunedTokensPerRow.end(), context.prunedPrefillTokens.begin());
+        bool const anyPruned
+            = std::any_of(prunedTokensPerRow.begin(), prunedTokensPerRow.end(), [](int32_t n) { return n > 0; });
         if (anyPruned)
         {
             LOG_DEBUG("Visual-token pruning (%s) shortened prefill from %d to %d tokens.", mVisualPruner->name(),
@@ -3302,6 +5047,14 @@ bool LLMRankRuntime::runBaseModelPrefill(
             context.raggedBatchBuilder->finalizeSubsetSelection(context.scheduledStep,
                 mVisualPruner->keepStartOffsets(), mVisualPruner->concatenatedKeepIndices(), batch);
             inputIdsLength = batch.shape.queryWidth;
+            // The step record describes what runs, not what was planned: a scheduler's ledger
+            // advances by the query length reported back from it. Rewritten only now, after the
+            // finalizer checked the step against the provisional batch it was built from.
+            for (int32_t i = 0; i < activeBatchSize; ++i)
+            {
+                context.scheduledStep.sequences[static_cast<size_t>(i)].queryLength
+                    = context.effectivePrefillLengths[i];
+            }
         }
     }
 
@@ -3312,11 +5065,17 @@ bool LLMRankRuntime::runBaseModelPrefill(
         return false;
     }
 
+    mPipelineIO->uploadRaggedMetadata(batch, context.stream);
     if (mGemma4Ple)
     {
-        mGemma4Ple->reshapeOutputsTokenMajor(batch.shape.physicalTokens);
+        mGemma4Ple->embed(
+            mIdsInput, context.stream, batch.queryLengths, &mPipelineIO->queryLengths, &batch.hostTokenIds);
     }
-    mPipelineIO->uploadRaggedMetadata(batch, context.stream);
+    if (mQwen4ExpNgram)
+    {
+        mQwen4ExpNgram->embed(batch.hostTokenIds.dataPointer<int32_t>(), hostCtxLenData, batch.stateIndices.data(),
+            batch.shape.numSequences, batch.shape.queryWidth, context.stream);
+    }
     mSharedResources->cacheManagers[0]->materializeExecutionLengths(mPipelineIO->pastLengths, context.stream);
     if (mDeployment.base.ropeConfig.type == RopeType::kMRope)
     {
@@ -3370,9 +5129,13 @@ bool LLMRankRuntime::runBaseModelPrefill(
     ExecutionPhase const prefillPhase = decoder_utils::contextPrefillPhase(batch.pastLengths, batch.shape.numSequences);
     auto const prefillDims = mDeployment.base.prefillDims(activeBatchSize, inputIdsLength,
         mDeployment.base.isDiffusionBackbone ? ExecutionPhase::kDiffusionCommit : prefillPhase);
-    check::check(mBaseExecutor->prepare(kPrefillProfile, prefillDims, mBaseTensorMap, context.stream),
-        "Failed to prepare base model for prefill step.");
-    check::check(mBaseExecutor->execute(context.stream), "Failed to execute base model for prefill step.");
+    {
+        auto forward
+            = gTimer.startForward("base", prefillDims.batch, prefillDims.seqLen, prefillDims.selectLen, context.stream);
+        check::check(mBaseExecutor->prepare(kPrefillProfile, prefillDims, mBaseTensorMap, context.stream),
+            "Failed to prepare base model for prefill step.");
+        check::check(mBaseExecutor->execute(context.stream), "Failed to execute base model for prefill step.");
+    }
     context.completionSequences.resize(static_cast<size_t>(activeBatchSize));
     for (int32_t i = 0; i < activeBatchSize; ++i)
     {
@@ -3386,7 +5149,10 @@ bool LLMRankRuntime::runBaseModelPrefill(
     {
         context.committedLengths[static_cast<size_t>(i)] += context.effectivePrefillLengths[static_cast<size_t>(i)];
     }
-    if (managedKVCacheRequest != nullptr && !managedKVCacheRequest->enqueuePrefillCaptures())
+    bool const captureReady = managedKVCacheRequest == nullptr
+        || (admissionSequenceIndex >= 0 ? managedKVCacheRequest->enqueueSequenceAdmissionCapture(admissionSequenceIndex)
+                                        : managedKVCacheRequest->enqueuePrefillCaptures());
+    if (!captureReady)
     {
         return false;
     }
@@ -3419,39 +5185,8 @@ bool LLMRankRuntime::runBaseModelPrefill(
     // Sampling from the prefill stage logits follows the same policy as vanilla decoding.
     // DFlash2 and DSpark keep non-greedy params; other speculative decoders are
     // normalized to greedy before decoding.
-    check::check(mSamplingIndices.reshape({activeBatchSize, 1}), "Tensor reshape failed");
-    if (shouldUseNonGreedySampling(context.temperature, context.topK, context.topP))
-    {
-        constexpr uint64_t kPREFILL_SAMPLING_SEED = 42U;
-        constexpr uint64_t kPREFILL_SAMPLING_OFFSET = 0U;
-        constexpr uint64_t kPREFILL_RANDOM_LANE = 0U;
-        SamplingParams params(activeBatchSize, mDeployment.base.outputVocabSize, context.temperature,
-            static_cast<int32_t>(context.topK), context.topP);
-        rt::Tensor const* rowUniforms{nullptr};
-        if (context.useRequestStableSampling)
-        {
-            check::check(mHostSamplingUniforms.reshape({activeBatchSize}), "Tensor reshape failed");
-            check::check(mSamplingUniforms.reshape({activeBatchSize}), "Tensor reshape failed");
-            for (int32_t batch = 0; batch < activeBatchSize; ++batch)
-            {
-                uint64_t const position = requestStableNextAbsolutePosition(
-                    context.rawBatchedInputIds[batch].size(), context.currentGenerateLengths[batch]);
-                mHostSamplingUniforms.dataPointer<float>()[batch] = requestStableUniform(
-                    context.samplingSeeds[batch], position, SpecRandomPurpose::kTarget, kPREFILL_RANDOM_LANE);
-            }
-            CUDA_CHECK(cudaMemcpyAsync(mSamplingUniforms.rawPointer(), mHostSamplingUniforms.rawPointer(),
-                activeBatchSize * sizeof(float), cudaMemcpyHostToDevice, context.stream));
-            rowUniforms = &mSamplingUniforms;
-        }
-        topKtopPSamplingFromLogits(mPipelineIO->outputLogits, mSamplingIndices, params, mSamplingWorkspace,
-            context.stream, kPREFILL_SAMPLING_SEED, kPREFILL_SAMPLING_OFFSET, rowUniforms);
-    }
-    else
-    {
-        constexpr int32_t kSAMPLING_TOP_K = 1;
-        selectAllTopK(mPipelineIO->outputLogits, std::nullopt, mSamplingIndices, kSAMPLING_TOP_K, mSamplingWorkspace,
-            context.stream);
-    }
+    decoder_utils::sampleNextTokens(context, activeBatchSize, mPipelineIO->outputLogits, mSamplingIndices,
+        mHostSamplingRows, mSamplingRows, mSamplingWorkspace, context.stream);
 
     // Matchers live in the output vocabulary, but the remap below rewrites mSamplingIndices
     // into full token IDs, so capture them first. Rides the round's single sync.
@@ -3475,11 +5210,13 @@ bool LLMRankRuntime::runBaseModelPrefill(
     }
 
     // Enqueue logprobs extraction + D2H before the round's single synchronization so the
-    // copies ride the same sync as the sampled-token D2H below.
-    if (context.numLogprobs > 0)
+    // copies ride the same sync as the sampled-token D2H below. Extracted at the widest width
+    // any slot asks for; each slot keeps its own.
+    int32_t const logprobsWidth = context.maxNumLogprobs();
+    if (logprobsWidth > 0)
     {
         decoder_utils::enqueueLogprobsD2H(mDecodingRuntimeContext->base.pipelineIO.outputLogits, activeBatchSize,
-            *mDecodingRuntimeContext, context.numLogprobs, context.stream);
+            *mDecodingRuntimeContext, logprobsWidth, context.stream);
     }
 
     check::check(mHostSelectedTokenIds.reshape({activeBatchSize}), "Tensor reshape failed");
@@ -3487,6 +5224,11 @@ bool LLMRankRuntime::runBaseModelPrefill(
     CUDA_CHECK(cudaMemcpyAsync(hostSelectedTokenIdsData, mSamplingIndices.rawPointer(),
         activeBatchSize * sizeof(int32_t), cudaMemcpyDeviceToHost, context.stream));
     CUDA_CHECK(cudaStreamSynchronize(context.stream));
+    if (managedKVCacheRequest != nullptr && admissionSequenceIndex >= 0
+        && !managedKVCacheRequest->completeSequenceAdmissionDeviceWork(admissionSequenceIndex))
+    {
+        return false;
+    }
 
     // Few-layer-validation debug: dump round 0 (prefill). At this point the KV cache is committed and
     // tokenIds[i].size() == the prefill length == the committed cache length.
@@ -3530,9 +5272,9 @@ bool LLMRankRuntime::runBaseModelPrefill(
         advanceGuidedDecoding(mGuidedDecoder, context, mHostOutputSpaceIds.dataPointer<int32_t>(), activeBatchSize);
     }
 
-    if (context.numLogprobs > 0)
+    if (logprobsWidth > 0)
     {
-        decoder_utils::collectLogprobsFromHost(*mDecodingRuntimeContext, context, activeBatchSize, context.numLogprobs);
+        decoder_utils::collectLogprobsFromHost(*mDecodingRuntimeContext, context, activeBatchSize, logprobsWidth);
     }
 
     emitTokenCallbacks(context);
@@ -3541,6 +5283,15 @@ bool LLMRankRuntime::runBaseModelPrefill(
 
 bool LLMRankRuntime::captureBaseGraphWithLoraFanout(InferenceDims const& dims, cudaStream_t stream)
 {
+    TIME_STAGE("graph_capture", stream);
+    if (mGemma4Ple)
+    {
+        mGemma4Ple->reshapeOutputsTokenMajor(dims.seqLen);
+    }
+    if (mQwen4ExpNgram)
+    {
+        mQwen4ExpNgram->reshapeOutput(dims.seqLen);
+    }
     auto captureOnce = [&](std::string const& loraName) -> bool {
         if (mSharedResources->loraManager)
         {
@@ -3574,22 +5325,72 @@ bool LLMRankRuntime::captureBaseGraphWithLoraFanout(InferenceDims const& dims, c
 
 bool LLMRankRuntime::captureDecodingCUDAGraph(cudaStream_t stream)
 {
+    if (!unavailableReason().empty())
+    {
+        return false;
+    }
+    selectProfilingTimer();
     try
     {
-        return mDecoderRegistry ? mDecoderRegistry->captureCudaGraphs(stream) : true;
+        TIME_STAGE("graph_capture", stream);
+        if (!mDecoderRegistry || mDecoderRegistry->captureCudaGraphs(stream))
+        {
+            return true;
+        }
     }
     catch (std::exception const& e)
     {
         LOG_WARNING("CUDA graph capture failed with exception: %s", e.what());
         static_cast<void>(cudaGetLastError());
-        return false;
     }
     catch (...)
     {
         LOG_WARNING("CUDA graph capture failed with an unknown exception.");
         static_cast<void>(cudaGetLastError());
+    }
+    mDeviceFailure.drainFailedRequest(stream);
+    return false;
+}
+
+std::vector<int32_t> LLMRankRuntime::mediaTokenIds() const
+{
+    std::vector<int32_t> ids;
+    if (mDeployment.base.imageTokenId >= 0)
+    {
+        ids.push_back(mDeployment.base.imageTokenId);
+    }
+    if (mDeployment.base.audioTokenId >= 0)
+    {
+        ids.push_back(mDeployment.base.audioTokenId);
+    }
+    return ids;
+}
+
+bool LLMRankRuntime::selectLoraWeights(std::string const& loraWeightsName)
+{
+    // LoRA switching goes through the LoRAManager on SharedResources.
+    if (mDeployment.base.maxSupportedLoraRank <= 0 || !mSharedResources->loraManager)
+    {
+        return true;
+    }
+    try
+    {
+        if (loraWeightsName.empty())
+        {
+            mSharedResources->loraManager->resetWeights();
+        }
+        else
+        {
+            mSharedResources->loraManager->switchWeights(loraWeightsName);
+        }
+        mSharedResources->loraManager->refreshTensorMap(mBaseTensorMap);
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("Failed to switch LoRA weights to %s: %s", loraWeightsName.c_str(), e.what());
         return false;
     }
+    return true;
 }
 
 bool LLMRankRuntime::setUpForPrefillExecution(DecodingInferenceContext& context, DecodingStrategy& strategy,
@@ -3597,26 +5398,9 @@ bool LLMRankRuntime::setUpForPrefillExecution(DecodingInferenceContext& context,
 {
     NVTX_SCOPED_RANGE(nvtx_setup, "SETUP_PREFILL_EXECUTION", nvtx_colors::PALE_GREEN);
 
-    // LoRA switching goes through the LoRAManager on SharedResources.
-    if (mDeployment.base.maxSupportedLoraRank > 0 && mSharedResources->loraManager)
+    if (!selectLoraWeights(context.loraWeightsName))
     {
-        try
-        {
-            if (context.loraWeightsName.empty())
-            {
-                mSharedResources->loraManager->resetWeights();
-            }
-            else
-            {
-                mSharedResources->loraManager->switchWeights(context.loraWeightsName);
-            }
-            mSharedResources->loraManager->refreshTensorMap(mBaseTensorMap);
-        }
-        catch (std::exception const& e)
-        {
-            LOG_ERROR("Failed to switch LoRA weights to %s: %s", context.loraWeightsName.c_str(), e.what());
-            return false;
-        }
+        return false;
     }
 
     int32_t const activeBatchSize = context.activeBatchSize;
@@ -3654,7 +5438,6 @@ bool LLMRankRuntime::setUpForPrefillExecution(DecodingInferenceContext& context,
             }
         }
 
-        // Record the length of the reused legacy system-prompt KV cache for each sequence.
         check::check(mHostReuseKVCacheLengths.reshape({activeBatchSize}), "Tensor reshape failed");
         int32_t* reuseKVCacheLengthsData = mHostReuseKVCacheLengths.dataPointer<int32_t>();
         std::fill(reuseKVCacheLengthsData, reuseKVCacheLengthsData + activeBatchSize, 0);
@@ -3662,62 +5445,30 @@ bool LLMRankRuntime::setUpForPrefillExecution(DecodingInferenceContext& context,
         for (int32_t i = 0; i < activeBatchSize; ++i)
         {
             ResidentRef const resident = context.residentRefs.at(static_cast<size_t>(i));
-            ELLM_CHECK(context.residentSlots.contains(resident), "System-prompt setup received a stale resident slot");
+            ELLM_CHECK(context.residentSlots.contains(resident), "Prefill setup received a stale resident slot");
             int32_t const residentSlot = resident.slot;
-            auto const& prompt = context.systemPrompts[i];
-            auto const promptKey = keySystemPromptWithLoraWeights(prompt, context.loraWeightsName);
-            auto const cached = mSystemPromptKVCacheBase.find(promptKey);
-            bool const prefixMatches = cached != mSystemPromptKVCacheBase.end()
-                && hasReusableSystemPromptPrefix(cached->second, batchedInputIds[i]);
-            if (cached != mSystemPromptKVCacheBase.end() && !prefixMatches)
+
+            context.tokenIds[i] = batchedInputIds[i];
+            context.effectivePrefillLengths[i] = static_cast<int32_t>(batchedInputIds[i].size());
+            context.committedLengths[i] = 0;
+            reuseKVCacheLengthsData[i] = 0;
+
+            if (mDeployment.base.numLinearAttnLayers > 0)
             {
-                LOG_WARNING("Legacy system-prompt token prefix mismatch; using cold prefill for batch slot %d.", i);
+                cacheMgrBase.getMambaCacheManager().clearSlot(residentSlot, context.stream);
             }
-            if (prefixMatches)
+            if (cacheMgrBase.numAuxConvStates() > 0)
             {
-                auto& precachedKVCacheBase = cached->second;
-                auto const& kvCacheLayersBase = precachedKVCacheBase.kvCacheLayers;
-                cacheMgrBase.restoreKVCache(kvCacheLayersBase, residentSlot, context.stream);
-
-                if (needsStrategyKVCache)
-                {
-                    check::check(strategy.hasSystemPromptKVCache(promptKey),
-                        "System prompt cache inconsistency between base and active decoding strategy");
-                    strategy.restoreSystemPromptKVCache(promptKey, residentSlot, context.stream);
-                }
-
-                // Base recurrent and convolution state use the same resident slot as base KV. A speculative
-                // strategy restores its independently owned draft state through restoreSystemPromptKVCache().
-                if (mDeployment.base.numLinearAttnLayers > 0)
-                {
-                    cacheMgrBase.getMambaCacheManager().restoreSlot(residentSlot,
-                        precachedKVCacheBase.recurrentStateContents, precachedKVCacheBase.convStateContents,
-                        context.stream);
-                }
-
-                // Cached token length comes from the tokenized prompt that was actually captured, not from
-                // any KV-tensor's physical shape (see computeSystemPromptReuse) — this also covers
-                // pure-recurrent models, whose kvCacheLayersBase is empty.
-                auto reuse = computeSystemPromptReuse(precachedKVCacheBase, batchedInputIds[i]);
-                reuseKVCacheLengthsData[i] = reuse.reuseKVCacheLength;
-                context.tokenIds[i] = std::move(reuse.tokenIds);
-                context.effectivePrefillLengths[i] = reuse.effectivePrefillLength;
-                context.committedLengths[i] = reuse.reuseKVCacheLength;
+                cacheMgrBase.clearAuxConvStates(residentSlot, context.stream);
             }
-            else
+            if (mQwen4ExpNgram)
             {
-                context.tokenIds[i] = batchedInputIds[i];
-                context.effectivePrefillLengths[i] = static_cast<int32_t>(batchedInputIds[i].size());
-                context.committedLengths[i] = 0;
-                reuseKVCacheLengthsData[i] = 0;
-
-                if (mDeployment.base.numLinearAttnLayers > 0)
-                {
-                    cacheMgrBase.getMambaCacheManager().clearSlot(residentSlot, context.stream);
-                }
+                mQwen4ExpNgram->resetHistory(residentSlot);
             }
         }
     }
+
+    strategy.beginBatch();
 
     int32_t const maxInputLength
         = *std::max_element(context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.end());
@@ -3741,170 +5492,6 @@ bool LLMRankRuntime::setUpForPrefillExecution(DecodingInferenceContext& context,
         }
     }
     return true;
-}
-
-bool LLMRankRuntime::genAndSaveSystemPromptKVCache(DecodingInferenceContext& context, int32_t genAndSaveBatchIdx)
-{
-    if (mDeployment.base.usesBoundedSwaKVCache())
-    {
-        LOG_WARNING(
-            "Legacy system-prompt KV-cache capture is unavailable with bounded SWA storage. Use context reuse "
-            "instead when prompt reuse is required.");
-        return false;
-    }
-    if (mContextCache != nullptr)
-    {
-        LOG_ERROR("Legacy system-prompt KV-cache capture cannot be combined with the context-cache manager.");
-        return false;
-    }
-    if (mDeployment.base.useVisionBidirectionalAttention)
-    {
-        LOG_ERROR("System-prompt KV-cache reuse is not supported with Gemma4 vision bidirectional attention.");
-        return false;
-    }
-
-    std::string const& loraWeightsName = context.loraWeightsName;
-    std::string const prompt = context.systemPrompts[genAndSaveBatchIdx];
-    auto const promptKey = keySystemPromptWithLoraWeights(prompt, loraWeightsName);
-
-    if (prompt.empty())
-    {
-        LOG_DEBUG("The systemPrompt is empty. Skip saving system prompt KVCache.");
-        return true;
-    }
-
-    DecodingStrategy& cacheStrategy = mDecoderRegistry->cachePrimingStrategy();
-    bool const hasDraft = cacheStrategy.isSpeculative();
-    auto baseCacheIt = mSystemPromptKVCacheBase.find(promptKey);
-    if (baseCacheIt != mSystemPromptKVCacheBase.end() && (!hasDraft || cacheStrategy.hasSystemPromptKVCache(promptKey)))
-    {
-        LOG_DEBUG("The system prompt KVCache already exists for the prompt: {%s}", prompt.c_str());
-        return true;
-    }
-    if (baseCacheIt != mSystemPromptKVCacheBase.end())
-    {
-        mSystemPromptKVCacheBase.erase(baseCacheIt);
-    }
-
-    auto tokenizedPrompt = mTokenizer->encode(prompt, true);
-    if (tokenizedPrompt.empty())
-    {
-        LOG_ERROR("Failed to encode system prompt for KVCache generation.");
-        return false;
-    }
-    int32_t const promptIdsLength = static_cast<int32_t>(tokenizedPrompt.size());
-
-    if (promptIdsLength > mDeployment.base.maxSupportedInputLength)
-    {
-        LOG_ERROR("System prompt length (%d) exceeds max supported input length (base=%d)", promptIdsLength,
-            mDeployment.base.maxSupportedInputLength);
-        return false;
-    }
-
-    if (hasDraft && promptIdsLength > mDeployment.draft->maxSupportedInputLength)
-    {
-        LOG_ERROR("System prompt length (%d) exceeds max supported input length (draft=%d)", promptIdsLength,
-            mDeployment.draft->maxSupportedInputLength);
-        return false;
-    }
-
-    // Temporary single-batch context to reuse the existing prefill functions.
-    DecodingInferenceContext tempContext;
-    tempContext.initialize(1, 1, context.visualEmbeddings, context.deepstackFeatures, loraWeightsName, context.stream);
-    tempContext.initializeRaggedScratch(RaggedEngineContract{TokenLayoutBackend::kEntryPaddedCompatibility,
-        mDeployment.base.maxNumSequences, mDeployment.base.maxQueryLength, mDeployment.base.maxPhysicalTokens,
-        mDeployment.base.recurrentPoolRows, /* mixedStepSupported = */ false});
-    tempContext.systemPrompts[0] = prompt;
-    tempContext.rawBatchedInputIds.push_back(tokenizedPrompt);
-    tempContext.tokenIds[0] = tokenizedPrompt;
-
-    if (!setUpForPrefillExecution(tempContext, cacheStrategy))
-    {
-        LOG_ERROR("Prefill execution setup failed for system prompt KVCache generation.");
-        return false;
-    }
-
-    bool prefillStatus = runBaseModelPrefill(tempContext);
-    if (!prefillStatus)
-    {
-        LOG_ERROR("Failed to execute base model prefill for system prompt KVCache generation.");
-        return false;
-    }
-
-    // Tokens produced during system KV-cache reuse prefill do not count as generated tokens.
-    tempContext.currentGenerateLengths[0] -= 1;
-
-    if (hasDraft)
-    {
-        bool draftPrefillStatus = cacheStrategy.runSystemPromptPrefill(tempContext);
-        if (!draftPrefillStatus)
-        {
-            LOG_ERROR("Failed to execute draft model prefill for system prompt KVCache generation.");
-            return false;
-        }
-    }
-    CUDA_CHECK(cudaStreamSynchronize(context.stream));
-
-    // Capture base KV cache content from the new-stack shared KV cache.
-    auto& cacheMgrBase = *mSharedResources->cacheManagers[0];
-    constexpr int32_t CACHE_BATCH_IDX{0};
-
-    SystemPromptKVCache savedKVCacheBase;
-    savedKVCacheBase.systemPrompt = prompt;
-    savedKVCacheBase.tokenizedPrompt = tokenizedPrompt;
-    savedKVCacheBase.kvCacheLayers = cacheMgrBase.captureKVCache(CACHE_BATCH_IDX, promptIdsLength, context.stream);
-
-    // Save recurrent / conv states for hybrid layers.
-    if (mDeployment.base.numLinearAttnLayers > 0)
-    {
-        savedKVCacheBase.recurrentStateContents = cacheMgrBase.captureRecurrentStates(CACHE_BATCH_IDX, context.stream);
-        savedKVCacheBase.convStateContents = cacheMgrBase.captureConvStates(CACHE_BATCH_IDX, context.stream);
-    }
-
-    mSystemPromptKVCacheBase.insert({promptKey, std::move(savedKVCacheBase)});
-
-    cacheStrategy.saveSystemPromptKVCache(promptKey, prompt, tokenizedPrompt, promptIdsLength, context.stream);
-
-    CUDA_CHECK(cudaStreamSynchronize(context.stream));
-    LOG_DEBUG("System prompt KVCache saved for batch %d: {%s}", genAndSaveBatchIdx, prompt.c_str());
-
-    return true;
-}
-
-bool LLMRankRuntime::genAndSaveSystemPromptKVCache(
-    std::string const& prompt, std::string const& loraWeightsName, cudaStream_t stream)
-{
-    if (mDeployment.base.useVisionBidirectionalAttention)
-    {
-        LOG_ERROR("System-prompt KV-cache reuse is not supported with Gemma4 vision bidirectional attention.");
-        return false;
-    }
-
-    if (prompt.empty())
-    {
-        LOG_DEBUG("The systemPrompt is empty. Skip saving system prompt KVCache.");
-        return true;
-    }
-    auto const promptKey = keySystemPromptWithLoraWeights(prompt, loraWeightsName);
-    DecodingStrategy& cacheStrategy = mDecoderRegistry->cachePrimingStrategy();
-    if (mSystemPromptKVCacheBase.find(promptKey) != mSystemPromptKVCacheBase.end()
-        && (!cacheStrategy.isSpeculative() || cacheStrategy.hasSystemPromptKVCache(promptKey)))
-    {
-        LOG_DEBUG("The system prompt KVCache already exists for the prompt: {%s}", prompt.c_str());
-        return true;
-    }
-    DecodingInferenceContext tempContext;
-    tempContext.initialize(1, 1, std::nullopt, rt::OptionalInputTensors{}, loraWeightsName, stream);
-    tempContext.systemPrompts[0] = prompt;
-    auto tokenizedPrompt = mTokenizer->encode(prompt, true);
-    if (tokenizedPrompt.empty())
-    {
-        LOG_ERROR("Failed to encode system prompt for KVCache generation.");
-        return false;
-    }
-    tempContext.rawBatchedInputIds.push_back(tokenizedPrompt);
-    tempContext.tokenIds[0] = tokenizedPrompt;
-    return genAndSaveSystemPromptKVCache(tempContext, 0);
 }
 
 bool LLMRankRuntime::performBatchEvict(
@@ -3992,7 +5579,7 @@ bool LLMRankRuntime::performBatchEvict(
             static_cast<size_t>(oldActiveBatch) * sizeof(int32_t), cudaMemcpyHostToDevice, context.stream));
         ELLM_CHECK(mSharedResources->cacheManagers.size() == mSharedResources->kvPageTables.size(),
             "KV cache managers and page tables are not index-aligned");
-        size_t const activeCacheCount = strategy.isSpeculative() ? mSharedResources->cacheManagers.size() : 1U;
+        size_t const activeCacheCount = activeCacheManagerCount(strategy);
         ELLM_CHECK(activeCacheCount > 0, "Active decoding strategy has no KV cache resource");
         for (size_t cacheIndex = 0; cacheIndex < activeCacheCount; ++cacheIndex)
         {
@@ -4052,27 +5639,29 @@ bool LLMRankRuntime::performBatchEvict(
             BatchResult result;
             result.tokenIds = std::move(context.tokenIds[i]);
             result.generateLength = context.currentGenerateLengths[i];
-            result.actualIterations = context.generationRound;
+            result.actualIterations = context.decodeRounds[i];
             result.rawBatchedInputIds = std::move(context.rawBatchedInputIds[i]);
             result.effectivePrefillLength = context.effectivePrefillLengths[i];
             result.prunedPrefillTokens = i < context.prunedPrefillTokens.size() ? context.prunedPrefillTokens[i] : 0;
             result.acceptedDraftTokens = context.acceptedDraftTokens[i];
             result.proposedDraftTokens = context.proposedDraftTokens[i];
             result.terminalReason = context.slotStreams[i].terminalReason;
+            result.skipSpecialTokens = context.slotStreams[i].skipSpecialTokens;
             // Convert flat LogprobsSlot -> nested vector for BatchResult (once per completed request).
             // Enrich each (token_id, logprob) with the raw token piece so consumers can render the
             // token string / bytes without needing a tokenizer (see LogprobEntry).
             rt::LogprobsSlot const& slot = context.stepLogprobs[i];
+            int32_t const width = context.numLogprobsPerSlot[i];
             result.logprobs.resize(slot.numSteps);
             for (int32_t step = 0; step < slot.numSteps; ++step)
             {
-                auto const* begin = slot.data.data() + step * context.numLogprobs;
-                auto& stepEntries = result.logprobs[step];
-                stepEntries.reserve(context.numLogprobs);
-                for (int32_t k = 0; k < context.numLogprobs; ++k)
-                {
-                    stepEntries.push_back({begin[k].first, begin[k].second, mTokenizer->idToPiece(begin[k].first)});
-                }
+                // A forced token's synthetic row holds one entry; the padding behind it is not an entry.
+                result.logprobs[step] = logprobEntriesForStep(slot, step, width, *mTokenizer);
+            }
+            if (context.jumpForwardEnabled[i] != 0)
+            {
+                LOG_INFO("Request %d jump-forward: %s", originalIdx,
+                    formatJumpForwardStats(context.jumpForwardStats[i]).c_str());
             }
 
             context.completedBatches[originalIdx] = std::move(result);
@@ -4086,8 +5675,19 @@ bool LLMRankRuntime::performBatchEvict(
     // skipping it migrates a constraint onto a different request.
     mGuidedDecoder.compactSlots(batchMapping);
     context.hasGuidedDecoding = mGuidedDecoder.hasAnyGrammar();
+    rt::compactVector(batchMapping, context.jumpForwardEnabled);
+    rt::compactVector(batchMapping, context.pendingTokens);
+    rt::compactVector(batchMapping, context.jumpForwardStats);
+    context.hasJumpForward = std::any_of(context.jumpForwardEnabled.begin(), context.jumpForwardEnabled.end(),
+        [](int8_t enabled) { return enabled != 0; });
     rt::compactVector(batchMapping, context.currentGenerateLengths);
+    rt::compactVector(batchMapping, context.samplingParams);
     rt::compactVector(batchMapping, context.samplingSeeds);
+    rt::compactVector(batchMapping, context.requestStableSampling);
+    rt::compactVector(batchMapping, context.maxGenerateLengths);
+    rt::compactVector(batchMapping, context.numLogprobsPerSlot);
+    rt::compactVector(batchMapping, context.ignoreEos);
+    rt::compactVector(batchMapping, context.decodeRounds);
     rt::compactVector(batchMapping, context.tokenIds);
     rt::compactVector(batchMapping, context.systemPrompts);
     rt::compactVector(batchMapping, context.rawBatchedInputIds);

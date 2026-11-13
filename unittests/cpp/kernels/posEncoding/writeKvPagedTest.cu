@@ -94,7 +94,8 @@ void TestWriteKvPagedPrefill(int32_t const batchSize, AttnParams const& attnPara
 
     float const ropeScale = 1.0f;
     bool const permuteRope = true;
-    rt::Tensor cosSinCacheTensor(rt::Coords{1, capPadded, rotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor cosSinCacheTensor(
+        rt::Coords{1, capPadded, rotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     initializeNormalRopeCosSin(
         cosSinCacheTensor.dataPointer<float>(), ropeTheta, ropeScale, 1.0f, rotaryDim, capPadded, stream);
 
@@ -127,11 +128,11 @@ void TestWriteKvPagedPrefill(int32_t const batchSize, AttnParams const& attnPara
     }
 
     rt::Tensor qTensor(
-        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor kTensor(
-        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor vTensor(
-        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     copyHostToDevice(qTensor, qInput);
     copyHostToDevice(kTensor, kInput);
     copyHostToDevice(vTensor, vInput);
@@ -142,11 +143,11 @@ void TestWriteKvPagedPrefill(int32_t const batchSize, AttnParams const& attnPara
         kvCacheEndLens[b] = kvCacheStart[b] + qSeqLen;
         ASSERT_LE(kvCacheEndLens[b], capPadded) << "request must fit within padded capacity";
     }
-    rt::Tensor kvCacheEndLensTensor(rt::Coords{batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor kvCacheEndLensTensor(rt::Coords{batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice(kvCacheEndLensTensor, kvCacheEndLens);
 
     rt::Tensor kvPoolTensor(
-        rt::Coords{2, numPages, kPageSize, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{2, numPages, kPageSize, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     int64_t const poolVolume = kvPoolTensor.getShape().volume();
     std::vector<half> zeros(static_cast<size_t>(poolVolume), __float2half(0.0f));
     copyHostToDevice(kvPoolTensor, zeros);
@@ -174,7 +175,7 @@ void TestWriteKvPagedPrefill(int32_t const batchSize, AttnParams const& attnPara
         }
     }
     rt::Tensor pageTableTensor(
-        rt::Coords{batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Coords{batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice(pageTableTensor, pageTableHost);
     int32_t const* pageTable = pageTableTensor.dataPointer<int32_t>();
 
@@ -274,7 +275,8 @@ TEST(WriteKvPaged, NegativeEntryInLiveRangeSkipsWrite)
     float const ropeTheta = 10000.0f;
     float const ropeScale = 1.0f;
     bool const permuteRope = true;
-    rt::Tensor cosSinCacheTensor(rt::Coords{1, capPadded, rotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor cosSinCacheTensor(
+        rt::Coords{1, capPadded, rotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     initializeNormalRopeCosSin(
         cosSinCacheTensor.dataPointer<float>(), ropeTheta, ropeScale, 1.0f, rotaryDim, capPadded, stream);
 
@@ -295,21 +297,21 @@ TEST(WriteKvPaged, NegativeEntryInLiveRangeSkipsWrite)
     }
 
     rt::Tensor qTensor(
-        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor kTensor(
-        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor vTensor(
-        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     copyHostToDevice(qTensor, qInput);
     copyHostToDevice(kTensor, kInput);
     copyHostToDevice(vTensor, vInput);
 
     std::vector<int32_t> kvCacheEndLens{qSeqLen};
-    rt::Tensor kvCacheEndLensTensor(rt::Coords{batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor kvCacheEndLensTensor(rt::Coords{batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice(kvCacheEndLensTensor, kvCacheEndLens);
 
     rt::Tensor kvPoolTensor(
-        rt::Coords{2, numPages, kPageSize, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{2, numPages, kPageSize, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     int64_t const poolVolume = kvPoolTensor.getShape().volume();
     std::vector<half> canaryFill(static_cast<size_t>(poolVolume), kCanary);
     copyHostToDevice(kvPoolTensor, canaryFill);
@@ -317,7 +319,7 @@ TEST(WriteKvPaged, NegativeEntryInLiveRangeSkipsWrite)
     // Page table [1, 2, 2]: page 0 is identity in both planes; page 1 is the sentinel in both halves.
     std::vector<int32_t> pageTableHost{0, rt::kUNUSED_PAGE_ENTRY, numPages, rt::kUNUSED_PAGE_ENTRY};
     rt::Tensor pageTableTensor(
-        rt::Coords{batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Coords{batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice(pageTableTensor, pageTableHost);
     int32_t const* pageTable = pageTableTensor.dataPointer<int32_t>();
 
@@ -390,7 +392,8 @@ TEST(WriteKvPaged, PaddingTokenWithNegativePageEntryIsSkipped)
 
     float const ropeTheta = 10000.0f;
     float const ropeScale = 1.0f;
-    rt::Tensor cosSinCacheTensor(rt::Coords{1, capPadded, rotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor cosSinCacheTensor(
+        rt::Coords{1, capPadded, rotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     initializeNormalRopeCosSin(
         cosSinCacheTensor.dataPointer<float>(), ropeTheta, ropeScale, 1.0f, rotaryDim, capPadded, stream);
 
@@ -402,11 +405,11 @@ TEST(WriteKvPaged, PaddingTokenWithNegativePageEntryIsSkipped)
     uniformFloatInitialization(vInput);
 
     rt::Tensor qTensor(
-        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor kTensor(
-        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor vTensor(
-        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     copyHostToDevice(qTensor, qInput);
     copyHostToDevice(kTensor, kInput);
     copyHostToDevice(vTensor, vInput);
@@ -414,15 +417,15 @@ TEST(WriteKvPaged, PaddingTokenWithNegativePageEntryIsSkipped)
     // kvCacheStartIdx = kvCacheEndLens[0] - qSeqLen = 127, so token 0 writes to position 127 (page 0)
     // and token 1 writes to position 128 (page 1).
     std::vector<int32_t> const kvCacheEndLens{129};
-    rt::Tensor kvCacheEndLensTensor(rt::Coords{batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor kvCacheEndLensTensor(rt::Coords{batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice(kvCacheEndLensTensor, kvCacheEndLens);
 
     std::vector<int32_t> const tokenPosIds{127, -1}; // token 0 real, token 1 padding
-    rt::Tensor tokenPosIdsTensor(rt::Coords{batchSize, qSeqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor tokenPosIdsTensor(rt::Coords{batchSize, qSeqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice(tokenPosIdsTensor, tokenPosIds);
 
     rt::Tensor kvPoolTensor(
-        rt::Coords{2, numPages, kPageSize, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{2, numPages, kPageSize, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     int64_t const poolVolume = kvPoolTensor.getShape().volume();
     std::vector<half> canaryFill(static_cast<size_t>(poolVolume), kCanary);
     copyHostToDevice(kvPoolTensor, canaryFill);
@@ -431,7 +434,7 @@ TEST(WriteKvPaged, PaddingTokenWithNegativePageEntryIsSkipped)
     // unmapped sentinel in both halves.
     std::vector<int32_t> const pageTableHost{0, rt::kUNUSED_PAGE_ENTRY, numPages, rt::kUNUSED_PAGE_ENTRY};
     rt::Tensor pageTableTensor(
-        rt::Coords{batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Coords{batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice(pageTableTensor, pageTableHost);
     int32_t const* pageTable = pageTableTensor.dataPointer<int32_t>();
 
@@ -477,7 +480,8 @@ TEST(WriteKvPaged, ExtraRetainedPagesKeepWriteAndGatherCorrect)
     float const ropeTheta = 10000.0f;
     float const ropeScale = 1.0f;
     bool const permuteRope = true;
-    rt::Tensor cosSinCacheTensor(rt::Coords{1, capPadded, rotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor cosSinCacheTensor(
+        rt::Coords{1, capPadded, rotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     initializeNormalRopeCosSin(
         cosSinCacheTensor.dataPointer<float>(), ropeTheta, ropeScale, 1.0f, rotaryDim, capPadded, stream);
 
@@ -498,29 +502,29 @@ TEST(WriteKvPaged, ExtraRetainedPagesKeepWriteAndGatherCorrect)
     }
 
     rt::Tensor qTensor(
-        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor kTensor(
-        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor vTensor(
-        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     copyHostToDevice(qTensor, qInput);
     copyHostToDevice(kTensor, kInput);
     copyHostToDevice(vTensor, vInput);
 
     std::vector<int32_t> const kvCacheEndLens{qSeqLen};
-    rt::Tensor kvCacheEndLensTensor(rt::Coords{batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor kvCacheEndLensTensor(rt::Coords{batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice(kvCacheEndLensTensor, kvCacheEndLens);
 
     // The pool retains extra pages beyond the identity-mapped active pages.
-    rt::Tensor kvPoolTensor(
-        rt::Coords{2, poolNumPages, kPageSize, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor kvPoolTensor(rt::Coords{2, poolNumPages, kPageSize, numKVHeads, headDim}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kHALF);
     int64_t const poolVolume = kvPoolTensor.getShape().volume();
     std::vector<half> canaryFill(static_cast<size_t>(poolVolume), kCanary);
     copyHostToDevice(kvPoolTensor, canaryFill);
 
     std::vector<int32_t> const pageTableHost{/*K=*/0, /*V=*/poolNumPages};
     rt::Tensor pageTableTensor(
-        rt::Coords{batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Coords{batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice(pageTableTensor, pageTableHost);
     int32_t const* pageTable = pageTableTensor.dataPointer<int32_t>();
 

@@ -24,6 +24,7 @@
 #include "common/pagedKvTypes.h"
 #include "common/parallelArtifactNames.h"
 #include "common/ropeUtils.h"
+#include "common/skipSoftmaxScaleTable.h"
 #include "common/specDecodeConfigUtils.h"
 #include "common/trtUtils.h"
 #include "common/version.h"
@@ -69,14 +70,28 @@ bool isSpecDecodeDraft(Json const& config, char const* type)
     return specDecodeType(config) == type && engineRole(config) == "draft";
 }
 
-//! DFlash-family draft engines (dflash/dflash2/jetspec share the DFlashDraftModel
+//! Whether an EAGLE draft's head is the in-engine low-rank candidate head (`eagle3_config.candidate_head`).
+bool hasEagleCandidateHead(Json const& config)
+{
+    auto const eagleConfig = config.find("eagle3_config");
+    if (eagleConfig == config.end() || !eagleConfig->is_object())
+    {
+        return false;
+    }
+    auto const candidateHead = eagleConfig->find("candidate_head");
+    return candidateHead != eagleConfig->end() && candidateHead->is_object()
+        && candidateHead->value("num_candidates", 0) > 0;
+}
+
+//! DFlash-family draft engines (dflash/dflash2/jetspec/domino share the DFlashDraftModel
 //! ONNX; dspark uses the DSpark draft) are the only engines that contain a plugin
 //! declaring aliased I/O: DFlashTargetKVCacheUpdatePlugin's present KV pool aliases
 //! its past KV pool. No other engine needs the kALIASED_PLUGIN_IO preview.
 bool usesAliasedPluginIO(Json const& config)
 {
     return isSpecDecodeDraft(config, "dflash") || isSpecDecodeDraft(config, "dflash2")
-        || isSpecDecodeDraft(config, "jetspec") || isSpecDecodeDraft(config, "dspark");
+        || isSpecDecodeDraft(config, "jetspec") || isSpecDecodeDraft(config, "dspark")
+        || isSpecDecodeDraft(config, "domino");
 }
 
 //! The CodePredictor exports one model name per Qwen3-Omni variant, all sharing this suffix.
@@ -90,7 +105,7 @@ bool isCodePredictor(Json const& config)
 bool isValidSpecDecodeType(std::string const& type)
 {
     return type == "none" || type == "mtp" || type == "eagle3" || type == "dflash" || type == "dflash2"
-        || type == "jetspec" || type == "dspark" || type == "gemma4_mtp";
+        || type == "jetspec" || type == "dspark" || type == "domino" || type == "gemma4_mtp";
 }
 
 bool isValidEngineRole(std::string const& role)
@@ -293,6 +308,54 @@ std::string getEngineFileName(LLMBuilderConfig const& config)
     return parallel_artifacts::engineFileName(makeArtifactContext(config));
 }
 
+using BeginCompactBuildReportFn = uint64_t (*)();
+using EndCompactBuildReportFn = bool (*)(uint64_t);
+
+//! The plugin library's compact build report around one engine build (edgellmBeginCompactBuildReport); the destructor
+//! ends it when end() was not called.
+class CompactBuildReportScope
+{
+public:
+    explicit CompactBuildReportScope(void* pluginLibrary)
+    {
+        if (pluginLibrary != nullptr)
+        {
+            auto const begin = reinterpret_cast<BeginCompactBuildReportFn>(
+                getDynamicLibrarySymbol(pluginLibrary, "edgellmBeginCompactBuildReport"));
+            mEnd = reinterpret_cast<EndCompactBuildReportFn>(
+                getDynamicLibrarySymbol(pluginLibrary, "edgellmEndCompactBuildReport"));
+            if (begin != nullptr && mEnd != nullptr)
+            {
+                mId = begin();
+                return;
+            }
+        }
+        LOG_WARNING("The plugin library has no compact build report; the engine will run without compact steps.");
+        mEnd = nullptr;
+    }
+
+    CompactBuildReportScope(CompactBuildReportScope const&) = delete;
+    CompactBuildReportScope& operator=(CompactBuildReportScope const&) = delete;
+
+    ~CompactBuildReportScope()
+    {
+        end();
+    }
+
+    //! End the report: whether the plugin library found the engine built in this scope built for compact execution
+    //! (it logs why not).
+    bool end()
+    {
+        bool const compact = mEnd != nullptr && mEnd(mId);
+        mEnd = nullptr;
+        return compact;
+    }
+
+private:
+    EndCompactBuildReportFn mEnd{nullptr};
+    uint64_t mId{0};
+};
+
 std::string getOnnxFilePath(std::filesystem::path const& onnxDir, LLMBuilderConfig const& config)
 {
     parallel_artifacts::RankArtifactContext const context = makeArtifactContext(config);
@@ -314,11 +377,6 @@ bool LLMBuilder::build()
     std::string trtVersion = std::to_string(NV_TENSORRT_MAJOR) + "." + std::to_string(NV_TENSORRT_MINOR) + "."
         + std::to_string(NV_TENSORRT_PATCH);
     LOG_INFO("Using TRT_VERSION=%s", trtVersion.c_str());
-    std::string const lunowudFlags = applyCompileWorkarounds();
-    if (!lunowudFlags.empty())
-    {
-        LOG_INFO("Using __LUNOWUD=%s", lunowudFlags.c_str());
-    }
 
     // Load plugin library
     auto pluginHandles = loadEdgellmPluginLib();
@@ -329,6 +387,15 @@ bool LLMBuilder::build()
         return false;
     }
 
+    // Apply the compile workarounds after config.json is parsed: the exporter's `use_trt_native_moe` marker
+    // keeps CUDA Tile code generation enabled for TensorRT's native MoE layer.
+    bool const useTrtNativeMoe = mModelConfig.value("use_trt_native_moe", false);
+    std::string const lunowudFlags = applyCompileWorkarounds(useTrtNativeMoe);
+    if (!lunowudFlags.empty())
+    {
+        LOG_INFO("Using __LUNOWUD=%s", lunowudFlags.c_str());
+    }
+
     int64_t const minimumActivePages
         = rt::computeMinimumKvPoolPages(mBuilderConfig.maxBatchSize, mBuilderConfig.maxKVCacheCapacity);
     int64_t const kvPoolPages = mBuilderConfig.resolvedKVPoolPages();
@@ -336,8 +403,12 @@ bool LLMBuilder::build()
     std::string const mode = specDecodeType(mModelConfig);
     bool const attentionOnlyReusableSpec = mNumLinearAttnLayers == 0
         && (mode == "eagle3" || mode == "gemma4_mtp" || mode == "dflash" || mode == "dflash2" || mode == "jetspec"
-            || mode == "dspark");
-    bool const supportsCrossRequestRetention = mNbKVCacheInputs > 0 && (mode == "none" || attentionOnlyReusableSpec);
+            || mode == "dspark" || mode == "domino");
+    bool const hybridReusableSpec = mNumLinearAttnLayers > 0 && mNbKVCacheInputs > 0
+        && (mode == "mtp" || mode == "eagle3" || mode == "dflash" || mode == "jetspec" || mode == "dspark"
+            || mode == "domino");
+    bool const supportsCrossRequestRetention
+        = mNbKVCacheInputs > 0 && (mode == "none" || attentionOnlyReusableSpec || hybridReusableSpec);
     if (hasExtraRetainedPages && !supportsCrossRequestRetention)
     {
         LOG_ERROR(
@@ -429,7 +500,13 @@ bool LLMBuilder::build()
 
     // Build and save engine
     std::string const engineFilePath = (mEngineDir / engineFileName).string();
-    if (!buildAndSerializeEngine(builder.get(), network.get(), config.get(), engineFilePath))
+    bool built = false;
+    {
+        CompactBuildReportScope compactReport(pluginHandles.get());
+        built = buildAndSerializeEngine(builder.get(), network.get(), config.get(), engineFilePath);
+        mCompactExecution = compactReport.end();
+    }
+    if (!built)
     {
         return false;
     }
@@ -474,6 +551,11 @@ bool LLMBuilder::build()
         }
 
         if (!copyDFlash2Files())
+        {
+            return false;
+        }
+
+        if (!copyDominoFiles())
         {
             return false;
         }
@@ -524,7 +606,8 @@ bool LLMBuilder::parseConfig()
     if (!isValidSpecDecodeType(specType))
     {
         LOG_ERROR(
-            "Invalid spec_decode_type='%s'. Expected one of: none, mtp, eagle3, dflash, jetspec, dspark, "
+            "Invalid spec_decode_type='%s'. Expected one of: none, mtp, eagle3, dflash, dflash2, jetspec, dspark, "
+            "domino, "
             "gemma4_mtp.",
             specType.c_str());
         return false;
@@ -563,22 +646,41 @@ bool LLMBuilder::parseConfig()
             role.c_str());
         return false;
     }
+    if (!dFlashV2BuildCapacityCoversCheckpoint(mModelConfig, mBuilderConfig))
+    {
+        Json const dflashConfig = mModelConfig.value("dflash_config", Json::object());
+        int64_t const checkpointBlockSize = dflashConfig.value("block_size", static_cast<int64_t>(0));
+        int64_t const engineCapacity
+            = role == "draft" ? mBuilderConfig.maxSpecDraftTokens : mBuilderConfig.maxSpecVerifyTokens;
+        if (isLiLiCorrDraftConfig(mModelConfig))
+        {
+            LOG_ERROR(
+                "LiLiCorr draft requires --max-spec-draft-tokens equal to checkpoint block_size %ld (got %ld): the "
+                "candidate-lattice head has a fixed block_size - 1 slot extent.",
+                checkpointBlockSize, engineCapacity);
+            return false;
+        }
+        LOG_ERROR("DFlash2 %s capacity %ld must cover checkpoint block_size %ld.", role.c_str(), engineCapacity,
+            checkpointBlockSize);
+        return false;
+    }
     if (mBuilderConfig.numSwaPages == 0 && mModelConfig.contains("num_swa_pages"))
     {
         mBuilderConfig.numSwaPages = mModelConfig["num_swa_pages"].get<int64_t>();
     }
 
     mHiddenSize = mModelConfig["hidden_size"].get<int32_t>();
-    // MTP draft consumes one target hidden state. Other draft modes may
-    // concatenate multiple target layers; prefer the exported contract when it
-    // is present and keep the legacy EAGLE3 hidden_size*3 fallback below.
+    // Prefer the exported base_model_hidden_size: a Qwen4-Exp MTP draft takes the
+    // hc_count-stream residual, wider than hidden_size. EAGLE3's hidden_size*3
+    // fallback stays below.
     if (isSpecDecodeDraft(mModelConfig, "mtp"))
     {
-        mTargetModelOutputHiddenDim = mHiddenSize;
+        mTargetModelOutputHiddenDim = mModelConfig.value("base_model_hidden_size", mHiddenSize);
     }
     else if ((isSpecDecodeDraft(mModelConfig, "eagle3") || isSpecDecodeDraft(mModelConfig, "dflash")
                  || isSpecDecodeDraft(mModelConfig, "dflash2") || isSpecDecodeDraft(mModelConfig, "jetspec")
-                 || isSpecDecodeDraft(mModelConfig, "dspark") || isSpecDecodeDraft(mModelConfig, "gemma4_mtp"))
+                 || isSpecDecodeDraft(mModelConfig, "dspark") || isSpecDecodeDraft(mModelConfig, "domino")
+                 || isSpecDecodeDraft(mModelConfig, "gemma4_mtp"))
         && mModelConfig.contains("base_model_hidden_size"))
     {
         mTargetModelOutputHiddenDim = mModelConfig["base_model_hidden_size"].get<int32_t>();
@@ -605,6 +707,18 @@ bool LLMBuilder::parseConfig()
     mRecurrentStateSize = mModelConfig.value("recurrent_state_size", 0);
     mConvDim = mModelConfig.value("conv_dim", 0);
     mConvKernel = mModelConfig.value("conv_kernel", 0);
+
+    mNgramLayers = mModelConfig.value("ngram_layers", std::vector<int32_t>{});
+    if (!mNgramLayers.empty())
+    {
+        mNgramEmbedDim = mModelConfig.value("ngram_embed_dim", 0);
+        int32_t const ngramSize = mModelConfig.value("ngram_size", 0);
+        int32_t const convKernel = mModelConfig.value("ngram_conv_kernel", 0);
+        mNgramConvDim = mModelConfig.value("ngram_conv_dim", 0);
+        mNgramConvStateLen = (convKernel - 1) * ngramSize;
+        ELLM_CHECK(mNgramEmbedDim > 0 && mNgramConvDim > 0 && mNgramConvStateLen > 0,
+            "ngram_layers is set but the injection geometry in the runtime config is incomplete");
+    }
 
     if (mModelConfig.contains("kv_layer_configs") && mModelConfig["kv_layer_configs"].is_array())
     {
@@ -733,11 +847,6 @@ bool LLMBuilder::parseConfig()
     }
     if (reducedCapacity.has_value())
     {
-        if (mModelConfig.value("kv_cache_dtype", "fp16") == "fp8")
-        {
-            LOG_ERROR("Reduced SWA KV pools do not support FP8 KV cache.");
-            return false;
-        }
         if (specType != "none" || configRevealsSpecDecode(mModelConfig) || mBuilderConfig.specBase
             || mBuilderConfig.specDraft)
         {
@@ -784,7 +893,7 @@ bool LLMBuilder::setupLLMOptimizationProfiles(
     bool result = true;
 
     if (isSpecDecodeDraft(mModelConfig, "dflash") || isSpecDecodeDraft(mModelConfig, "dflash2")
-        || isSpecDecodeDraft(mModelConfig, "jetspec"))
+        || isSpecDecodeDraft(mModelConfig, "jetspec") || isSpecDecodeDraft(mModelConfig, "domino"))
     {
         result &= setupDFlashDraftProfiles(*contextProfile, *generationProfile);
         if (!result)
@@ -847,18 +956,21 @@ bool LLMBuilder::setupLLMOptimizationProfiles(
         result &= setupVanillaProfiles(*contextProfile, *generationProfile, network);
     }
 
-    // Setup hybrid state profiles for MTP/DFlash/JetSpec/DSpark base models.
-    if (isSpecDecodeBase(mModelConfig, "mtp") || isSpecDecodeBase(mModelConfig, "dflash")
-        || isSpecDecodeBase(mModelConfig, "dflash2") || isSpecDecodeBase(mModelConfig, "jetspec")
-        || isSpecDecodeBase(mModelConfig, "dspark"))
+    // Setup hybrid state profiles for MTP/EAGLE/DFlash/JetSpec/DSpark base models.
+    if (isSpecDecodeBase(mModelConfig, "mtp") || isSpecDecodeBase(mModelConfig, "eagle3")
+        || isSpecDecodeBase(mModelConfig, "dflash") || isSpecDecodeBase(mModelConfig, "dflash2")
+        || isSpecDecodeBase(mModelConfig, "jetspec") || isSpecDecodeBase(mModelConfig, "dspark")
+        || isSpecDecodeBase(mModelConfig, "domino"))
     {
         result &= setupIntermediateRecurrentStateProfiles(*contextProfile, *generationProfile);
         result &= setupIntermediateConvStateProfiles(*contextProfile, *generationProfile);
         result &= setupLinearAttentionSpecVerifyProfiles(*contextProfile, *generationProfile, network);
     }
 
-    // Setup Gemma4 PLE profiles when ple_token_embeds_* inputs are present.
-    result &= setupPleProfiles(*contextProfile, *generationProfile, network);
+    result &= setupPleProfiles(*contextProfile, *generationProfile);
+
+    // Setup Qwen4-Exp n-gram injection profiles; a different feature that shares the "PLE" name.
+    result &= setupNgramPleProfiles(*contextProfile, *generationProfile);
 
     // Setup Deepstack profiles for Qwen3VL models
     result &= setupDeepstackProfiles(*contextProfile, *generationProfile, network);
@@ -963,15 +1075,17 @@ bool LLMBuilder::setupCommonProfiles(nvinfer1::IOptimizationProfile& contextProf
     result &= setupConvStateProfiles(&contextProfile, &generationProfile);
     LOG_DEBUG("Conv state profiles done.");
 
-    // skip_softmax_scale: [S] INT8 shape-only runtime skip-softmax override carrier.
-    // dim0 IS the integer scale factor S; a meaningful S satisfies lambda < 1, i.e.
-    // S < context length <= maxKVCacheCapacity.
-    if (hasInputBinding(network, binding_names::kSkipSoftmaxScale))
+    // Skip-softmax scale tables ([2N] INT32; length 0 is dense).
+    for (char const* const tableBinding :
+        {binding_names::kSkipSoftmaxPrefillScale, binding_names::kSkipSoftmaxDecodeScale})
     {
-        result &= setOptimizationProfile(&contextProfile, binding_names::kSkipSoftmaxScale, createDims({0}),
-            createDims({0}), createDims({mBuilderConfig.maxKVCacheCapacity}));
-        result &= setOptimizationProfile(&generationProfile, binding_names::kSkipSoftmaxScale, createDims({0}),
-            createDims({0}), createDims({mBuilderConfig.maxKVCacheCapacity}));
+        if (hasInputBinding(network, tableBinding))
+        {
+            result &= setOptimizationProfile(&contextProfile, tableBinding, createDims({0}), createDims({0}),
+                createDims({rt::kSKIP_SOFTMAX_SCALE_TABLE_MAX_LEN}));
+            result &= setOptimizationProfile(&generationProfile, tableBinding, createDims({0}), createDims({0}),
+                createDims({rt::kSKIP_SOFTMAX_SCALE_TABLE_MAX_LEN}));
+        }
     }
 
     return result;
@@ -1016,6 +1130,9 @@ bool LLMBuilder::setupRopeProfiles(nvinfer1::IOptimizationProfile& contextProfil
     return result;
 }
 
+//! Widest verify window the CodePredictor runtime can request; must stay >= kCpSpecMaxK.
+constexpr int64_t kCodePredictorMaxVerifyWindow = 8;
+
 std::pair<RaggedProfileRange, RaggedProfileRange> LLMBuilder::tokenAlignedProfileRanges() const
 {
     RaggedProfileRange const prefill = mBuilderConfig.raggedPrefillProfileRange();
@@ -1029,7 +1146,14 @@ std::pair<RaggedProfileRange, RaggedProfileRange> LLMBuilder::tokenAlignedProfil
         return {
             prefill, mBuilderConfig.raggedMultiTokenGenerationProfileRange(mBuilderConfig.resolvedRoleQueryLength())};
     }
-    return {prefill, mBuilderConfig.raggedDecodeProfileRange()};
+    RaggedProfileRange generation = mBuilderConfig.raggedDecodeProfileRange();
+    // A CodePredictor verifies several RVQ depths in one generation call, so every
+    // token-aligned binding, RoPE rows included, must admit that window.
+    if (isCodePredictor(mModelConfig))
+    {
+        generation.max.physicalTokens = mBuilderConfig.checkedPhysicalTokens(kCodePredictorMaxVerifyWindow);
+    }
+    return {prefill, generation};
 }
 
 bool LLMBuilder::setupDiffusionBackboneProfiles(nvinfer1::IOptimizationProfile& contextProfile,
@@ -1112,20 +1236,12 @@ bool LLMBuilder::setupDiffusionBackboneProfiles(nvinfer1::IOptimizationProfile& 
     return result;
 }
 
-//! Widest verify window the CodePredictor runtime can request; must stay >= kCpSpecMaxK.
-constexpr int64_t kCodePredictorMaxVerifyWindow = 8;
-
 bool LLMBuilder::setupVanillaProfiles(nvinfer1::IOptimizationProfile& contextProfile,
     nvinfer1::IOptimizationProfile& generationProfile, nvinfer1::INetworkDefinition const& network)
 {
     bool result = true;
-    RaggedProfileRange const prefill = mBuilderConfig.raggedPrefillProfileRange();
-    RaggedProfileRange decode = mBuilderConfig.raggedDecodeProfileRange();
+    auto const [prefill, decode] = tokenAlignedProfileRanges();
     bool const codePredictor = isCodePredictor(mModelConfig);
-    if (codePredictor)
-    {
-        decode.max.physicalTokens = mBuilderConfig.checkedPhysicalTokens(kCodePredictorMaxVerifyWindow);
-    }
     auto setTokenProfile = [&](char const* name, int64_t width = 0) {
         auto dims = [&](int64_t tokens) { return width == 0 ? createDims({tokens}) : createDims({tokens, width}); };
         result &= setOptimizationProfile(&contextProfile, name, dims(prefill.min.physicalTokens),
@@ -1256,7 +1372,10 @@ bool LLMBuilder::setupSpecDecodeProfiles(nvinfer1::IOptimizationProfile& context
 
     if (mBuilderConfig.specDraft)
     {
-        setTokenProfile(binding_names::kDraftModelHiddenStates, mHiddenSize);
+        // An MTP draft feeds back the same state it receives from the base.
+        int32_t const draftHiddenDim
+            = isSpecDecodeDraft(mModelConfig, "mtp") ? mTargetModelOutputHiddenDim : mHiddenSize;
+        setTokenProfile(binding_names::kDraftModelHiddenStates, draftHiddenDim);
         setTokenProfile(binding_names::kBaseModelHiddenStates, mTargetModelOutputHiddenDim);
     }
 
@@ -1272,6 +1391,13 @@ bool LLMBuilder::setupSpecDecodeProfiles(nvinfer1::IOptimizationProfile& context
         &contextProfile, binding_names::kExecutionPhaseMarker, createDims({1}), createDims({1}), createDims({8}));
     result &= setOptimizationProfile(&generationProfile, binding_names::kExecutionPhaseMarker, createDims({1}),
         createDims({mBuilderConfig.specDraft ? 4 : 5}), createDims({8}));
+    if (hasInputBinding(network, binding_names::kSpecVerifyLayout))
+    {
+        result &= setOptimizationProfile(
+            &contextProfile, binding_names::kSpecVerifyLayout, createDims({0}), createDims({0}), createDims({0}));
+        result &= setOptimizationProfile(&generationProfile, binding_names::kSpecVerifyLayout, createDims({0}),
+            createDims({mBuilderConfig.specDraft ? 0 : 1}), createDims({mBuilderConfig.specDraft ? 0 : 2}));
+    }
 
     return result;
 }
@@ -1282,10 +1408,10 @@ bool LLMBuilder::setupDFlashDraftProfiles(
     bool result = true;
 
     bool const isDFlash2 = isDFlashV2DraftConfig(mModelConfig);
-    int64_t const maxDraftTokens = std::max<int64_t>(1, mBuilderConfig.maxDraftTreeSize);
+    int64_t const maxDraftTokens = std::max<int64_t>(1, mBuilderConfig.maxSpecDraftTokens);
     if (isDFlash2 && (maxDraftTokens < 2 || maxDraftTokens > 16))
     {
-        LOG_ERROR("DFlash2 requires maxDraftTreeSize in [2, 16]");
+        LOG_ERROR("DFlash2 requires maxSpecDraftTokens in [2, 16]");
         return false;
     }
     int64_t const optDraftTokens = maxDraftTokens;
@@ -1305,7 +1431,7 @@ bool LLMBuilder::setupDFlashDraftProfiles(
     auto setupOneProfile = [&](nvinfer1::IOptimizationProfile& profile, int64_t optTargetHiddenLen,
                                int64_t maxTargetHiddenLen) {
         bool ok = true;
-        int64_t const minProposalRows = isDFlash2 ? 2 : 1;
+        int64_t const minProposalRows = dFlashDraftMinProposalRows(mModelConfig, mBuilderConfig);
         int64_t const optProposalRows = mBuilderConfig.maxBatchSize * optDraftTokens;
         int64_t const maxProposalRows = mBuilderConfig.maxBatchSize * maxDraftTokens;
         int64_t const optDeltaRows = mBuilderConfig.maxBatchSize * optTargetHiddenLen;
@@ -1463,13 +1589,14 @@ bool LLMBuilder::setupDSparkDraftProfiles(
 {
     bool result = true;
 
-    int64_t const maxProposalTokens = std::max<int64_t>(1, mBuilderConfig.maxDraftTreeSize);
+    int64_t const maxDraftQueryTokens = std::max<int64_t>(1, mBuilderConfig.maxSpecDraftTokens);
     nlohmann::json const emptyDSparkConfig = nlohmann::json::object();
     nlohmann::json const& dsparkConfig
         = mModelConfig.contains("dspark_config") ? mModelConfig["dspark_config"] : emptyDSparkConfig;
     bool const sampleFromAnchor = dsparkConfig.value("sample_from_anchor", true);
-    int64_t const maxDraftQueryTokens = maxProposalTokens + (sampleFromAnchor ? 0 : 1);
     int64_t const optDraftQueryTokens = maxDraftQueryTokens;
+    int64_t const maxProposalTokens = maxDraftQueryTokens - (sampleFromAnchor ? 0 : 1);
+    ELLM_CHECK(maxProposalTokens > 0, "DSpark maxSpecDraftTokens must include at least one usable proposal row.");
     int64_t const maxPrefillTargetHiddenLen = std::max<int64_t>(1, mBuilderConfig.maxInputLen);
     int64_t const optPrefillTargetHiddenLen = std::max<int64_t>(1, maxPrefillTargetHiddenLen / 2);
     // DSpark verifies [anchor] + proposal tokens and can accept the base bonus token,
@@ -1551,54 +1678,41 @@ bool LLMBuilder::setupDSparkDraftProfiles(
     return result;
 }
 
-bool LLMBuilder::setupPleProfiles(nvinfer1::IOptimizationProfile& contextProfile,
-    nvinfer1::IOptimizationProfile& generationProfile, nvinfer1::INetworkDefinition const& network)
+bool LLMBuilder::setupPleProfiles(
+    nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile)
 {
     bool result = true;
-    bool foundPleInput = false;
-    std::string_view const prefix = binding_names::kPleTokenEmbedsTemplate;
     auto const [prefill, generation] = tokenAlignedProfileRanges();
-
-    for (int32_t idx = 0; idx < network.getNbInputs(); ++idx)
+    if (mModelConfig.contains("ple_pool"))
     {
-        auto const* input = network.getInput(idx);
-        char const* const inputName = input->getName();
-        std::string_view const inputNameView = inputName;
-        if (inputNameView.rfind(prefix, 0) != 0 || inputNameView.size() <= prefix.size()
-            || inputNameView[prefix.size()] != '_')
+        auto const& metadata = mModelConfig.at("ple_pool");
+        if (!metadata.contains("source"))
         {
-            continue;
+            LOG_ERROR("PLE pool requires checkpoint source metadata; re-export and rebuild the engine.");
+            return false;
         }
-        foundPleInput = true;
-
-        auto const inputDims = input->getDimensions();
-        if (inputDims.nbDims != 2 || inputDims.d[1] <= 0)
+        int64_t const rows = metadata.at("row_count").get<int64_t>();
+        int64_t const width = metadata.at("row_width").get<int64_t>();
+        int64_t const heads = metadata.value("heads", int64_t{1});
+        if (rows <= 0 || rows >= std::numeric_limits<int32_t>::max() || width <= 0 || heads <= 0)
         {
-            LOG_ERROR(
-                "PLE input %s must be rank-2 [physical_tokens, hidden] with a static hidden dimension.", inputName);
-            result = false;
-            continue;
+            LOG_ERROR("Invalid PLE pool row count, row width or head count");
+            return false;
         }
-
-        int64_t const pleHiddenSize = inputDims.d[1];
-        result &= setOptimizationProfile(&contextProfile, inputName,
-            createDims({prefill.min.physicalTokens, pleHiddenSize}),
-            createDims({prefill.opt.physicalTokens, pleHiddenSize}),
-            createDims({prefill.max.physicalTokens, pleHiddenSize}));
-        result &= setOptimizationProfile(&generationProfile, inputName,
-            createDims({generation.min.physicalTokens, pleHiddenSize}),
-            createDims({generation.opt.physicalTokens, pleHiddenSize}),
-            createDims({generation.max.physicalTokens, pleHiddenSize}));
+        auto const minimum = createDims({1, width});
+        auto const optimum = createDims({std::min<int64_t>(rows + 1, 4096), width});
+        auto const maximum = createDims({rows + 1, width});
+        result &= setOptimizationProfile(&contextProfile, "ple_cache_pool", minimum, optimum, maximum);
+        result &= setOptimizationProfile(&generationProfile, "ple_cache_pool", minimum, optimum, maximum);
+        result
+            &= setOptimizationProfile(&contextProfile, "ple_row_map", createDims({prefill.min.physicalTokens, heads}),
+                createDims({prefill.opt.physicalTokens, heads}), createDims({prefill.max.physicalTokens, heads}));
+        result &= setOptimizationProfile(&generationProfile, "ple_row_map",
+            createDims({generation.min.physicalTokens, heads}), createDims({generation.opt.physicalTokens, heads}),
+            createDims({generation.max.physicalTokens, heads}));
+        return result;
     }
 
-    if (foundPleInput)
-    {
-        LOG_INFO("Configured optimization profiles for Gemma4 PLE inputs.");
-    }
-    if (!result)
-    {
-        LOG_ERROR("Failed to setup optimization profiles at setupPleProfiles().");
-    }
     return result;
 }
 
@@ -1874,6 +1988,31 @@ bool LLMBuilder::setupConvStateProfiles(
     return result;
 }
 
+bool LLMBuilder::setupNgramPleProfiles(
+    nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile)
+{
+    if (mNgramLayers.empty())
+    {
+        return true;
+    }
+
+    bool result = true;
+
+    // ngram_conv_state_%d shape: [resident_pool_rows, ngram_conv_dim, state_len], indexed over
+    // the injected layers rather than over the recurrent ones. The pool is addressed through the
+    // same state_indices as the recurrent states, so it has the same fixed row count.
+    nvinfer1::Dims const stateShape = createDims({mBuilderConfig.maxBatchSize, mNgramConvDim, mNgramConvStateLen});
+    for (int32_t idx = 0; idx < static_cast<int32_t>(mNgramLayers.size()); ++idx)
+    {
+        std::string const name = binding_names::formatNgramConvStateName(idx, /*isPast=*/true);
+        result &= setOptimizationProfile(&contextProfile, name.c_str(), stateShape, stateShape, stateShape);
+        result &= setOptimizationProfile(&generationProfile, name.c_str(), stateShape, stateShape, stateShape);
+    }
+
+    LOG_DEBUG("Set up n-gram injection optimization profiles for %zu layers", mNgramLayers.size());
+    return result;
+}
+
 bool LLMBuilder::setupIntermediateRecurrentStateProfiles(
     nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile)
 {
@@ -1942,7 +2081,7 @@ bool LLMBuilder::setupLinearAttentionSpecVerifyProfiles(nvinfer1::IOptimizationP
 
     if (!hasInputBinding(network, binding_names::kExecutionPhaseMarker))
     {
-        LOG_ERROR("Hybrid MTP/DFlash/JetSpec base engine is missing input '%s'. Re-export the ONNX model.",
+        LOG_ERROR("Hybrid speculative base engine is missing input '%s'. Re-export the ONNX model.",
             binding_names::kExecutionPhaseMarker);
         return false;
     }
@@ -1977,6 +2116,10 @@ bool LLMBuilder::copyConfig()
     Json configWithBuilder = mSharedModelConfig;
     LLMBuilderConfig outputConfig = mBuilderConfig;
     configWithBuilder["builder_config"] = outputConfig.toJson();
+    if (mCompactExecution)
+    {
+        configWithBuilder["builder_config"]["compact_execution"] = true;
+    }
 
     if (configWithBuilder.contains("rank_configs"))
     {
@@ -2234,9 +2377,9 @@ bool LLMBuilder::copyTokenizerFiles()
 
 bool LLMBuilder::copyEagleFiles()
 {
-    // Copy d2t.safetensors for Eagle3 draft models only. MTP/DFlash/JetSpec drafts share vocab with base and have no
-    // d2t.
-    if (isSpecDecodeDraft(mModelConfig, "eagle3"))
+    // Copy d2t.safetensors for dense Eagle3 draft models only. MTP/DFlash/JetSpec drafts share vocab with base, and
+    // candidate-head Eagle drafts emit full-vocabulary IDs, so neither has a d2t.
+    if (isSpecDecodeDraft(mModelConfig, "eagle3") && !hasEagleCandidateHead(mModelConfig))
     {
         std::string const d2tPath = (mOnnxDir / "d2t.safetensors").string();
         std::string const targetD2tPath = (mEngineDir / "d2t.safetensors").string();
@@ -2281,12 +2424,29 @@ bool LLMBuilder::copyDSparkFiles()
             allSuccess = false;
         }
     }
+    auto const packedW2 = mOnnxDir / binding_names::kDSparkW2Nvfp4FileName;
+    auto const packedDestination = mEngineDir / binding_names::kDSparkW2Nvfp4FileName;
+    if (std::filesystem::exists(packedW2))
+    {
+        allSuccess = file_io::copyFile(packedW2.string(), packedDestination.string()) && allSuccess;
+    }
+    else
+    {
+        std::error_code error;
+        std::filesystem::remove(packedDestination, error);
+        if (error)
+        {
+            LOG_ERROR("Failed to remove stale DSpark packed W2 sidecar %s: %s", packedDestination.c_str(),
+                error.message().c_str());
+            allSuccess = false;
+        }
+    }
     return allSuccess;
 }
 
 bool LLMBuilder::copyDFlash2Files()
 {
-    if (!isDFlashV2DraftConfig(mModelConfig))
+    if (!isDFlashV2DraftConfig(mModelConfig) || isLiLiCorrDraftConfig(mModelConfig))
     {
         return true;
     }
@@ -2312,6 +2472,26 @@ bool LLMBuilder::copyDFlash2Files()
         }
     }
     return allSuccess;
+}
+
+bool LLMBuilder::copyDominoFiles()
+{
+    if (!isSpecDecodeDraft(mModelConfig, "domino"))
+    {
+        return true;
+    }
+
+    Json const& dflashConfig = mModelConfig.at("dflash_config");
+    std::string const filename = dflashConfig.value("heads_file", std::string(binding_names::kDominoHeadsFileName));
+    std::string const srcPath = (mOnnxDir / filename).string();
+    std::string const dstPath = (mEngineDir / filename).string();
+    if (!file_io::copyFile(srcPath, dstPath))
+    {
+        LOG_ERROR("Failed to copy Domino sidecar %s from %s to %s", filename.c_str(), srcPath.c_str(), dstPath.c_str());
+        return false;
+    }
+    LOG_INFO("Copied Domino sidecar %s to %s", filename.c_str(), dstPath.c_str());
+    return true;
 }
 
 bool LLMBuilder::copyVocabMappingFiles()
@@ -2448,22 +2628,6 @@ bool LLMBuilder::copyEmbeddingFile()
         LOG_ERROR(
             "Failed to copy embedding.safetensors from %s to %s", embeddingPath.c_str(), targetEmbeddingPath.c_str());
         return false;
-    }
-
-    if (mModelConfig.value("ple_enabled", false))
-    {
-        std::string const plePath = (mOnnxDir / binding_names::kPleEmbeddingFileName).string();
-        std::string const targetPlePath = (mEngineDir / binding_names::kPleEmbeddingFileName).string();
-        if (file_io::copyFile(plePath, targetPlePath))
-        {
-            LOG_INFO("Copied %s to %s", binding_names::kPleEmbeddingFileName, targetPlePath.c_str());
-        }
-        else
-        {
-            LOG_ERROR("Failed to copy %s from %s to %s", binding_names::kPleEmbeddingFileName, plePath.c_str(),
-                targetPlePath.c_str());
-            return false;
-        }
     }
 
     return true;

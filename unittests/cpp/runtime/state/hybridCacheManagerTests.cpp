@@ -25,7 +25,6 @@
 #include <type_traits>
 
 using namespace trt_edgellm;
-using namespace nvinfer1;
 
 namespace
 {
@@ -332,6 +331,53 @@ TEST(HybridCacheManagerTests, ResetAndCommitTracksActiveBatchAndEmptyFlag)
     // reuseNonZero truncated to activeBatch=2 -> {0, 5}, +7 each.
     EXPECT_EQ(lengths[0], 7);
     EXPECT_EQ(lengths[1], 12);
+}
+
+// Given a manager whose batch holds some sequences
+// When sequences are appended one at a time with the KV length they already hold, up to the batch limit
+// Then each lands as the last execution row with that length, the rows before it are untouched, the
+//      empty flag follows the lengths, and an append past the limit throws and changes nothing
+TEST(HybridCacheManagerTests, AppendGrowsBatchByLastRow)
+{
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    constexpr int32_t maxBatch = 3;
+    rt::HybridCacheManager::Config cfg;
+    cfg.layerTypes = {rt::HybridCacheManager::LayerType::kAttention};
+    cfg.kvConfig = makeUniformKVConfig(1, maxBatch, 16, 1, 8);
+    cfg.mambaConfig = makeMambaConfig(0, maxBatch);
+    cfg.maxBatchSize = maxBatch;
+    rt::HybridCacheManager mgr(cfg, stream);
+
+    std::vector<int32_t> reuse{4};
+    rt::Tensor reuseT({1}, rt::DeviceType::kCPU, DataType::kINT32);
+    std::memcpy(reuseT.rawPointer(), reuse.data(), sizeof(int32_t));
+    mgr.resetForNewSequences(reuseT, stream);
+    ASSERT_EQ(mgr.getActiveBatchSize(), 1);
+
+    mgr.appendSequence(/*committedLength=*/0, stream);
+    mgr.appendSequence(/*committedLength=*/9, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    EXPECT_EQ(mgr.getActiveBatchSize(), 3);
+    EXPECT_EQ(mgr.getKVCacheLengths().getShape()[0], 3);
+    EXPECT_FALSE(mgr.getKVCacheAllEmpty());
+    auto lengths = copyDeviceToHost<int32_t>(mgr.getKVCacheLengths());
+    ASSERT_EQ(lengths.size(), 3u);
+    EXPECT_EQ(lengths[0], 4) << "the row that was there stays";
+    EXPECT_EQ(lengths[1], 0);
+    EXPECT_EQ(lengths[2], 9) << "a reused prefix is the row's starting length";
+
+    // The batch is full: the append is refused and nothing moved.
+    EXPECT_THROW(mgr.appendSequence(1, stream), std::runtime_error);
+    EXPECT_EQ(mgr.getActiveBatchSize(), 3);
+    EXPECT_EQ(mgr.getKVCacheLengths().getShape()[0], 3);
+    lengths = copyDeviceToHost<int32_t>(mgr.getKVCacheLengths());
+    EXPECT_EQ(lengths, (std::vector<int32_t>{4, 0, 9}));
+
+    // Dropping the last row is the ordinary size change the session uses to give a reservation back.
+    mgr.setActiveBatchSize(2);
+    EXPECT_EQ(mgr.getActiveBatchSize(), 2);
+    CUDA_CHECK(cudaStreamDestroy(stream));
 }
 
 TEST(HybridCacheManagerTests, ClearingResidentStateDoesNotClearLogicalLengthRow)
@@ -867,5 +913,129 @@ TEST(HybridCacheManagerTests, MaterializesExecutionLengthsWithoutMovingResidentS
     expectSlotEqHalf(mgr.getRecurrentState(2), 0, 4.0F, "recurrent");
     expectSlotEqHalf(mgr.getRecurrentState(2), 1, 5.0F, "recurrent");
     expectSlotEqHalf(mgr.getRecurrentState(2), 2, 6.0F, "recurrent");
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+// --- Auxiliary conv state, speculative verify -------------------------------
+
+namespace
+{
+
+rt::HybridCacheManager::Config makeAuxConfig(int32_t maxBatch, int32_t intermediateSeqLen)
+{
+    rt::HybridCacheManager::Config cfg{};
+    cfg.layerTypes.assign(2, rt::HybridCacheManager::LayerType::kMamba);
+    cfg.kvConfig = makeUniformKVConfig(/*numLayers=*/0, maxBatch, /*maxSeq=*/128, /*numKVHeads=*/4, /*headDim=*/64);
+    cfg.mambaConfig = makeMambaConfig(/*numLayers=*/2, maxBatch);
+    cfg.mambaConfig.maxIntermediateSeqLen = intermediateSeqLen;
+    cfg.maxBatchSize = maxBatch;
+    // stateElements = convDim * convWidth must be a multiple of the scatter kernel's vector width.
+    cfg.auxConvStateConfigs.push_back(
+        {/*absLayerIdx=*/1, /*stateIdx=*/1, /*convDim=*/8, /*convWidth=*/2, DataType::kHALF});
+    return cfg;
+}
+
+// Write `value` into one (sequence, verify step) snapshot of an auxiliary intermediate slab.
+void fillAuxSnapshot(rt::Tensor& slab, int32_t sequence, int32_t step, float value)
+{
+    auto const& shape = slab.getShape();
+    int64_t const stepElems = shape[2] * shape[3];
+    std::vector<half> host(static_cast<size_t>(stepElems), __float2half(value));
+    int64_t const offset = (static_cast<int64_t>(sequence) * shape[1] + step) * stepElems;
+    CUDA_CHECK(cudaMemcpy(static_cast<half*>(slab.rawPointer()) + offset, host.data(),
+        static_cast<size_t>(stepElems) * sizeof(half), cudaMemcpyHostToDevice));
+}
+
+rt::Tensor uploadInt32(std::vector<int32_t> const& values, char const* name)
+{
+    rt::Tensor tensor({static_cast<int32_t>(values.size())}, rt::DeviceType::kGPU, DataType::kINT32, name);
+    CUDA_CHECK(cudaMemcpy(tensor.rawPointer(), values.data(), values.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
+    return tensor;
+}
+
+} // namespace
+
+// Given an injected layer whose auxiliary conv state is snapshotted once per verified token,
+// When the decoder commits after accepting a prefix of the chain,
+// Then the sequence's resident slot holds the snapshot the last accepted token wrote, and a
+// sequence that accepted nothing keeps the state it had.
+TEST(HybridCacheManagerTests, AuxConvStateScatterCommitsTheAcceptedEndpoint)
+{
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    constexpr int32_t maxBatch = 2;
+    constexpr int32_t verifySize = 4;
+    rt::HybridCacheManager mgr(makeAuxConfig(maxBatch, verifySize), stream);
+
+    ASSERT_EQ(mgr.numAuxConvStates(), 1);
+    ASSERT_TRUE(mgr.hasIntermediateAuxConvStates());
+    auto& slab = mgr.getIntermediateAuxConvState(0);
+
+    // A narrower step must narrow the binding, or the scatter reads another sequence's rows.
+    mgr.reshapeIntermediateAuxConvStates(/*activeBatchSize=*/1, /*seqLen=*/2);
+    EXPECT_EQ(slab.getShape()[0], 1);
+    EXPECT_EQ(slab.getShape()[1], 2);
+    mgr.reshapeIntermediateAuxConvStates(/*activeBatchSize=*/2, /*seqLen=*/verifySize);
+    EXPECT_EQ(slab.getShape()[0], 2);
+    EXPECT_EQ(slab.getShape()[1], verifySize);
+
+    // Distinct per (sequence, step) so a scatter off by one step or one sequence is visible.
+    for (int32_t sequence = 0; sequence < 2; ++sequence)
+    {
+        for (int32_t step = 0; step < verifySize; ++step)
+        {
+            fillAuxSnapshot(slab, sequence, step, 10.0F * static_cast<float>(sequence + 1) + static_cast<float>(step));
+        }
+    }
+    auto& resident = mgr.getAuxConvState(0);
+    fillSlotHalf(resident, 0, -1.0F);
+    fillSlotHalf(resident, 1, -2.0F);
+
+    // Execution row 0 owns resident slot 1 and accepts three tokens; row 1 owns slot 0 and accepts none.
+    auto acceptLengths = uploadInt32({3, 0}, "acceptLengths");
+    auto stateIndices = uploadInt32({1, 0}, "stateIndices");
+    mgr.scatterAcceptedAuxConvStates(acceptLengths, stateIndices, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    expectSlotEqHalf(resident, 1, 12.0F, "accepted endpoint");
+    expectSlotEqHalf(resident, 0, -1.0F, "untouched slot");
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+// Given an injected layer whose auxiliary conv state is snapshotted once per verified tree node,
+// When the decoder commits a tree verify whose accepted path skips a sibling,
+// Then the resident slot holds the snapshot of the path's last node, not of the node at the accept
+// length, and a sequence that accepted nothing keeps the state it had.
+TEST(HybridCacheManagerTests, AuxConvStateTreeScatterCommitsTheLastAcceptedNode)
+{
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    constexpr int32_t maxBatch = 2;
+    constexpr int32_t verifySize = 4;
+    rt::HybridCacheManager mgr(makeAuxConfig(maxBatch, verifySize), stream);
+    mgr.reshapeIntermediateAuxConvStates(maxBatch, verifySize);
+    auto& slab = mgr.getIntermediateAuxConvState(0);
+    for (int32_t sequence = 0; sequence < maxBatch; ++sequence)
+    {
+        for (int32_t node = 0; node < verifySize; ++node)
+        {
+            fillAuxSnapshot(slab, sequence, node, 10.0F * static_cast<float>(sequence + 1) + static_cast<float>(node));
+        }
+    }
+    auto& resident = mgr.getAuxConvState(0);
+    fillSlotHalf(resident, 0, -1.0F);
+    fillSlotHalf(resident, 1, -2.0F);
+
+    // Execution row 0 owns resident slot 1 and accepts the root then node 3; row 1 owns slot 0 and
+    // accepts none.
+    auto acceptedNodes = uploadInt32({0, 3, -1, 0, -1, -1}, "acceptedNodes");
+    ASSERT_TRUE(acceptedNodes.reshape({maxBatch, 3}));
+    auto acceptLengths = uploadInt32({2, 0}, "acceptLengths");
+    auto stateIndices = uploadInt32({1, 0}, "stateIndices");
+    mgr.scatterAcceptedAuxConvStates(acceptLengths, stateIndices, stream, &acceptedNodes);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    expectSlotEqHalf(resident, 1, 13.0F, "last accepted node");
+    expectSlotEqHalf(resident, 0, -1.0F, "untouched slot");
     CUDA_CHECK(cudaStreamDestroy(stream));
 }

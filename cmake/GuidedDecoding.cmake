@@ -41,9 +41,8 @@ set(XGRAMMAR_INCLUDE_DIRS
     "${XGRAMMAR_ROOT}/3rdparty/dlpack/include")
 
 add_library(xgrammarCore STATIC ${XGRAMMAR_SRCS})
-# PUBLIC so consumers (edgellmCore) pick the headers up; SYSTEM so third-party
-# headers do not trip our -Wall -Werror.
-target_include_directories(xgrammarCore SYSTEM PUBLIC ${XGRAMMAR_INCLUDE_DIRS})
+# XGrammar is an implementation detail of edgellmCore.
+target_include_directories(xgrammarCore SYSTEM PRIVATE ${XGRAMMAR_INCLUDE_DIRS})
 # Third-party sources are not held to our warning policy.
 target_compile_options(xgrammarCore PRIVATE -w)
 set_target_properties(
@@ -52,6 +51,6 @@ set_target_properties(
              CXX_VISIBILITY_PRESET hidden
              VISIBILITY_INLINES_HIDDEN ON)
 find_package(Threads REQUIRED)
-target_link_libraries(xgrammarCore PUBLIC Threads::Threads)
+target_link_libraries(xgrammarCore PRIVATE Threads::Threads)
 
 message(STATUS "Guided decoding: XGrammar, ${_xgr_src_count} sources")

@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Dataset download and conversion. Runtime metric jobs do not install this
+# profile.
+datasets==5.0.0
+tqdm==4.69.0
+huggingface-hub==1.15.0
+pillow==12.2.0
+requests>=2.32.0

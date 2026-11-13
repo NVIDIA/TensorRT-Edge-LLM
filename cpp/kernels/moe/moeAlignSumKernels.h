@@ -34,9 +34,16 @@ void launchCountSlotsPerExpertKernel(int32_t const* topkIndices, int32_t* slotsP
 void launchComputePaddedOffsetsKernel(int32_t const* counts, int32_t* paddedCounts, int32_t* paddedOffsets,
     int32_t* numTokensPostPadded, int32_t numExperts, int32_t moeBlockSize, cudaStream_t stream);
 
-/** Host launcher: build slot lists per expert (atomic offsets). Num SMs are queried from the device internally. */
+/** Host launcher: build per-expert slot lists. */
 void launchBuildSlotListsKernel(int32_t const* topkIndices, int32_t* slotsByExpertWorkspace,
     int32_t* slotsPerExpertWorkspace, int32_t numTokens, int32_t topK, int32_t numExperts, cudaStream_t stream);
+
+/** Host launcher: build ascending routed-slot lists per expert in the existing workspace. */
+void launchBuildStableSlotListsKernel(int32_t const* topkIndices, int32_t* slotsByExpertWorkspace,
+    int32_t* slotsPerExpertWorkspace, int32_t numTokens, int32_t topK, int32_t numExperts, cudaStream_t stream);
+
+/** Return whether the measured grouped stable-list kernel applies to this architecture and expert count. */
+bool shouldUseGroupedStableSlotLists(int32_t smVersion, int32_t numExperts);
 
 } // namespace kernel
 } // namespace trt_edgellm

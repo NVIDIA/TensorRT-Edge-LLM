@@ -83,7 +83,7 @@ protected:
         float base = 1.0F;
         for (auto const& [name, count] : tensors)
         {
-            Tensor tensor({count}, DeviceType::kCPU, nvinfer1::DataType::kFLOAT, name);
+            Tensor tensor({count}, DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, name);
             auto* data = static_cast<float*>(tensor.rawPointer());
             std::iota(data, data + count, base);
             base += 1000.0F;
@@ -157,7 +157,7 @@ TEST_F(CheckpointReaderTest, ScansEveryShardWhenNoIndexIsPresent)
 
     View view{};
     ASSERT_TRUE(reader.findHost("layer.0.weight", view));
-    EXPECT_EQ(view.dtype, nvinfer1::DataType::kFLOAT);
+    EXPECT_EQ(view.dtype, trt_edgellm::DataType::kFLOAT);
     EXPECT_EQ(view.shape, Coords({8}));
     EXPECT_EQ(view.bytes, 8U * sizeof(float));
     EXPECT_EQ(hostFloats(view), expectedRamp(0, 8));
@@ -510,7 +510,7 @@ TEST_F(CheckpointReaderTest, ExplicitLocationReadsARawByteRangeVerbatim)
 
     View view{};
     ASSERT_TRUE(reader.findHost("zip.weight", view));
-    EXPECT_EQ(view.dtype, nvinfer1::DataType::kFLOAT);
+    EXPECT_EQ(view.dtype, trt_edgellm::DataType::kFLOAT);
     EXPECT_EQ(view.shape, Coords({4}));
     EXPECT_EQ(hostFloats(view), payload);
 }
@@ -535,7 +535,7 @@ TEST_F(CheckpointReaderTest, ExplicitLocationMustStayInsideTheCheckpointDirector
     std::filesystem::copy_file(mDir / "outside.bin", inner / "inside.bin");
     {
         std::vector<Tensor> shard;
-        shard.emplace_back(Coords({4}), DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "weight");
+        shard.emplace_back(Coords({4}), DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, "weight");
         ASSERT_TRUE(safetensors::saveSafetensors(inner / kShardA, shard, mStream));
     }
 

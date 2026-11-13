@@ -511,6 +511,11 @@ std::unique_ptr<PreTokenizer> Tokenizer::createPreTokenizer(Json const& preToken
             std::string normalizedPattern = normalizeRegex(pattern);
             return std::make_unique<RegexSplit>(normalizedPattern);
         }
+        else if (type == "Metaspace")
+        {
+            return std::make_unique<Metaspace>(preTokenizerConfig.value("replacement", "\xE2\x96\x81"),
+                preTokenizerConfig.value("prepend_scheme", "always"), preTokenizerConfig.value("split", true));
+        }
     }
 
     LOG_WARNING("Unknown pretokenizer configuration, using default sequence");

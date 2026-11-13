@@ -55,7 +55,7 @@ class Gemma4ViTRunner : public MultimodalRunner
 {
 public:
     //! \brief Constructor for Gemma4ViTRunner.
-    Gemma4ViTRunner(std::string const& engineDir, cudaStream_t stream);
+    Gemma4ViTRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
 
     ~Gemma4ViTRunner() noexcept = default;
 

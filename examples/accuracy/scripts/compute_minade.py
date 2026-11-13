@@ -22,6 +22,7 @@ import argparse
 import csv
 import json
 import os
+from collections import Counter
 
 import einops
 import numpy as np
@@ -115,6 +116,25 @@ def estimate_v0(traj_history_xyz, traj_history_rot):
     return v[..., -1]
 
 
+def validate_samples(requests, responses, num_samples):
+    """Require complete finite trajectories for every requested clip."""
+    if num_samples < 1 or not requests or len(requests) != len(responses):
+        raise ValueError(
+            "Expected a positive sample count and one response per request")
+    counts = Counter(request["id"] for request in requests)
+    if any(count < num_samples for count in counts.values()):
+        raise ValueError(
+            "Every clip must supply the requested number of candidates")
+    for index, response in enumerate(responses):
+        trajectory = np.asarray(response.get("output_trajectory", []),
+                                dtype=np.float32)
+        if trajectory.shape != (N_WAYPOINTS,
+                                2) or not np.isfinite(trajectory).all():
+            raise ValueError(
+                f"Response {index} requires a finite {N_WAYPOINTS}x2 trajectory"
+            )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input",
@@ -142,6 +162,7 @@ def main():
 
     requests = inp["requests"]
     responses = out["responses"]
+    validate_samples(requests, responses, N)
     print(
         f"Requests: {len(requests)}, Responses: {len(responses)}, GT clips: {len(gt_data)}"
     )
@@ -160,8 +181,7 @@ def main():
                 torch.tensor(gt["ego_history_rot"], dtype=torch.float32),
                 "responses": [],
             }
-        if "output_trajectory" in resp and resp["output_trajectory"]:
-            clip_data[cid]["responses"].append(resp)
+        clip_data[cid]["responses"].append(resp)
 
     print(f"Clips: {len(clip_data)}")
 
@@ -178,10 +198,6 @@ def main():
 
         for idx, (cid, cd) in enumerate(sorted(clip_data.items())):
             resps = cd["responses"]
-            if len(resps) < N:
-                skipped += 1
-                continue
-
             gt_xy = cd["gt_xy"]
             actions = np.stack([
                 np.array(r["output_trajectory"], dtype=np.float32)

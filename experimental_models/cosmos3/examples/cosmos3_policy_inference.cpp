@@ -463,7 +463,7 @@ void writeActionSafetensors(std::string const& path, std::vector<float> const& a
     int32_t dim, cudaStream_t stream)
 {
     std::vector<int64_t> const shape{batch, chunk, dim};
-    rt::Tensor t(shape, rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "action");
+    rt::Tensor t(shape, rt::DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, "action");
     std::memcpy(t.rawPointer(), action.data(), action.size() * sizeof(float));
     std::vector<rt::Tensor> tensors;
     tensors.push_back(std::move(t));
@@ -544,7 +544,7 @@ int main(int argc, char** argv)
         printUsage(argv[0]);
         return EXIT_SUCCESS;
     }
-    gLogger.setLevel(nvinfer1::ILogger::Severity::kINFO);
+    gLogger.setLevel(trt_edgellm::logger::Severity::kINFO);
 
     if (args.domain != "droid_lerobot")
     {
@@ -679,7 +679,7 @@ int main(int argc, char** argv)
             "reflection-padding to %dx%d, and normalizing to pixel_values.",
             condFramePath.c_str(), img.width, img.height, contentW, contentH, clipW, clipH);
         rt::imageUtils::ImageData resized(rt::Tensor(
-            {1, contentH, contentW, 3}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8, "cosmos3::resized"));
+            {1, contentH, contentW, 3}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8, "cosmos3::resized"));
         rt::imageUtils::ImageData const& content = rt::imageUtils::resizeImage(
             img, resized, contentW, contentH, rt::imageUtils::InterpolationMode::kBICUBIC);
 
@@ -708,8 +708,8 @@ int main(int argc, char** argv)
         {
             std::copy_n(clip.data(), clipElems, clip.data() + static_cast<size_t>(b) * clipElems);
         }
-        rt::Tensor pixelTensor({batch, 3, pixelFrames, clipH, clipW}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT,
-            "cosmos3::pixelValues");
+        rt::Tensor pixelTensor({batch, 3, pixelFrames, clipH, clipW}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT, "cosmos3::pixelValues");
         // One-time host->device setup copies below source from pageable std::vectors, so they use the
         // synchronous cudaMemcpy: cudaMemcpyAsync on pageable memory silently falls back to a sync copy.
         CUDA_CHECK(
@@ -764,11 +764,11 @@ int main(int argc, char** argv)
         {
             idsHost.insert(idsHost.end(), promptIds.begin(), promptIds.end());
         }
-        rt::Tensor idsTensor({batch, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "cosmos3::inputIds");
+        rt::Tensor idsTensor({batch, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "cosmos3::inputIds");
         CUDA_CHECK(cudaMemcpy(
             idsTensor.rawPointer(), idsHost.data(), idsHost.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
         rt::Tensor inputsEmbeds(
-            {batch, seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "cosmos3::inputsEmbeds");
+            {batch, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "cosmos3::inputsEmbeds");
         kernel::embeddingLookup(idsTensor, table, std::nullopt, inputsEmbeds, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -807,11 +807,11 @@ int main(int argc, char** argv)
                 uIdsHost.insert(uIdsHost.end(), uids.begin(), uids.end());
             }
             rt::Tensor uIdsTensor(
-                {batch, uSeqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "cosmos3::uncondIds");
+                {batch, uSeqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "cosmos3::uncondIds");
             CUDA_CHECK(cudaMemcpy(
                 uIdsTensor.rawPointer(), uIdsHost.data(), uIdsHost.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
-            uncondEmbeds = rt::Tensor(
-                {batch, uSeqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "cosmos3::uncondEmbeds");
+            uncondEmbeds = rt::Tensor({batch, uSeqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
+                "cosmos3::uncondEmbeds");
             kernel::embeddingLookup(uIdsTensor, table, std::nullopt, uncondEmbeds, stream);
             CUDA_CHECK(cudaStreamSynchronize(stream));
             LOG_INFO(

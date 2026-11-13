@@ -157,7 +157,7 @@ LLMEngineConfig makeEngineConfig()
     int64_t const minimumActivePages = computeMinimumKvPoolPages(kMAX_BATCH, kMAX_SEQUENCE_LENGTH);
     ELLM_CHECK(minimumActivePages <= kMAX_KV_POOL_PAGES, "Test KV pool page count must fit int32.");
     config.kvPoolPages = static_cast<int32_t>(minimumActivePages);
-    config.kvCacheDtype = nvinfer1::DataType::kHALF;
+    config.kvCacheDtype = trt_edgellm::DataType::kHALF;
     config.layerTypes = {HybridCacheManager::LayerType::kAttention};
     config.kvLayerConfigs = {KVLayerConfig{config.numKVHeads, config.headDim}};
     return config;
@@ -226,8 +226,6 @@ protected:
         std::vector<int32_t> const& tokens, std::vector<Hash128> const& perPositionMediaHash)
     {
         ContextCacheBatchAdmission admission;
-        admission.lookupPolicy = ContextCacheLookupPolicy::kUseCache;
-        admission.commitPolicy = ContextCacheCommitPolicy::kIncludingGeneratedTokens;
         ContextCacheSequenceAdmission seq;
         seq.tokenIds = tokens;
         seq.perPositionMediaHash = perPositionMediaHash;

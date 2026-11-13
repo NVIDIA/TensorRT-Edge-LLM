@@ -87,7 +87,7 @@ cudaError_t launchModelOptInt4CuteDslRepack(
 
 cudaError_t launchGptqInt4CuteDslRepack(int32_t const* qweightK8N, int32_t const* qzerosGN8,
     int32_t const* activationPermutation, int8_t* fragmentRows512, int32_t N, int32_t K, int32_t numGroups,
-    int32_t groupSize, int32_t zeroPointOffset, cudaStream_t stream)
+    int32_t groupSize, int32_t zeroPointOffset, bool outputMajor, cudaStream_t stream)
 {
     if (qweightK8N == nullptr || fragmentRows512 == nullptr || N <= 0 || K <= 0 || (K % 64) != 0
         || (qzerosGN8 != nullptr && (numGroups <= 0 || numGroups * groupSize != K)))
@@ -96,22 +96,21 @@ cudaError_t launchGptqInt4CuteDslRepack(int32_t const* qweightK8N, int32_t const
     }
     int32_t const rows = int4CuteDslFragmentRows(N, K);
     directInt4CuteDslRepackKernel<<<rows, 128, 0, stream>>>(
-        GptqInt4Accessor{qweightK8N, qzerosGN8, activationPermutation, N, groupSize, zeroPointOffset},
+        GptqInt4Accessor{qweightK8N, qzerosGN8, activationPermutation, N, K, groupSize, zeroPointOffset, outputMajor},
         reinterpret_cast<uint32_t*>(fragmentRows512), N, K, rows);
     return cudaGetLastError();
 }
 
-cudaError_t launchAwqInt4CuteDslRepack(int32_t const* qweightKN8, int32_t const* qzerosGN8, int8_t* fragmentRows512,
-    int32_t N, int32_t K, int32_t numGroups, int32_t groupSize, cudaStream_t stream)
+cudaError_t launchAwqInt4CuteDslRepack(
+    int32_t const* qweightKN8, int8_t* fragmentRows512, int32_t N, int32_t K, cudaStream_t stream)
 {
-    if (qweightKN8 == nullptr || qzerosGN8 == nullptr || fragmentRows512 == nullptr || N <= 0 || K <= 0 || (K % 64) != 0
-        || numGroups <= 0 || numGroups * groupSize != K)
+    if (qweightKN8 == nullptr || fragmentRows512 == nullptr || N <= 0 || K <= 0 || (K % 64) != 0)
     {
         return cudaErrorInvalidValue;
     }
     int32_t const rows = int4CuteDslFragmentRows(N, K);
     directInt4CuteDslRepackKernel<<<rows, 128, 0, stream>>>(
-        AwqInt4Accessor{qweightKN8, qzerosGN8, N, groupSize}, reinterpret_cast<uint32_t*>(fragmentRows512), N, K, rows);
+        AwqInt4Accessor{qweightKN8, N}, reinterpret_cast<uint32_t*>(fragmentRows512), N, K, rows);
     return cudaGetLastError();
 }
 

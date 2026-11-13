@@ -102,7 +102,7 @@ rt::Tensor& LoRAManager::getActiveWeight(std::string const& bindingName)
         // sees deterministic zeros rather than uninitialized GPU memory.
         if (mDummyTensor.isEmpty())
         {
-            mDummyTensor = rt::Tensor({1}, DeviceType::kGPU, nvinfer1::DataType::kHALF, "LoRAManager::dummy");
+            mDummyTensor = rt::Tensor({1}, DeviceType::kGPU, trt_edgellm::DataType::kHALF, "LoRAManager::dummy");
             CUDA_CHECK(cudaMemset(mDummyTensor.rawPointer(), 0, mDummyTensor.getMemoryCapacity()));
         }
         return mDummyTensor;
@@ -198,7 +198,7 @@ void LoRAManager::initializeEngineBindings(EngineExecutor const& runner)
         // to the engine's lora_A_*/lora_B_* inputs, so the rank-1 contraction
         // must read deterministic zeros, not uninitialized cudaMalloc memory.
         auto [it, inserted] = dummyTensors.emplace(
-            name, rt::Tensor(shape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "loraDummy_" + name));
+            name, rt::Tensor(shape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "loraDummy_" + name));
         CUDA_CHECK(cudaMemset(it->second.rawPointer(), 0, it->second.getMemoryCapacity()));
     }
 

@@ -21,6 +21,7 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "common/mmapReader.h"
+#include "common/trtInterop.h"
 #include "kernels/talkerMLPKernels/talkerMLPKernels.h"
 
 #include <algorithm>
@@ -47,7 +48,7 @@ std::unique_ptr<nvinfer1::ICudaEngine> loadEngine(nvinfer1::IRuntime& runtime, s
 
 CloneEncoderRunner::CloneEncoderRunner(std::string const& engineDir, cudaStream_t stream)
 {
-    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
     ELLM_CHECK(mRuntime, "Failed to create TensorRT runtime");
 
     std::string const speakerPath = engineDir + "/speaker_encoder.engine";
@@ -87,7 +88,7 @@ CloneEncoderRunner::CloneEncoderRunner(std::string const& engineDir, cudaStream_
         maxSamples = std::max(maxSamples, mBucketSamples);
 
         mCodesBuffer = rt::Tensor(
-            {mBucketFrames, mNumQuantizers}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "cloneRefCodes");
+            {mBucketFrames, mNumQuantizers}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "cloneRefCodes");
     }
     else
     {
@@ -95,7 +96,7 @@ CloneEncoderRunner::CloneEncoderRunner(std::string const& engineDir, cudaStream_
     }
 
     mSharedContextMemory
-        = rt::Tensor({contextMemBytes}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "cloneCtxMem");
+        = rt::Tensor({contextMemBytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "cloneCtxMem");
     mSpeakerContext->setDeviceMemoryV2(mSharedContextMemory.rawPointer(), contextMemBytes);
     ELLM_CHECK(mSpeakerContext->setOptimizationProfileAsync(0, stream), "Failed to set speaker profile");
     if (mTokenizerContext)
@@ -104,8 +105,8 @@ CloneEncoderRunner::CloneEncoderRunner(std::string const& engineDir, cudaStream_
         ELLM_CHECK(mTokenizerContext->setOptimizationProfileAsync(0, stream), "Failed to set tokenizer profile");
     }
 
-    mWavBuffer = rt::Tensor({1, maxSamples}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "cloneWav");
-    mXvecFp32 = rt::Tensor({1, mXvecDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "cloneXvecF32");
+    mWavBuffer = rt::Tensor({1, maxSamples}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "cloneWav");
+    mXvecFp32 = rt::Tensor({1, mXvecDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "cloneXvecF32");
 
     LOG_INFO(
         "CloneEncoderRunner initialized: xvecDim=%ld, bucket=%ld samples/%ld frames, %d quantizers, "
@@ -117,7 +118,8 @@ bool CloneEncoderRunner::extractSpeakerEmbedding(rt::Tensor const& wav24k, rt::T
 {
     int64_t const wavSamples = wav24k.getShape().volume();
     check::check(wavSamples > 0, "extractSpeakerEmbedding: empty waveform");
-    check::check(wav24k.getDeviceType() == rt::DeviceType::kCPU && wav24k.getDataType() == nvinfer1::DataType::kFLOAT,
+    check::check(
+        wav24k.getDeviceType() == rt::DeviceType::kCPU && wav24k.getDataType() == trt_edgellm::DataType::kFLOAT,
         "extractSpeakerEmbedding: wav24k shall be a host Float tensor");
     check::check(xvecOut.getShape().volume() == mXvecDim, "x-vector output dim mismatch");
     int64_t const numSamples = std::min<int64_t>(wavSamples, mSpeakerMaxSamples);
@@ -145,7 +147,8 @@ bool CloneEncoderRunner::encodeReferenceCodes(rt::Tensor const& wav24k, int32_t&
     check::check(hasTokenizerEncoder(), "speech_tokenizer_encoder.engine not loaded");
     int64_t const wavSamples = wav24k.getShape().volume();
     check::check(wavSamples > 0, "encodeReferenceCodes: empty waveform");
-    check::check(wav24k.getDeviceType() == rt::DeviceType::kCPU && wav24k.getDataType() == nvinfer1::DataType::kFLOAT,
+    check::check(
+        wav24k.getDeviceType() == rt::DeviceType::kCPU && wav24k.getDataType() == trt_edgellm::DataType::kFLOAT,
         "encodeReferenceCodes: wav24k shall be a host Float tensor");
     int64_t const numSamples = std::min<int64_t>(wavSamples, mBucketSamples);
     if (numSamples < wavSamples)

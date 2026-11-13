@@ -1,6 +1,0 @@
-tests:
-  - tests/defs/test_common.py::test_build_project
-  - tests/defs/test_common.py::test_unit_tests
-
-  - tests/defs/test_vlm_pipeline.py::test_engine_build[Qwen3.5-0.8B-fp16-mxsl4096-mxbs2-mxil4096-mnit128-mxit4096-mxpiit512]
-  - tests/defs/test_vlm_pipeline.py::test_inference[Qwen3.5-0.8B-fp16-mxsl4096-mxbs2-mxil4096-mnit128-mxit4096-mxpiit512-vlm_basic]

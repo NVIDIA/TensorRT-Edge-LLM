@@ -69,7 +69,7 @@ tests:
   - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_engine_build[Qwen3.5-4B-nvfp4-mxsl4096-mxbs8-mxil4096]
   # 64 KV pages exceed the minimum active pages (8), exercising retained non-identity mappings.
   - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_engine_build[Qwen3.5-4B-nvfp4-mxsl1024-mxbs1-mxil1024-mxkvp64]
-  - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_inference[Qwen3.5-4B-nvfp4-mxsl1024-mxbs1-mxil1024-mxkvp64-ctxreuse-ccrsb67108864-ccpkvsb67108864-llm_context_reuse]
+  - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_inference[Qwen3.5-4B-nvfp4-mxsl1024-mxbs1-mxil1024-mxkvp64-ctxreuse-llm_context_reuse]
 
   # Qwen3.5-4B - fp8
   - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_engine_build[Qwen3.5-4B-fp8-mxsl4096-mxbs8-mxil4096]

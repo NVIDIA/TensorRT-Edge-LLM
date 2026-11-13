@@ -49,8 +49,7 @@
                         }
                     ]
                 }
-            ],
-            "save_system_prompt_kv_cache": true
+            ]
         },
         {
             "messages": [
@@ -262,8 +261,7 @@
                         }
                     ]
                 }
-            ],
-            "save_system_prompt_kv_cache": true
+            ]
         },
         {
             "messages": [

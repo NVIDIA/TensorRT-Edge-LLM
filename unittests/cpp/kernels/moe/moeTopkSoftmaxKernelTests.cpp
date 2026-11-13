@@ -30,7 +30,6 @@
 
 using namespace trt_edgellm;
 using namespace trt_edgellm::kernel;
-using namespace nvinfer1;
 
 // ============================================================================
 // Test Configuration and Runner
@@ -437,6 +436,27 @@ TEST_F(MoeTopkSoftmaxTest, BF16InputTest)
     }
 
     MoeTopkSoftmaxTestRunner::verifyWeightsSum(result, config);
+}
+
+TEST(MoeTopKReferenceTest, TiesPreferLowerExpertIds)
+{
+    // Given equal scores within the selected experts and across the top-k boundary,
+    // When the CPU reference selects top-k experts,
+    // Then scores rank descending, with lower expert IDs winning ties.
+    int32_t constexpr kNUM_TOKENS = 3;
+    int32_t constexpr kNUM_EXPERTS = 8;
+    int32_t constexpr kTOP_K = 4;
+    std::vector<float> const scores{0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.125f, 0.1f, 0.2f, 0.1f,
+        0.2f, 0.1f, 0.1f, 0.1f, 0.1f, 0.05f, 0.05f, 0.05f, 0.05f, 0.05f, 0.1f, 0.25f, 0.4f};
+    std::vector<int32_t> const expectedIndices{0, 1, 2, 3, 1, 3, 0, 2, 7, 6, 5, 0};
+
+    for (bool renormalize : {false, true})
+    {
+        std::vector<float> weights;
+        std::vector<int32_t> indices;
+        referenceMoeTopK(scores, weights, indices, kNUM_TOKENS, kNUM_EXPERTS, kTOP_K, renormalize);
+        EXPECT_EQ(indices, expectedIndices) << "renormalize=" << renormalize;
+    }
 }
 
 TEST_F(MoeTopkSoftmaxTest, LargeScaleTest)

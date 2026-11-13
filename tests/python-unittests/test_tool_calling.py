@@ -17,9 +17,8 @@ import json
 
 import pytest
 
-from experimental.server.parsing.tool_calling import (parse_assistant_output,
-                                                      stream_assistant_output,
-                                                      validate_tool_request)
+from tensorrt_edgellm.server.parsing.tool_calling import (
+    parse_assistant_output, stream_assistant_output, validate_tool_request)
 
 
 def _tools():
@@ -131,22 +130,33 @@ def test_filters_forced_tool(tmp_path):
     assert parsed.content == text
 
 
-def test_streams_content_reasoning_and_tools_across_chunk_boundaries(tmp_path):
+@pytest.mark.parametrize("reasoning,implicit", [
+    ("<think>plan</think>", None),
+    ("plan</think>", True),
+    ("", None),
+])
+def test_streams_content_reasoning_and_tools_across_chunk_boundaries(
+        tmp_path, reasoning, implicit):
+    """Reasoning splits with or without its opening tag when enabled; by
+    default, untagged output with tools stays content."""
     parser = stream_assistant_output(_config(),
                                      str(tmp_path),
-                                     reasoning_parser="qwen3")
+                                     reasoning_parser="qwen3",
+                                     allow_implicit_reasoning=implicit)
     events = []
     for chunk in (
-            "<th",
-            "ink>plan</think>Before<tool_",
+            reasoning[:3],
+            reasoning[3:-1],
+            reasoning[-1:] + "Before<tool_",
             'call>{"name":"get_weather","arguments":{"city":',
             '"Paris"}}</tool_call>After',
     ):
         events.extend(parser.feed(chunk))
     events.extend(parser.flush())
 
-    assert "".join(event["text"] for event in events
-                   if event["type"] == "reasoning") == "plan"
+    assert "".join(
+        event["text"] for event in events
+        if event["type"] == "reasoning") == ("plan" if reasoning else "")
     assert "".join(event["text"] for event in events
                    if event["type"] == "content") == "BeforeAfter"
     calls = [

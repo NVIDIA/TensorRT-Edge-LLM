@@ -46,7 +46,9 @@ std::string toString(InferenceDims const& dims)
        << ", select_len=" << dims.selectLen << ", attn_seq_len=" << dims.attnMaskSeqLen
        << ", rope_batch=" << dims.ropeBatch << ", packed_mask_len=" << dims.packedMaskLen
        << ", context_mask_selector_len=" << dims.contextMaskSelectorLen << ", start_index_len=" << dims.startIndexLen
-       << ", execution_phase_len=" << dims.executionPhaseLen << ", skip_softmax_scale_len=" << dims.skipSoftmaxScaleLen
+       << ", execution_phase_len=" << dims.executionPhaseLen << ", spec_verify_layout_len=" << dims.specVerifyLayoutLen
+       << ", skip_softmax_prefill_scale_len=" << dims.skipSoftmaxPrefillScaleLen
+       << ", skip_softmax_decode_scale_len=" << dims.skipSoftmaxDecodeScaleLen
        << ", swa_kv_cache_mode_len=" << dims.swaKVCacheModeLen << ", query_offset_len=" << dims.queryOffsetLen
        << ", context_sequence_count=" << dims.contextSequenceCount << "}";
     return ss.str();

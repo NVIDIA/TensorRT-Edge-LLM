@@ -23,6 +23,8 @@
 #include "common/trtUtils.h"
 #include "common/version.h"
 
+#include <cstring>
+
 using namespace trt_edgellm;
 
 namespace trt_edgellm
@@ -37,6 +39,7 @@ Json AudioBuilderConfig::toJson() const noexcept
     json["min_time_steps"] = minTimeSteps;
     json["max_time_steps"] = maxTimeSteps;
     json["use_trt_native_audio_attn"] = useTrtNativeAudioAttn;
+    json["use_audio_attention_plugin"] = useAudioAttnPlugin;
     // Code2Wav config
     json["min_code_len"] = minCodeLen;
     json["opt_code_len"] = optCodeLen;
@@ -59,6 +62,10 @@ AudioBuilderConfig AudioBuilderConfig::fromJson(Json const& json)
     if (json.contains("use_trt_native_audio_attn"))
     {
         config.useTrtNativeAudioAttn = json["use_trt_native_audio_attn"];
+    }
+    if (json.contains("use_audio_attention_plugin"))
+    {
+        config.useAudioAttnPlugin = json["use_audio_attention_plugin"];
     }
     // Code2Wav config
     if (json.contains("min_code_len"))
@@ -104,6 +111,22 @@ bool AudioBuilder::build()
     {
         LOG_ERROR("Failed to parse model configuration from %s", mOnnxDir.string().c_str());
         return false;
+    }
+
+    bool const isQwen3AudioEncoder = mBuildType == AudioBuildType::AUDIO_ENCODER
+        && (mModelType == multimodal::ModelType::QWEN3_OMNI_AUDIO_ENCODER
+            || mModelType == multimodal::ModelType::QWEN3_OMNI_NEXT_AUDIO_ENCODER);
+    if (isQwen3AudioEncoder)
+    {
+        // Same requirement the visual tower has: without these workarounds, fusing the separate
+        // Q/K/V projections that feed ViTAttentionPlugin yields an engine that faults at
+        // execution context creation. They have to be set before the builder exists, which is
+        // before the graph can say whether it uses the plugin, so the whole family gets them.
+        std::string const lunowudFlags = applyCompileWorkarounds();
+        if (!lunowudFlags.empty())
+        {
+            LOG_INFO("Using __LUNOWUD=%s", lunowudFlags.c_str());
+        }
     }
 
     // Create builder and network
@@ -405,7 +428,11 @@ bool AudioBuilder::parseAudioEncoderConfig()
         return false;
     }
 
-    LOG_INFO("AudioEncoder config: mel_bins=%d, n_window_dim=%d", mMelBins, mNWindowDim);
+    // Sizes the attention windows, so the ragged-attention profile depends on it.
+    mNWindowInfer = audioConfig.value("n_window_infer", mNWindowInfer);
+
+    LOG_INFO(
+        "AudioEncoder config: mel_bins=%d, n_window_dim=%d, n_window_infer=%d", mMelBins, mNWindowDim, mNWindowInfer);
     return true;
 }
 
@@ -501,7 +528,7 @@ bool AudioBuilder::setupAudioEncoderProfile(
     {
     case multimodal::ModelType::QWEN3_OMNI_AUDIO_ENCODER:
     case multimodal::ModelType::QWEN3_OMNI_NEXT_AUDIO_ENCODER:
-        result = setupQwen3OmniAudioEncoderProfile(*profile);
+        result = setupQwen3OmniAudioEncoderProfile(*profile, network);
         break;
     case multimodal::ModelType::GEMMA4_UNIFIED_AUDIO: result = setupGemma4UnifiedAudioEncoderProfile(*profile); break;
     case multimodal::ModelType::NEMOTRON_OMNI_AUDIO_ENCODER:
@@ -541,9 +568,26 @@ bool AudioBuilder::setupGemma4UnifiedAudioEncoderProfile(nvinfer1::IOptimization
     return result;
 }
 
-bool AudioBuilder::setupQwen3OmniAudioEncoderProfile(nvinfer1::IOptimizationProfile& profile)
+bool AudioBuilder::setupQwen3OmniAudioEncoderProfile(
+    nvinfer1::IOptimizationProfile& profile, nvinfer1::INetworkDefinition const& network)
 {
     bool result = true;
+
+    // The graph, not config.json, decides which attention inputs need a profile.
+    mBuilderConfig.useAudioAttnPlugin = false;
+    mBuilderConfig.useTrtNativeAudioAttn = false;
+    for (int32_t i = 0; i < network.getNbInputs(); ++i)
+    {
+        char const* name = network.getInput(i)->getName();
+        if (std::strcmp(name, binding_names::kMaxSeqLenCarrier) == 0)
+        {
+            mBuilderConfig.useAudioAttnPlugin = true;
+        }
+        else if (std::strcmp(name, binding_names::kKvLengths) == 0)
+        {
+            mBuilderConfig.useTrtNativeAudioAttn = true;
+        }
+    }
 
     // Calculate chunk dimensions using ceiling division
     int64_t minChunks = static_cast<int64_t>(divUp(mBuilderConfig.minTimeSteps, mNWindowDim));
@@ -563,17 +607,34 @@ bool AudioBuilder::setupQwen3OmniAudioEncoderProfile(nvinfer1::IOptimizationProf
     // Qwen3-Omni audio encoder inputs:
     //   padded_feature: [num_chunks, mel_bins, n_window_dim]
     //   padded_mask_after_cnn_indices: [num_attention_elems, 2]
-    //   attention_mask: [num_attention_elems, num_attention_elems]
+    //   cu_seqlens: [num_windows + 1] and max_seqlen_carrier: [max_window_len] (plugin graph), or
+    //   attention_mask: [num_attention_elems, num_attention_elems] (dense graph)
     result &= setOptimizationProfile(&profile, "padded_feature", createDims({minChunks, mMelBins, mNWindowDim}),
         createDims({optChunks, mMelBins, mNWindowDim}), createDims({maxChunks, mMelBins, mNWindowDim}));
 
     result &= setOptimizationProfile(&profile, "padded_mask_after_cnn_indices", createDims({minElems, 2}),
         createDims({optElems, 2}), createDims({maxElems, 2}));
 
-    result &= setOptimizationProfile(&profile, "attention_mask", createDims({minElems, minElems}),
-        createDims({optElems, optElems}), createDims({maxElems, maxElems}));
+    if (mBuilderConfig.useAudioAttnPlugin)
+    {
+        // Attention runs on ragged segments, one per chunk window, so the descriptor length
+        // follows the token count rather than the batch size. The runtime derives the window
+        // from the clip's real after-CNN length rather than this constant, but that factor
+        // cancels: both reduce to ceil(maxChunks / ratio), so this bound is exact.
+        int64_t const windowAfterCNN = kAttentionElementsPerChunk * std::max<int64_t>(1, mNWindowInfer / mNWindowDim);
+        auto const maxWindows = static_cast<int64_t>(divUp(maxElems, windowAfterCNN));
+        auto const optWindows = static_cast<int64_t>(divUp(optElems, windowAfterCNN));
+        result &= setOptimizationProfile(&profile, binding_names::kCuSeqlens, createDims({2}),
+            createDims({optWindows + 1}), createDims({maxWindows + 1}));
+        result &= setOptimizationProfile(&profile, binding_names::kMaxSeqLenCarrier, createDims({1}),
+            createDims({windowAfterCNN}), createDims({windowAfterCNN}));
+    }
+    else
+    {
+        result &= setOptimizationProfile(&profile, "attention_mask", createDims({minElems, minElems}),
+            createDims({optElems, optElems}), createDims({maxElems, maxElems}));
+    }
 
-    mBuilderConfig.useTrtNativeAudioAttn = mModelConfig.value("use_trt_native_audio_attn", false);
     if (mBuilderConfig.useTrtNativeAudioAttn)
     {
         int64_t const maxBatchSize = std::max<int64_t>(1, mModelConfig.value("max_batch_size", 16));

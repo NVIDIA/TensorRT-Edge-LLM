@@ -15,8 +15,7 @@
 
 if(NOT TARGET _edgellm_runtime OR NOT TARGET NvInfer_edgellm_plugin)
   message(
-    FATAL_ERROR
-      "Wheel install rules require the existing pybind and plugin targets.")
+    FATAL_ERROR "Wheel install rules require the nanobind and plugin targets.")
 endif()
 
 if(IS_ABSOLUTE "${EDGELLM_WHEEL_PAYLOAD_DIR}" OR EDGELLM_WHEEL_PAYLOAD_DIR
@@ -25,11 +24,9 @@ if(IS_ABSOLUTE "${EDGELLM_WHEEL_PAYLOAD_DIR}" OR EDGELLM_WHEEL_PAYLOAD_DIR
 endif()
 
 if(NOT DEFINED EDGELLM_WHEEL_EXTENSION_NAME
-   OR NOT EDGELLM_WHEEL_EXTENSION_NAME MATCHES
-      "^_edgellm_runtime\\.cpython-[0-9]+-(x86_64|aarch64)-linux-gnu\\.so$")
+   OR NOT EDGELLM_WHEEL_EXTENSION_NAME STREQUAL "_edgellm_runtime.abi3.so")
   message(
-    FATAL_ERROR
-      "EDGELLM_WHEEL_EXTENSION_NAME must be an explicit target CPython filename."
+    FATAL_ERROR "EDGELLM_WHEEL_EXTENSION_NAME must be _edgellm_runtime.abi3.so."
   )
 endif()
 

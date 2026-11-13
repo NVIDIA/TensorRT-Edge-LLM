@@ -25,6 +25,8 @@ PUBLIC_PLATFORM_TAGS = {
     "x86_64": "manylinux_2_35_x86_64",
     "aarch64": "manylinux_2_39_aarch64",
 }
+PYTHON_TAG = "cp310"
+ABI_TAG = "abi3"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -33,7 +35,8 @@ class WheelIdentity:
 
     filename: str
     version: str
-    python_abi: str
+    python_tag: str
+    abi_tag: str
     cpu_arch: str
     build_tag: str | None
 
@@ -47,11 +50,9 @@ def public_platform_tag(cpu_arch: str) -> str:
             f"Unsupported final wheel architecture: {cpu_arch!r}.") from error
 
 
-def binary_wheel_tag(python_abi: str, cpu_arch: str) -> str:
+def binary_wheel_tag(cpu_arch: str) -> str:
     """Return the complete public binary tag for a final wheel."""
-    if not re.fullmatch(r"cp3\d{2}", python_abi):
-        raise RuntimeError(f"Unsupported final wheel ABI: {python_abi!r}.")
-    return f"{python_abi}-{python_abi}-{public_platform_tag(cpu_arch)}"
+    return f"{PYTHON_TAG}-{ABI_TAG}-{public_platform_tag(cpu_arch)}"
 
 
 def parse_final_wheel_filename(filename: str,
@@ -79,9 +80,10 @@ def parse_final_wheel_filename(filename: str,
             f"Unexpected wheel distribution {distribution!r} in {filename!r}.")
     if not version:
         raise RuntimeError(f"Wheel has an empty version: {filename!r}.")
-    if not python_tag or python_tag != abi_tag:
+    if python_tag != PYTHON_TAG or abi_tag != ABI_TAG:
         raise RuntimeError(
-            f"Wheel has inconsistent Python ABI tags: {filename!r}.")
+            f"Wheel must use the {PYTHON_TAG}-{ABI_TAG} stable ABI: {filename!r}."
+        )
     architectures = [
         cpu_arch for cpu_arch, expected in PUBLIC_PLATFORM_TAGS.items()
         if platform_tag == expected
@@ -90,4 +92,5 @@ def parse_final_wheel_filename(filename: str,
         raise RuntimeError(
             f"Wheel has an unsupported public platform tag: {filename!r}.")
     cpu_arch = architectures[0]
-    return WheelIdentity(filename, version, python_tag, cpu_arch, build_tag)
+    return WheelIdentity(filename, version, python_tag, abi_tag, cpu_arch,
+                         build_tag)

@@ -57,7 +57,7 @@ def _verify_native_free(wheel: Path) -> None:
                 (".so", ".a", ".o", ".cubin", ".fatbin", ".cpp", ".cu",
                  ".cuh")) or name.endswith("/_native/variants.json")
                     or name.startswith("tensorrt_edgellm/_native/payloads/")
-                    or "/experimental/pybind/" in f"/{name}"
+                    or "/python/nanobind/" in f"/{name}"
                     or archive.read(info).startswith(b"\x7fELF")):
                 forbidden.append(name)
     if forbidden:

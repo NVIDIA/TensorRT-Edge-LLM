@@ -383,8 +383,8 @@ def _load_adapter_config(config_path: str) -> Tuple[float, int]:
     return config['lora_alpha'], config['r']
 
 
-_VLM_TEXT_PREFIXES = ("model.language_model.", "language_model.model.",
-                      "language_model.")
+_VLM_TEXT_PREFIXES = ("vlm.model.language_model.", "model.language_model.",
+                      "language_model.model.", "language_model.")
 
 
 def _process_tensor_name(key: str) -> str:

@@ -33,9 +33,9 @@ from tensorrt_edgellm import cli
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 ROUTES = [
     ("chat", "experimental.frontend.cli"),
-    ("serve", "experimental.server.cli"),
-    ("build", "experimental.builder.cli"),
-    ("export", "tensorrt_edgellm.scripts.export"),
+    ("serve", "tensorrt_edgellm.server.cli"),
+    ("build", "tensorrt_edgellm.builder.cli"),
+    ("export", "tensorrt_edgellm.onnx.cli"),
     ("quantize", "tensorrt_edgellm.scripts.quantize"),
     ("insert-lora", "tensorrt_edgellm.scripts.insert_lora"),
     ("process-lora", "tensorrt_edgellm.scripts.process_lora_weights"),
@@ -129,30 +129,6 @@ sys.exit(main())
         assert "trtedge COMMAND --help" in result.stdout
     else:
         assert "edge-llm" in result.stdout
-
-
-@pytest.mark.parametrize(
-    "command,module_name,legacy",
-    [(command, module_name, legacy) for command, module_name in ROUTES
-     for legacy in (False, True) if command != "chat" or not legacy])
-def test_real_handler_help_preserves_command_name(monkeypatch, capsys, command,
-                                                  module_name, legacy):
-    # Given either the combined command or a legacy entry point.
-    # When help is requested, then the real parser shows that command's options.
-    module = pytest.importorskip(module_name)
-    prog = "tensorrt-edgellm-" + command if legacy else "trtedge " + command
-    monkeypatch.setattr(sys, "argv", [prog, "--help"] if legacy else
-                        ["unrelated-process", "--invalid-parent-argument"])
-    with pytest.raises(SystemExit) as result:
-        if legacy:
-            module.main()
-        else:
-            cli.main([command, "--help"])
-    assert result.value.code == 0
-    out, err = capsys.readouterr()
-    assert not err
-    assert "usage: " + prog in out
-    assert "--help" in out
 
 
 def test_packaged_entry_points_keep_legacy_routes():

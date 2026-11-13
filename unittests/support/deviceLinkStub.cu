@@ -22,4 +22,4 @@
 // resolves. A target built purely from .cpp sources gets no such step.
 //
 // The same stub exists for the Python bindings; see
-// experimental/pybind/device_link_stub.cu.
+// python/nanobind/device_link_stub.cu.

@@ -18,33 +18,21 @@
 
 #include "common/checkMacros.h"
 #include "common/cudaMacros.h"
+#include "kernels/PluginJitKernels/pluginJitModuleRegistry.h"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#include <array>
 #include <cstdint>
 #include <limits>
-#include <mutex>
 #include <stdexcept>
-#include <type_traits>
-#include <unordered_map>
+#include <string>
 
 namespace trt_edgellm
 {
 
-struct Nvfp4A16BlackwellMoeLoadedModule
+struct Nvfp4A16BlackwellMoeLoadedModule : PluginJitLoadedModule<Nvfp4A16BlackwellMoeJitKey>
 {
-    ~Nvfp4A16BlackwellMoeLoadedModule()
-    {
-        if (module != nullptr)
-        {
-            (void) cuModuleUnload(module);
-        }
-    }
-
-    CUcontext context{};
-    CUmodule module{};
     CUfunction route{};
     CUfunction layout{};
     CUfunction gather{};
@@ -62,106 +50,21 @@ constexpr uint32_t kLAYOUT_THREADS{1024U};
 constexpr uint32_t kWARPS_PER_BLOCK{8U};
 constexpr int32_t kN_TILE{128};
 
-struct RegistryKey
+void bindFunctions(Nvfp4A16BlackwellMoeLoadedModule& loaded)
 {
-    CUcontext context{};
-    Nvfp4A16BlackwellMoeJitKey jitKey{};
-    Nvfp4A16BlackwellMoeJitDigest digest{};
+    CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded.route, loaded.module, "nvfp4_a16_blackwell_moe_route"));
+    CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded.layout, loaded.module, "nvfp4_a16_blackwell_moe_layout"));
+    CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded.gather, loaded.module, "nvfp4_a16_blackwell_moe_gather"));
+    CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded.fc1, loaded.module, "nvfp4_a16_blackwell_moe_fc1"));
+    CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded.fc1Reduce, loaded.module, "nvfp4_a16_blackwell_moe_fc1_reduce"));
+    CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded.fc2, loaded.module, "nvfp4_a16_blackwell_moe_fc2"));
+    CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded.fc2Reduce, loaded.module, "nvfp4_a16_blackwell_moe_fc2_reduce"));
+}
 
-    bool operator==(RegistryKey const& other) const noexcept
-    {
-        return context == other.context && jitKey == other.jitKey && digest == other.digest;
-    }
-};
-
-struct RegistryKeyHasher
+PluginJitModuleRegistry<Nvfp4A16BlackwellMoeJitKey, Nvfp4A16BlackwellMoeLoadedModule>& getKernelRegistry()
 {
-    size_t operator()(RegistryKey const& key) const noexcept
-    {
-        auto mix = [](size_t hash, size_t value) noexcept {
-            constexpr size_t kPRIME{0x100000001B3ULL};
-            return (hash ^ value) * kPRIME;
-        };
-        size_t hash{0xCBF29CE484222325ULL};
-        hash = mix(hash, reinterpret_cast<uintptr_t>(key.context));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.numExperts));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.topK));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.hiddenSize));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.interSize));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.fc1SplitK));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.fc2SplitK));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.fc2PrefetchSlots));
-        hash = mix(hash, static_cast<size_t>(static_cast<uint32_t>(key.jitKey.dataType)));
-        hash = mix(hash, static_cast<size_t>(key.digest.lo));
-        return mix(hash, static_cast<size_t>(key.digest.hi));
-    }
-};
-
-class KernelRegistry
-{
-public:
-    std::shared_ptr<Nvfp4A16BlackwellMoeLoadedModule> load(Nvfp4A16BlackwellMoeJitKernel const& kernel)
-    {
-        if (!canCompileNvfp4A16BlackwellMoeJitKernel(kernel.key) || kernel.cubin.empty())
-        {
-            throw std::invalid_argument("Invalid NVFP4-A16 Blackwell MoE JIT key or cubin");
-        }
-        Nvfp4A16BlackwellMoeJitDigest const actualDigest
-            = computeNvfp4A16BlackwellMoeJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
-        if (!(actualDigest == kernel.digest))
-        {
-            throw std::invalid_argument("NVFP4-A16 Blackwell MoE JIT cubin digest mismatch");
-        }
-        CUDA_CHECK(cudaFree(nullptr));
-        CUcontext context{};
-        CUDA_DRIVER_CHECK(cuCtxGetCurrent(&context));
-        if (context == nullptr)
-        {
-            throw std::runtime_error("NVFP4-A16 Blackwell MoE JIT module load requires a current CUDA context");
-        }
-        RegistryKey const registryKey{context, kernel.key, kernel.digest};
-        std::lock_guard<std::mutex> lock(mMutex);
-        auto const existing = mModules.find(registryKey);
-        if (existing != mModules.end())
-        {
-            if (auto loaded = existing->second.lock())
-            {
-                return loaded;
-            }
-            mModules.erase(existing);
-        }
-        auto loaded = std::make_shared<Nvfp4A16BlackwellMoeLoadedModule>();
-        loaded->context = context;
-        CUDA_DRIVER_CHECK(cuModuleLoadData(&loaded->module, kernel.cubin.data()));
-        try
-        {
-            CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded->route, loaded->module, "nvfp4_a16_blackwell_moe_route"));
-            CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded->layout, loaded->module, "nvfp4_a16_blackwell_moe_layout"));
-            CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded->gather, loaded->module, "nvfp4_a16_blackwell_moe_gather"));
-            CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded->fc1, loaded->module, "nvfp4_a16_blackwell_moe_fc1"));
-            CUDA_DRIVER_CHECK(
-                cuModuleGetFunction(&loaded->fc1Reduce, loaded->module, "nvfp4_a16_blackwell_moe_fc1_reduce"));
-            CUDA_DRIVER_CHECK(cuModuleGetFunction(&loaded->fc2, loaded->module, "nvfp4_a16_blackwell_moe_fc2"));
-            CUDA_DRIVER_CHECK(
-                cuModuleGetFunction(&loaded->fc2Reduce, loaded->module, "nvfp4_a16_blackwell_moe_fc2_reduce"));
-        }
-        catch (...)
-        {
-            loaded.reset();
-            throw;
-        }
-        mModules.emplace(registryKey, loaded);
-        return loaded;
-    }
-
-private:
-    std::mutex mMutex;
-    std::unordered_map<RegistryKey, std::weak_ptr<Nvfp4A16BlackwellMoeLoadedModule>, RegistryKeyHasher> mModules;
-};
-
-KernelRegistry& getKernelRegistry()
-{
-    static KernelRegistry registry;
+    static PluginJitModuleRegistry<Nvfp4A16BlackwellMoeJitKey, Nvfp4A16BlackwellMoeLoadedModule> registry{
+        "NVFP4-A16 Blackwell MoE JIT"};
     return registry;
 }
 
@@ -214,9 +117,12 @@ uint32_t pairBlocks(int64_t const elements)
 
 void Nvfp4A16BlackwellMoeJitRunner::load(Nvfp4A16BlackwellMoeJitKernel const& kernel)
 {
-    mLoadedModule = getKernelRegistry().load(kernel);
+    if (!canCompileNvfp4A16BlackwellMoeJitKernel(kernel.key))
+    {
+        throw std::invalid_argument("Invalid NVFP4-A16 Blackwell MoE JIT key");
+    }
+    mLoadedModule = getKernelRegistry().load(kernel, bindFunctions);
     mKey = kernel.key;
-    mDigest = kernel.digest;
 }
 
 namespace

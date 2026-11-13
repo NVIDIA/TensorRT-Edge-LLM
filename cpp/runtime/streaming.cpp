@@ -168,6 +168,12 @@ void attachStreamChannel(std::shared_ptr<StreamChannel> const& channel, int32_t 
     channel->setOriginalBatchIdx(originalIdx);
 }
 
+void detachStreamChannel(std::shared_ptr<StreamChannel> const& channel) noexcept
+{
+    channel->setOriginalBatchIdx(-1);
+    channel->mAttachedToRequest.store(false, std::memory_order_release);
+}
+
 bool validateStreamingSubmission(LLMGenerationRequest const& request)
 {
     if (request.streamChannels.empty())
@@ -273,25 +279,82 @@ StopMatchOutcome applyStopStringMatch(
     return out;
 }
 
+void applyCancellationToFinishState(DecodingInferenceContext& context, int32_t row)
+{
+    auto& s = context.slotStreams[row];
+    if (context.finishedStates[row])
+    {
+        return; // First-writer-wins: don't overwrite a natural-finish reason.
+    }
+    bool const channelCancelled = s.channel != nullptr && s.channel->mCancelled.load(std::memory_order_acquire);
+    bool const tokenCancelled = s.cancelToken != nullptr && s.cancelToken->load(std::memory_order_acquire);
+    if (channelCancelled || tokenCancelled)
+    {
+        context.finishedStates[row] = 1;
+        s.terminalReason = FinishReason::kCancelled;
+        LOG_DEBUG("Batch %d finished, reason: cancel", row);
+    }
+}
+
 void applyCancellationToFinishStates(DecodingInferenceContext& context)
 {
     for (int32_t i = 0; i < context.activeBatchSize; ++i)
     {
-        auto& s = context.slotStreams[i];
-        if (!s.channel)
+        applyCancellationToFinishState(context, i);
+    }
+}
+
+void decodeSlot(DecodingInferenceContext& context, int32_t row, tokenizer::Tokenizer const& tok)
+{
+    auto& s = context.slotStreams[row];
+    auto const& slotStops = context.stopStringsPerSlot[row];
+    bool const hasChannel = (s.channel != nullptr);
+    bool const slotStopsEnabled = !slotStops.empty();
+
+    s.stopMatchedThisIter = false;
+    s.pendingEmitText.clear();
+
+    // Fast path: row needs neither chunk emission nor stop detection.
+    if (!hasChannel && !slotStopsEnabled)
+    {
+        return;
+    }
+
+    bool const isFinal = context.finishedStates[row] != 0;
+
+    // Stream-interval gating; non-streaming slots run detection every iter.
+    if (hasChannel)
+    {
+        int32_t const streamInterval = s.channel->getStreamInterval();
+        size_t const newlyAvailable = context.tokenIds[row].size() - s.sentTokenCount;
+        bool const intervalMet = static_cast<int32_t>(newlyAvailable) >= streamInterval;
+        if (!isFinal && !intervalMet)
         {
-            continue;
+            return;
         }
-        if (context.finishedStates[i])
-        {
-            continue; // First-writer-wins: don't overwrite a natural-finish reason.
-        }
-        if (s.channel->mCancelled.load(std::memory_order_acquire))
-        {
-            context.finishedStates[i] = 1;
-            s.terminalReason = FinishReason::kCancelled;
-            LOG_DEBUG("Batch %d finished, reason: cancel", i);
-        }
+    }
+
+    bool const skipSpecial = hasChannel ? s.channel->getSkipSpecialTokens() : s.skipSpecialTokens;
+    std::string delta = tokenizer::emitDelta(s, tok, context.tokenIds[row], skipSpecial);
+    if (isFinal && !s.pendingBytes.empty())
+    {
+        delta.append(tokenizer::emitDeltaFlush(s));
+    }
+
+    // Stop match overrides kEndId/kLength but not kCancelled/kError. The
+    // override itself is applied by applyStopMatch based on stopMatchedThisIter.
+    bool const stopActive
+        = slotStopsEnabled && s.terminalReason != FinishReason::kCancelled && s.terminalReason != FinishReason::kError;
+    if (stopActive)
+    {
+        s.stopMatchBuffer.append(delta);
+        auto outcome = applyStopStringMatch(s.stopMatchBuffer, slotStops, s.maxStopLen, isFinal);
+        s.pendingEmitText = std::move(outcome.emitted);
+        s.stopMatchedThisIter = outcome.stopMatched;
+    }
+    else
+    {
+        s.pendingEmitText = std::move(delta);
     }
 }
 
@@ -299,129 +362,137 @@ void decodePerSlot(DecodingInferenceContext& context, tokenizer::Tokenizer const
 {
     for (int32_t i = 0; i < context.activeBatchSize; ++i)
     {
-        auto& s = context.slotStreams[i];
-        auto const& slotStops = context.stopStringsPerSlot[i];
-        bool const hasChannel = (s.channel != nullptr);
-        bool const slotStopsEnabled = !slotStops.empty();
-
-        s.stopMatchedThisIter = false;
-        s.pendingEmitText.clear();
-
-        // Fast path: slot needs neither chunk emission nor stop detection.
-        if (!hasChannel && !slotStopsEnabled)
-        {
-            continue;
-        }
-
-        bool const isFinal = context.finishedStates[i] != 0;
-
-        // Stream-interval gating; non-streaming slots run detection every iter.
-        if (hasChannel)
-        {
-            int32_t const streamInterval = s.channel->getStreamInterval();
-            size_t const newlyAvailable = context.tokenIds[i].size() - s.sentTokenCount;
-            bool const intervalMet = static_cast<int32_t>(newlyAvailable) >= streamInterval;
-            if (!isFinal && !intervalMet)
-            {
-                continue;
-            }
-        }
-
-        bool const skipSpecial = hasChannel ? s.channel->getSkipSpecialTokens() : s.skipSpecialTokens;
-        std::string delta = tokenizer::emitDelta(s, tok, context.tokenIds[i], skipSpecial);
-        if (isFinal && !s.pendingBytes.empty())
-        {
-            delta.append(tokenizer::emitDeltaFlush(s));
-        }
-
-        // Stop match overrides kEndId/kLength but not kCancelled/kError. The
-        // override itself is applied by updateFinishStates based on stopMatchedThisIter.
-        bool const stopActive = slotStopsEnabled && s.terminalReason != FinishReason::kCancelled
-            && s.terminalReason != FinishReason::kError;
-        if (stopActive)
-        {
-            s.stopMatchBuffer.append(delta);
-            auto outcome = applyStopStringMatch(s.stopMatchBuffer, slotStops, s.maxStopLen, isFinal);
-            s.pendingEmitText = std::move(outcome.emitted);
-            s.stopMatchedThisIter = outcome.stopMatched;
-        }
-        else
-        {
-            s.pendingEmitText = std::move(delta);
-        }
+        decodeSlot(context, i, tok);
     }
+}
+
+namespace
+{
+//! -1 until the row's prefill has sampled a token: before that its effective prefill length is not yet set, and
+//! the difference would count the whole prompt as reused.
+int32_t reusedPromptTokenCountOf(DecodingInferenceContext const& context, size_t row) noexcept
+{
+    if (row >= context.currentGenerateLengths.size() || context.currentGenerateLengths[row] == 0
+        || row >= context.rawBatchedInputIds.size() || row >= context.effectivePrefillLengths.size())
+    {
+        return -1;
+    }
+    int32_t const pruned = row < context.prunedPrefillTokens.size() ? context.prunedPrefillTokens[row] : 0;
+    return reusedPromptTokens(
+        static_cast<int32_t>(context.rawBatchedInputIds[row].size()), context.effectivePrefillLengths[row], pruned);
+}
+} // namespace
+
+void emitChunk(DecodingInferenceContext& context, int32_t row, tokenizer::Tokenizer const& tokenizer)
+{
+    auto& s = context.slotStreams[row];
+    if (!s.channel)
+    {
+        return; // non-streaming: output assembled at handleRequest finalization
+    }
+
+    bool const isFinal = context.finishedStates[row] != 0;
+    // EOS/length can be set after decodePerSlot held back a possible stop prefix.
+    if (isFinal && (s.terminalReason == FinishReason::kEndId || s.terminalReason == FinishReason::kLength))
+    {
+        s.pendingEmitText.append(s.stopMatchBuffer);
+        s.stopMatchBuffer.clear();
+    }
+    if (s.pendingEmitText.empty() && !isFinal)
+    {
+        return;
+    }
+
+    StreamChunk chunk;
+    if (s.channel->getCollectMetrics())
+    {
+        chunk.metrics = s.profiler.snapshot(context.effectivePrefillLengths[row]);
+    }
+    chunk.promptTokenCount = static_cast<int32_t>(context.rawBatchedInputIds[row].size());
+    chunk.reusedPromptTokenCount = reusedPromptTokenCountOf(context, static_cast<size_t>(row));
+    // Delta tokens span [lastEmittedTokenCount, sentTokenCount) — accumulates
+    // across prior iterations where pendingEmitText was held back.
+    size_t const snapLastEmitted = s.lastEmittedTokenCount;
+    chunk.tokenIds.assign(context.tokenIds[row].begin() + static_cast<std::ptrdiff_t>(snapLastEmitted),
+        context.tokenIds[row].begin() + static_cast<std::ptrdiff_t>(s.sentTokenCount));
+    chunk.text = std::move(s.pendingEmitText);
+    chunk.finished = isFinal;
+    if (isFinal)
+    {
+        chunk.reason = s.terminalReason;
+    }
+    if (static_cast<size_t>(row) < context.stepLogprobs.size() && context.numLogprobsPerSlot[row] > 0)
+    {
+        rt::LogprobsSlot const& logprobs = context.stepLogprobs[row];
+        int32_t const topK = context.numLogprobsPerSlot[row];
+        size_t const newTokens = s.sentTokenCount - snapLastEmitted;
+        for (size_t j = 0; j < newTokens; ++j)
+        {
+            size_t const stepIdx = s.logprobsEmittedCount + j;
+            if (stepIdx >= static_cast<size_t>(logprobs.numSteps))
+            {
+                break;
+            }
+            chunk.logprobs.push_back(logprobEntriesForStep(logprobs, static_cast<int32_t>(stepIdx), topK, tokenizer));
+        }
+        s.logprobsEmittedCount += chunk.logprobs.size();
+    }
+
+    s.channel->push(std::move(chunk));
+    s.lastEmittedTokenCount = s.sentTokenCount;
+    if (isFinal)
+    {
+        s.channel->finish(s.terminalReason);
+    }
+}
+
+std::vector<LogprobEntry> logprobEntriesForStep(
+    LogprobsSlot const& slot, int32_t step, int32_t topK, tokenizer::Tokenizer const& tokenizer)
+{
+    auto const* base = slot.data.data() + static_cast<std::ptrdiff_t>(step) * topK;
+    std::vector<LogprobEntry> entries;
+    entries.reserve(static_cast<size_t>(topK));
+    for (int32_t k = 0; k < topK; ++k)
+    {
+        if (base[k].first < 0)
+        {
+            break;
+        }
+        entries.push_back({base[k].first, base[k].second, tokenizer.idToPiece(base[k].first)});
+    }
+    return entries;
 }
 
 void emitChunks(DecodingInferenceContext& context, tokenizer::Tokenizer const& tokenizer)
 {
     for (int32_t i = 0; i < context.activeBatchSize; ++i)
     {
-        auto& s = context.slotStreams[i];
-        if (!s.channel)
-        {
-            continue; // non-streaming: output assembled at handleRequest finalization
-        }
-
-        bool const isFinal = context.finishedStates[i] != 0;
-        // EOS/length can be set after decodePerSlot held back a possible stop prefix.
-        if (isFinal && (s.terminalReason == FinishReason::kEndId || s.terminalReason == FinishReason::kLength))
-        {
-            s.pendingEmitText.append(s.stopMatchBuffer);
-            s.stopMatchBuffer.clear();
-        }
-        if (s.pendingEmitText.empty() && !isFinal)
-        {
-            continue;
-        }
-
-        StreamChunk chunk;
-        if (s.channel->getCollectMetrics())
-        {
-            chunk.metrics = s.profiler.snapshot(context.effectivePrefillLengths[i]);
-        }
-        chunk.promptTokenCount = static_cast<int32_t>(context.rawBatchedInputIds[i].size());
-        // Delta tokens span [lastEmittedTokenCount, sentTokenCount) — accumulates
-        // across prior iterations where pendingEmitText was held back.
-        size_t const snapLastEmitted = s.lastEmittedTokenCount;
-        chunk.tokenIds.assign(context.tokenIds[i].begin() + static_cast<std::ptrdiff_t>(snapLastEmitted),
-            context.tokenIds[i].begin() + static_cast<std::ptrdiff_t>(s.sentTokenCount));
-        chunk.text = std::move(s.pendingEmitText);
-        chunk.finished = isFinal;
-        if (isFinal)
-        {
-            chunk.reason = s.terminalReason;
-        }
-        if (context.numLogprobs > 0 && static_cast<size_t>(i) < context.stepLogprobs.size())
-        {
-            rt::LogprobsSlot const& slot = context.stepLogprobs[i];
-            int32_t const topK = context.numLogprobs;
-            size_t const newTokens = s.sentTokenCount - snapLastEmitted;
-            for (size_t j = 0; j < newTokens; ++j)
-            {
-                size_t const stepIdx = s.logprobsEmittedCount + j;
-                if (stepIdx >= static_cast<size_t>(slot.numSteps))
-                {
-                    break;
-                }
-                auto const* base = slot.data.data() + static_cast<std::ptrdiff_t>(stepIdx) * topK;
-                std::vector<LogprobEntry> entries;
-                entries.reserve(topK);
-                for (int32_t k = 0; k < topK; ++k)
-                {
-                    entries.push_back({base[k].first, base[k].second, tokenizer.idToPiece(base[k].first)});
-                }
-                chunk.logprobs.push_back(std::move(entries));
-            }
-            s.logprobsEmittedCount += chunk.logprobs.size();
-        }
-
-        s.channel->push(std::move(chunk));
-        s.lastEmittedTokenCount = s.sentTokenCount;
-        if (isFinal)
-        {
-            s.channel->finish(s.terminalReason);
-        }
+        emitChunk(context, i, tokenizer);
     }
+}
+
+void emitTokenCallbackForSlot(DecodingInferenceContext& context, int32_t row)
+{
+    if (!context.onTokenGenerated.has_value())
+    {
+        return;
+    }
+    auto const& slotTokens = context.tokenIds[row];
+    if (slotTokens.empty() || static_cast<size_t>(row) >= context.callbackEmittedTokenCounts.size())
+    {
+        return;
+    }
+
+    auto const& callback = context.onTokenGenerated.value();
+    int32_t emittedCount = context.callbackEmittedTokenCounts[row];
+    emittedCount = std::clamp(emittedCount, 0, static_cast<int32_t>(slotTokens.size()));
+    bool const slotFinished = context.finishedStates[row] != 0;
+    for (int32_t tokenIdx = emittedCount; tokenIdx < static_cast<int32_t>(slotTokens.size()); ++tokenIdx)
+    {
+        bool const isLastNewToken = tokenIdx + 1 == static_cast<int32_t>(slotTokens.size());
+        callback(TokenCallbackInfo{slotTokens[tokenIdx], row, context.generationRound, slotFinished && isLastNewToken});
+    }
+    context.callbackEmittedTokenCounts[row] = static_cast<int32_t>(slotTokens.size());
 }
 
 void emitTokenCallbacks(DecodingInferenceContext& context)
@@ -430,26 +501,9 @@ void emitTokenCallbacks(DecodingInferenceContext& context)
     {
         return;
     }
-
-    auto const& callback = context.onTokenGenerated.value();
     for (int32_t i = 0; i < context.activeBatchSize; ++i)
     {
-        auto const& slotTokens = context.tokenIds[i];
-        if (slotTokens.empty() || static_cast<size_t>(i) >= context.callbackEmittedTokenCounts.size())
-        {
-            continue;
-        }
-
-        int32_t emittedCount = context.callbackEmittedTokenCounts[i];
-        emittedCount = std::clamp(emittedCount, 0, static_cast<int32_t>(slotTokens.size()));
-        bool const slotFinished = context.finishedStates[i] != 0;
-        for (int32_t tokenIdx = emittedCount; tokenIdx < static_cast<int32_t>(slotTokens.size()); ++tokenIdx)
-        {
-            bool const isLastNewToken = tokenIdx + 1 == static_cast<int32_t>(slotTokens.size());
-            callback(
-                TokenCallbackInfo{slotTokens[tokenIdx], i, context.generationRound, slotFinished && isLastNewToken});
-        }
-        context.callbackEmittedTokenCounts[i] = static_cast<int32_t>(slotTokens.size());
+        emitTokenCallbackForSlot(context, i);
     }
 }
 
@@ -491,6 +545,7 @@ StreamChannelFinalizer::~StreamChannelFinalizer() noexcept
             {
                 chunk.promptTokenCount = static_cast<int32_t>(mCtx.rawBatchedInputIds[i].size());
             }
+            chunk.reusedPromptTokenCount = reusedPromptTokenCountOf(mCtx, i);
 
             // Any tokens generated but not yet pushed (held by streamInterval
             // or appended just before the aborting exit path).
@@ -499,10 +554,10 @@ StreamChannelFinalizer::~StreamChannelFinalizer() noexcept
                 chunk.tokenIds.assign(mCtx.tokenIds[i].begin() + static_cast<std::ptrdiff_t>(s.lastEmittedTokenCount),
                     mCtx.tokenIds[i].end());
             }
-            if (mCtx.numLogprobs > 0 && i < mCtx.stepLogprobs.size())
+            if (i < mCtx.stepLogprobs.size() && mCtx.numLogprobsPerSlot[i] > 0)
             {
                 rt::LogprobsSlot const& slot = mCtx.stepLogprobs[i];
-                int32_t const topK = mCtx.numLogprobs;
+                int32_t const topK = mCtx.numLogprobsPerSlot[i];
                 for (size_t stepIdx = s.logprobsEmittedCount; stepIdx < static_cast<size_t>(slot.numSteps); ++stepIdx)
                 {
                     auto const* base = slot.data.data() + static_cast<std::ptrdiff_t>(stepIdx) * topK;

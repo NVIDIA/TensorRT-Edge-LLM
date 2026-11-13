@@ -93,7 +93,7 @@ export ONNX=$MODEL_ROOT/onnx
 export ENG=$MODEL_ROOT/engines
 
 # 1. Build Talker LLM engine
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
     --onnx-dir $ONNX/llm \
     --engine-dir $ENG/talker \
     --max-input-len 4096 \
@@ -101,7 +101,7 @@ export ENG=$MODEL_ROOT/engines
     --max-batch-size 1
 
 # 2. Build CodePredictor LLM engine
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
     --onnx-dir $ONNX/code_predictor \
     --engine-dir $ENG/code_predictor \
     --max-input-len 4096 \
@@ -109,7 +109,7 @@ export ENG=$MODEL_ROOT/engines
     --max-batch-size 1
 
 # 3. Build Code2Wav engine
-./build/examples/multimodal/audio_build \
+./build/bin/audio_build \
     --onnx-dir $ONNX/code2wav \
     --engine-dir $ENG
 ```
@@ -276,7 +276,7 @@ export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
 export MODEL_ROOT=$WORKSPACE_DIR/Qwen3-TTS-12Hz-1.7B-CustomVoice
 export ENG=$MODEL_ROOT/engines
 
-./build/examples/omni/qwen3_tts_inference \
+./build/bin/qwen3_tts_inference \
     --talker-engine-dir   $ENG/talker \
     --code2wav-engine-dir $ENG/code2wav \
     --tokenizer-dir      $ENG/talker \
@@ -326,7 +326,7 @@ Streaming behavior:
   of audio content plus vocode time).
 
 ```bash
-./build/examples/omni/qwen3_tts_inference \
+./build/bin/qwen3_tts_inference \
     --talker-engine-dir   $ENG/talker \
     --code2wav-engine-dir $ENG/code2wav \
     --tokenizer-dir      $ENG/talker \
@@ -350,6 +350,42 @@ instruct / VoiceDesign / clone). Text input is consumed whole per request; strea
 > | Chunk knob | `--chunk-frames` | `codec_chunk_frames` |
 >
 > Unifying the two surfaces (same JSON block / flag names) is tracked as a follow-up.
+
+### Run with `multistage_inference`
+
+`multistage_inference` runs the engines from Part 2 as one stage graph. It
+reads the [input file format](#input-file-format), including `speaker`,
+`language`, `instruct`, `ref_audio`, and `ref_text`. It loads the tokenizer
+from beside the Talker engine and the clone encoders from the directory that
+the graph names, so it needs no `--tokenizer-dir` or `--clone-encoder-dir`.
+
+1. On the device, write the graph file, `multistage_config.json`, into `$ENG`.
+   This step builds nothing and reads the checkpoint's configuration files, not
+   its weights; `--model-dir` takes a local copy of the checkpoint that you
+   exported in Part 1.
+
+   ```bash
+   trtedge build --graph-only --model-dir /path/to/checkpoint --engine-dir $ENG
+   ```
+
+2. Run the request file. The speech for request `<i>`, counting from 0, is
+   written to `./audio_output/audio_req<i>.wav`, and its RVQ codes to
+   `./audio_output/rvq_req<i>.safetensors`.
+
+   ```bash
+   ./build/bin/multistage_inference --config $ENG \
+       --input-file input.json --output-file output.json \
+       --output-audio-dir ./audio_output
+   ```
+
+To speak one line without a request file, pass
+`--prompt "Hello" --voice ryan --out-audio hello.wav` instead of the
+request-file flags. Audio is vocoded in windows while the Talker runs; add
+`--whole-utterance` to vocode each utterance in one pass when it fits the
+Code2Wav engine, as `qwen3_tts_inference` does without `--streaming`. For
+batching and other differences from `qwen3_tts_inference`, see
+[Multi-Stage Graph](../../developer_guide/software-design/multi-stage-graph.md).
+
 ## CodePredictor speculative decoding
 
 The CodePredictor loop dominates audio decode time and can speculate with no draft model and no
@@ -358,7 +394,7 @@ default; add `--cp-spec-verify-size N` (one committed RVQ depth plus `N-1` draft
 range 2-8) to the command above:
 
 ```bash
-./build/examples/omni/qwen3_tts_inference \
+./build/bin/qwen3_tts_inference \
     --talker-engine-dir $ENG/talker \
     --code2wav-engine-dir $ENG/code2wav \
     --tokenizer-dir $ENG/talker \

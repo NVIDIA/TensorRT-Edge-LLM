@@ -17,8 +17,10 @@
 
 #pragma once
 
+#include "common/bindingNames.h"
 #include "common/checkMacros.h"
 #include "common/pagedKvTypes.h"
+#include "common/specDecodeLimits.h"
 
 #include <NvInfer.h>
 #include <algorithm>
@@ -39,12 +41,8 @@ namespace trt_edgellm
 namespace builder
 {
 
-inline bool isDFlashV2DraftConfig(Json const& config)
+inline bool isDFlashV2Config(Json const& config)
 {
-    if (config.value("engine_role", "llm") != "draft")
-    {
-        return false;
-    }
     std::string const specType = config.value("spec_decode_type", "none");
     if (specType == "dflash2")
     {
@@ -53,6 +51,27 @@ inline bool isDFlashV2DraftConfig(Json const& config)
     auto const dflashConfig = config.find("dflash_config");
     return specType == "dflash" && dflashConfig != config.end() && dflashConfig->is_object()
         && dflashConfig->value("version", 1) == 2;
+}
+
+inline bool isDFlashV2DraftConfig(Json const& config)
+{
+    return config.value("engine_role", "llm") == "draft" && isDFlashV2Config(config);
+}
+
+inline bool isLiLiCorrDraftConfig(Json const& config)
+{
+    if (!isDFlashV2DraftConfig(config))
+    {
+        return false;
+    }
+    auto const dflashConfig = config.find("dflash_config");
+    if (dflashConfig == config.end() || !dflashConfig->is_object())
+    {
+        return false;
+    }
+    auto const projectorType = dflashConfig->find("projector_type");
+    return projectorType != dflashConfig->end() && projectorType->is_string()
+        && projectorType->get<std::string>() == binding_names::kDFlashLiLiCorrProjectorType;
 }
 
 struct RaggedProfilePoint
@@ -81,8 +100,8 @@ struct LLMBuilderConfig
     int64_t maxBatchSize{4};          //!< Maximum batch size for inference
     int64_t maxLoraRank{0};           //!< Maximum LoRA rank (0 = no LoRA support)
     int64_t maxKVCacheCapacity{4096}; //!< Maximum KV cache capacity (sequence length)
-    int64_t maxVerifyTreeSize{60};    //!< Maximum length of input_ids passed into spec base model for verification
-    int64_t maxDraftTreeSize{60};     //!< Maximum length of input_ids passed into spec draft model for draft generation
+    int64_t maxSpecVerifyTokens{60};  //!< Maximum length of input_ids passed into spec base model for verification
+    int64_t maxSpecDraftTokens{60};   //!< Maximum length of input_ids passed into spec draft model for draft generation
     bool profilingDetailed{false};    //!< Enable detailed profiling verbosity for layer info extraction
     //! Exact physical K-page count for the engine's KV pool. Zero selects the minimum active pages.
     //! Kept after the original aggregate fields so existing positional initializers remain source-compatible.
@@ -100,15 +119,16 @@ struct LLMBuilderConfig
         int64_t result = std::max<int64_t>(1, maxQueryLength);
         if (specDraft)
         {
-            ELLM_CHECK(maxDraftTreeSize > 0 && maxDraftTreeSize <= std::numeric_limits<int32_t>::max(),
-                "LLMBuilderConfig: maxDraftTreeSize must fit a positive int32.");
-            result = std::max(result, maxDraftTreeSize);
+            ELLM_CHECK(maxSpecDraftTokens > 0 && maxSpecDraftTokens <= std::numeric_limits<int32_t>::max(),
+                "LLMBuilderConfig: maxSpecDraftTokens must fit a positive int32.");
+            result = std::max(result, maxSpecDraftTokens);
         }
         if (specBase)
         {
-            ELLM_CHECK(maxVerifyTreeSize > 0 && maxVerifyTreeSize <= std::numeric_limits<int32_t>::max(),
-                "LLMBuilderConfig: maxVerifyTreeSize must fit a positive int32.");
-            result = std::max(result, maxVerifyTreeSize);
+            ELLM_CHECK(maxSpecVerifyTokens > 0 && maxSpecVerifyTokens <= kMAX_SPEC_VERIFY_TREE_TOKENS,
+                "LLMBuilderConfig: maxSpecVerifyTokens must be in [1, " + std::to_string(kMAX_SPEC_VERIFY_TREE_TOKENS)
+                    + "], got " + std::to_string(maxSpecVerifyTokens) + ".");
+            result = std::max(result, maxSpecVerifyTokens);
         }
         return result;
     }
@@ -254,11 +274,11 @@ struct LLMBuilderConfig
         // Only include speculative-decoding limits for the engine role that owns them.
         if (specBase)
         {
-            json["max_verify_tree_size"] = maxVerifyTreeSize;
+            json["max_spec_verify_tokens"] = maxSpecVerifyTokens;
         }
         if (specDraft)
         {
-            json["max_draft_tree_size"] = maxDraftTreeSize;
+            json["max_spec_draft_tokens"] = maxSpecDraftTokens;
         }
         return json;
     }
@@ -311,13 +331,13 @@ struct LLMBuilderConfig
             config.numSwaPages = json["num_swa_pages"];
         }
         config.raggedBackend = json.value("ragged_backend", config.raggedBackend);
-        if (json.contains("max_verify_tree_size"))
+        if (json.contains("max_spec_verify_tokens"))
         {
-            config.maxVerifyTreeSize = json["max_verify_tree_size"];
+            config.maxSpecVerifyTokens = json["max_spec_verify_tokens"];
         }
-        if (json.contains("max_draft_tree_size"))
+        if (json.contains("max_spec_draft_tokens"))
         {
-            config.maxDraftTreeSize = json["max_draft_tree_size"];
+            config.maxSpecDraftTokens = json["max_spec_draft_tokens"];
         }
         if (json.contains("tp_size"))
         {
@@ -345,15 +365,55 @@ struct LLMBuilderConfig
         // Only show speculative-decoding limits for the engine role that owns them.
         if (specBase)
         {
-            oss << "  maxVerifyTreeSize: " << maxVerifyTreeSize << "\n";
+            oss << "  maxSpecVerifyTokens: " << maxSpecVerifyTokens << "\n";
         }
         if (specDraft)
         {
-            oss << "  maxDraftTreeSize: " << maxDraftTreeSize << "\n";
+            oss << "  maxSpecDraftTokens: " << maxSpecDraftTokens << "\n";
         }
         return oss.str();
     }
 };
+
+inline bool dFlashV2BuildCapacityCoversCheckpoint(Json const& config, LLMBuilderConfig const& builderConfig)
+{
+    if (!isDFlashV2Config(config))
+    {
+        return true;
+    }
+    auto const dflashConfig = config.find("dflash_config");
+    if (dflashConfig == config.end() || !dflashConfig->is_object())
+    {
+        return false;
+    }
+    int64_t const checkpointBlockSize = dflashConfig->value("block_size", static_cast<int64_t>(0));
+    std::string const role = config.value("engine_role", "llm");
+    if (role == "draft")
+    {
+        // The LiLiCorr head reshapes each sequence to exactly block_size - 1 candidate slots.
+        if (isLiLiCorrDraftConfig(config))
+        {
+            return checkpointBlockSize > 0 && builderConfig.maxSpecDraftTokens == checkpointBlockSize;
+        }
+        return checkpointBlockSize > 0 && builderConfig.maxSpecDraftTokens >= checkpointBlockSize;
+    }
+    if (role == "base")
+    {
+        return checkpointBlockSize > 0 && builderConfig.maxSpecVerifyTokens >= checkpointBlockSize;
+    }
+    return true;
+}
+
+//! Minimum proposal rows (`inputs_embeds` rows) of a DFlash draft engine profile.
+//! LiLiCorr drafts always run whole blocks, so their minimum is one full sequence.
+inline int64_t dFlashDraftMinProposalRows(Json const& config, LLMBuilderConfig const& builderConfig)
+{
+    if (isLiLiCorrDraftConfig(config))
+    {
+        return std::max<int64_t>(1, builderConfig.maxSpecDraftTokens);
+    }
+    return isDFlashV2DraftConfig(config) ? 2 : 1;
+}
 
 //! Builder class for Large Language Model TensorRT engines.
 //! Handles the complete process of building TensorRT engines from ONNX models
@@ -447,7 +507,7 @@ private:
     //! for the full dataset.
     //!
     //! @param maxToken The `max` shape count for this profile
-    //!                 (e.g., `maxVerifyTreeSize` for verify, `maxDraftTreeSize` for draft).
+    //!                 (e.g., `maxSpecVerifyTokens` for verify, `maxSpecDraftTokens` for draft).
     int64_t effectiveOptTokens(int64_t maxToken) const;
 
     //! Set up optimization profiles for speculative tree-decoding models.
@@ -484,14 +544,21 @@ private:
     bool setupDSparkDraftProfiles(
         nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile);
 
-    //! Set up optimization profiles for Gemma4 PLE tensor inputs.
-    //! Gemma4 E-model engines receive one ple_token_embeds_* tensor per layer.
+    //! Set up the PLE pool capacity and token-major row-map profiles.
     //! @param contextProfile Optimization profile for context processing
     //! @param generationProfile Optimization profile for generation processing
-    //! @param network TensorRT network definition for input analysis
     //! @return true if setup was successful, false otherwise
-    bool setupPleProfiles(nvinfer1::IOptimizationProfile& contextProfile,
-        nvinfer1::IOptimizationProfile& generationProfile, nvinfer1::INetworkDefinition const& network);
+    bool setupPleProfiles(
+        nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile);
+
+    //! Set up optimization profiles for the Qwen4-Exp n-gram injection.
+    //! Unrelated to the Gemma4 tensors above: one conv state per injected layer; the gathered rows
+    //! themselves come through the shared PLE row pool. No-op when the model carries no injection.
+    //! @param contextProfile Optimization profile for context processing
+    //! @param generationProfile Optimization profile for generation processing
+    //! @return true if setup was successful, false otherwise
+    bool setupNgramPleProfiles(
+        nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile);
 
     //! Set up optimization profiles for Deepstack embeddings (Qwen3VL).
     //! Configures deepstack embedding inputs with the same profile as inputs_embeds.
@@ -594,6 +661,10 @@ private:
     //! @return true if copying was successful or this is not a DFlash2 draft.
     bool copyDFlash2Files();
 
+    //! Copy the Domino runtime correction-head sidecar into the engine directory.
+    //! @return true if copying was successful or this is not a Domino draft.
+    bool copyDominoFiles();
+
     //! Copy vocabulary mapping files to the engine directory.
     //! Copies vocab_map.safetensors file if reduced vocabulary is used.
     //! @return true if copying was successful, false otherwise
@@ -629,10 +700,18 @@ private:
     int32_t mRecurrentStateSize{0};     //!< Recurrent state size
     int32_t mConvDim{0};                //!< Conv state dimension
     int32_t mConvKernel{0};             //!< Conv kernel size (d_conv)
-    Json mModelConfig;                  //!< Parsed model configuration
-    Json mSharedModelConfig;            //!< Shared runtime config before rank-local overrides
-    bool mIsDiffusionBackbone{false};   //!< Whether this builder builds the DiffusionGemma DLLM engine
-    int64_t mDiffusionCanvasLength{0};  //!< DiffusionGemma fixed canvas/block length
+    //! Qwen4-Exp n-gram injection. All zero/empty for a model without one, which is what leaves
+    //! its bindings and profiles out of such an engine entirely.
+    std::vector<int32_t> mNgramLayers{}; //!< Decoder layers carrying an injection, zero-indexed
+    int32_t mNgramEmbedDim{0};           //!< Width of the gathered n-gram vector
+    int32_t mNgramConvDim{0};            //!< Channels of the injection's dilated conv
+    int32_t mNgramConvStateLen{0};       //!< Steps of that conv's state
+    Json mModelConfig;                   //!< Parsed model configuration
+    Json mSharedModelConfig;             //!< Shared runtime config before rank-local overrides
+    bool mIsDiffusionBackbone{false};    //!< Whether this builder builds the DiffusionGemma DLLM engine
+    int64_t mDiffusionCanvasLength{0};   //!< DiffusionGemma fixed canvas/block length
+    //! Every phase-8 plugin layer of the engine reserved the compact workspace (builder_config.compact_execution)
+    bool mCompactExecution{false};
 };
 
 } // namespace builder

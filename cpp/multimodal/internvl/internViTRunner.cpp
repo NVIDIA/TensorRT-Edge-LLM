@@ -18,6 +18,7 @@
 #include "multimodal/internvl/internViTRunner.h"
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
+#include "common/trtInterop.h"
 #include "kernels/preprocessKernels/imageUtilKernels.h"
 #include "multimodal/common/imageUtils.h"
 #include "profiling/metrics.h"
@@ -36,8 +37,8 @@ namespace trt_edgellm
 namespace rt
 {
 
-InternViTRunner::InternViTRunner(std::string const& engineDir, cudaStream_t stream)
-    : MultimodalRunner(engineDir, stream)
+InternViTRunner::InternViTRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
+    : MultimodalRunner(engineDir, stream, checkpointDir)
 {
     if (!validateAndFillConfig(engineDir))
     {
@@ -126,11 +127,11 @@ bool InternViTRunner::allocateBuffer(cudaStream_t stream)
         mConfig.maxNumBlocks, mConfig.numChannels, mConfig.blockImageSizeH, mConfig.blockImageSizeW);
     mVitInput
         = rt::Tensor({mConfig.maxNumBlocks, mConfig.numChannels, mConfig.blockImageSizeH, mConfig.blockImageSizeW},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "InternViTRunner::mVitInput");
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "InternViTRunner::mVitInput");
     setTensorAddressStatus &= mVisualContext->setTensorAddress(binding_names::kVisualInput, mVitInput.rawPointer());
     LOG_INFO("MConfig.maxNumBlocks: %d, mConfig.outHiddenSize: %d", mConfig.maxNumBlocks, mConfig.outHiddenSize);
     mOutputEmbedding = rt::Tensor({mConfig.maxNumBlocks * mConfig.tokensPerBlock, mConfig.outHiddenSize},
-        rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "InternViTRunner::mOutputEmbedding");
+        rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "InternViTRunner::mOutputEmbedding");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kVisualOutput, mOutputEmbedding.rawPointer());
     if (!setTensorAddressStatus)
@@ -143,8 +144,8 @@ bool InternViTRunner::allocateBuffer(cudaStream_t stream)
     mImageStd = mConfig.imageStd;
 
     int64_t const maxImagePixels = mVitInput.getShape().volume();
-    mNormalizedImageDevice = rt::Tensor(
-        {maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "InternViTRunner::mNormalizedImageDevice");
+    mNormalizedImageDevice = rt::Tensor({maxImagePixels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
+        "InternViTRunner::mNormalizedImageDevice");
 
     return true;
 }
@@ -490,7 +491,7 @@ bool InternViTRunner::infer(cudaStream_t stream) noexcept
 
         bool setEngineIOStatus{true};
         setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kVisualInput, mVitInput.getShape().getTRTDims());
+            &= mVisualContext->setInputShape(binding_names::kVisualInput, toTrtDims(mVitInput.getShape()));
         if (!setEngineIOStatus)
         {
             LOG_ERROR("Failed to bind engine input tensors.");

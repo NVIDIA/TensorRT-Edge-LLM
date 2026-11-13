@@ -125,7 +125,7 @@ TEST(RopeConfigTest, LongPositionPhaseIsAccurateThroughHostAndDeviceDispatch)
             rope.type = type;
             rope.maxPositionEmbeddings = kMaxPositions;
             rope.partialRotaryFactor = type == RopeType::kProportional ? 0.5F : 1.0F;
-            Tensor cache({1, kMaxPositions, rotaryDim}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+            Tensor cache({1, kMaxPositions, rotaryDim}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
             ASSERT_TRUE(initializeRopeCosSinCache(cache, rope, nullptr));
             std::vector<float> host(static_cast<size_t>(cache.getShape().volume()));
             ASSERT_EQ(cudaMemcpy(host.data(), cache.rawPointer(), host.size() * sizeof(float), cudaMemcpyDeviceToHost),
@@ -294,7 +294,7 @@ TEST(RopeConfigTest, Llama3ScaledInverseFrequenciesReachTheCosSinCache)
     auto const rope = collectRopeConfig(rawConfig);
     ASSERT_EQ(rope.type, RopeType::kLlama3);
 
-    Tensor cache({1, kMaxPositions, kRotaryDim}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "test::ropeCache");
+    Tensor cache({1, kMaxPositions, kRotaryDim}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "test::ropeCache");
     cudaStream_t stream{};
     ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
     ASSERT_TRUE(initializeRopeCosSinCache(cache, rope, stream));
@@ -379,6 +379,26 @@ TEST(RopeConfigTest, YarnDerivesTheAttentionScaleWhenTheConfigOmitsIt)
     Json explicitScale = makeYarnScaling(4.0F);
     explicitScale["attention_factor"] = 1.5F;
     EXPECT_FLOAT_EQ(collectRopeConfig(withScaling(explicitScale)).yarn->mscale, 1.5F);
+}
+
+// Qwen3.5 enables long context with rope_type "yarn" and keeps mrope_section.
+//
+// Given a YaRN config that also states an MRoPE section
+// When the rope config is collected
+// Then it stays MRoPE with that section and also carries the YaRN parameters
+TEST(RopeConfigTest, YarnWithMropeSectionStaysMRopeAndCollectsYarn)
+{
+    Json scaling = makeYarnScaling(4.0F);
+    scaling["mrope_section"] = Json::array({11, 11, 10});
+
+    auto const rope = collectRopeConfig(withScaling(scaling));
+
+    EXPECT_EQ(rope.type, RopeType::kMRope);
+    EXPECT_EQ(rope.mropeSection, std::vector<int32_t>({11, 11, 10}));
+    ASSERT_TRUE(rope.yarn.has_value());
+    EXPECT_FLOAT_EQ(rope.yarn->factor, 4.0F);
+    EXPECT_EQ(rope.yarn->originalMaxPositionEmbeddings, 4096);
+    EXPECT_FLOAT_EQ(rope.yarn->mscale, 0.1F * std::log(4.0F) + 1.0F);
 }
 
 // Both parameters are divisors or interpolation references in the cache

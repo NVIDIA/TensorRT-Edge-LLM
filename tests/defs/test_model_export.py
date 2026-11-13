@@ -115,8 +115,11 @@ def validate_quantization_result(config: TestConfig) -> None:
     needs_kv_cache_quant = bool(config.fp8_kv_cache)
     needs_visual_quant = bool(config.visual_precision == "fp8")
     needs_audio_quant = bool(config.audio_precision == "fp8")
+    needs_embedding_quant = bool(config.token_embedding_precision
+                                 or config.ple_embedding_precision)
 
-    if needs_weight_quant or needs_visual_quant or needs_audio_quant:
+    if (needs_weight_quant or needs_visual_quant or needs_audio_quant
+            or needs_embedding_quant):
         ckpt_dir = config.get_quantized_model_dir()
         _require_hf_quant_checkpoint(ckpt_dir, "Quantized model")
         validate_ckpt_layout(
@@ -125,6 +128,8 @@ def validate_quantization_result(config: TestConfig) -> None:
             lm_head_precision=config.lm_head_precision,
             visual_precision=config.visual_precision,
             audio_precision=config.audio_precision,
+            token_embedding_precision=config.token_embedding_precision,
+            ple_embedding_precision=config.ple_embedding_precision,
             label="Quantized model",
         )
     elif needs_kv_cache_quant:
@@ -141,8 +146,9 @@ def validate_quantization_result(config: TestConfig) -> None:
             label="KV-cache quantized model",
         )
 
-    if ((config.is_eagle or config.is_dflash or config.is_jetspec)
-            and not config.is_mtp and config.draft_llm_precision
+    if ((config.is_eagle or config.is_dflash or config.is_jetspec
+         or config.is_dspark or config.is_domino) and not config.is_mtp
+            and config.draft_llm_precision
             and config.draft_llm_precision not in ("fp16", "int4_gptq")):
         draft_dir = config.get_quantized_draft_model_dir()
         _require_hf_quant_checkpoint(draft_dir, "Quantized draft model")
@@ -170,7 +176,8 @@ def _needs_gptqmodel_install(config: TestConfig) -> bool:
         return False
     if config.is_prequantized():
         return False
-    if config.is_dflash or config.is_jetspec or config.is_eagle:
+    if (config.is_dflash or config.is_jetspec or config.is_domino
+            or config.is_eagle):
         return False
     return True
 
@@ -205,6 +212,11 @@ class TestModelExport:
             if not os.path.exists(draft_torch_dir):
                 raise FileNotFoundError(
                     f"JetSpec draft model not found: {draft_torch_dir}")
+        elif config.is_domino:
+            draft_torch_dir = config.get_domino_draft_model_dir()
+            if not os.path.exists(draft_torch_dir):
+                raise FileNotFoundError(
+                    f"Domino draft model not found: {draft_torch_dir}")
         elif config.is_eagle and not config.is_mtp:
             draft_torch_dir = config.get_draft_torch_model_dir()
             if not os.path.exists(draft_torch_dir):

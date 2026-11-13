@@ -227,7 +227,7 @@ int main(int argc, char** argv)
         printUsage(argv[0], helpPolicy ? &helpPolicy->contract() : nullptr);
         return parsed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
-    gLogger.setLevel(args.debug ? nvinfer1::ILogger::Severity::kVERBOSE : nvinfer1::ILogger::Severity::kINFO);
+    gLogger.setLevel(args.debug ? trt_edgellm::logger::Severity::kVERBOSE : trt_edgellm::logger::Severity::kINFO);
 
     cudaStream_t stream{};
     CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
