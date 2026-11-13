@@ -21,68 +21,70 @@ import pytest
 
 pytest.importorskip("tensorrt")
 
-from experimental.builder.core import contracts
-from experimental.builder.core.artifacts.runtime_config import \
+from tensorrt_edgellm.builder.core import contracts
+from tensorrt_edgellm.builder.core.artifacts.runtime_config import \
     build_runtime_config
-from experimental.builder.core.builder import (_setup_diffusion_profiles,
-                                               _setup_llm_profiles)
-from experimental.builder.core.config import (LAYER_ATTN, LAYER_GDN,
-                                              LAYER_MAMBA, DeviceConfig,
-                                              GdnConfig, MambaConfig)
-from experimental.builder.core.ragged import (checked_kv_pool_pages,
-                                              decoder_profile_ranges)
-from experimental.builder.models.alpamayo.modeling_alpamayo_text import \
+from tensorrt_edgellm.builder.core.builder import (_setup_diffusion_profiles,
+                                                   _setup_llm_profiles)
+from tensorrt_edgellm.builder.core.config import (LAYER_ATTN, LAYER_GDN,
+                                                  LAYER_MAMBA, DeviceConfig,
+                                                  GdnConfig, MambaConfig)
+from tensorrt_edgellm.builder.core.ragged import (checked_kv_pool_pages,
+                                                  decoder_profile_ranges)
+from tensorrt_edgellm.builder.models.alpamayo.modeling_alpamayo_text import \
     AlpamayoForCausalLM
-from experimental.builder.models.dflash.modeling_dflash_draft import \
+from tensorrt_edgellm.builder.models.dflash.modeling_dflash_draft import \
     DFlashDraftModel
-from experimental.builder.models.diffusion_gemma.modeling_diffusion_gemma import \
+from tensorrt_edgellm.builder.models.diffusion_gemma.modeling_diffusion_gemma import \
     DiffusionGemmaForBlockDiffusion
-from experimental.builder.models.diffusion_gemma.runtime_config import \
+from tensorrt_edgellm.builder.models.diffusion_gemma.runtime_config import \
     _diffusion_config
-from experimental.builder.models.dspark.configuration import \
+from tensorrt_edgellm.builder.models.dspark.configuration import \
     configure_draft as configure_dspark_draft
-from experimental.builder.models.dspark.modeling_dspark_draft import \
+from tensorrt_edgellm.builder.models.dspark.modeling_dspark_draft import \
     DSparkDraftModel
-from experimental.builder.models.eagle3.modeling_eagle3_draft import \
+from tensorrt_edgellm.builder.models.eagle3.modeling_eagle3_draft import \
     Eagle3DraftModel
-from experimental.builder.models.gemma4.modeling_gemma4_assistant import \
+from tensorrt_edgellm.builder.models.gemma4.modeling_gemma4_assistant import \
     Gemma4AssistantForCausalLM
-from experimental.builder.models.gemma4.modeling_gemma4_text import \
+from tensorrt_edgellm.builder.models.gemma4.modeling_gemma4_text import \
     Gemma4ForCausalLM
-from experimental.builder.models.llama.modeling_llama import LlamaForCausalLM
-from experimental.builder.models.muse_glimmer.modeling_muse_glimmer_text import \
+from tensorrt_edgellm.builder.models.llama.modeling_llama import \
+    LlamaForCausalLM
+from tensorrt_edgellm.builder.models.muse_glimmer.modeling_muse_glimmer_text import \
     MuseGlimmerForCausalLM
-from experimental.builder.models.nemotron_h.modeling_nemotron_h import \
+from tensorrt_edgellm.builder.models.nemotron_h.modeling_nemotron_h import \
     NemotronHForCausalLM
-from experimental.builder.models.nemotron_omni.modeling_nemotron_omni_text import \
+from tensorrt_edgellm.builder.models.nemotron_omni.modeling_nemotron_omni_text import \
     NemotronOmniCausalLM
-from experimental.builder.models.qwen3_5.modeling_qwen3_5_mtp import \
+from tensorrt_edgellm.builder.models.qwen3_5.modeling_qwen3_5_mtp import \
     Qwen35MtpDraftModel
-from experimental.builder.models.qwen3_5.modeling_qwen3_5_text import \
+from tensorrt_edgellm.builder.models.qwen3_5.modeling_qwen3_5_text import \
     Qwen3_5ForCausalLM
-from experimental.builder.models.qwen3_5_moe.modeling_qwen3_5_moe import \
+from tensorrt_edgellm.builder.models.qwen3_5_moe.modeling_qwen3_5_moe import \
     Qwen3_5MoeForCausalLM
-from experimental.builder.models.qwen3_moe.modeling_qwen3_moe import \
+from tensorrt_edgellm.builder.models.qwen3_moe.modeling_qwen3_moe import \
     Qwen3MoeForCausalLM
-from experimental.builder.models.qwen3_omni.modeling_qwen3_omni_code_predictor import \
+from tensorrt_edgellm.builder.models.qwen3_omni.modeling_qwen3_omni_code_predictor import \
     Qwen3OmniCodePredictor
-from experimental.builder.models.qwen3_omni.modeling_qwen3_omni_moe_talker import \
+from tensorrt_edgellm.builder.models.qwen3_omni.modeling_qwen3_omni_moe_talker import \
     Qwen3OmniMoeTalker
-from experimental.builder.models.qwen3_omni.modeling_qwen3_omni_moe_text import \
+from tensorrt_edgellm.builder.models.qwen3_omni.modeling_qwen3_omni_moe_text import \
     Qwen3OmniMoeThinker
-from experimental.builder.models.qwen3_omni.modeling_qwen3_omni_talker import \
+from tensorrt_edgellm.builder.models.qwen3_omni.modeling_qwen3_omni_talker import \
     Qwen3OmniTalker
-from experimental.builder.models.qwen3_omni_next.modeling_qwen3_omni_next_talker import \
+from tensorrt_edgellm.builder.models.qwen3_omni_next.modeling_qwen3_omni_next_talker import \
     Qwen3OmniNextTalker
-from experimental.builder.models.qwen3_omni_next.modeling_qwen3_omni_next_text import \
+from tensorrt_edgellm.builder.models.qwen3_omni_next.modeling_qwen3_omni_next_text import \
     Qwen3OmniNextThinker
-from experimental.builder.models.qwen3_tts.modeling_qwen3_tts_code_predictor import \
+from tensorrt_edgellm.builder.models.qwen3_tts.modeling_qwen3_tts_code_predictor import \
     Qwen3TTSCodePredictor
-from experimental.builder.models.qwen3_tts.modeling_qwen3_tts_talker import \
+from tensorrt_edgellm.builder.models.qwen3_tts.modeling_qwen3_tts_talker import \
     Qwen3TTSTalker
-from experimental.builder.ops import BuildContext, BuildOptions, NetworkModule
-from experimental.builder.ops.ragged import add_ragged_decoder_inputs
-from experimental.builder.ops.scope import build_scope
+from tensorrt_edgellm.builder.ops import (BuildContext, BuildOptions,
+                                          NetworkModule)
+from tensorrt_edgellm.builder.ops.ragged import add_ragged_decoder_inputs
+from tensorrt_edgellm.builder.ops.scope import build_scope
 
 _COMMON_DECODER_METADATA = {
     "positions",
@@ -196,7 +198,8 @@ def _hybrid_config(**overrides):
                   num_value_heads=2,
                   key_head_dim=4,
                   value_head_dim=4,
-                  conv_kernel=4),
+                  conv_kernel=4,
+                  output_gate_type="silu"),
     }
     values.update(overrides)
     return _dense_config(**values)
@@ -230,8 +233,8 @@ def _build_args(**overrides):
         "max_batch_size": 3,
         "max_input_len": 17,
         "max_kv_cache_capacity": 64,
-        "max_verify_tree_size": 9,
-        "max_draft_tree_size": 7,
+        "max_spec_verify_tokens": 9,
+        "max_spec_draft_tokens": 7,
         "max_lora_rank": 0,
         "tp_size": 1,
         "reduced_vocab_dir": "",
@@ -257,6 +260,45 @@ def _network_inputs(model_class, cfg):
     with build_scope(context):
         model.input_tensors()
     return net.inputs
+
+
+@pytest.mark.parametrize("model_class,config_factory", (
+    (Qwen3_5ForCausalLM, _hybrid_config),
+    (Qwen3_5MoeForCausalLM, _hybrid_config),
+    (NemotronHForCausalLM, _mamba_config),
+    (NemotronOmniCausalLM, _mamba_config),
+))
+def test_recurrent_target_declares_layout_without_topology_option(
+        model_class, config_factory):
+    # Given a recurrent base without topology options, when declaring its
+    # bindings, then both layouts have ancestry and an INT32 execution marker.
+    import tensorrt as trt
+
+    inputs = _network_inputs(model_class, config_factory(engine_role="base"))
+    actual = {
+        name: (inputs[name].dtype, inputs[name].shape)
+        for name in ("tree_parent_ids", "tree_depths", "spec_verify_layout")
+        if name in inputs
+    }
+    assert actual == {
+        name: (trt.int32, (-1, ))
+        for name in ("tree_parent_ids", "tree_depths", "spec_verify_layout")
+    }
+
+
+def test_recurrent_layout_profiles_cover_inactive_chain_and_tree():
+    # Given one target marker, when building profiles, then prefill admits zero
+    # and generation admits inactive fallback plus both verify layouts.
+    network = _ProfileNetwork(
+        [_RecordedInput("spec_verify_layout", None, (-1, ))])
+    profiles = _ProfileConfig()
+    _setup_llm_profiles(
+        _ProfileBuilder(), profiles, network, _hybrid_config(),
+        _build_args(resolved_spec_role=contracts.SpecRole.BASE,
+                    spec_type="mtp"))
+    assert [p.shapes.get("spec_verify_layout")
+            for p in profiles.profiles] == [((0, ), (0, ), (0, )),
+                                            ((0, ), (1, ), (2, ))]
 
 
 def _assert_decoder_contract(inputs,
@@ -332,8 +374,8 @@ def test_spec_runtime_capacity_covers_default_generation_profile(role):
                        spec_type="mtp",
                        max_batch_size=2,
                        max_input_len=32,
-                       max_verify_tree_size=60,
-                       max_draft_tree_size=60)
+                       max_spec_verify_tokens=60,
+                       max_spec_draft_tokens=60)
 
     prefill, generation = decoder_profile_ranges(args)
 
@@ -417,7 +459,7 @@ def test_explicit_larger_input_dominates_spec_prefill_capacity():
                        spec_type="mtp",
                        max_batch_size=2,
                        max_input_len=96,
-                       max_verify_tree_size=60)
+                       max_spec_verify_tokens=60)
 
     prefill, generation = decoder_profile_ranges(args)
 
@@ -430,7 +472,7 @@ def test_spec_generation_capacity_overflow_is_rejected_actionably():
                        spec_type="mtp",
                        max_batch_size=(1 << 31) // 60 + 1,
                        max_input_len=32,
-                       max_verify_tree_size=60)
+                       max_spec_verify_tokens=60)
 
     with pytest.raises(ValueError,
                        match="ragged physical-token capacity exceeds int32"):
@@ -565,14 +607,15 @@ def test_draft_profiles_bound_entry_padded_proposal_rows():
     assert proposal.logits_rows == (1, 21, 21)
 
 
-def test_spec_prefill_profiles_keep_sequence_and_logits_extents_distinct():
-    args = _build_args(resolved_spec_role=contracts.SpecRole.DRAFT,
+def test_spec_prefill_profiles_bound_logits_rows_by_sequences():
+    """Speculative prefill selects one logits row per sequence, so its profile
+    reserves batch rows rather than every prompt token."""
+    args = _build_args(resolved_spec_role=contracts.SpecRole.BASE,
                        spec_type="mtp")
 
     prefill, _ = decoder_profile_ranges(args)
 
-    assert prefill.sequence() == ((1, ), (3, ), (3, ))
-    assert prefill.logits_rows == (1, 24, 51)
+    assert prefill.logits_rows == (1, 3, 3)
 
 
 def test_common_decoder_input_bundle_declares_exact_mandatory_contract():
@@ -610,7 +653,8 @@ def test_block_draft_profiles_separate_proposal_and_delta_address_spaces():
         "execution_phase_marker": (-1, ),
         "context_sequence_count_carrier": (-1, ),
         "kv_page_table": (-1, 2, -1),
-        "skip_softmax_scale": (-1, ),
+        "skip_softmax_prefill_scale": (-1, ),
+        "skip_softmax_decode_scale": (-1, ),
         "packed_attention_mask": (-1, -1),
         "dflash_target_hidden_concat": (-1, 80),
         "dflash_delta_rope_cos_sin": (-1, 4),
@@ -647,8 +691,14 @@ def test_block_draft_profiles_separate_proposal_and_delta_address_spaces():
     assert generation.shapes["context_sequence_count_carrier"] == ((0, ),
                                                                    (0, ),
                                                                    (0, ))
-    assert context.shapes["skip_softmax_scale"] == ((0, ), (0, ), (64, ))
-    assert generation.shapes["skip_softmax_scale"] == ((0, ), (0, ), (64, ))
+    skip_softmax_profile = ((0, ), (0, ),
+                            (contracts.SKIP_SOFTMAX_SCALE_TABLE_MAX_LEN, ))
+    assert context.shapes["skip_softmax_prefill_scale"] == skip_softmax_profile
+    assert generation.shapes[
+        "skip_softmax_prefill_scale"] == skip_softmax_profile
+    assert context.shapes["skip_softmax_decode_scale"] == skip_softmax_profile
+    assert generation.shapes[
+        "skip_softmax_decode_scale"] == skip_softmax_profile
 
 
 def test_dspark_sample_without_anchor_uses_resolved_physical_capacity():
@@ -695,6 +745,7 @@ def test_experimental_dspark_accepts_shared_kv_and_value_norm():
     target = _dense_config()
     cfg = _dense_config(dspark_target_layer_ids=[0],
                         dspark_markov_rank=1,
+                        dspark_mask_token_id=4,
                         attention_k_eq_v=True,
                         has_value_norm=True)
 
@@ -774,7 +825,7 @@ def test_packed_tree_mask_keeps_unit_minimum_width_above_one_word():
     config = _ProfileConfig()
     args = _build_args(resolved_spec_role=contracts.SpecRole.DRAFT,
                        spec_type="dflash",
-                       max_draft_tree_size=60)
+                       max_spec_draft_tokens=60)
 
     _setup_llm_profiles(_ProfileBuilder(), config, network, _dense_config(),
                         args)
@@ -815,7 +866,6 @@ def test_muse_glimmer_base_uses_dual_rope_and_ragged_tree_bindings():
         model_type="muse_glimmer_text",
         engine_role="base",
         spec_decode_type="dflash",
-        dflash_tree_base=True,
         sliding_rope_config={"rope_type": "default"},
         full_rope_config={"rope_type": "nope"},
     )
@@ -855,18 +905,25 @@ def test_mtp_draft_network_uses_common_contract_and_hidden_portals():
         hidden_inputs=("hidden_states_input", "hidden_states_from_draft"))
 
 
-def test_qwen35_target_verify_network_uses_common_contract_and_tree_portals():
-    cfg = _hybrid_config(engine_role="base",
-                         spec_decode_type="mtp",
-                         mtp_tree_base=True)
+@pytest.mark.parametrize(
+    ("model_class", "method"),
+    (
+        (Qwen3_5ForCausalLM, "mtp"),
+        (Qwen3_5ForCausalLM, "dspark"),
+        (Qwen3_5MoeForCausalLM, "dspark"),
+    ),
+)
+def test_qwen35_target_verify_network_uses_common_contract_and_tree_portals(
+        model_class, method):
+    cfg = _hybrid_config(engine_role="base", spec_decode_type=method)
 
-    inputs = _network_inputs(Qwen3_5ForCausalLM, cfg)
+    inputs = _network_inputs(model_class, cfg)
 
     _assert_decoder_contract(
         inputs,
         required_portals=("packed_attention_mask", "attention_position_ids",
                           "tree_parent_ids", "tree_depths",
-                          "valid_tree_counts"))
+                          "valid_tree_counts", "spec_verify_layout"))
 
 
 @pytest.mark.parametrize(
@@ -880,7 +937,7 @@ def test_qwen35_target_verify_network_uses_common_contract_and_tree_portals():
         (Qwen3OmniCodePredictor, _dense_config(), ()),
         (Qwen3TTSTalker, _dense_config(), ()),
         (Qwen3TTSCodePredictor, _dense_config(), ()),
-        (Gemma4ForCausalLM, _dense_config(), ("ple", )),
+        (Gemma4ForCausalLM, _dense_config(), ()),
         (Eagle3DraftModel,
          _dense_config(eagle3_target_layer_ids=[0], target_hidden_size=16),
          ("hidden_states_input", "hidden_states_from_draft")),
@@ -916,3 +973,35 @@ def test_specialized_full_row_decoders_omit_logits_indices(
                              required_portals=required_portals,
                              hidden_inputs=hidden_inputs,
                              include_logits_indices=False)
+
+
+@pytest.mark.parametrize("spec_role",
+                         [contracts.SpecRole.NONE, contracts.SpecRole.BASE])
+def test_gemma_ple_pool_profiles_share_token_axis_and_dynamic_capacity(
+        spec_role):
+    cfg = _dense_config(hidden_size_per_layer_input=4,
+                        vocab_size_per_layer_input=64)
+    inputs = _network_inputs(Gemma4ForCausalLM, cfg)
+    assert inputs["ple_cache_pool"].name == "ple_cache_pool"
+    assert inputs["ple_cache_pool"].shape == (-1, 4)
+    assert inputs["ple_row_map"].shape == (-1, 1)
+    assert not any(name.startswith("ple_token_embeds_") for name in inputs)
+    args = _build_args(resolved_spec_role=spec_role,
+                       spec_type="gemma4_mtp"
+                       if spec_role == contracts.SpecRole.BASE else "none")
+    network = _ProfileNetwork(list(inputs.values()))
+    config = _ProfileConfig()
+    _setup_llm_profiles(_ProfileBuilder(), config, network, cfg, args)
+    ranges = decoder_profile_ranges(args)
+    for profile, token_range in zip(config.profiles, ranges):
+        assert profile.shapes["ple_cache_pool"] == ((1, 4), (65, 4), (65, 4))
+        assert profile.shapes["ple_row_map"] == token_range.token(1)
+
+
+def test_direct_diffusion_ple_rejects_before_loading_parameters():
+    context = SimpleNamespace(cfg=SimpleNamespace(
+        hidden_size_per_layer_input=4))
+    with pytest.raises(
+            ValueError,
+            match="Checkpoint-direct DiffusionGemma PLE is not implemented"):
+        DiffusionGemmaForBlockDiffusion(context)

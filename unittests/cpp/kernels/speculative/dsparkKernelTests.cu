@@ -33,7 +33,6 @@
 
 using namespace trt_edgellm;
 using namespace trt_edgellm::kernel;
-using namespace nvinfer1;
 
 namespace
 {
@@ -503,8 +502,11 @@ TEST(DSparkKernels, BuildVerifyTokensUsesDraftStrideForDynamicVerifyLength)
     copyHostToDevice<int32_t>(lastAcceptedTokens, {5});
     copyHostToDevice<int32_t>(draftTokenIds, {7, 8, 9});
 
-    dsparkBuildVerifyTokens(
-        lastAcceptedTokens, draftTokenIds, verifyTokenIds, batchSize, draftStride, verifyProposalLen, stream);
+    rt::Tensor proposalLengths({batchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor acceptValidTokenCounts({batchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice<int32_t>(proposalLengths, {verifyProposalLen});
+    dsparkBuildVerifyTokens(lastAcceptedTokens, draftTokenIds, proposalLengths, verifyTokenIds, acceptValidTokenCounts,
+        batchSize, draftStride, verifyProposalLen, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     EXPECT_EQ(copyDeviceToHost<int32_t>(verifyTokenIds), (std::vector<int32_t>{5, 7}));
@@ -767,4 +769,52 @@ TEST(DSparkKernels, ProbabilisticAcceptRejectsTokenTheTargetGivesNoMass)
 
     EXPECT_EQ(copyDeviceToHost<int32_t>(acceptLength), (std::vector<int32_t>{1}));
     EXPECT_EQ(copyDeviceToHost<int32_t>(acceptedTokenIds)[0], 0) << "the masked token must not be emitted";
+}
+
+TEST(DSparkKernels, BuildVerifyTokensSeparatesAcceptanceBoundsFromExecutionWidth)
+{
+    // Given unequal scheduled proposal lengths, when assembling root-inclusive candidates,
+    // then acceptance is bounded independently while physical rows and original lengths are preserved.
+    rt::Tensor roots({3}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor draft({3, 4}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor lengths({3}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor verify({3, 4}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor counts({3}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice<int32_t>(roots, {10, 20, 30});
+    copyHostToDevice<int32_t>(draft, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
+    copyHostToDevice<int32_t>(lengths, {1, 9, 0});
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    dsparkBuildVerifyTokens(roots, draft, lengths, verify, counts, 3, 4, 3, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    EXPECT_EQ(copyDeviceToHost<int32_t>(counts), (std::vector<int32_t>{2, 4, 2}));
+    EXPECT_EQ(copyDeviceToHost<int32_t>(verify), (std::vector<int32_t>{10, 1, 2, 3, 20, 5, 6, 7, 30, 9, 10, 11}));
+    EXPECT_EQ(copyDeviceToHost<int32_t>(lengths), (std::vector<int32_t>{1, 9, 0}));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+TEST(DSparkKernels, SeparatedSelectorPreservesExceptionalRows)
+{
+    // Given ties and exceptional logits, when selection is separated, then the existing DSpark selector is preserved.
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    constexpr int32_t rows = 7;
+    constexpr int32_t vocab = 512;
+    std::vector<float> values(rows * vocab, -1.0F);
+    values[3] = 2.0F;
+    values[vocab + 127] = values[vocab + 255] = 3.0F;
+    std::fill(values.begin() + 2 * vocab, values.begin() + 3 * vocab, std::numeric_limits<float>::quiet_NaN());
+    std::fill(values.begin() + 3 * vocab, values.begin() + 4 * vocab, -std::numeric_limits<float>::infinity());
+    values[4 * vocab + 33] = values[4 * vocab + 300] = std::numeric_limits<float>::infinity();
+    std::fill(values.begin() + 5 * vocab, values.begin() + 6 * vocab, -std::numeric_limits<float>::max());
+    values[6 * vocab] = std::numeric_limits<float>::quiet_NaN();
+    values[6 * vocab + 64] = 4.0F;
+    rt::Tensor logits({1, rows, vocab}, rt::DeviceType::kGPU, DataType::kFLOAT);
+    rt::Tensor selected({1, rows}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice<float>(logits, values);
+    copyHostToDevice<int32_t>(selected, std::vector<int32_t>(rows, -99));
+    dsparkSelectTargetTokens(logits, selected, 1, rows, vocab, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    EXPECT_EQ(copyDeviceToHost<int32_t>(selected), (std::vector<int32_t>{3, 127, 0, 0, 33, 0, 64}));
+    CUDA_CHECK(cudaStreamDestroy(stream));
 }

@@ -42,7 +42,6 @@
 #include "testUtils.h"
 #include "xqaJitTestUtils.h"
 
-using namespace nvinfer1;
 using namespace trt_edgellm;
 
 // Tests pack paged KV into a scalar host buffer, so the final head-dim/D coordinate is explicit here.
@@ -1551,7 +1550,7 @@ double estimateXQATreeAttentionBytes(XQATreeAttentionBenchShape const& shape, in
 }
 
 template <typename KVType>
-void runXQATreeAttentionBenchmark(nvinfer1::DataType kvDataType, char const* kvLabel, int32_t tokensPerPage = 0)
+void runXQATreeAttentionBenchmark(trt_edgellm::DataType kvDataType, char const* kvLabel, int32_t tokensPerPage = 0)
 {
     initializeCudaContextForXQATest();
 
@@ -1947,7 +1946,7 @@ void TestXQAPaddingConsistency(int32_t batchSize, int32_t numQHeads, int32_t num
 
     // For padded case, adjust context length to account for padding tokens
     // This ensures correct context K range: K[0 : paddedContextLen - paddedQSeqLen] = K[0 : kvSequenceLength -
-    // actualQSeqLen] Same as what eagleUtilKernels does: sequenceContextLengths = sequenceStartIndices +
+    // actualQSeqLen] Same as what speculativeKernels does: sequenceContextLengths = sequenceStartIndices +
     // maxAcceptedTokenNum
     int32_t paddedContextLen = kvSequenceLength + (paddedQSeqLen - actualQSeqLen);
     std::vector<int32_t> kvCacheLengthPadded(1, paddedContextLen);

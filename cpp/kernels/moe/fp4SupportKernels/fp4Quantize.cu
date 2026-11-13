@@ -166,8 +166,9 @@ inline __device__ uint32_t floatToE2m1(float val)
 /// Older architectures use the software floatToE2m1 fallback.
 inline __device__ uint32_t fp32VecToE2m1(float2 (&array)[4])
 {
-    // SM100 (1000), SM101 (1010), SM110 (1100).
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 1000 || __CUDA_ARCH__ == 1010 || __CUDA_ARCH__ == 1100)
+    // SM100 (1000), SM101 (1010), SM103 (1030), SM110 (1100).
+#if defined(__CUDA_ARCH__)                                                                                             \
+    && (__CUDA_ARCH__ == 1000 || __CUDA_ARCH__ == 1010 || __CUDA_ARCH__ == 1030 || __CUDA_ARCH__ == 1100)
     // Hardware path
     uint32_t val;
     asm volatile(
@@ -586,12 +587,12 @@ void fp4Quantize(rt::Tensor const& input, rt::Tensor const& globalSF, rt::Tensor
     auto* fp4Ptr = static_cast<uint32_t*>(outputFP4.rawPointer());
     auto* sfPtr = static_cast<uint8_t*>(outputSF.rawPointer());
 
-    if (input.getDataType() == nvinfer1::DataType::kBF16)
+    if (input.getDataType() == trt_edgellm::DataType::kBF16)
     {
         quantizeToFp4Kernel<__nv_bfloat16><<<gridSize, blockSize, 0, stream>>>(static_cast<int32_t>(M),
             static_cast<int32_t>(N), static_cast<__nv_bfloat16 const*>(input.rawPointer()), sfPtrFwd, fp4Ptr, sfPtr);
     }
-    else if (input.getDataType() == nvinfer1::DataType::kHALF)
+    else if (input.getDataType() == trt_edgellm::DataType::kHALF)
     {
         quantizeToFp4Kernel<__half><<<gridSize, blockSize, 0, stream>>>(static_cast<int32_t>(M),
             static_cast<int32_t>(N), static_cast<__half const*>(input.rawPointer()), sfPtrFwd, fp4Ptr, sfPtr);
@@ -631,12 +632,12 @@ void fp4QuantizeLinearSF(rt::Tensor const& input, rt::Tensor const& globalSF, rt
     auto* fp4Ptr = static_cast<uint32_t*>(outputFP4.rawPointer());
     auto* sfPtr = static_cast<uint8_t*>(outputSF.rawPointer());
 
-    if (input.getDataType() == nvinfer1::DataType::kBF16)
+    if (input.getDataType() == trt_edgellm::DataType::kBF16)
     {
         quantizeToFp4LinearSfKernel<__nv_bfloat16><<<gridSize, blockSize, 0, stream>>>(static_cast<int32_t>(M),
             static_cast<int32_t>(N), static_cast<__nv_bfloat16 const*>(input.rawPointer()), sfPtrFwd, fp4Ptr, sfPtr);
     }
-    else if (input.getDataType() == nvinfer1::DataType::kHALF)
+    else if (input.getDataType() == trt_edgellm::DataType::kHALF)
     {
         quantizeToFp4LinearSfKernel<__half><<<gridSize, blockSize, 0, stream>>>(static_cast<int32_t>(M),
             static_cast<int32_t>(N), static_cast<__half const*>(input.rawPointer()), sfPtrFwd, fp4Ptr, sfPtr);
@@ -679,13 +680,13 @@ void fp4QuantizeRoutedLinearSF(rt::Tensor const& input, rt::Tensor const& topkId
     auto* fp4Ptr = static_cast<uint32_t*>(outputFP4.rawPointer());
     auto* sfPtr = static_cast<uint8_t*>(outputSF.rawPointer());
 
-    if (input.getDataType() == nvinfer1::DataType::kBF16)
+    if (input.getDataType() == trt_edgellm::DataType::kBF16)
     {
         quantizeRoutedToFp4LinearSfKernel<__nv_bfloat16><<<gridSize, blockSize, 0, stream>>>(static_cast<int32_t>(M),
             static_cast<int32_t>(topK), static_cast<int32_t>(N), static_cast<__nv_bfloat16 const*>(input.rawPointer()),
             topkPtr, sfPtrFwd, fp4Ptr, sfPtr);
     }
-    else if (input.getDataType() == nvinfer1::DataType::kHALF)
+    else if (input.getDataType() == trt_edgellm::DataType::kHALF)
     {
         quantizeRoutedToFp4LinearSfKernel<__half><<<gridSize, blockSize, 0, stream>>>(static_cast<int32_t>(M),
             static_cast<int32_t>(topK), static_cast<int32_t>(N), static_cast<__half const*>(input.rawPointer()),
@@ -752,14 +753,14 @@ void fp4BuildLayoutAndQuantizeRoutedLinearSFDecode(rt::Tensor const& input, rt::
     auto* permutedPtr = layoutBuffers.permutedIdxToExpandedIdx.dataPointer<int32_t>();
     auto* numTilesPtr = layoutBuffers.numNonExitingTiles.dataPointer<int32_t>();
 
-    if (input.getDataType() == nvinfer1::DataType::kBF16)
+    if (input.getDataType() == trt_edgellm::DataType::kBF16)
     {
         buildLayoutAndQuantizeRoutedToFp4LinearSfDecodeKernel<__nv_bfloat16>
             <<<gridSize, blockSize, 0, stream>>>(static_cast<int32_t>(topK), static_cast<int32_t>(N), localNumExperts,
                 tileSize, static_cast<__nv_bfloat16 const*>(input.rawPointer()), topkPtr, sfPtrFwd, permutedPtr,
                 tileGroupPtr, tileLimitPtr, numTilesPtr, fp4Ptr, sfPtr);
     }
-    else if (input.getDataType() == nvinfer1::DataType::kHALF)
+    else if (input.getDataType() == trt_edgellm::DataType::kHALF)
     {
         buildLayoutAndQuantizeRoutedToFp4LinearSfDecodeKernel<__half>
             <<<gridSize, blockSize, 0, stream>>>(static_cast<int32_t>(topK), static_cast<int32_t>(N), localNumExperts,

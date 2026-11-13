@@ -37,10 +37,11 @@ from transformers import (AutoConfig, AutoModelForCausalLM,
                           AutoModelForImageTextToText, AutoTokenizer)
 
 from ..datasets import TextDataset, dataset_name, resolve_dataset
-from ..quantization_configs import build_quant_config
+from ..quantization_configs import (build_quant_config,
+                                    split_lm_head_calibration)
 from .attention_scale import resolve_attention_scale
 from .layers import (RMSNorm, RotaryEmbedding, SwiGLUMLP, apply_rotary_pos_emb,
-                     repeat_kv)
+                     config_rope_theta, repeat_kv)
 
 
 class Eagle3DraftAttention(nn.Module):
@@ -159,8 +160,8 @@ class Eagle3DraftModel(nn.Module):
         self.register_buffer("d2t", torch.empty(draft_vocab,
                                                 dtype=torch.int32))
 
-        rope_theta = getattr(config, "rope_theta", None) or 10000.0
-        self.rotary_emb = RotaryEmbedding(head_dim, base=rope_theta)
+        self.rotary_emb = RotaryEmbedding(head_dim,
+                                          base=config_rope_theta(config))
 
     @property
     def device(self):
@@ -248,7 +249,11 @@ def quantize_and_export_draft(
                 cat_hs = torch.cat([hs[i] for i in idx], dim=-1)
                 dm(data, cat_hs, torch.zeros_like(hs[idx[0]]))
 
+        lm_head_cfg = split_lm_head_calibration(quant_cfg,
+                                                lm_head_quantization)
         mtq.quantize(draft, quant_cfg, forward_loop=_calib)
+        if lm_head_cfg:
+            mtq.quantize(draft, lm_head_cfg, forward_loop=_calib)
         mtq.print_quant_summary(draft)
 
     print(f"Quantization: {time.time() - t0:.1f}s")

@@ -14,23 +14,25 @@
 # limitations under the License.
 """Contract tests for experimental token-major recurrent operations."""
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("tensorrt")
 
-from experimental.builder.core import config
-from experimental.builder.models.nemotron_h.modeling_nemotron_h import \
+from tensorrt_edgellm.builder.core import config
+from tensorrt_edgellm.builder.models.nemotron_h.modeling_nemotron_h import \
     NemotronHForCausalLM
-from experimental.builder.models.nemotron_omni.modeling_nemotron_omni_text import \
+from tensorrt_edgellm.builder.models.nemotron_omni.modeling_nemotron_omni_text import \
     NemotronOmniCausalLM
-from experimental.builder.models.qwen3_5.modeling_qwen3_5_text import \
+from tensorrt_edgellm.builder.models.qwen3_5.modeling_qwen3_5_text import \
     Qwen3_5ForCausalLM
-from experimental.builder.ops import BuildContext, BuildOptions, NetworkModule
-from experimental.builder.ops import functional as F
-from experimental.builder.ops.ragged import RaggedDecoderInputs
-from experimental.builder.ops.scope import build_scope
+from tensorrt_edgellm.builder.ops import (BuildContext, BuildOptions,
+                                          NetworkModule)
+from tensorrt_edgellm.builder.ops import functional as F
+from tensorrt_edgellm.builder.ops.ragged import RaggedDecoderInputs
+from tensorrt_edgellm.builder.ops.scope import build_scope
 
 
 class _Value:
@@ -78,6 +80,131 @@ def _context(net):
                         args=SimpleNamespace())
 
 
+@pytest.mark.parametrize("channel_scales", [False, True])
+def test_fp8_conv_projection_has_dense_channel_output(channel_scales):
+    # Given FP8 projection weights, when lowering the conv partition, then
+    # TensorRT receives a dense token-major conv projection and matching scales.
+    import numpy as np
+    import tensorrt as trt
+
+    from tensorrt_edgellm.builder.core.weights import LinearWeights
+    from tensorrt_edgellm.builder.models.nemotron_h.modeling_nemotron_h import \
+        NemotronHMamba2Mixer
+    from tensorrt_edgellm.builder.ops.backend import Net
+
+    logger = trt.Logger(trt.Logger.ERROR)
+    with trt.Builder(logger) as builder:
+        network = builder.create_network(
+            1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED))
+        net = Net(builder, network)
+        assert hasattr(net, "fp8_conv")
+        projection_calls = []
+        fp8_linear = net.fp8_linear
+        fp8_conv = net.fp8_conv
+
+        def record_fp8_linear(*args, **kwargs):
+            projection_calls.append("linear")
+            return fp8_linear(*args, **kwargs)
+
+        def record_fp8_conv(*args, **kwargs):
+            projection_calls.append("conv")
+            return fp8_conv(*args, **kwargs)
+
+        net.fp8_linear = record_fp8_linear
+        net.fp8_conv = record_fp8_conv
+        hidden = network.add_input("hidden", trt.float16, (-1, 16))
+        weights = LinearWeights("fp8",
+                                np.ones((50, 16), dtype=np.uint8),
+                                input_scale=np.array(0.03125,
+                                                     dtype=np.float16),
+                                weight_scale=np.array(0.0625,
+                                                      dtype=np.float16))
+        if channel_scales:
+            weights = dataclasses.replace(weights,
+                                          weight_scale=np.full(
+                                              50, 0.0625, dtype=np.float16))
+        ctx = _context(net)
+        ctx.cfg = SimpleNamespace(tp_size=1,
+                                  tp_rank=0,
+                                  mamba_cfg=SimpleNamespace(
+                                      intermediate_size=16,
+                                      conv_dim=32,
+                                      num_heads=2))
+        ctx.weights = SimpleNamespace(
+            module_quant_type=lambda *args, **kwargs: "fp8",
+            linear_descriptor=lambda *args, **kwargs: weights,
+            shard_linear=lambda descriptor, *args: descriptor,
+            linear_adapter=lambda *args: None)
+        with build_scope(ctx):
+            outputs = NemotronHMamba2Mixer(ctx, "mixer")._project_inputs(
+                F.tensor(hidden))
+        layers = [network.get_layer(i) for i in range(network.num_layers)]
+        conv_channels = [
+            layer.get_output(0).shape[1] for layer in layers
+            if layer.type == trt.LayerType.CONVOLUTION
+        ]
+        conv = next(layer for layer in layers
+                    if layer.type == trt.LayerType.CONVOLUTION)
+        weight_dq = next(layer for layer in layers
+                         if layer.get_output(0).name == conv.get_input(1).name)
+        output_shapes = tuple(tuple(output.shape) for output in outputs)
+        scale_shape = tuple(weight_dq.get_input(1).shape)
+        expected_shapes = ((-1, 16), (-1, 32), (-1, 2))
+        expected_scale_shape = (32, ) if channel_scales else (1, )
+        assert (output_shapes, conv_channels, scale_shape,
+                projection_calls) == (expected_shapes, [32],
+                                      expected_scale_shape,
+                                      ["linear", "conv", "linear"])
+
+
+def test_weightless_fp8_projection_keeps_single_refit_parameter(monkeypatch):
+    # Given a metadata-only FP8 matrix, when partitioning Mamba inputs, then
+    # the checkpoint parameter remains whole and the projection output is sliced.
+    import numpy as np
+
+    from tensorrt_edgellm.builder.core.weights import (LinearWeights,
+                                                       ParameterSpec)
+    from tensorrt_edgellm.builder.models.nemotron_h.modeling_nemotron_h import \
+        NemotronHMamba2Mixer
+
+    descriptor = LinearWeights("fp8",
+                               ParameterSpec((50, 16), np.uint8),
+                               weight_scale=np.ones(1, np.float16))
+
+    class Projection:
+
+        def __init__(self):
+            self.calls = []
+
+        def quant_type(self):
+            return "fp8"
+
+        def has_adapter(self):
+            return False
+
+        def weight_descriptor(self):
+            return descriptor
+
+        def __call__(self, value):
+            self.calls.append(value)
+            return "projected"
+
+    ctx = _context(_RecordingNet())
+    ctx.cfg = SimpleNamespace(mamba_cfg=SimpleNamespace(
+        intermediate_size=16, conv_dim=32, num_heads=2))
+    mixer = NemotronHMamba2Mixer(ctx, "mixer")
+    mixer.in_proj = Projection()
+    slices = []
+    monkeypatch.setattr(
+        F, "slice_last_dim", lambda value, offset, size, rank: slices.append(
+            (value, offset, size, rank)) or size)
+
+    assert mixer._project_inputs("hidden") == (16, 32, 2)
+    assert mixer.in_proj.calls == ["hidden"]
+    assert slices == [("projected", 0, 16, 2), ("projected", 16, 32, 2),
+                      ("projected", 48, 2, 2)]
+
+
 def _ragged():
     return RaggedDecoderInputs(
         positions=_Value("positions"),
@@ -91,11 +218,52 @@ def _ragged():
         context_sequence_count_carrier=_Value(
             "context_sequence_count_carrier"),
         kv_page_table=_Value("kv_page_table"),
+        spec_verify_layout=_Value("spec_verify_layout"),
     )
 
 
 def _names(values):
     return [value.name for value in values]
+
+
+@pytest.mark.parametrize("call,prefix_count,kwargs,output_count", (
+    (F.causal_conv1d, 4, {
+        "groups": 64,
+        "padding": 3
+    }, 3),
+    (F.gated_delta_net, 8, {
+        "key_head_dim": 128,
+        "value_head_dim": 128
+    }, 3),
+    (F.update_ssm_state, 8, {
+        "dim": 128,
+        "dstate": 64,
+        "nheads": 4,
+        "ngroups": 1
+    }, 6),
+))
+def test_verify_recurrent_operation_has_fixed_layout_contract(
+        call, prefix_count, kwargs, output_count):
+    # Given a verify-capable recurrent operation, when lowering it, then the
+    # outputs and ancestry stay fixed; only conv/Mamba consume a layout marker.
+    net = _RecordingNet()
+    metadata = _ragged()
+    ancestry = ["tree_parent_ids", "tree_depths"]
+    if call is F.gated_delta_net:
+        metadata = dataclasses.replace(metadata, spec_verify_layout=None)
+    else:
+        ancestry.append("spec_verify_layout")
+    with build_scope(_context(net)):
+        outputs = call(*[_Value(f"input_{i}") for i in range(prefix_count)],
+                       metadata,
+                       tree_parent_ids=_Value("tree_parent_ids"),
+                       tree_depths=_Value("tree_depths"),
+                       use_intermediate=True,
+                       **kwargs)
+    _, attributes, inputs = net.calls[0]
+    assert (_names(inputs)[prefix_count + 5:],
+            attributes.get("use_spec_verify_state"), "use_ddtree"
+            in attributes, len(outputs)) == (ancestry, 1, False, output_count)
 
 
 def test_causal_conv_uses_resident_slot_and_phase_order():
@@ -106,8 +274,7 @@ def test_causal_conv_uses_resident_slot_and_phase_order():
 
     name, attributes, inputs = net.calls[0]
     assert name == "causal_conv1d"
-    assert attributes["use_mtp"] == 0
-    assert attributes["use_ddtree"] == 0
+    assert attributes["use_spec_verify_state"] == 0
     assert _names(inputs) == [
         "x", "weight", "bias", "resident_conv_pool", "query_lengths",
         "query_start_offsets", "state_indices", "execution_phase_marker",
@@ -130,16 +297,17 @@ def test_causal_conv_ddtree_appends_parent_and_depth_after_common_metadata():
                         use_intermediate=True)
 
     _, attributes, inputs = net.calls[0]
-    assert attributes["use_mtp"] == 0
-    assert attributes["use_ddtree"] == 1
+    assert attributes["use_spec_verify_state"] == 1
     assert _names(inputs)[4:] == [
         "query_lengths", "query_start_offsets", "state_indices",
         "execution_phase_marker", "context_sequence_count_carrier",
-        "tree_parent_ids", "tree_depths"
+        "tree_parent_ids", "tree_depths", "spec_verify_layout"
     ]
 
 
 def test_gdn_ddtree_uses_explicit_tree_metadata_after_common_state_metadata():
+    # Given GDN verification, when lowering ancestry, then both parent/depth
+    # inputs follow resident metadata without a redundant topology marker.
     net = _RecordingNet()
     with build_scope(_context(net)):
         result = F.gated_delta_net(*[
@@ -154,8 +322,7 @@ def test_gdn_ddtree_uses_explicit_tree_metadata_after_common_state_metadata():
                                    use_intermediate=True)
 
     _, attributes, inputs = net.calls[0]
-    assert attributes["use_mtp"] == 0
-    assert attributes["use_ddtree"] == 1
+    assert attributes["use_spec_verify_state"] == 1
     assert attributes["use_diffusion_state"] == 0
     assert _names(inputs)[8:] == [
         "query_lengths", "query_start_offsets", "state_indices",
@@ -178,6 +345,8 @@ def test_mamba_uses_same_nonidentity_resident_slot_binding():
                                     dstate=64,
                                     nheads=4,
                                     ngroups=1,
+                                    tree_parent_ids=_Value("tree_parent_ids"),
+                                    tree_depths=_Value("tree_depths"),
                                     use_intermediate=True)
 
     name, attributes, inputs = net.calls[0]
@@ -186,7 +355,8 @@ def test_mamba_uses_same_nonidentity_resident_slot_binding():
     assert attributes["dim"] == 128
     assert _names(inputs)[8:] == [
         "query_lengths", "query_start_offsets", "state_indices",
-        "execution_phase_marker", "context_sequence_count_carrier"
+        "execution_phase_marker", "context_sequence_count_carrier",
+        "tree_parent_ids", "tree_depths", "spec_verify_layout"
     ]
     assert len(result) == 6
 
@@ -296,7 +466,7 @@ def test_nemotron_top_level_preserves_all_mamba_replay_bindings(
     layer = _FakeHybridLayer(states)
     model.layers = [layer]
     model.norm = lambda value: value
-    model.lm_head = lambda value: _Value("logits")
+    model.lm_head = lambda value, out_dtype=None: _Value("logits")
     monkeypatch.setattr(F, "gather_token_rows", lambda value, indices: value)
     monkeypatch.setattr(F, "cast", lambda value, dtype: value)
     monkeypatch.setattr(F, "hidden_state_feedback",
@@ -313,9 +483,9 @@ def test_nemotron_top_level_preserves_all_mamba_replay_bindings(
 
 @pytest.mark.parametrize(
     "module_name,class_name",
-    (("experimental.builder.models.nemotron_h.modeling_nemotron_h",
+    (("tensorrt_edgellm.builder.models.nemotron_h.modeling_nemotron_h",
       "NemotronHBlock"),
-     ("experimental.builder.models.nemotron_omni.modeling_nemotron_omni_text",
+     ("tensorrt_edgellm.builder.models.nemotron_omni.modeling_nemotron_omni_text",
       "NemotronOmniBlock")),
 )
 def test_nemotron_mamba_block_routes_ddtree_metadata_to_causal_conv_boundary(

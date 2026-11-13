@@ -18,9 +18,12 @@
 #include "actionBuilder.h"
 #include "builderUtils.h"
 #include "common/bindingNames.h"
+#include "common/executionPhase.h"
 #include "common/logger.h"
+#include "common/pagedKvTypes.h"
 #include "common/trtUtils.h"
 #include "common/version.h"
+#include "llmBuilder.h"
 
 using namespace trt_edgellm;
 
@@ -142,10 +145,48 @@ bool ActionBuilder::parseConfig()
     }
     mNumDiffusionTokens = mModelConfig["n_diffusion_tokens"].get<int32_t>();
 
+    if (mModelConfig.contains("builder_config"))
+    {
+        ActionBuilderConfig const exportedConfig = ActionBuilderConfig::fromJson(mModelConfig["builder_config"]);
+        if (mBuilderConfig.maxKVCacheCapacity == 0)
+        {
+            mBuilderConfig.maxKVCacheCapacity = exportedConfig.maxKVCacheCapacity;
+        }
+    }
+
     return true;
 }
 
+namespace
+{
+
+int32_t findInputDim(nvinfer1::INetworkDefinition const& network, std::string const& inputName, int32_t dim)
+{
+    for (int32_t i = 0; i < network.getNbInputs(); ++i)
+    {
+        auto const* input = network.getInput(i);
+        if (input != nullptr && inputName == input->getName())
+        {
+            auto const dims = input->getDimensions();
+            return dim < dims.nbDims ? static_cast<int32_t>(dims.d[dim]) : 0;
+        }
+    }
+    return 0;
+}
+
+} // namespace
+
 bool ActionBuilder::setupActionOptimizationProfile(
+    nvinfer1::IBuilder& builder, nvinfer1::IBuilderConfig& config, nvinfer1::INetworkDefinition const& network)
+{
+    if (findInputDim(network, binding_names::formatKCacheName(0, true), 2) > 0)
+    {
+        return setupDenseActionOptimizationProfile(builder, config, network);
+    }
+    return setupPagedActionOptimizationProfile(builder, config, network);
+}
+
+bool ActionBuilder::setupDenseActionOptimizationProfile(
     nvinfer1::IBuilder& builder, nvinfer1::IBuilderConfig& config, nvinfer1::INetworkDefinition const& network)
 {
     auto* profile = builder.createOptimizationProfile();
@@ -190,6 +231,37 @@ bool ActionBuilder::setupActionOptimizationProfile(
 
     mBuilderConfig.maxKVCacheCapacity = maxKVCacheCapacity;
 
+    // Alpamayo action graphs may use kvcache_start_index as both an execution
+    // tensor and a shape tensor. The dimensions above describe its batch
+    // extent; shape values cover the live KV-length range.
+    nvinfer1::ITensor const* kvCacheStartInput = nullptr;
+    for (int32_t i = 0; i < network.getNbInputs(); ++i)
+    {
+        auto const* input = network.getInput(i);
+        if (std::string(input->getName()) == binding_names::kKVCacheStartIndex)
+        {
+            kvCacheStartInput = input;
+            break;
+        }
+    }
+    if (kvCacheStartInput != nullptr && kvCacheStartInput->isShapeTensor())
+    {
+        if (mBuilderConfig.maxBatchSize != 1)
+        {
+            LOG_ERROR("A shape-tensor kvcache_start_index currently supports action maxBatchSize=1 only");
+            return false;
+        }
+        int64_t const minKVLength{0};
+        int64_t const optKVLength{maxKVCacheCapacity / 2};
+        int64_t const maxKVLength{maxKVCacheCapacity};
+        result &= profile->setShapeValuesV2(
+            binding_names::kKVCacheStartIndex, nvinfer1::OptProfileSelector::kMIN, &minKVLength, 1);
+        result &= profile->setShapeValuesV2(
+            binding_names::kKVCacheStartIndex, nvinfer1::OptProfileSelector::kOPT, &optKVLength, 1);
+        result &= profile->setShapeValuesV2(
+            binding_names::kKVCacheStartIndex, nvinfer1::OptProfileSelector::kMAX, &maxKVLength, 1);
+    }
+
     nvinfer1::Dims minCacheDims = createDims({1, mNumHeads, maxKVCacheCapacity, mHeadDim});
     nvinfer1::Dims optCacheDims = createDims({mBuilderConfig.maxBatchSize, mNumHeads, maxKVCacheCapacity, mHeadDim});
     nvinfer1::Dims maxCacheDims = createDims({mBuilderConfig.maxBatchSize, mNumHeads, maxKVCacheCapacity, mHeadDim});
@@ -200,6 +272,112 @@ bool ActionBuilder::setupActionOptimizationProfile(
             profile, binding_names::formatKCacheName(i, true).c_str(), minCacheDims, optCacheDims, maxCacheDims);
         result &= setOptimizationProfile(
             profile, binding_names::formatVCacheName(i, true).c_str(), minCacheDims, optCacheDims, maxCacheDims);
+    }
+
+    if (!result)
+    {
+        LOG_ERROR("Failed to setup action optimization profile");
+        return false;
+    }
+
+    LOG_DEBUG("%s", printOptimizationProfile(profile, "action_profile", &network).c_str());
+    config.addOptimizationProfile(profile);
+
+    return true;
+}
+
+bool ActionBuilder::setupPagedActionOptimizationProfile(
+    nvinfer1::IBuilder& builder, nvinfer1::IBuilderConfig& config, nvinfer1::INetworkDefinition const& network)
+{
+    auto* profile = builder.createOptimizationProfile();
+    bool result = true;
+
+    // query_lengths/past_lengths/attention_sequence_lengths: [batch]
+    result &= setOptimizationProfile(profile, binding_names::kQueryLengths, createDims({1}),
+        createDims({mBuilderConfig.maxBatchSize}), createDims({mBuilderConfig.maxBatchSize}));
+    result &= setOptimizationProfile(profile, binding_names::kPastLengths, createDims({1}),
+        createDims({mBuilderConfig.maxBatchSize}), createDims({mBuilderConfig.maxBatchSize}));
+    result &= setOptimizationProfile(profile, binding_names::kAttentionSequenceLengths, createDims({1}),
+        createDims({mBuilderConfig.maxBatchSize}), createDims({mBuilderConfig.maxBatchSize}));
+    result &= setOptimizationProfile(profile, binding_names::kQueryStartOffsets, createDims({2}),
+        createDims({mBuilderConfig.maxBatchSize + 1}), createDims({mBuilderConfig.maxBatchSize + 1}));
+    result &= setOptimizationProfile(profile, binding_names::kContextMaskSelector, createDims({1}),
+        createDims({mBuilderConfig.maxBatchSize}), createDims({mBuilderConfig.maxBatchSize}));
+    int32_t const denoisePhaseExtent = static_cast<int32_t>(rt::ExecutionPhase::kDiffusionDenoise);
+    result &= setOptimizationProfile(profile, binding_names::kExecutionPhaseMarker, createDims({denoisePhaseExtent}),
+        createDims({denoisePhaseExtent}), createDims({denoisePhaseExtent}));
+    result &= setOptimizationProfile(
+        profile, binding_names::kContextSequenceCountCarrier, createDims({0}), createDims({0}), createDims({0}));
+
+    // noise_trajectory: [batch, num_waypoints, 2]
+    result &= setOptimizationProfile(profile, binding_names::kNoiseTrajectory, createDims({1, mNumDiffusionTokens, 2}),
+        createDims({mBuilderConfig.maxBatchSize, mNumDiffusionTokens, 2}),
+        createDims({mBuilderConfig.maxBatchSize, mNumDiffusionTokens, 2}));
+
+    // rope_rotary_cos_sin: [batch, num_diffusion_tokens, head_dim]
+    result
+        &= setOptimizationProfile(profile, binding_names::kRopeCosSin, createDims({1, mNumDiffusionTokens, mHeadDim}),
+            createDims({mBuilderConfig.maxBatchSize, mNumDiffusionTokens, mHeadDim}),
+            createDims({mBuilderConfig.maxBatchSize, mNumDiffusionTokens, mHeadDim}));
+
+    std::string const kvPool0Name = binding_names::formatKVCacheName(0, true);
+    int32_t const exportedKVPoolPages = findInputDim(network, kvPool0Name, 1);
+    int32_t const exportedMaxPrefixPagesPerSeq = findInputDim(network, binding_names::kKVPageTable, 2);
+    if (exportedKVPoolPages == 0 || exportedMaxPrefixPagesPerSeq == 0)
+    {
+        LOG_ERROR("Cannot infer paged action KV geometry. Do you have past_key_values_0 and kv_page_table inputs?");
+        return false;
+    }
+
+    if (mBuilderConfig.maxKVCacheCapacity <= 0)
+    {
+        LOG_ERROR("Action builder requires builder_config.max_kv_cache_capacity in the exported config.json.");
+        return false;
+    }
+    ELLM_CHECK(mNumDiffusionTokens > 0 && mNumDiffusionTokens <= rt::kMAX_KV_CACHE_CAPACITY - rt::kTOKENS_PER_PAGE,
+        "Action token count exceeds the supported page-aligned capacity.");
+    ELLM_CHECK(mBuilderConfig.maxKVCacheCapacity <= rt::kMAX_KV_CACHE_CAPACITY - mNumDiffusionTokens,
+        "Action prefix plus action tokens exceed the supported page-aligned capacity.");
+    LLMBuilderConfig poolConfig;
+    poolConfig.maxBatchSize = mBuilderConfig.maxBatchSize;
+    poolConfig.maxKVCacheCapacity = mBuilderConfig.maxKVCacheCapacity;
+    poolConfig.maxKVPoolPages = mBuilderConfig.maxKVPoolPages;
+    int32_t const prefixPoolPages = static_cast<int32_t>(poolConfig.resolvedKVPoolPages());
+    int32_t const maxPrefixPagesPerSeq = rt::computeMaxPagesPerSeq(mBuilderConfig.maxKVCacheCapacity);
+    if ((exportedKVPoolPages > 0 && exportedKVPoolPages != prefixPoolPages)
+        || (exportedMaxPrefixPagesPerSeq > 0 && exportedMaxPrefixPagesPerSeq != maxPrefixPagesPerSeq))
+    {
+        LOG_ERROR("Action ONNX fixed KV dimensions do not match builder_config. Re-export with matching capacity.");
+        return false;
+    }
+    mBuilderConfig.maxKVPoolPages = prefixPoolPages;
+
+    nvinfer1::Dims const minPageTableDims = createDims({1, 2, maxPrefixPagesPerSeq});
+    nvinfer1::Dims const optPageTableDims = createDims({mBuilderConfig.maxBatchSize, 2, maxPrefixPagesPerSeq});
+    nvinfer1::Dims const maxPageTableDims = createDims({mBuilderConfig.maxBatchSize, 2, maxPrefixPagesPerSeq});
+    result &= setOptimizationProfile(
+        profile, binding_names::kKVPageTable, minPageTableDims, optPageTableDims, maxPageTableDims);
+
+    nvinfer1::Dims const cacheDims = createDims({2, prefixPoolPages, rt::kTOKENS_PER_PAGE, mNumHeads, mHeadDim});
+
+    for (int32_t i = 0; i < mNumLayers; ++i)
+    {
+        result &= setOptimizationProfile(
+            profile, binding_names::formatKVCacheName(i, true).c_str(), cacheDims, cacheDims, cacheDims);
+    }
+
+    int32_t const scratchPagesPerSeq = rt::computeMaxPagesPerSeq(mNumDiffusionTokens);
+    int64_t const scratchPageCount = mBuilderConfig.maxBatchSize * static_cast<int64_t>(scratchPagesPerSeq);
+    ELLM_CHECK(scratchPageCount <= rt::kMAX_KV_POOL_PAGES, "Action scratch page count exceeds supported capacity.");
+    int32_t const scratchPages = static_cast<int32_t>(scratchPageCount);
+    result &= setOptimizationProfile(profile, binding_names::kActionPageTable, createDims({1, 2, scratchPagesPerSeq}),
+        createDims({mBuilderConfig.maxBatchSize, 2, scratchPagesPerSeq}),
+        createDims({mBuilderConfig.maxBatchSize, 2, scratchPagesPerSeq}));
+    auto const scratchDims = createDims({2, scratchPages, rt::kTOKENS_PER_PAGE, mNumHeads, mHeadDim});
+    for (int32_t layer = 0; layer < mNumLayers; ++layer)
+    {
+        result &= setOptimizationProfile(
+            profile, binding_names::formatActionKVCacheName(layer).c_str(), scratchDims, scratchDims, scratchDims);
     }
 
     if (!result)

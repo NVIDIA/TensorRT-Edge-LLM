@@ -60,7 +60,9 @@ from ..external_weights import (externalize_model_weights,
                                 reject_quantized_lm_head_externalization,
                                 resolve_externalize_weights)
 from ..models.default.modeling_default import CausalLM
+from ..models.ops import nvfp4_a16_export_target_sm
 from .dynamo_translations import build_custom_translation_table
+from .onnx_custom_schemas import _attention_plugin_schema
 
 _ATTENTION_SINK_INIT_PREFIX = "attention_sinks_fp32"
 
@@ -82,6 +84,7 @@ def export_onnx(
     externalize_weights=None,
     config_filename: str = "config.json",
     write_shared_artifacts: bool = True,
+    fp8_ple: bool = False,
 ) -> None:
     """Export *model* to ONNX using the dynamo exporter.
 
@@ -95,7 +98,7 @@ def export_onnx(
         model_dir:   Checkpoint directory (for tokenizer file copying).
                      If empty, tokenizer files are skipped.
         fp8_embedding: Quantize embedding.safetensors to FP8 E4M3 with
-                       per-row block scales.
+                       one FP32 per-tensor scale.
         reduced_vocab_dir: Directory containing ``vocab_map.safetensors``
                            when reduced vocabulary is enabled.
         externalize_weights: Iterable of weight kinds to expose as fixed-shape
@@ -110,10 +113,18 @@ def export_onnx(
         write_shared_artifacts: Emit shared embedding/tokenizer files. Set to
                                 False on non-rank-0 per-rank exports to avoid
                                 redundant rewrites of identical sidecar files.
+        fp8_ple: Quantize the Gemma4 or Qwen4-Exp PLE table to per-tensor
+                 FP8 at export time.
     """
     out_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(out_dir, exist_ok=True)
     model.eval()
+    if fp8_ple and not model_dir:
+        raise ValueError(
+            "FP8 PLE export requires the source checkpoint directory")
+    if model_dir:
+        from ..checkpoint.embedding_quantization import prepare_ple_export
+        prepare_ple_export(model, model_dir, out_dir, fp8_ple)
 
     requested_external_weights = resolve_externalize_weights(
         externalize_weights)
@@ -149,14 +160,19 @@ def _fix_nvfp4_weight_dtype(onnx_path: str) -> None:
     type with logical shape [out, in] -- same bytes, different ONNX element type
     and shape declaration.
 
-    This pass finds all int8 initialisers whose name ends with ``.weight``
-    (NVFP4 linear weights) and rewrites them:
+    This pass finds the int8 initialisers whose name ends with ``.weight``
+    (NVFP4 linear weights) and that no INT4 GEMM plugin consumes, and rewrites
+    them:
       elem_type  INT8  -> FLOAT4E2M1 (23)
       dims       [N, M] -> [N, M*2]   (double the last dim -- nibble unpacking)
+    The value_info of each dequantize output fed by such a weight gets the
+    unpacked dims and the element type the node produces (fp32 for the dense
+    ``DequantizeLinear``, the ``output_dtype`` of ``TRT_BlockDequantize``).
     """
     _FLOAT4E2M1 = 23  # ONNX TensorProto.FLOAT4E2M1
     _INT8 = 3  # ONNX TensorProto.INT8
     _FLOAT = 1  # ONNX TensorProto.FLOAT
+    _FLOAT16 = 10  # ONNX TensorProto.FLOAT16
 
     model = onnx.load(onnx_path, load_external_data=False)
     value_infos = {
@@ -180,10 +196,33 @@ def _fix_nvfp4_weight_dtype(onnx_path: str) -> None:
     changed = 0
     fixed_value_infos = 0
     fp4_weight_dims = {}
+    # Stacked NVFP4 MoE expert weights for the TRT-native W4A8 and W4A4 arms
+    # (``Qwen3SparseMoeBlock._prepare_native_moe_weights`` and
+    # ``_prepare_native_moe_w4a4_weights``,
+    # ``NemotronHMoEMLP._prepare_for_export_native`` and
+    # ``_prepare_for_export_native_w4a4``). They are plain buffers, so their
+    # initializer names do not end in ".weight", but they are packed FP4
+    # exactly like the dense linear weights and need the same INT8 ->
+    # FLOAT4E2M1 reinterpretation.
+    _MOE_FP4_BUFFERS = ("nvfp4_gate_weight", "nvfp4_up_weight",
+                        "nvfp4_down_weight")
+    # Plugins that read packed INT8 weights, e.g. an INT4 lm_head in an NVFP4
+    # mixed-precision model.
+    _PACKED_WEIGHT_OPS = ("Q8_0LinearPlugin", "Int4GroupwiseGemmPlugin",
+                          "Int4GroupwiseGemmPluginV2")
+    packed_linear_weights = {
+        name
+        for node in model.graph.node if node.op_type in _PACKED_WEIGHT_OPS
+        for name in node.input[1:]
+    }
+
     for init in model.graph.initializer:
-        # Only NVFP4 tensors whose name ends with ".weight" (not scale / qweight).
-        if (not init.name.endswith(".weight") or "scale" in init.name
-                or "qweight" in init.name):
+        # Only NVFP4 tensors whose name ends with ".weight" (not scale /
+        # qweight), plus the stacked MoE FP4 expert buffers.
+        is_fp4_name = (init.name.endswith(".weight")
+                       or init.name.endswith(_MOE_FP4_BUFFERS))
+        if (not is_fp4_name or init.name in packed_linear_weights
+                or "scale" in init.name or "qweight" in init.name):
             continue
         if len(init.dims) < 1:
             continue
@@ -205,15 +244,42 @@ def _fix_nvfp4_weight_dtype(onnx_path: str) -> None:
     if not fp4_weight_dims:
         return
 
+    initializer_dtypes = {
+        init.name: init.data_type
+        for init in model.graph.initializer
+    }
+
+    def _dequant_output_dtype(node) -> int:
+        """Element type the dequantize node produces.
+
+        The dense NVFP4 linears use the standard ``DequantizeLinear`` with an
+        fp32 per-block scale (float32 out, cast to fp16 afterwards). The
+        TRT-native MoE experts use ``TRT_BlockDequantize`` with an fp16 block
+        scale and an explicit ``output_dtype`` (fp16 out, fed to ``TRT_MoE``
+        directly), so their value_info must say fp16.
+        """
+        if node.op_type == "TRT_BlockDequantize":
+            for attr in node.attribute:
+                if attr.name == "output_dtype":
+                    return int(attr.i)
+            if len(node.input) > 1:  # the output type follows the scale
+                return initializer_dtypes.get(node.input[1], _FLOAT16)
+            return _FLOAT16
+        return _FLOAT
+
     for node in model.graph.node:
-        if node.op_type != "DequantizeLinear" or not node.input:
+        # TRT_BlockDequantize is the MoE weight path (it carries an explicit
+        # block_shape, which Myelin's moe lowering requires).
+        if node.op_type not in ("DequantizeLinear",
+                                "TRT_BlockDequantize") or not node.input:
             continue
         weight_dims = fp4_weight_dims.get(node.input[0])
         if weight_dims is None:
             continue
+        out_dtype = _dequant_output_dtype(node)
         for output_name in node.output:
             fixed_value_infos += int(
-                _set_value_info(output_name, _FLOAT, weight_dims))
+                _set_value_info(output_name, out_dtype, weight_dims))
 
     if changed:
         logger.info("TRT fix: reinterpreted %d NVFP4 weight(s) as FLOAT4E2M1",
@@ -234,6 +300,39 @@ def _fix_nvfp4_weight_dtype(onnx_path: str) -> None:
     )
 
 
+def _encode_fp8_kv_cache_as_int8(onnx_path: str) -> None:
+    """Represent FP8 KV-cache graph I/O as raw INT8 E4M3 bytes.
+
+    TensorRT cannot expose FP8 bindings on Ampere. The attention plugin's
+    ``enable_fp8_kv_cache`` attribute defines the byte encoding, so INT8 is a
+    transport type and does not change cache quantization semantics.
+    """
+    model = onnx.load(onnx_path, load_external_data=False)
+    changed = 0
+    for value in (list(model.graph.input) + list(model.graph.output) +
+                  list(model.graph.value_info)):
+        if not value.name.startswith(
+            ("past_key_values_", "present_key_values_")):
+            continue
+        tensor_type = value.type.tensor_type
+        if tensor_type.elem_type == onnx.TensorProto.FLOAT8E4M3FN:
+            tensor_type.elem_type = onnx.TensorProto.INT8
+            changed += 1
+    if not changed:
+        return
+    logger.info("TRT fix: represented %d FP8 KV-cache value(s) as INT8 bytes",
+                changed)
+    data_file = os.path.basename(onnx_path) + ".data"
+    onnx.save_model(
+        model,
+        onnx_path,
+        save_as_external_data=True,
+        all_tensors_to_one_file=True,
+        location=data_file,
+        size_threshold=0,
+    )
+
+
 def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
     """Strip disabled optional inputs from AttentionPlugin ONNX nodes.
 
@@ -243,15 +342,27 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
     that relative order, with disabled groups removed from the ONNX node input
     list.
     """
-    _NUM_REQUIRED = 6
-    _GAMMA_POSITIONS = (6, 7)
-    _CONTEXT_MASK_SELECTOR_POSITION = 8
-    _ATTENTION_MASK_POSITION = 9
-    _ATTENTION_POS_ID_POSITION = 10
-    _SKIP_SCALE_POSITION = 11
-    _SWA_KV_CACHE_MODE_POSITION = 12
-    _ATTENTION_SINKS_POSITION = 13
-    _TOKEN_METADATA_POSITIONS = range(14, 18)
+    # Node input positions as the translation emits them: the schema's input
+    # order, with the four token-metadata inputs and the two prefix inputs as
+    # groups.
+    position = {
+        param.name: index
+        for index, param in enumerate(_attention_plugin_schema.inputs)
+    }
+    _NUM_REQUIRED = position["q_norm_gamma"]
+    _GAMMA_POSITIONS = (position["q_norm_gamma"], position["k_norm_gamma"])
+    _CONTEXT_MASK_SELECTOR_POSITION = position["context_mask_selector"]
+    _ATTENTION_MASK_POSITION = position["attention_mask"]
+    _ATTENTION_POS_ID_POSITION = position["attention_pos_id"]
+    _SKIP_PREFILL_SCALE_POSITION = position["skip_softmax_prefill_scale"]
+    _SKIP_DECODE_SCALE_POSITION = position["skip_softmax_decode_scale"]
+    _SWA_KV_CACHE_MODE_POSITION = position["swa_kv_cache_mode"]
+    _ATTENTION_SINKS_POSITION = position["attention_sinks"]
+    _TOKEN_METADATA_POSITIONS = range(
+        position["query_start_offsets"],
+        position["context_sequence_count_carrier"] + 1)
+    _PREFIX_KV_POSITIONS = (position["prefix_key_value"],
+                            position["prefix_page_table"])
     model = onnx.load(onnx_path, load_external_data=False)
     changed = 0
     mode_shape_changed = False
@@ -260,8 +371,8 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
         if graph_input.name != "swa_kv_cache_mode":
             continue
         tensor_type = graph_input.type.tensor_type
-        if tensor_type.elem_type != onnx.TensorProto.INT8:
-            raise ValueError("swa_kv_cache_mode must be an INT8 tensor")
+        if tensor_type.elem_type != onnx.TensorProto.INT32:
+            raise ValueError("swa_kv_cache_mode must be an INT32 tensor")
         if len(tensor_type.shape.dim) != 1:
             raise ValueError("swa_kv_cache_mode must be a 1-D tensor")
         mode_dim = tensor_type.shape.dim[0]
@@ -294,10 +405,15 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
             (a.i for a in node.attribute if a.name == "enable_attention_sink"),
             0,
         )
-        skip_scale_factor = next(
-            (a.f
-             for a in node.attribute if a.name == "skip_softmax_scale_factor"),
-            0.0,
+        skip_prefill_input = next(
+            (a.i for a in node.attribute
+             if a.name == "skip_softmax_prefill_input"),
+            0,
+        )
+        skip_decode_input = next(
+            (a.i
+             for a in node.attribute if a.name == "skip_softmax_decode_input"),
+            0,
         )
         inputs = list(node.input)
 
@@ -319,13 +435,14 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
             ])
         if vision_block_attn:
             new_inputs.append(get_input(_ATTENTION_MASK_POSITION))
-        # Trailing runtime skip-softmax override carrier (shape-only INT8 input),
-        # emitted last by the translation; kept iff skip-softmax is enabled
-        # (scale factor > 0).
-        if skip_scale_factor > 0.0:
-            skip_input = get_input(_SKIP_SCALE_POSITION)
-            if skip_input:
-                new_inputs.append(skip_input)
+        if skip_prefill_input:
+            skip_prefill_table = get_input(_SKIP_PREFILL_SCALE_POSITION)
+            if skip_prefill_table:
+                new_inputs.append(skip_prefill_table)
+        if skip_decode_input:
+            skip_decode_table = get_input(_SKIP_DECODE_SCALE_POSITION)
+            if skip_decode_table:
+                new_inputs.append(skip_decode_table)
         # The final shape-only policy input is the single source of truth for
         # bounded SWA capability. Materialize the corresponding TensorRT plugin
         # field only after optional inputs have been normalized.
@@ -355,6 +472,8 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
         elif sink_input:
             dropped_const_tensors.add(sink_input)
         new_inputs.extend(get_input(i) for i in _TOKEN_METADATA_POSITIONS)
+        if any(a.name == "external_kv_prefix" and a.i for a in node.attribute):
+            new_inputs.extend(get_input(i) for i in _PREFIX_KV_POSITIONS)
         if new_inputs != inputs:
             del node.input[:]
             node.input.extend(new_inputs)
@@ -387,13 +506,15 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
             if init.name in dropped_const_tensors and init.name not in consumed:
                 model.graph.initializer.remove(init)
 
-    # Drop the graph-level skip_softmax_scale input when no node consumes it
-    # any more (skip_softmax_scale_factor == 0 everywhere): a dangling ONNX
-    # graph input still becomes a TRT network input, so the dense engine would
-    # carry the binding it is supposed to be free of.
+    # Drop the graph-level skip-softmax table inputs no node consumes any more
+    # (skip_softmax_prefill_input == 0 / skip_softmax_decode_input == 0
+    # everywhere): a dangling ONNX graph input still becomes a TRT network
+    # input, so the dense engine would carry the binding it is supposed to be
+    # free of.
     consumed_inputs = {i for n in model.graph.node for i in n.input}
     for graph_input in list(model.graph.input):
-        if (graph_input.name == "skip_softmax_scale"
+        if (graph_input.name
+                in ("skip_softmax_prefill_scale", "skip_softmax_decode_scale")
                 and graph_input.name not in consumed_inputs):
             model.graph.input.remove(graph_input)
             changed += 1
@@ -596,6 +717,21 @@ def _count_shared_dql_scale_duplicates(model) -> int:
     return duplicated
 
 
+def _fp32_consumer_initializer_names(model, elem_types: dict) -> set:
+    """Initializers consumed by a standard ONNX op whose exporter-typed output is FLOAT.
+
+    ``Cast`` is excluded because its output dtype does not follow its input.
+    """
+    init_names = {init.name for init in model.graph.initializer}
+    names: set = set()
+    for node in model.graph.node:
+        if node.domain not in ("", "ai.onnx") or node.op_type == "Cast":
+            continue
+        if any(elem_types.get(name) == 1 for name in node.output):  # FLOAT
+            names.update(name for name in node.input if name in init_names)
+    return names
+
+
 def _initializer_dtype_fixup_required(
     model,
     dedup_dql_scales: bool,
@@ -603,6 +739,7 @@ def _initializer_dtype_fixup_required(
     preserve_fp32_patterns: "tuple[str, ...]",
     match_fp32_matmul_initializers: bool,
     match_fp32_elementwise_initializers: bool,
+    match_fp32_consumer_initializers: bool = False,
 ) -> bool:
     if dedup_dql_scales and _count_shared_dql_scale_duplicates(model) > 0:
         return True
@@ -623,6 +760,8 @@ def _initializer_dtype_fixup_required(
                     plugin_fp32_init_names.add(node.input[input_idx])
         if node.op_type == "Fp16MoePlugin" and len(node.input) > 4:
             plugin_fp32_init_names.add(node.input[4])
+        if node.op_type == "W2A16MoePlugin" and len(node.input) > 5:
+            plugin_fp32_init_names.add(node.input[5])
         if node.op_type == "AttentionPlugin":
             plugin_fp32_init_names.update(
                 name for name in node.input
@@ -630,7 +769,8 @@ def _initializer_dtype_fixup_required(
 
     init_map = {init.name: init for init in model.graph.initializer}
     elem_types: dict[str, int] = {}
-    if match_fp32_matmul_initializers or match_fp32_elementwise_initializers:
+    if (match_fp32_matmul_initializers or match_fp32_elementwise_initializers
+            or match_fp32_consumer_initializers):
         for value in (list(model.graph.input) + list(model.graph.value_info) +
                       list(model.graph.output)):
             tensor_type = value.type.tensor_type
@@ -664,6 +804,11 @@ def _initializer_dtype_fixup_required(
                 if elem_types.get(node.input[other_idx]) == 1:  # FLOAT
                     elementwise_fp32_init_names.add(init.name)
 
+    consumer_fp32_init_names: set = set()
+    if match_fp32_consumer_initializers:
+        consumer_fp32_init_names = _fp32_consumer_initializer_names(
+            model, elem_types)
+
     def _is_preserved_fp32(init_name: str) -> bool:
         return any(p in init_name for p in preserve_fp32_patterns)
 
@@ -688,6 +833,8 @@ def _initializer_dtype_fixup_required(
             if init.name in matmul_fp32_init_names:
                 continue
             if init.name in elementwise_fp32_init_names:
+                continue
+            if init.name in consumer_fp32_init_names:
                 continue
             return True
 
@@ -763,6 +910,49 @@ def _permissive_inline_opset():
         InlinePass._instantiate_call = _orig  # type: ignore[method-assign]
 
 
+def _buffer_scalar(buffer) -> float:
+    return float(buffer.item()) if buffer is not None else 1.0
+
+
+def _attach_shared_kv_fp8_scales(model: "torch.nn.Module") -> None:
+    attention_modules = [
+        module for module in model.modules()
+        if getattr(module, "enable_fp8_kv_cache", False)
+        and hasattr(module, "layer_idx") and hasattr(module, "attention_type")
+        and hasattr(module, "is_kv_shared")
+    ]
+    if not attention_modules:
+        return
+    donors_by_type = {}
+    for module in sorted(attention_modules,
+                         key=lambda attn: int(attn.layer_idx)):
+        attention_type = str(module.attention_type)
+        if not getattr(module, "is_kv_shared", False):
+            donors_by_type[attention_type] = module
+            continue
+
+        donor = donors_by_type.get(attention_type)
+        if donor is None:
+            raise RuntimeError(
+                "FP8 shared-KV attention is missing its donor layer: "
+                f"layer={module.layer_idx}, type={attention_type}.")
+        donor_scales = getattr(donor, "_qkv_scales_float", None)
+        consumer_scales = getattr(module, "_qkv_scales_float", None)
+        if donor_scales is None or len(donor_scales) != 3:
+            raise RuntimeError(
+                "FP8 shared-KV donor is missing Q/K/V export scales: "
+                f"layer={donor.layer_idx}, type={attention_type}.")
+        if consumer_scales is None or len(consumer_scales) != 3:
+            raise RuntimeError(
+                "FP8 shared-KV consumer is missing Q/K/V export scales: "
+                f"layer={module.layer_idx}, type={attention_type}.")
+        module._qkv_scales_float = [
+            float(consumer_scales[0]),
+            float(donor_scales[1]),
+            float(donor_scales[2]),
+        ]
+
+
 def setup_fp8_qkv_scales_for_export(model: "torch.nn.Module") -> None:
     """Pre-cache FP8 Q/K/V scales as Python floats before torch.export tracing.
 
@@ -782,7 +972,8 @@ def setup_fp8_qkv_scales_for_export(model: "torch.nn.Module") -> None:
                   quantization frontend), else ``q_proj.q_scale`` (LLM
                   convention), else 1.0
       - k_scale : ``k_proj.k_scale`` buffer value if present, else 1.0
-      - v_scale : ``v_proj.v_scale`` buffer value if present, else 1.0
+      - v_scale : ``v_proj.v_scale`` buffer value if present, else K scale
+                  when ``attention_k_eq_v`` writes V from K, else 1.0
     """
     for module in model.modules():
         if not (getattr(module, "enable_fp8_kv_cache", False)
@@ -800,13 +991,15 @@ def setup_fp8_qkv_scales_for_export(model: "torch.nn.Module") -> None:
             q_buf = getattr(getattr(module, "q_proj", None), "q_scale", None)
         k_buf = getattr(getattr(module, "k_proj", None), "k_scale", None)
         v_buf = getattr(getattr(module, "v_proj", None), "v_scale", None)
-        if v_buf is None and getattr(module, "attention_k_eq_v", False):
+        if getattr(module, "attention_k_eq_v",
+                   False) and (v_buf is None or v_buf.isnan().any()):
             v_buf = k_buf
         module._qkv_scales_float = [
-            float(q_buf.item()) if q_buf is not None else 1.0,
-            float(k_buf.item()) if k_buf is not None else 1.0,
-            float(v_buf.item()) if v_buf is not None else 1.0,
+            _buffer_scalar(q_buf),
+            _buffer_scalar(k_buf),
+            _buffer_scalar(v_buf),
         ]
+    _attach_shared_kv_fp8_scales(model)
 
 
 def _capture_qk_norm_gammas_for_export(model: "CausalLM") -> None:
@@ -832,6 +1025,22 @@ def _capture_qk_norm_gammas_for_export(model: "CausalLM") -> None:
                 f"{type(module).__name__}: the module has q_norm/k_norm "
                 "weights but no gamma values were captured — the export "
                 "would silently drop the fused qk_norm.")
+        # Same contract for a sparse-attention indexer's own norms, which the
+        # check above does not reach. Gated on the submodule actually being
+        # there so models without an indexer are unaffected.
+        indexer = getattr(module, "indexer", None)
+        indexer_has_norm = (getattr(indexer, "q_layernorm", None) is not None
+                            or getattr(indexer, "k_layernorm",
+                                       None) is not None)
+        indexer_captured = bool(
+            getattr(module, "_indexer_q_norm_gamma_list", None)
+            or getattr(module, "_indexer_k_norm_gamma_list", None))
+        if indexer_has_norm and not indexer_captured:
+            raise RuntimeError(
+                "indexer qk_norm gamma capture failed for "
+                f"{type(module).__name__}: the indexer has q_layernorm/"
+                "k_layernorm weights but no gamma values were captured — the "
+                "export would silently drop the indexer norm.")
 
 
 def _capture_attention_sinks_for_export(model: "CausalLM") -> None:
@@ -855,6 +1064,7 @@ def _fix_initializer_dtypes(
     preserve_fp32_patterns: "tuple[str, ...]" = (),
     match_fp32_matmul_initializers: bool = False,
     match_fp32_elementwise_initializers: bool = False,
+    match_fp32_consumer_initializers: bool = False,
 ) -> None:
     """Single-pass ONNX initializer fixup for TRT compatibility.
 
@@ -889,6 +1099,12 @@ def _fix_initializer_dtypes(
        dynamo exporter folding float32 buffers (e.g. RoPE ``inv_freq``)
        into FP16 initializers — TRT rejects mixed-type element-wise ops.
        Used by the DFlash draft model export.
+
+    5. **FP32 consumer matching** (when *match_fp32_consumer_initializers*
+       is True): skip the FP32→FP16 downgrade for initializers consumed by
+       any standard ONNX op with an FP32 output (see
+       :func:`_fp32_consumer_initializer_names`), e.g. folded FP32 constants
+       feeding ``Expand`` or ``LayerNormalization`` in an FP32 head.
     """
     import numpy as np
 
@@ -902,6 +1118,7 @@ def _fix_initializer_dtypes(
             match_fp32_matmul_initializers=match_fp32_matmul_initializers,
             match_fp32_elementwise_initializers=
             match_fp32_elementwise_initializers,
+            match_fp32_consumer_initializers=match_fp32_consumer_initializers,
     ):
         logger.info(
             "_fix_initializer_dtypes: no dtype fixup required; skipped "
@@ -950,7 +1167,8 @@ def _fix_initializer_dtypes(
 
     init_map = {init.name: init for init in model.graph.initializer}
     elem_types: dict[str, int] = {}
-    if match_fp32_matmul_initializers or match_fp32_elementwise_initializers:
+    if (match_fp32_matmul_initializers or match_fp32_elementwise_initializers
+            or match_fp32_consumer_initializers):
         for value in (list(model.graph.input) + list(model.graph.value_info) +
                       list(model.graph.output)):
             tensor_type = value.type.tensor_type
@@ -984,6 +1202,11 @@ def _fix_initializer_dtypes(
                     continue
                 if elem_types.get(node.input[other_idx]) == 1:  # FLOAT
                     elementwise_fp32_init_names.add(init.name)
+
+    consumer_fp32_init_names: set = set()
+    if match_fp32_consumer_initializers:
+        consumer_fp32_init_names = _fp32_consumer_initializer_names(
+            model, elem_types)
 
     def _is_preserved_fp32(init_name: str) -> bool:
         """Does ``init_name`` match any caller-supplied preserve pattern?"""
@@ -1024,6 +1247,11 @@ def _fix_initializer_dtypes(
         if init.name in elementwise_fp32_init_names:
             logger.info(
                 "_fix_initializer_dtypes: %s %s kept FP32 (element-wise FP32 input)",
+                init.name, list(init.dims))
+            continue
+        if init.name in consumer_fp32_init_names:
+            logger.info(
+                "_fix_initializer_dtypes: %s %s kept FP32 (FP32 consumer)",
                 init.name, list(init.dims))
             continue
         dims = list(init.dims)
@@ -1177,8 +1405,14 @@ def _export_model(
                             match_fp32_elementwise_initializers=bool(
                                 getattr(model,
                                         "match_fp32_elementwise_initializers",
+                                        False)),
+                            match_fp32_consumer_initializers=bool(
+                                getattr(model,
+                                        "match_fp32_consumer_initializers",
                                         False)))
     _strip_attention_plugin_optional_inputs(output_path)
+    if nvfp4_a16_export_target_sm() in (80, 86, 87):
+        _encode_fp8_kv_cache_as_int8(output_path)
     # Must run after every pass that re-saves with save_as_external_data
     # (which can re-materialize stray payloads on zero-volume tensors).
     _fix_zero_volume_initializers(output_path)

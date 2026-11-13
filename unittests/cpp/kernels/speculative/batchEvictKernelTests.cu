@@ -24,7 +24,6 @@
 
 using namespace trt_edgellm;
 using namespace trt_edgellm::kernel;
-using namespace nvinfer1;
 
 // ============================================================================
 // Helper Functions

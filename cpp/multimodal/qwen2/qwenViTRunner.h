@@ -18,8 +18,12 @@
 #pragma once
 
 #include "multimodal/common/multimodalRunner.h"
+#include <array>
+#include <cstddef>
 #include <cuda_fp16.h>
 #include <nlohmann/json.hpp>
+#include <optional>
+#include <utility>
 #include <vector>
 
 namespace trt_edgellm
@@ -59,6 +63,15 @@ struct VisionSpan
 {
     LlmVisionBlock llm{};
     VitFrameGrid vit{};
+};
+
+//! Full-request geometry and contiguous TP2 image shards shared by preprocessing and gathering.
+struct VisionDpPlan
+{
+    std::vector<VisionSpan> spans;
+    std::vector<int64_t> spansPerRequest;
+    size_t splitIndex{0};                 //!< First image assigned to rank 1.
+    std::array<int64_t, 2> tokenCounts{}; //!< Visual token counts in rank order.
 };
 
 //! \brief Configuration for Qwen-VL vision encoder
@@ -101,10 +114,11 @@ public:
     //! \param[in] llmMaxBatchSize Maximum batch size from LLM engine
     //! \param[in] llmMaxSequenceLength Maximum sequence length from LLM engine
     //! \param[in] stream CUDA stream for execution
+    //! \param[in] checkpointDir HF checkpoint directory used by runtime weight loading
     //! \throws std::runtime_error if engine directory does not contain engine files, or if buffer allocation fails
     //! \throws json::type_error if JSON configuration contains unexpected datatypes
-    QwenViTRunner(
-        std::string const& engineDir, int32_t llmMaxBatchSize, int32_t llmMaxSequenceLength, cudaStream_t stream);
+    QwenViTRunner(std::string const& engineDir, int32_t llmMaxBatchSize, int32_t llmMaxSequenceLength,
+        cudaStream_t stream, std::string const& checkpointDir = "");
 
     ~QwenViTRunner() noexcept = default;
 
@@ -124,6 +138,19 @@ public:
         tokenizer::Tokenizer const* tokenizer, rt::OptionalOutputTensor mropeCosSinOut, cudaStream_t stream,
         bool imageOnly = false, bool skipEncoderWork = false) override;
 
+    //! Allocate reusable TP2 planning and preprocessing metadata before accepting requests.
+    void initializeDataParallel();
+
+    //! \brief Plan contiguous TP2 image shards without modifying runner tensors.
+    //! \return Null for unsupported inputs; otherwise a borrowed plan valid until the next planning call.
+    VisionDpPlan const* planDataParallel(rt::LLMGenerationRequest const& request);
+
+    //! \brief Preprocess one image shard using a plan produced by planDataParallel(request).
+    //! Text/MRoPE cover the full request; the caller must gather visual outputs before LLM prefill.
+    bool preprocessDataParallel(rt::LLMGenerationRequest const& request, int32_t rank, VisionDpPlan const& plan,
+        std::vector<std::vector<int32_t>>& batchedInputIds, tokenizer::Tokenizer const* tokenizer,
+        rt::OptionalOutputTensor mropeCosSinOut, cudaStream_t stream);
+
     //! \brief Encode the system prompt and generate ND-RoPE parameters for the system prompt for KVCache saving.
     //! \param[in] systemPrompt System prompt string
     //! \param[in] tokenizer Tokenizer for text processing
@@ -132,6 +159,8 @@ public:
     //! \return True if preprocessing succeeded, false otherwise
     bool preprocessSystemPrompt(std::string const& systemPrompt, tokenizer::Tokenizer const* tokenizer,
         rt::OptionalOutputTensor mropeCosSinOut, cudaStream_t stream) override;
+
+    void setMropeYarnFrequencies(rt::Tensor const& invFreq, float mscale) override;
 
     //! \brief Run inference on the vision encoder
     //! \param[in] stream CUDA stream for execution
@@ -274,17 +303,20 @@ protected:
     //! \param[out] spans Vision spans (flattened, global order)
     //! \param[out] spansPerRequest Number of spans each request contributed (in request order)
     //! \param[in] stream CUDA stream for execution
+    //! \param[in] recordMetrics Whether to record this invocation in the public multimodal metrics
+    //! \param[in] imageRange Optional [begin, end) image range; requires a single request.
     //! \throws std::runtime_error if aspect ratio is invalid
     //! \throws std::runtime_error if image dimensions are incompatible with patch size, or sequence length is out of
     //! range
     //! \throws std::runtime_error if a frame exceeds the preprocessing kernel's 32-bit addressing
     //! \throws std::runtime_error if a CUDA error occurs
     void imagePreprocess(rt::LLMGenerationRequest const& request, std::vector<VisionSpan>& spans,
-        std::vector<int64_t>& spansPerRequest, cudaStream_t stream);
+        std::vector<int64_t>& spansPerRequest, cudaStream_t stream, bool recordMetrics = true,
+        std::optional<std::pair<size_t, size_t>> imageRange = std::nullopt);
 
-    //! Compute vision spans (token layout metadata) without performing any GPU pixel work.
-    //! Used on embedding cache hit to provide text preprocessing with the correct span geometry.
-    void imagePreprocessSpansOnly(
+    //! Compute vision spans without modifying runner tensors.
+    //! \return Total ViT patch count across the request.
+    int64_t imagePreprocessSpansOnly(
         rt::LLMGenerationRequest const& request, std::vector<VisionSpan>& spans, std::vector<int64_t>& spansPerRequest);
 
     QwenViTConfig mConfig{};              //!< Qwen-VL configuration
@@ -302,6 +334,9 @@ protected:
     rt::Tensor mMropePositionIdsDevice{}; //!< MRoPE position IDs device tensor
     // Model-specific ViT-input tensors live in the per-model subclasses.
 
+    rt::Tensor const* mMropeInvFreq{nullptr}; //!< YaRN inverse frequencies, owned by PipelineIO; null without YaRN
+    float mMropeScale{1.0F};                  //!< YaRN scale on cos/sin
+
     std::string mEngineDir;           //!< Visual engine dir (kept for the deferred initialize() config load)
     int32_t mLLMMaxBatchSize{0};      //!< Maximum batch size from LLM engine
     int32_t mLLMMaxSequenceLength{0}; //!< Maximum sequence length from LLM engine
@@ -313,6 +348,9 @@ protected:
                                       //!< usesRotaryPosEmb() hook and validated against the engine
 
     std::vector<VisionSpan> mLastSpans; //!< Last round's spans; ViT-input tensors are reused when vit geometry matches.
+    VisionDpPlan mVisionDpPlan{};       //!< Reused full-request metadata; never copied into a request-local plan.
+    std::vector<VisionSpan> mVisionDpLocalSpans;        //!< Reused metadata for the selected image range.
+    std::vector<int64_t> mVisionDpLocalSpansPerRequest; //!< One entry for the DP request.
     std::vector<int64_t> mMropeRopeDeltasPerBatch{}; //!< Used by downstream runners like Alpamayo1ActionRunner to set
                                                      //!< base MRoPE positions so the action expert's RoPE continues
                                                      //!< coherently after the VLM sequence.

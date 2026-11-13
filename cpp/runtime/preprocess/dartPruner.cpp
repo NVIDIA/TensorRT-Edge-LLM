@@ -78,16 +78,16 @@ DartPruner::DartPruner(VisualPrunerConfig const& config, LLMEngineConfig const& 
     mL1Scores.reserve(maxInputLen);
     mInRetained.reserve(maxInputLen);
     mSimScores.reserve(maxInputLen);
-    mNormsDevice = Tensor({maxInputLen, 2}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "DartPruner::normsDevice");
-    mNormsHost = Tensor({maxInputLen, 2}, DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "DartPruner::normsHost");
+    mNormsDevice = Tensor({maxInputLen, 2}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "DartPruner::normsDevice");
+    mNormsHost = Tensor({maxInputLen, 2}, DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, "DartPruner::normsHost");
     mDotsDevice = Tensor(
-        {kernel::kDartMaxPivots, maxInputLen}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "DartPruner::dots");
+        {kernel::kDartMaxPivots, maxInputLen}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "DartPruner::dots");
     mDotsHost = Tensor(
-        {kernel::kDartMaxPivots, maxInputLen}, DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "DartPruner::dotsHost");
-    mPivotIdxDevice
-        = Tensor({kernel::kDartMaxPivots}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DartPruner::pivotIdxDevice");
+        {kernel::kDartMaxPivots, maxInputLen}, DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, "DartPruner::dotsHost");
+    mPivotIdxDevice = Tensor(
+        {kernel::kDartMaxPivots}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DartPruner::pivotIdxDevice");
     mPivotIdxHost
-        = Tensor({kernel::kDartMaxPivots}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "DartPruner::pivotIdxHost");
+        = Tensor({kernel::kDartMaxPivots}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "DartPruner::pivotIdxHost");
 }
 
 int32_t DartPruner::prune(PruneRequest const& req, PipelineIO& io, cudaStream_t stream)

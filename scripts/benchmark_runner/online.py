@@ -71,6 +71,7 @@ def _wait_until_ready(adapter: base.ServingAdapter, client: httpx.Client,
 def _run_request(adapter: base.ServingAdapter, client: httpx.Client,
                  request: Mapping[str, Any], generation: Mapping[str, Any],
                  submit_ns: int, timeout_s: float) -> dict[str, Any]:
+    status = None
     try:
         backend_request = adapter.inference_request(request, generation)
         first_token_ns = None
@@ -81,6 +82,7 @@ def _run_request(adapter: base.ServingAdapter, client: httpx.Client,
                            content=backend_request.body,
                            headers=backend_request.headers,
                            timeout=timeout_s) as response:
+            status = response.status_code
             if not 200 <= response.status_code < 300:
                 raise RuntimeError(
                     f"Completion request failed: HTTP {response.status_code}")
@@ -119,6 +121,7 @@ def _run_request(adapter: base.ServingAdapter, client: httpx.Client,
     except Exception as error:
         return {
             "success": False,
+            "status": status,
             "request_id": request["id"],
             "timestamp_ns": submit_ns,
             "completion_ns": time.monotonic_ns(),
@@ -130,6 +133,7 @@ def _run_request(adapter: base.ServingAdapter, client: httpx.Client,
         }
     return {
         "success": True,
+        "status": status,
         "request_id": request["id"],
         "timestamp_ns": submit_ns,
         "first_token_ns": first_token_ns,

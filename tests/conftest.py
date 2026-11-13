@@ -12,10 +12,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 import logging
 import os
+import re
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +35,8 @@ if str(repo_root) not in sys.path:
 
 import pytest
 import yaml
+from defs.model_test_config import ModelTest, load_model_tests
+from defs.shared_roots import resolve_shared_root
 
 
 @dataclass
@@ -66,31 +73,10 @@ class EnvironmentConfig:
                 "Please set it to the root directory of the TensorRT Edge-LLM project."
             )
 
-        # LLM models directory with default fallback
-        llm_models_dir = os.environ.get('LLM_MODELS_DIR')
-        if not llm_models_dir:
-            # Try default paths
-            default_paths = [
-                '/scratch.trt_llm_data/llm-models',
-                '/home/scratch.trt_llm_data/llm-models'
-            ]
-            for path in default_paths:
-                if os.path.exists(path):
-                    llm_models_dir = path
-                    break
-
-        # EdgeLLM data directory with default fallback
-        edgellm_data_dir = os.environ.get('EDGELLM_DATA_DIR')
-        if not edgellm_data_dir:
-            # Try default paths
-            default_paths = [
-                '/scratch.edge_llm_cache', '/home/edge_llm_cache',
-                '/home/scratch.edge_llm_cache'
-            ]
-            for path in default_paths:
-                if os.path.exists(path):
-                    edgellm_data_dir = path
-                    break
+        # Shared storage roots, resolved the same way model configs expand
+        # ${LLM_MODELS_DIR} / ${EDGELLM_DATA_DIR}: variable first, then mounts.
+        llm_models_dir = resolve_shared_root('LLM_MODELS_DIR')
+        edgellm_data_dir = resolve_shared_root('EDGELLM_DATA_DIR')
 
         # Optional directories - will be validated when needed
         onnx_dir = os.environ.get('ONNX_DIR')
@@ -122,10 +108,14 @@ class EnvironmentConfig:
             raise ValueError(
                 f"{variable} environment variable is required for {purpose}.")
 
-    def validate_for_export_tests(self) -> None:
+    def validate_for_export_tests(self,
+                                  *,
+                                  require_model_root: bool = True) -> None:
         """Validate the checkpoint export environment."""
-        self._require_setting(self.llm_models_dir, 'LLM_MODELS_DIR',
-                              'export tests')
+        if require_model_root:
+            self._require_setting(
+                self.llm_models_dir, 'LLM_MODELS_DIR',
+                'export tests without an explicit checkpoint')
         self._require_setting(self.onnx_dir, 'ONNX_DIR', 'export tests')
 
     def validate_for_pipeline_tests(self) -> None:
@@ -133,12 +123,22 @@ class EnvironmentConfig:
         self._require_setting(self.onnx_dir, 'ONNX_DIR', 'pipeline tests')
         self._require_setting(self.engine_dir, 'ENGINE_DIR', 'pipeline tests')
 
-    def validate_for_checkpoint_builder_tests(self) -> None:
+    def validate_for_checkpoint_builder_tests(self,
+                                              *,
+                                              require_model_root: bool = True
+                                              ) -> None:
         """Validate a direct checkpoint-to-engine test environment."""
-        self._require_setting(self.llm_models_dir, 'LLM_MODELS_DIR',
-                              'checkpoint builder tests')
+        if require_model_root:
+            self._require_setting(
+                self.llm_models_dir, 'LLM_MODELS_DIR',
+                'checkpoint builder tests without an explicit checkpoint')
         self._require_setting(self.engine_dir, 'ENGINE_DIR',
                               'checkpoint builder tests')
+
+    def validate_for_checkpoint_runtime_tests(self) -> None:
+        """Validate checkpoint-direct runtime tests with an explicit model."""
+        self._require_setting(self.engine_dir, 'ENGINE_DIR',
+                              'checkpoint runtime tests')
 
     def validate_for_vlmevalkit_tests(self):
         """Validate that required directories are set for VLMEvalKit tests."""
@@ -199,20 +199,22 @@ def executable_files(env_config):
     build_dir = env_config.build_dir
     executable_suffix = ".exe" if os.name == "nt" else ""
     return {
-        'llm_build': f"{build_dir}/examples/llm/llm_build{executable_suffix}",
-        'llm_inference':
-        f"{build_dir}/examples/llm/llm_inference{executable_suffix}",
-        'llm_bench': f"{build_dir}/examples/llm/llm_bench{executable_suffix}",
-        'visual_build':
-        f"{build_dir}/examples/multimodal/visual_build{executable_suffix}",
-        'audio_build':
-        f"{build_dir}/examples/multimodal/audio_build{executable_suffix}",
-        'action_build':
-        f"{build_dir}/examples/multimodal/action_build{executable_suffix}",
+        'llm_build': f"{build_dir}/bin/llm_build{executable_suffix}",
+        'llm_inference': f"{build_dir}/bin/llm_inference{executable_suffix}",
+        'llm_bench': f"{build_dir}/bin/llm_bench{executable_suffix}",
+        'visual_build': f"{build_dir}/bin/visual_build{executable_suffix}",
+        'audio_build': f"{build_dir}/bin/audio_build{executable_suffix}",
+        'action_build': f"{build_dir}/bin/action_build{executable_suffix}",
         'action_inference':
-        f"{build_dir}/examples/multimodal/action_inference{executable_suffix}",
+        f"{build_dir}/bin/action_inference{executable_suffix}",
         'qwen3_tts_inference':
-        f"{build_dir}/examples/omni/qwen3_tts_inference{executable_suffix}",
+        f"{build_dir}/bin/qwen3_tts_inference{executable_suffix}",
+        'media_ipc_server':
+        f"{build_dir}/bin/media_ipc_server{executable_suffix}",
+        'media_ipc_client':
+        f"{build_dir}/bin/media_ipc_client{executable_suffix}",
+        'multistage_inference':
+        f"{build_dir}/bin/multistage_inference{executable_suffix}",
         # The unit tests are several ctest-registered executables; this points
         # at the directory ctest is invoked from, not a single binary.
         'unit_test': f"{build_dir}"
@@ -313,6 +315,70 @@ def test_logger(request, env_config):
         logger.removeHandler(handler)
 
 
+_model_hardware_cache = {}
+
+
+def _available_model_memory_gb(remote_config, logger, shared_memory):
+    from pytest_helpers import run_command
+
+    result = run_command([
+        "nvidia-smi", "--query-gpu=memory.total",
+        "--format=csv,noheader,nounits"
+    ], remote_config, 60, logger)
+    memory_mb = []
+    if result["success"]:
+        for line in result["output"].splitlines():
+            try:
+                memory_mb.append(float(line.strip()))
+            except ValueError:
+                continue
+    if memory_mb:
+        return max(memory_mb) / 1024
+
+    if shared_memory:
+        result = run_command(["cat", "/proc/meminfo"], remote_config, 10,
+                             logger)
+        match = re.search(r"^MemTotal:\s+(\d+)\s+kB$", result["output"],
+                          re.MULTILINE)
+        if result["success"] and match:
+            return int(match.group(1)) / (1024 * 1024)
+
+    pytest.fail("cannot determine GPU memory for model requirements")
+
+
+@pytest.fixture(autouse=True)
+def model_hardware_requirements(request):
+    callspec = getattr(request.node, "callspec", None)
+    test_param = callspec.params.get("test_param") if callspec else None
+    if not isinstance(test_param, ModelTest) or not test_param.requirements:
+        return
+
+    remote_config = request.getfixturevalue("remote_config")
+    logger = request.getfixturevalue("test_logger")
+    cache_key = (remote_config.host if remote_config else "local",
+                 os.environ.get("CUDA_VISIBLE_DEVICES", ""))
+    if cache_key not in _model_hardware_cache:
+        from defs.utils.device import DeviceConfig
+
+        device = DeviceConfig.auto_detect(remote_config, logger)
+        if device.compute_capability is None:
+            pytest.fail("cannot determine compute capability")
+        memory_gb = _available_model_memory_gb(
+            remote_config, logger, shared_memory=device.arch == "aarch64")
+        _model_hardware_cache[cache_key] = (device.compute_capability,
+                                            memory_gb)
+
+    compute_capability, memory_gb = _model_hardware_cache[cache_key]
+    minimum_sm = test_param.requirements["min_sm"]
+    minimum_memory = test_param.requirements["min_gpu_memory_gb"]
+    if compute_capability < minimum_sm:
+        pytest.skip(f"{test_param} requires SM{minimum_sm}+; this runner is "
+                    f"SM{compute_capability}")
+    if memory_gb < minimum_memory:
+        pytest.skip(f"{test_param} requires {minimum_memory} GiB; this runner "
+                    f"has {memory_gb:.1f} GiB")
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Replay library size reports so they reach the CI job log."""
     del exitstatus, config
@@ -324,6 +390,11 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
 def pytest_addoption(parser):
     """Add custom command line options"""
+    parser.addoption("--weightless-engine",
+                     action="store_true",
+                     default=False,
+                     help="Use experimental internal TRT/Myelin weightless "
+                     "engines in checkpoint-direct pipeline validation")
     parser.addoption("--priority",
                      action="store",
                      default=None,
@@ -373,6 +444,49 @@ def pytest_runtest_makereport(item, call):
 
 
 _test_config_cache = {}
+
+
+@lru_cache(maxsize=1)
+def _complete_merge_request_description(description):
+    """Recover an MR description truncated by GitLab's CI variable limit."""
+    if os.environ.get("CI_MERGE_REQUEST_DESCRIPTION_IS_TRUNCATED") != "true":
+        return description
+
+    required = {
+        name: os.environ.get(name)
+        for name in (
+            "CI_API_V4_URL",
+            "CI_JOB_TOKEN",
+            "CI_PROJECT_ID",
+            "CI_MERGE_REQUEST_IID",
+        )
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise ValueError("Cannot recover truncated merge request description; "
+                         f"missing CI variables: {missing}")
+    for name in ("CI_PROJECT_ID", "CI_MERGE_REQUEST_IID"):
+        if not required[name].isdecimal():
+            raise ValueError(f"{name} must be a decimal integer")
+
+    url = (f"{required['CI_API_V4_URL']}/projects/"
+           f"{required['CI_PROJECT_ID']}/merge_requests/"
+           f"{required['CI_MERGE_REQUEST_IID']}")
+    request = urllib.request.Request(
+        url, headers={"JOB-TOKEN": required["CI_JOB_TOKEN"]})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            "Failed to recover truncated merge request description") from error
+
+    full_description = payload.get("description")
+    if not isinstance(full_description, str) or not full_description:
+        raise RuntimeError(
+            "GitLab returned an empty merge request description")
+    return full_description
+
 
 _MODEL_QUANTIZATION_TEST_NAMES = (
     "test_llm_model_quantization",
@@ -434,18 +548,80 @@ def _get_test_list_file(priority):
     """Get test configuration with caching"""
     if priority is None:
         return None
-    if priority not in _test_config_cache:
-        if priority.endswith(('.yml', '.yaml')):
+    explicit_list = priority.endswith(('.yml', '.yaml'))
+    custom_description = None
+    if not explicit_list and os.environ.get("EDGE_LLM_CUSTOM_L0") == "1":
+        custom_description = os.environ.get("CI_MERGE_REQUEST_DESCRIPTION")
+        if not custom_description:
+            raise ValueError(
+                "CI_MERGE_REQUEST_DESCRIPTION is required for a custom L0 run")
+        custom_description = _complete_merge_request_description(
+            custom_description)
+    cache_key = (priority, custom_description)
+    if cache_key not in _test_config_cache:
+        if explicit_list:
             config_file = priority
         else:
             config_file = f"tests/test_lists/{priority}.yml"
 
         try:
             with open(config_file, 'r') as f:
-                _test_config_cache[priority] = yaml.safe_load(f)
+                config = yaml.safe_load(f) or {}
         except FileNotFoundError:
-            _test_config_cache[priority] = None
-    return _test_config_cache[priority]
+            config = {}
+        model_tests = ([] if explicit_list else load_model_tests(
+            priority, custom_description))
+        tests = config.setdefault('tests', [])
+        project_setup = 'tests/defs/test_common.py::test_build_project'
+        if (any('test_checkpoint_export.py' not in test.node
+                for test in model_tests) and project_setup not in tests):
+            tests.insert(0, project_setup)
+        server_setup = \
+            'tests/defs/test_server_pipeline.py::test_build_nanobind'
+        if (any('test_server_pipeline.py' in test.node
+                or 'test_nemo_evaluator.py' in test.node
+                for test in model_tests) and server_setup not in tests):
+            tests.append(server_setup)
+        tests.extend(model_tests)
+        _test_config_cache[cache_key] = config or None
+    return _test_config_cache[cache_key]
+
+
+def _configured_test_paths(config):
+    """Return the test modules selected by a priority file, if one exists."""
+    if config.getoption("--test-param"):
+        return None
+
+    priority = config.getoption("--priority", "l0")
+    test_list_file = _get_test_list_file(priority)
+    if not test_list_file:
+        return None
+
+    paths = set()
+    for test_case in test_list_file.get('tests', []):
+        if isinstance(test_case, ModelTest):
+            node = test_case.node
+        elif isinstance(test_case, str):
+            node = test_case
+        else:
+            continue
+        path = Path(node.split('::', 1)[0])
+        if not path.is_absolute():
+            path = repo_root / path
+        paths.add(path.resolve())
+    return paths
+
+
+def pytest_ignore_collect(collection_path, config):
+    """Do not import test modules excluded by the selected priority file."""
+    selected_paths = _configured_test_paths(config)
+    if selected_paths is None:
+        return False
+
+    path = Path(str(collection_path)).resolve()
+    is_test_module = (path.suffix == '.py' and path.name.startswith('test_')
+                      and tests_dir in path.parents)
+    return is_test_module and path not in selected_paths
 
 
 def pytest_generate_tests(metafunc):
@@ -472,6 +648,18 @@ def pytest_generate_tests(metafunc):
     current_test_file = metafunc.module.__name__
 
     for test_case in test_cases:
+        if isinstance(test_case, ModelTest):
+            parts = test_case.node.split('::')
+            test_module = parts[0].replace('/', '.').removesuffix('.py')
+            if test_module != current_test_file or parts[
+                    -1] != current_test_name:
+                continue
+            if len(parts) == 3 and (metafunc.cls is None
+                                    or metafunc.cls.__name__ != parts[1]):
+                continue
+            relevant_tests.append(pytest.param(test_case,
+                                               id=test_case.case_id))
+            continue
         if isinstance(test_case, str):
             if '::' in test_case:
                 test_file_path, test_function_part = test_case.split('::', 1)
@@ -525,6 +713,24 @@ def pytest_collection_modifyitems(config, items):
     ordered = []
     seen = set()
     for test_case in test_list_file.get('tests', []):
+        if isinstance(test_case, ModelTest):
+            parts = test_case.node.split('::')
+            expected_path = (repo_root / parts[0]).resolve()
+            for item in items:
+                callspec = getattr(item, 'callspec', None)
+                parameter = (callspec.params.get('test_param')
+                             if callspec else None)
+                item_class = (item.cls.__name__
+                              if getattr(item, 'cls', None) else None)
+                expected_class = parts[1] if len(parts) == 3 else None
+                if (Path(str(item.path)).resolve() == expected_path
+                        and _test_item_function_name(item) == parts[-1]
+                        and item_class == expected_class and getattr(
+                            parameter, 'case_id', None) == test_case.case_id
+                        and id(item) not in seen):
+                    ordered.append(item)
+                    seen.add(id(item))
+            continue
         if not isinstance(test_case, str):
             continue
         if '::' not in test_case:

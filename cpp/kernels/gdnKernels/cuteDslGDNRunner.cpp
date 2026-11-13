@@ -36,7 +36,7 @@ namespace
 #ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
 bool isBlackwellSm(int32_t smVersion)
 {
-    return smVersion == 100 || smVersion == 101 || smVersion == 110;
+    return smVersion == 100 || smVersion == 101 || smVersion == 103 || smVersion == 110;
 }
 #endif
 
@@ -51,12 +51,19 @@ bool isBlackwellGeforceSm(int32_t smVersion)
 
 detail::LazyKernelModule<gdn_decode_Kernel_Module_t> CuteDslGDNRunner::sDecodeModule{};
 detail::LazyKernelModule<gdn_prefill_Kernel_Module_t> CuteDslGDNRunner::sPrefillModule{};
+detail::LazyKernelModule<gdn_prefill_varlen_Kernel_Module_t> CuteDslGDNRunner::sVarlenPrefillModule{};
 #ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
 detail::LazyKernelModule<gdn_prefill_blackwell_Kernel_Module_t> CuteDslGDNRunner::sBlackwellPrefillModule{};
+detail::LazyKernelModule<gdn_prefill_blackwell_varlen_Kernel_Module_t>
+    CuteDslGDNRunner::sBlackwellVarlenPrefillModule{};
 #endif
 #ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
 detail::LazyKernelModule<gdn_prefill_blackwell_geforce_Kernel_Module_t>
     CuteDslGDNRunner::sBlackwellGeforcePrefillModule{};
+#endif
+#ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
+detail::LazyKernelModule<gdn_prefill_blackwell_geforce_varlen_Kernel_Module_t>
+    CuteDslGDNRunner::sBlackwellGeforceVarlenPrefillModule{};
 #endif
 detail::LazyKernelModule<gdn_decode_mtp_cache_Kernel_Module_t> CuteDslGDNRunner::sMTPDecodeCacheModule{};
 
@@ -105,11 +112,53 @@ bool CuteDslGDNRunner::canImplement(int32_t kDim, int32_t vDim, int32_t smVersio
     return (smVersion >= 80) && (kDim == 128) && (vDim == 128);
 }
 
+bool CuteDslGDNRunner::canImplementPackedVarlen(
+    [[maybe_unused]] int32_t kDim, [[maybe_unused]] int32_t vDim, [[maybe_unused]] int32_t smVersion)
+{
+    if (kDim != 128 || vDim != 128)
+    {
+        return false;
+    }
+    if (smVersion >= 80 && smVersion < 100)
+    {
+        return true;
+    }
+#ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
+    if (isBlackwellSm(smVersion))
+    {
+        int32_t const smCount = getDeviceMultiProcessorCount();
+        return smCount > 0 && smCount <= kBlackwellRaggedMaxSMCount;
+    }
+#endif
+#ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
+    if (isBlackwellGeforceSm(smVersion))
+    {
+        int32_t const smCount = getDeviceMultiProcessorCount();
+        return smCount > 0 && smCount <= kBlackwellGeforceMaxSMCount;
+    }
+#endif
+    return false;
+}
+
 GDNBackend CuteDslGDNRunner::selectBackend(GDNParams const& params)
 {
     if (params.use_mtp)
     {
         return GDNBackend::kDecodeMTP;
+    }
+    if (params.packed_varlen)
+    {
+        if (params.smVersion >= 80 && params.smVersion < 100)
+        {
+            return GDNBackend::kPrefillPackedVarlen;
+        }
+#ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
+        if (isBlackwellGeforceSm(params.smVersion))
+        {
+            return GDNBackend::kPrefillBlackwellGeforceVarlen;
+        }
+#endif
+        return GDNBackend::kPrefillBlackwellVarlen;
     }
     if (!params.use_prefill)
     {
@@ -134,6 +183,9 @@ bool CuteDslGDNRunner::ensureKernelModules(GDNParams const& params, cudaStream_t
 {
     switch (selectBackend(params))
     {
+    case GDNBackend::kPrefillPackedVarlen:
+        return detail::ensureModuleLoaded<gdn_prefill_varlen_Kernel_Module_Load,
+            gdn_prefill_varlen_Kernel_Module_Unload>(sVarlenPrefillModule, "gdn_prefill_varlen", stream);
     case GDNBackend::kDecodeMTP:
         return detail::ensureModuleLoaded<gdn_decode_mtp_cache_Kernel_Module_Load,
             gdn_decode_mtp_cache_Kernel_Module_Unload>(sMTPDecodeCacheModule, "gdn_decode_mtp_cache", stream);
@@ -148,6 +200,14 @@ bool CuteDslGDNRunner::ensureKernelModules(GDNParams const& params, cudaStream_t
 #else
         return false;
 #endif
+    case GDNBackend::kPrefillBlackwellGeforceVarlen:
+#ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
+        return detail::ensureModuleLoaded<gdn_prefill_blackwell_geforce_varlen_Kernel_Module_Load,
+            gdn_prefill_blackwell_geforce_varlen_Kernel_Module_Unload>(
+            sBlackwellGeforceVarlenPrefillModule, "gdn_prefill_blackwell_geforce_varlen", stream);
+#else
+        return false;
+#endif
     case GDNBackend::kPrefillBlackwell:
 #ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
         return detail::ensureModuleLoaded<gdn_prefill_blackwell_Kernel_Module_Load,
@@ -155,6 +215,17 @@ bool CuteDslGDNRunner::ensureKernelModules(GDNParams const& params, cudaStream_t
 #else
         return false;
 #endif
+    case GDNBackend::kPrefillBlackwellVarlen:
+#ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
+        if (isBlackwellSm(params.smVersion))
+        {
+            return detail::ensureModuleLoaded<gdn_prefill_blackwell_varlen_Kernel_Module_Load,
+                gdn_prefill_blackwell_varlen_Kernel_Module_Unload>(
+                sBlackwellVarlenPrefillModule, "gdn_prefill_blackwell_varlen", stream);
+        }
+#endif
+        LOG_ERROR("Packed-varlen GDN prefill requires the SM100/101/110 Blackwell variant.");
+        return false;
     case GDNBackend::kPrefill:
         return detail::ensureModuleLoaded<gdn_prefill_Kernel_Module_Load, gdn_prefill_Kernel_Module_Unload>(
             sPrefillModule, "gdn_prefill", stream);
@@ -164,6 +235,11 @@ bool CuteDslGDNRunner::ensureKernelModules(GDNParams const& params, cudaStream_t
 
 int CuteDslGDNRunner::run(GDNParams const& params, cudaStream_t stream)
 {
+    if (params.state_indices != nullptr && params.state_pool_rows <= 0)
+    {
+        LOG_ERROR("Indexed GDN dispatch requires a non-empty resident state pool.");
+        return -1;
+    }
     if (!ensureKernelModules(params, stream))
     {
         return -1;
@@ -171,14 +247,17 @@ int CuteDslGDNRunner::run(GDNParams const& params, cudaStream_t stream)
 
     switch (selectBackend(params))
     {
+    case GDNBackend::kPrefillPackedVarlen: return runPrefillPackedVarlen(params, stream);
     case GDNBackend::kDecodeMTP: return runDecodeMTP(params, stream);
     case GDNBackend::kDecode: return runDecode(params, stream);
+    case GDNBackend::kPrefillBlackwellVarlen: return runPrefillBlackwellVarlen(params, stream);
     case GDNBackend::kPrefillBlackwellGeforce:
 #ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
         return runPrefillBlackwellGeforce(params, stream);
 #else
         return -1;
 #endif
+    case GDNBackend::kPrefillBlackwellGeforceVarlen: return runPrefillBlackwellGeforceVarlen(params, stream);
     case GDNBackend::kPrefillBlackwell:
 #ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
         return runPrefillBlackwell(params, stream);
@@ -188,6 +267,62 @@ int CuteDslGDNRunner::run(GDNParams const& params, cudaStream_t stream)
     case GDNBackend::kPrefill: return runPrefill(params, stream);
     }
     return -1;
+}
+
+int CuteDslGDNRunner::runPrefillPackedVarlen(GDNParams const& params, cudaStream_t stream)
+{
+    if (params.q == nullptr || params.k == nullptr || params.v == nullptr || params.a == nullptr || params.b == nullptr
+        || params.A_log == nullptr || params.dt_bias == nullptr || params.o == nullptr || params.h0_source == nullptr
+        || params.cu_seqlens == nullptr || params.n <= 0 || params.total_tokens <= 0)
+    {
+        LOG_ERROR("Packed-varlen GDN requires packed tensors, cu_seqlens, states, and positive dimensions.");
+        return -1;
+    }
+    if (params.k_dim != 128 || params.v_dim != 128 || params.h <= 0 || params.hv < params.h
+        || params.hv % params.h != 0)
+    {
+        LOG_ERROR("Packed-varlen GDN requires K = V = 128 and hv to be a positive multiple of h.");
+        return -1;
+    }
+    if (stream == nullptr)
+    {
+        LOG_ERROR("Packed-varlen GDN requires an explicit CUDA stream.");
+        return -1;
+    }
+    if (params.state_indices == nullptr && params.state_pool_rows > 0 && params.state_pool_rows < params.n)
+    {
+        LOG_ERROR("Packed-varlen GDN requires at least n state rows without state_indices.");
+        return -1;
+    }
+    gdn_prefill_varlen_Tensor_q_t qTensor{};
+    SET_3D_TENSOR(qTensor, params.q, params.total_tokens, params.h, params.k_dim);
+    gdn_prefill_varlen_Tensor_k_t kTensor{};
+    SET_3D_TENSOR(kTensor, params.k, params.total_tokens, params.h, params.k_dim);
+    gdn_prefill_varlen_Tensor_v_t vTensor{};
+    SET_3D_TENSOR(vTensor, params.v, params.total_tokens, params.hv, params.v_dim);
+    gdn_prefill_varlen_Tensor_a_t aTensor{};
+    SET_2D_TENSOR(aTensor, params.a, params.total_tokens, params.hv);
+    gdn_prefill_varlen_Tensor_b_t bTensor{};
+    SET_2D_TENSOR(bTensor, params.b, params.total_tokens, params.hv);
+    gdn_prefill_varlen_Tensor_A_log_t aLogTensor{};
+    SET_1D_TENSOR(aLogTensor, params.A_log, params.hv);
+    gdn_prefill_varlen_Tensor_dt_bias_t dtBiasTensor{};
+    SET_1D_TENSOR(dtBiasTensor, params.dt_bias, params.hv);
+    gdn_prefill_varlen_Tensor_h0_source_t h0Tensor{};
+    h0Tensor.data = params.h0_source;
+    h0Tensor.dynamic_shapes[0] = params.state_pool_rows > 0 ? params.state_pool_rows : params.n;
+    h0Tensor.dynamic_shapes[1] = params.hv;
+    h0Tensor.dynamic_strides[0] = static_cast<int64_t>(params.hv) * params.k_dim * params.v_dim;
+    gdn_prefill_varlen_Tensor_state_indices_t stateIndicesTensor{};
+    SET_1D_TENSOR(
+        stateIndicesTensor, params.state_indices != nullptr ? params.state_indices : params.cu_seqlens, params.n);
+    gdn_prefill_varlen_Tensor_context_lengths_t cuSeqlensTensor{};
+    SET_1D_TENSOR(cuSeqlensTensor, params.cu_seqlens, params.n + 1);
+    gdn_prefill_varlen_Tensor_o_t oTensor{};
+    SET_3D_TENSOR(oTensor, params.o, params.total_tokens, params.hv, params.v_dim);
+    return cute_dsl_gdn_prefill_varlen_wrapper(&sVarlenPrefillModule.module, &qTensor, &kTensor, &vTensor, &aTensor,
+        &bTensor, &aLogTensor, &dtBiasTensor, &h0Tensor, &stateIndicesTensor, params.state_indices != nullptr,
+        &cuSeqlensTensor, &oTensor, params.total_tokens, stream);
 }
 
 int CuteDslGDNRunner::runDecode(GDNParams const& params, cudaStream_t stream)
@@ -413,6 +548,141 @@ int CuteDslGDNRunner::runPrefillBlackwell(GDNParams const& params, cudaStream_t 
 #endif
 }
 
+int CuteDslGDNRunner::runPrefillBlackwellVarlen(
+    [[maybe_unused]] GDNParams const& params, [[maybe_unused]] cudaStream_t stream)
+{
+#ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
+    int32_t const n = params.n;
+    int32_t const totalTokens = params.total_tokens > 0 ? params.total_tokens : params.seq_len;
+    int32_t const h = params.h;
+    int32_t const hv = params.hv;
+    int32_t const k = params.k_dim;
+    int32_t const v = params.v_dim;
+    if (n <= 0 || totalTokens <= 0)
+    {
+        LOG_ERROR("Packed-varlen GDN prefill requires positive batch and total token counts.");
+        return -1;
+    }
+    if (h <= 0 || hv < h || hv % h != 0)
+    {
+        LOG_ERROR("Packed-varlen GDN prefill requires hv to be a positive multiple of h, got h=%d, hv=%d.", h, hv);
+        return -1;
+    }
+    if (k != 128 || v != 128)
+    {
+        LOG_ERROR("Packed-varlen GDN prefill requires k_dim == v_dim == 128, got k_dim=%d, v_dim=%d.", k, v);
+        return -1;
+    }
+    if (params.q == nullptr || params.k == nullptr || params.v == nullptr || params.a == nullptr || params.b == nullptr
+        || params.A_log == nullptr || params.dt_bias == nullptr || params.h0_source == nullptr || params.o == nullptr)
+    {
+        LOG_ERROR("Packed-varlen GDN prefill requires all input, state, and output pointers.");
+        return -1;
+    }
+    if (stream == nullptr)
+    {
+        LOG_ERROR("Packed-varlen GDN prefill requires an explicit CUDA stream.");
+        return -1;
+    }
+    if (params.h0_scratch == nullptr)
+    {
+        LOG_ERROR("Packed-varlen GDN prefill requires h0_scratch.");
+        return -1;
+    }
+    if (params.cu_seqlens == nullptr)
+    {
+        LOG_ERROR("Packed-varlen GDN prefill requires cu_seqlens.");
+        return -1;
+    }
+    if (params.tensormap_scratch == nullptr)
+    {
+        LOG_ERROR("Packed-varlen GDN prefill requires tensor-map scratch.");
+        return -1;
+    }
+    bool const useStateIndices = params.state_indices != nullptr;
+    if (useStateIndices && params.h0_out_scratch == nullptr)
+    {
+        LOG_ERROR("Packed-varlen GDN prefill with state_indices requires h0_out_scratch.");
+        return -1;
+    }
+    int32_t const smCount = getDeviceMultiProcessorCount();
+    if (smCount <= 0 || smCount > kBlackwellRaggedMaxSMCount)
+    {
+        LOG_ERROR("Packed-varlen GDN prefill supports 1 to %d SMs, got %d.", kBlackwellRaggedMaxSMCount, smCount);
+        return -1;
+    }
+    launchGdnL2NormQK(params.q, params.k, 1, totalTokens, h, k, stream);
+
+    // The ragged kernel maps s_in and s_out identically and s_out is stored without a transpose, so the initial
+    // state keeps the resident K-major layout.
+    if (useStateIndices)
+    {
+        launchGdnStateGather(
+            params.h0_source, params.h0_scratch, params.state_indices, n, hv, params.state_pool_rows, k, v, stream);
+    }
+    else
+    {
+        CUDA_CHECK(cudaMemcpyAsync(params.h0_scratch, params.h0_source,
+            static_cast<size_t>(n) * hv * k * v * sizeof(float), cudaMemcpyDeviceToDevice, stream));
+    }
+
+    gdn_prefill_blackwell_varlen_Tensor_q_t qTensor{};
+    SET_3D_TENSOR(qTensor, params.q, totalTokens, h, k);
+
+    gdn_prefill_blackwell_varlen_Tensor_k_t kTensor{};
+    SET_3D_TENSOR(kTensor, params.k, totalTokens, h, k);
+
+    gdn_prefill_blackwell_varlen_Tensor_v_t vTensor{};
+    SET_3D_TENSOR(vTensor, params.v, totalTokens, hv, v);
+
+    gdn_prefill_blackwell_varlen_Tensor_a_t aTensor{};
+    SET_2D_TENSOR(aTensor, params.a, totalTokens, hv);
+
+    gdn_prefill_blackwell_varlen_Tensor_b_t bTensor{};
+    SET_2D_TENSOR(bTensor, params.b, totalTokens, hv);
+
+    gdn_prefill_blackwell_varlen_Tensor_A_log_t ALogTensor{};
+    SET_1D_TENSOR(ALogTensor, params.A_log, hv);
+
+    gdn_prefill_blackwell_varlen_Tensor_dt_bias_t dtBiasTensor{};
+    SET_1D_TENSOR(dtBiasTensor, params.dt_bias, hv);
+
+    gdn_prefill_blackwell_varlen_Tensor_s_in_t h0InTensor{};
+    SET_4D_TENSOR(h0InTensor, params.h0_scratch, n, hv, k, v);
+
+    gdn_prefill_blackwell_varlen_Tensor_s_out_t h0OutTensor{};
+    SET_4D_TENSOR(h0OutTensor, useStateIndices ? params.h0_out_scratch : params.h0_source, n, hv, k, v);
+
+    gdn_prefill_blackwell_varlen_Tensor_o_t oTensor{};
+    SET_3D_TENSOR(oTensor, params.o, totalTokens, hv, v);
+
+    gdn_prefill_blackwell_varlen_Tensor_cu_seqlens_t cuSeqLensTensor{};
+    SET_1D_TENSOR(cuSeqLensTensor, params.cu_seqlens, n + 1);
+
+    gdn_prefill_blackwell_varlen_Tensor_tensormap_workspace_t tensormapWorkspaceTensor{};
+    tensormapWorkspaceTensor.data = params.tensormap_scratch;
+
+    float const scale = 1.0F / std::sqrt(static_cast<float>(k));
+    int32_t const result = cute_dsl_gdn_prefill_blackwell_varlen_wrapper(&sBlackwellVarlenPrefillModule.module,
+        &qTensor, &kTensor, &vTensor, &aTensor, &bTensor, &ALogTensor, &dtBiasTensor, &oTensor, &cuSeqLensTensor,
+        &h0InTensor, &h0OutTensor, scale, &tensormapWorkspaceTensor, smCount, stream);
+    if (result != 0)
+    {
+        return result;
+    }
+
+    if (useStateIndices)
+    {
+        launchGdnStateScatter(
+            params.h0_out_scratch, params.h0_source, params.state_indices, n, params.state_pool_rows, hv, k, v, stream);
+    }
+    return 0;
+#else
+    LOG_ERROR("Packed-varlen Blackwell GDN prefill not compiled in this build.");
+    return -1;
+#endif
+}
+
 int CuteDslGDNRunner::runPrefillBlackwellGeforce(GDNParams const& params, cudaStream_t stream)
 {
 #ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
@@ -433,12 +703,6 @@ int CuteDslGDNRunner::runPrefillBlackwellGeforce(GDNParams const& params, cudaSt
     {
         LOG_ERROR(
             "GDN Blackwell GeForce prefill supports at most %d SMs, got %d.", kBlackwellGeforceMaxSMCount, smCount);
-        return -1;
-    }
-
-    if (params.state_indices != nullptr && params.state_pool_rows <= 0)
-    {
-        LOG_ERROR("GDN Blackwell GeForce indexed prefill requires a non-empty resident state pool.");
         return -1;
     }
 
@@ -504,6 +768,104 @@ int CuteDslGDNRunner::runPrefillBlackwellGeforce(GDNParams const& params, cudaSt
     static_cast<void>(params);
     static_cast<void>(stream);
     LOG_ERROR("Blackwell GeForce GDN prefill not compiled in this build.");
+    return -1;
+#endif
+}
+
+int CuteDslGDNRunner::runPrefillBlackwellGeforceVarlen(GDNParams const& params, cudaStream_t stream)
+{
+#ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
+    int32_t const n = params.n;
+    int32_t const totalTokens = params.total_tokens;
+    int32_t const h = params.h;
+    int32_t const hv = params.hv;
+    int32_t const k = params.k_dim;
+    int32_t const v = params.v_dim;
+    if (!params.packed_varlen || params.cu_seqlens == nullptr || params.tensormap_scratch == nullptr
+        || params.q == nullptr || params.k == nullptr || params.v == nullptr || params.a == nullptr
+        || params.b == nullptr || params.A_log == nullptr || params.dt_bias == nullptr || params.o == nullptr
+        || params.h0_source == nullptr || n <= 0 || totalTokens <= 0)
+    {
+        LOG_ERROR("Packed-varlen GeForce GDN requires packed tensors, cu_seqlens, states, and positive dimensions.");
+        return -1;
+    }
+    if (h <= 0 || hv < h || hv % h != 0)
+    {
+        LOG_ERROR("Packed-varlen GeForce GDN requires hv to be a positive multiple of h, got h=%d, hv=%d.", h, hv);
+        return -1;
+    }
+    if (k != 128 || v != 128)
+    {
+        LOG_ERROR("Packed-varlen GeForce GDN requires k_dim == v_dim == 128, got k_dim=%d, v_dim=%d.", k, v);
+        return -1;
+    }
+    if (stream == nullptr)
+    {
+        LOG_ERROR("Packed-varlen GeForce GDN requires an explicit CUDA stream.");
+        return -1;
+    }
+    if (params.state_indices != nullptr && params.state_pool_rows <= 0)
+    {
+        LOG_ERROR("Packed-varlen GeForce GDN with state_indices requires a state pool.");
+        return -1;
+    }
+    int32_t const smCount = getDeviceMultiProcessorCount();
+    if (smCount <= 0 || smCount > kBlackwellGeforceMaxSMCount)
+    {
+        LOG_ERROR("Packed-varlen GeForce GDN supports 1 to %d SMs, got %d.", kBlackwellGeforceMaxSMCount, smCount);
+        return -1;
+    }
+    int32_t const enablePdl = useGdnPdl(params.enablePdl, totalTokens, params.smVersion) ? 1 : 0;
+    cudaError_t const qkNormResult
+        = launchGdnL2NormQKFusedSm12x(params.q, params.k, 1, totalTokens, h, k, enablePdl != 0, stream);
+    if (qkNormResult != cudaSuccess)
+    {
+        LOG_ERROR("GDN Blackwell GeForce Q/K normalization launch failed: %s", cudaGetErrorString(qkNormResult));
+        return -1;
+    }
+
+    gdn_prefill_blackwell_geforce_varlen_Tensor_q_t qTensor{};
+    SET_3D_TENSOR(qTensor, params.q, totalTokens, h, k);
+    gdn_prefill_blackwell_geforce_varlen_Tensor_k_t kTensor{};
+    SET_3D_TENSOR(kTensor, params.k, totalTokens, h, k);
+    gdn_prefill_blackwell_geforce_varlen_Tensor_v_t vTensor{};
+    SET_3D_TENSOR(vTensor, params.v, totalTokens, hv, v);
+    gdn_prefill_blackwell_geforce_varlen_Tensor_o_t oTensor{};
+    SET_3D_TENSOR(oTensor, params.o, totalTokens, hv, v);
+    gdn_prefill_blackwell_geforce_varlen_Tensor_a_t aTensor{};
+    SET_2D_TENSOR(aTensor, params.a, totalTokens, hv);
+    gdn_prefill_blackwell_geforce_varlen_Tensor_b_t bTensor{};
+    SET_2D_TENSOR(bTensor, params.b, totalTokens, hv);
+    gdn_prefill_blackwell_geforce_varlen_Tensor_A_log_t ALogTensor{};
+    SET_1D_TENSOR(ALogTensor, params.A_log, hv);
+    gdn_prefill_blackwell_geforce_varlen_Tensor_dt_bias_t dtBiasTensor{};
+    SET_1D_TENSOR(dtBiasTensor, params.dt_bias, hv);
+    int32_t const stateRows = params.state_pool_rows > 0 ? params.state_pool_rows : n;
+    gdn_prefill_blackwell_geforce_varlen_Tensor_h0_in_t h0InTensor{};
+    h0InTensor.data = params.h0_source;
+    h0InTensor.dynamic_shapes[0] = stateRows;
+    h0InTensor.dynamic_shapes[1] = hv;
+    h0InTensor.dynamic_strides[0] = static_cast<int64_t>(hv) * k * v;
+    gdn_prefill_blackwell_geforce_varlen_Tensor_h0_out_t h0OutTensor{};
+    h0OutTensor.data = params.h0_source;
+    h0OutTensor.dynamic_shapes[0] = stateRows;
+    h0OutTensor.dynamic_shapes[1] = hv;
+    h0OutTensor.dynamic_strides[0] = static_cast<int64_t>(hv) * k * v;
+    gdn_prefill_blackwell_geforce_varlen_Tensor_state_indices_t stateIndicesTensor{};
+    SET_1D_TENSOR(stateIndicesTensor, params.state_indices != nullptr ? params.state_indices : params.cu_seqlens, n);
+    gdn_prefill_blackwell_geforce_varlen_Tensor_cu_seqlens_t cuSeqlensTensor{};
+    SET_1D_TENSOR(cuSeqlensTensor, params.cu_seqlens, n + 1);
+    gdn_prefill_blackwell_geforce_varlen_Tensor_tensormap_scratch_t tensormapScratchTensor{};
+    SET_1D_TENSOR(tensormapScratchTensor, params.tensormap_scratch,
+        kBlackwellGeforceMaxSMCount * kBlackwellGeforceTensorMapDescriptorBytes);
+    return cute_dsl_gdn_prefill_blackwell_geforce_varlen_wrapper(&sBlackwellGeforceVarlenPrefillModule.module, &qTensor,
+        &kTensor, &vTensor, &aTensor, &bTensor, &ALogTensor, &dtBiasTensor, &h0InTensor, &h0OutTensor,
+        &stateIndicesTensor, params.state_indices != nullptr, &cuSeqlensTensor, n, &oTensor, &tensormapScratchTensor,
+        enablePdl, stream);
+#else
+    static_cast<void>(params);
+    static_cast<void>(stream);
+    LOG_ERROR("Packed-varlen Blackwell GeForce GDN prefill not compiled in this build.");
     return -1;
 #endif
 }

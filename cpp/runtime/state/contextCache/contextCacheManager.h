@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace trt_edgellm
@@ -69,6 +70,7 @@ private:
 
     //! Acquisition provenance retained while the request executes so publication can validate the produced prefix.
     ReusePlanMode mMode{ReusePlanMode::kVanilla};
+    bool mPublishable{true};
     std::vector<BlockHash> mMatchedBlockHashes;
 
     //! Every remaining active reference owned by this lease and released by release() or destruction.
@@ -81,6 +83,8 @@ private:
     bool mHybridHasAttention{false};
     std::optional<int32_t> mRecurrentSnapshotBinding;
     std::optional<int32_t> mPartialKvSnapshotBinding;
+    //! Admission seed transferred once to BoundedSwaKVPageManager; ResourceIds remain lease-owned.
+    std::optional<SwaKVCacheState> mSwaState;
 };
 
 //! Outcome of planning and acquiring one request.
@@ -109,10 +113,20 @@ enum class PublishStatus : uint8_t
 
 struct PublishRequest
 {
+    PublishRequest(std::vector<BlockHash> hashes, int32_t stateLength,
+        std::optional<SwaWindowState> settledSwaState = std::nullopt)
+        : fullBlockHashes(std::move(hashes))
+        , residentStateLength(stateLength)
+        , swaWindowState(std::move(settledSwaState))
+    {
+    }
+
     std::vector<BlockHash> fullBlockHashes;
     //! Greatest logical prefix ready for publication. For speculative leases, both base and draft state must be
     //! materialized through this boundary.
     int32_t residentStateLength{};
+    //! Settled state supplied by BoundedSwaKVPageManager after the execution completion point.
+    std::optional<SwaWindowState> swaWindowState;
 };
 
 //! Detailed publication outcome describing the record path selected at commit time.
@@ -149,6 +163,7 @@ struct ContextCacheManagerMetrics
     uint64_t reclaimedDraftKvPages{};
     uint64_t reclaimedRecurrentSnapshots{};
     uint64_t reclaimedPartialKvSnapshots{};
+    uint64_t reclaimedSwaKvPages{};
 };
 
 //! Host orchestrator for the complete context-cache lifecycle under an externally serialized single-writer contract.
@@ -167,7 +182,11 @@ class ContextCacheManager
 {
 public:
     ContextCacheManager(int32_t pageSize, ResourceDemand capacities, int32_t maxRecords,
-        std::optional<SpecReuseContract> specReuseContract = std::nullopt);
+        std::optional<SpecReuseContract> specReuseContract = std::nullopt,
+        std::optional<SwaCacheConfig> swaConfig = std::nullopt);
+
+    ReusePlan planVanilla(std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount,
+        ContextCacheLookupPolicy lookupPolicy = ContextCacheLookupPolicy::kUseCache) const;
 
     AcquireResult acquireVanilla(std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount,
         ContextCacheLookupPolicy lookupPolicy = ContextCacheLookupPolicy::kUseCache);
@@ -190,6 +209,15 @@ public:
     //! Reserve unpublished hybrid snapshot storage. Failure is retention pressure and leaves the lease unchanged.
     std::optional<HybridSnapshotReservation> reserveHybridSnapshots(
         CacheRequestLease& lease, bool needsPartialKvSnapshot);
+    //! Retain existing base pages for a read-only consumer. The returned lease cannot publish or allocate pages.
+    CacheRequestLease retainBasePages(std::vector<PageId> const& pages);
+    //! Transfer the seeded bounded-SWA state to its execution owner. Page references remain owned by the lease.
+    std::optional<SwaKVCacheState> takeSwaState(CacheRequestLease& lease);
+    //! True when a retained page is shared through cache or another active request and must not be overwritten.
+    bool isExternallyOwnedSwaPage(CacheRequestLease const& lease, PageId page) const;
+    //! Replace one retired shared SWA page with a private reservation owned by the same lease. Failure is fatal to the
+    //! request because the retired page has already been released; callers must tear down the lease without retrying.
+    PageId replaceSwaPage(CacheRequestLease& lease, PageId page);
     //! Release hit-snapshot active pins after the stream-ordered restore has completed.
     void releaseRestoredHybridSnapshots(CacheRequestLease& lease);
     //! Release producer ownership after capture is terminal and publication has committed.
@@ -225,6 +253,8 @@ private:
     void releaseLeaseResource(CacheRequestLease& lease, ResourceId resource);
 
     int32_t mPageSize{};
+    std::optional<SwaCacheConfig> mSwaConfig;
+    int32_t mSwaPrivatePageLimit{};
     ResourcePools mPools;
     BaseBlockIndex mBaseIndex;
     SpecStateIndex mSpecIndex;

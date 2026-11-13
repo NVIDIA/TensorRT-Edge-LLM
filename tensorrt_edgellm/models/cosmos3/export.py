@@ -31,25 +31,21 @@ import torch
 
 from ..._version import __version__
 from ...onnx.export_encoder import _run_dynamo_export
-from .modeling_gen import (ACTION_CHUNK_SIZE, DEFAULT_FPS,
-                           DEFAULT_MAX_VIDEO_SUBSAMPLE_FACTOR,
-                           DEFAULT_NUM_FRAMES, build_cosmos3_gen,
-                           gen_config_from_transformer, make_gen_config)
+from .modeling_gen import (DEFAULT_MAX_VIDEO_SUBSAMPLE_FACTOR,
+                           build_cosmos3_gen, gen_config_from_transformer,
+                           make_gen_config)
 from .modeling_und_prefill import (build_cosmos3_und_prefill,
                                    make_und_prefill_config)
-from .modeling_vae_encoder import (VAE_HEIGHT, VAE_WIDTH,
-                                   build_cosmos3_vae_encoder,
+from .modeling_vae_encoder import (build_cosmos3_vae_encoder,
                                    get_vae_onnx_export_args,
                                    make_vae_encoder_config)
+from .policy_geometry import DEFAULT_MAX_UND_LEN, Cosmos3PolicyGeometry
 from .weights import load_config_json, split_transformer_weights
 
 logger = logging.getLogger(__name__)
 
 COSMOS3_COMPONENTS = ("und_prefill", "gen", "vae_encoder")
 CONTRACT_VERSION = 1
-
-# Policy-path export default (droid context length).
-DEFAULT_MAX_UND_LEN = 512
 
 
 def _write_component_config(out_dir: str, config: dict) -> None:
@@ -68,7 +64,7 @@ def _transformer_dir(checkpoint: str) -> str:
 
 def _save_embedding_artifacts(out_dir: str, und_weights: dict,
                               dtype: torch.dtype) -> None:
-    import safetensors.torch as st
+    from ..._safetensors_io import save_file
 
     artifacts = {
         "embed_tokens.weight": "embed_tokens.safetensors",
@@ -76,8 +72,8 @@ def _save_embedding_artifacts(out_dir: str, und_weights: dict,
     }
     for key, filename in artifacts.items():
         if key in und_weights:
-            st.save_file({key: und_weights[key].to(dtype).contiguous()},
-                         os.path.join(out_dir, filename))
+            save_file({key: und_weights[key].to(dtype).contiguous()},
+                      os.path.join(out_dir, filename))
             logger.info("Saved %s", filename)
 
 
@@ -99,23 +95,26 @@ def _write_tokenizer_artifacts(checkpoint: str, output_dir: str) -> None:
 def export_gen(
         checkpoint: str,
         out_dir: str,
-        max_und_len: int,
         dtype: torch.dtype,
-        action_chunk_size: "int | None" = None,
-        num_frames: "int | None" = None,
-        fps: float = DEFAULT_FPS,
+        geometry: Cosmos3PolicyGeometry,
         max_video_subsample_factor: int = DEFAULT_MAX_VIDEO_SUBSAMPLE_FACTOR,
         min_action_chunk: "int | None" = None,
         max_action_chunk: "int | None" = None) -> None:
     """Export the GEN diffusion expert."""
     tcfg = load_config_json(checkpoint, "transformer")
     _, gen_weights = split_transformer_weights(_transformer_dir(checkpoint))
-    cfg = gen_config_from_transformer(tcfg,
-                                      action_chunk_size=action_chunk_size,
-                                      num_frames=num_frames)
+    cfg = gen_config_from_transformer(
+        tcfg,
+        action_chunk_size=geometry.action_chunk_size,
+        num_frames=geometry.num_frames,
+        raw_action_dim=geometry.raw_action_dim,
+        state_rows=geometry.state_rows,
+        latent_height=geometry.latent_h,
+        latent_width=geometry.latent_w,
+        domain_id=geometry.domain_id)
     model = build_cosmos3_gen(cfg, gen_weights, dtype).to("cpu")
     args, input_names, output_names, dynamic_shapes = model.get_onnx_export_args(
-        max_und_len, "cpu")
+        geometry.max_und_len, "cpu")
     os.makedirs(out_dir, exist_ok=True)
     _run_dynamo_export(model, args, os.path.join(out_dir, "model.onnx"),
                        input_names, output_names, dynamic_shapes)
@@ -123,8 +122,9 @@ def export_gen(
         out_dir,
         make_gen_config(cfg,
                         tcfg,
-                        max_und_len,
-                        fps=fps,
+                        geometry.max_und_len,
+                        fps=geometry.fps,
+                        domain=geometry.domain_name,
                         max_video_subsample_factor=max_video_subsample_factor,
                         min_action_chunk=min_action_chunk,
                         max_action_chunk=max_action_chunk))
@@ -149,18 +149,26 @@ def export_und_prefill(checkpoint: str,
     logger.info("UND-prefill export complete: %s", out_dir)
 
 
-def export_vae_encoder(checkpoint: str, out_dir: str, height: int, width: int,
-                       dtype: torch.dtype, num_frames: int) -> None:
+def export_vae_encoder(checkpoint: str, out_dir: str, dtype: torch.dtype,
+                       geometry: Cosmos3PolicyGeometry) -> None:
     """Export the Wan VAE encoder."""
-    model = build_cosmos3_vae_encoder(os.path.join(checkpoint, "vae"),
-                                      dtype).to("cpu")
+    model = build_cosmos3_vae_encoder(
+        os.path.join(checkpoint, "vae"),
+        dtype,
+        content_height=geometry.content_height,
+        content_width=geometry.content_width).to("cpu")
     args, input_names, output_names, dynamic_shapes = get_vae_onnx_export_args(
-        height, width, "cpu", dtype, num_frames)
+        geometry.height, geometry.width, "cpu", dtype,
+        geometry.conditioning_frames)
     os.makedirs(out_dir, exist_ok=True)
     _run_dynamo_export(model, args, os.path.join(out_dir, "model.onnx"),
                        input_names, output_names, dynamic_shapes)
-    _write_component_config(out_dir,
-                            make_vae_encoder_config(height, width, num_frames))
+    _write_component_config(
+        out_dir,
+        make_vae_encoder_config(geometry.height, geometry.width,
+                                geometry.conditioning_frames,
+                                geometry.content_height,
+                                geometry.content_width))
     logger.info("VAE encoder export complete: %s", out_dir)
 
 
@@ -168,28 +176,34 @@ def export_cosmos3_components(checkpoint: str,
                               output_dir: str,
                               components: "list[str] | None" = None,
                               max_und_len: int = DEFAULT_MAX_UND_LEN,
-                              height: int = VAE_HEIGHT,
-                              width: int = VAE_WIDTH,
+                              height: "int | None" = None,
+                              width: "int | None" = None,
                               dtype: torch.dtype = torch.float16,
-                              num_frames: int = DEFAULT_NUM_FRAMES,
-                              action_chunk_size: int = ACTION_CHUNK_SIZE,
-                              fps: float = DEFAULT_FPS,
+                              num_frames: "int | None" = None,
+                              action_chunk_size: "int | None" = None,
+                              fps: "float | None" = None,
                               max_video_subsample_factor: int = (
                                   DEFAULT_MAX_VIDEO_SUBSAMPLE_FACTOR),
                               min_action_chunk: "int | None" = None,
                               max_action_chunk: "int | None" = None) -> None:
     """Export Cosmos3 policy components from a HF/diffusers checkpoint.
 
-    The defaults are the canonical policy request: one input image,
-    ``num_frames=17``, ``fps=5``, ``action_chunk_size=16`` (action chunk
-    [16, 8]). The generated frames are the rollout associated with the
-    action chunk, not an input video.
+    Geometry arguments left as None come from checkpoint policy metadata.
     """
     components = list(components or COSMOS3_COMPONENTS)
     unknown = [c for c in components if c not in COSMOS3_COMPONENTS]
     if unknown:
         raise ValueError(f"Unsupported Cosmos3 components: {unknown}; "
                          f"expected a subset of {list(COSMOS3_COMPONENTS)}")
+    geometry = Cosmos3PolicyGeometry.from_checkpoint(
+        checkpoint, {
+            "action_chunk_size": action_chunk_size,
+            "fps": fps,
+            "height": height,
+            "max_und_len": max_und_len,
+            "num_frames": num_frames,
+            "width": width,
+        })
     os.makedirs(output_dir, exist_ok=True)
     _write_tokenizer_artifacts(checkpoint, output_dir)
     for component in components:
@@ -197,16 +211,13 @@ def export_cosmos3_components(checkpoint: str,
         if component == "gen":
             export_gen(checkpoint,
                        out_dir,
-                       max_und_len,
                        dtype,
-                       action_chunk_size=action_chunk_size,
-                       num_frames=num_frames,
-                       fps=fps,
+                       geometry,
                        max_video_subsample_factor=max_video_subsample_factor,
                        min_action_chunk=min_action_chunk,
                        max_action_chunk=max_action_chunk)
         elif component == "und_prefill":
-            export_und_prefill(checkpoint, out_dir, dtype, max_und_len)
+            export_und_prefill(checkpoint, out_dir, dtype,
+                               geometry.max_und_len)
         elif component == "vae_encoder":
-            export_vae_encoder(checkpoint, out_dir, height, width, dtype,
-                               num_frames)
+            export_vae_encoder(checkpoint, out_dir, dtype, geometry)

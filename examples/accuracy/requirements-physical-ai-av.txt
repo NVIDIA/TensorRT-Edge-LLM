@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# PhysicalAI-AV dataset kit for Alpamayo-R1 requests.
+physical_ai_av==0.2.3
+pillow==12.2.0

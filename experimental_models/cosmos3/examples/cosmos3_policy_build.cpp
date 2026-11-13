@@ -118,7 +118,7 @@ int main(int argc, char** argv)
         printUsage(argv[0]);
         return EXIT_SUCCESS;
     }
-    gLogger.setLevel(args.debug ? nvinfer1::ILogger::Severity::kVERBOSE : nvinfer1::ILogger::Severity::kINFO);
+    gLogger.setLevel(args.debug ? trt_edgellm::logger::Severity::kVERBOSE : trt_edgellm::logger::Severity::kINFO);
 
     std::vector<std::string> const components
         = args.component == "all" ? cosmos3::policyComponents() : std::vector<std::string>{args.component};

@@ -22,15 +22,15 @@
  */
 
 #include "common/checkMacros.h"
+#include "common/identityHash.h"
 #include "imageUtilKernels.h"
 #include "kernels/common/vectorizedTypes.cuh"
 #include <cmath>
 #include <cstdint>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <limits>
 #include <string>
-
-using namespace nvinfer1;
 
 namespace trt_edgellm
 {
@@ -1116,6 +1116,215 @@ void evsScoresNemotronViT(
     int64_t const hidden = embeds.getShape()[1];
     evsScoresNemotronKernel<<<static_cast<uint32_t>(numTokens), 256, 0, stream>>>(
         embeds.dataPointer<half>(), scores.dataPointer<float>(), tokensPerGroup, hidden);
+}
+
+namespace
+{
+
+struct FnvValue
+{
+    uint64_t hi;
+    uint64_t lo;
+};
+
+__device__ constexpr FnvValue kFNV_OFFSET{rt::kFNV128_OFFSET_HI, rt::kFNV128_OFFSET_LO};
+__device__ constexpr FnvValue kFNV_PRIME{rt::kFNV128_PRIME_HI, rt::kFNV128_PRIME_LO};
+
+// FNV-1a multiplies modulo 2^128; device code has no native 128-bit integer, so the multiply runs as
+// two 64-bit halves (same shape as fnv1aHashKernel.cu's Fnv128).
+__device__ __forceinline__ void fnvByte(FnvValue& state, uint8_t const value)
+{
+    state.lo ^= static_cast<uint64_t>(value);
+    uint64_t const lo = state.lo * kFNV_PRIME.lo;
+    uint64_t const hiCarry = __umul64hi(state.lo, kFNV_PRIME.lo);
+    state.hi = state.hi * kFNV_PRIME.lo + state.lo * kFNV_PRIME.hi + hiCarry;
+    state.lo = lo;
+}
+
+__device__ __forceinline__ void fnvU64(FnvValue& state, uint64_t value)
+{
+    for (uint32_t i = 0; i < sizeof(value); ++i)
+    {
+        fnvByte(state, static_cast<uint8_t>(value));
+        value >>= 8U;
+    }
+}
+
+template <DigestAccess access>
+__device__ __forceinline__ uint8_t loadRowByte(
+    ImageDigestPlane const& plane, int64_t const rowStart, int32_t const row, int32_t const index);
+
+template <>
+__device__ __forceinline__ uint8_t loadRowByte<DigestAccess::kPITCH_LINEAR>(
+    ImageDigestPlane const& plane, int64_t const rowStart, int32_t const row, int32_t const index)
+{
+    return plane.bytes[rowStart + index];
+}
+
+template <>
+__device__ __forceinline__ uint8_t loadRowByte<DigestAccess::kTEXTURE_LUMA>(
+    ImageDigestPlane const& plane, int64_t const rowStart, int32_t const row, int32_t const index)
+{
+    return tex2D<uint8_t>(plane.texture, index, row);
+}
+
+template <>
+__device__ __forceinline__ uint8_t loadRowByte<DigestAccess::kTEXTURE_CHROMA>(
+    ImageDigestPlane const& plane, int64_t const rowStart, int32_t const row, int32_t const index)
+{
+    uchar2 const texel = tex2D<uchar2>(plane.texture, index / 2, row);
+    return (index % 2) == 0 ? texel.x : texel.y;
+}
+
+//! Rows are hashed by a full warp, not one thread: each lane strides the row from its own offset basis,
+//! then the 32 lane digests combine through a butterfly reduction over log2(kROW_LANES) shuffle rounds.
+//! Lane count is fixed, not derived from the launch configuration, so a component still only depends on
+//! (row, bytes).
+constexpr uint32_t kROW_LANES = 32;
+
+//! Butterfly reduction over the warp: each round folds lane `lane ^ offset`'s digest into this lane's, for
+//! offsets kROW_LANES / 2 down to 1. Lane 0 holds the warp's digest afterwards.
+__device__ __forceinline__ FnvValue combineLanes(FnvValue combined)
+{
+    constexpr unsigned kFULL_WARP_MASK = 0xFFFFFFFFU;
+    for (uint32_t offset = kROW_LANES / 2; offset > 0; offset >>= 1)
+    {
+        uint64_t const partnerHi = __shfl_xor_sync(kFULL_WARP_MASK, combined.hi, static_cast<int>(offset));
+        uint64_t const partnerLo = __shfl_xor_sync(kFULL_WARP_MASK, combined.lo, static_cast<int>(offset));
+        fnvU64(combined, partnerHi);
+        fnvU64(combined, partnerLo);
+    }
+    return combined;
+}
+
+template <DigestAccess access>
+__device__ __forceinline__ ImageRowDigest hashRow(
+    ImageDigestPlane const& plane, int64_t const rowStart, int32_t const row, uint32_t const lane)
+{
+    FnvValue laneState = kFNV_OFFSET;
+    for (int32_t index = static_cast<int32_t>(lane); index < plane.validRowBytes; index += kROW_LANES)
+    {
+        fnvByte(laneState, loadRowByte<access>(plane, rowStart, row, index));
+    }
+    FnvValue const combined = combineLanes(laneState);
+    return {combined.hi, combined.lo};
+}
+
+} // namespace
+
+__global__ void hashImageRowsKernel(ImageDigestPlane const plane0, ImageDigestPlane const plane1,
+    int32_t const rowsPerFrame, int32_t const totalRows, ImageRowDigest* rowDigests)
+{
+    uint32_t const globalLane = blockIdx.x * blockDim.x + threadIdx.x;
+    int32_t const entry = static_cast<int32_t>(globalLane / kROW_LANES);
+    uint32_t const lane = globalLane % kROW_LANES;
+    if (entry >= totalRows)
+    {
+        return;
+    }
+
+    // The (frame, plane, row) this entry stands for, and where that row starts. Planes stack within a
+    // frame, so a warp's own index is all the addressing it needs.
+    int32_t const frame = entry / rowsPerFrame;
+    int32_t const withinFrame = entry - frame * rowsPerFrame;
+    bool const isSecondPlane = withinFrame >= plane0.rows;
+    ImageDigestPlane const& plane = isSecondPlane ? plane1 : plane0;
+    int32_t const row = isSecondPlane ? withinFrame - plane0.rows : withinFrame;
+    int64_t const rowStart = plane.offsetBytes + static_cast<int64_t>(frame) * plane.frameStrideBytes
+        + static_cast<int64_t>(row) * plane.pitchBytes;
+
+    ImageRowDigest digest{};
+    switch (plane.access)
+    {
+    case DigestAccess::kPITCH_LINEAR: digest = hashRow<DigestAccess::kPITCH_LINEAR>(plane, rowStart, row, lane); break;
+    case DigestAccess::kTEXTURE_LUMA: digest = hashRow<DigestAccess::kTEXTURE_LUMA>(plane, rowStart, row, lane); break;
+    case DigestAccess::kTEXTURE_CHROMA:
+        digest = hashRow<DigestAccess::kTEXTURE_CHROMA>(plane, rowStart, row, lane);
+        break;
+    }
+    if (lane == 0)
+    {
+        rowDigests[entry] = digest;
+    }
+}
+
+void hashImageRows(ImageDigestPlane const* const planes, int32_t const numPlanes, int32_t const frames,
+    ImageRowDigest* const rowDigests, cudaStream_t stream)
+{
+    check::check(planes != nullptr && (numPlanes == 1 || numPlanes == 2), "hashImageRows: expects one or two planes.");
+    check::check(frames > 0, "hashImageRows: frame count shall be positive.");
+    check::check(rowDigests != nullptr, "hashImageRows: destination is null.");
+
+    int32_t rowsPerFrame = 0;
+    for (int32_t p = 0; p < numPlanes; ++p)
+    {
+        std::string const what = "hashImageRows: plane " + std::to_string(p) + " ";
+        check::check(planes[p].validRowBytes > 0 && planes[p].rows > 0, what + "has a non-positive row geometry.");
+        check::check(
+            planes[p].access == DigestAccess::kPITCH_LINEAR ? planes[p].bytes != nullptr : planes[p].texture != 0,
+            what + "carries no pixels for its access mode.");
+        check::check(planes[p].access != DigestAccess::kPITCH_LINEAR || planes[p].pitchBytes >= planes[p].validRowBytes,
+            what + "pitch is below its valid row width.");
+        rowsPerFrame += planes[p].rows;
+    }
+
+    int64_t const totalRows = static_cast<int64_t>(frames) * rowsPerFrame;
+    check::check(totalRows <= std::numeric_limits<int32_t>::max(),
+        "hashImageRows: " + std::to_string(totalRows) + " rows overflow the kernel's 32-bit indexing.");
+
+    // One warp per row (see hashRow), so the grid spans totalRows * kROW_LANES lanes, not totalRows threads.
+    uint32_t const blockSize = 256;
+    uint64_t const totalLanes = static_cast<uint64_t>(totalRows) * kROW_LANES;
+    uint32_t const gridSize = static_cast<uint32_t>((totalLanes + blockSize - 1) / blockSize);
+    hashImageRowsKernel<<<gridSize, blockSize, 0, stream>>>(planes[0], numPlanes > 1 ? planes[1] : ImageDigestPlane{},
+        rowsPerFrame, static_cast<int32_t>(totalRows), rowDigests);
+}
+
+namespace
+{
+
+// One warp per group, a block's warps taking consecutive groups: row r belongs to group r % groupCount, lane l
+// folds the group's rows l, l + kROW_LANES, ... in ascending order, then the lanes combine as in hashRow. Group
+// g's own output slot (index g, since g < groupCount) is read only by its warp's lane 0, and only before the
+// write: writing the combined digests back over the rows they came from is safe without a second buffer.
+__global__ void combineRowDigestsKernel(ImageRowDigest* rowDigests, int32_t const rowCount, int32_t const groupCount)
+{
+    uint32_t const globalLane = blockIdx.x * blockDim.x + threadIdx.x;
+    int32_t const group = static_cast<int32_t>(globalLane / kROW_LANES);
+    int32_t const lane = static_cast<int32_t>(globalLane % kROW_LANES);
+    if (group >= groupCount)
+    {
+        return;
+    }
+    FnvValue combined = kFNV_OFFSET;
+    for (int32_t row = group + groupCount * lane; row < rowCount; row += groupCount * static_cast<int32_t>(kROW_LANES))
+    {
+        ImageRowDigest const digest = rowDigests[row];
+        fnvU64(combined, digest.hi);
+        fnvU64(combined, digest.lo);
+    }
+    combined = combineLanes(combined);
+    if (lane == 0)
+    {
+        rowDigests[group] = {combined.hi, combined.lo};
+    }
+}
+
+} // namespace
+
+void combineImageRowDigests(
+    ImageRowDigest* const rowDigests, int32_t const rowCount, int32_t const groupCount, cudaStream_t stream)
+{
+    check::check(rowDigests != nullptr, "combineImageRowDigests: destination is null.");
+    check::check(rowCount > 0, "combineImageRowDigests: row count shall be positive.");
+    check::check(groupCount > 0 && groupCount <= rowCount,
+        "combineImageRowDigests: group count shall be positive and no more than the row count.");
+
+    // One warp per group (see combineRowDigestsKernel), so the grid spans groupCount * kROW_LANES lanes.
+    uint32_t const blockSize = 256;
+    uint32_t const totalLanes = static_cast<uint32_t>(groupCount) * kROW_LANES;
+    uint32_t const gridSize = (totalLanes + blockSize - 1) / blockSize;
+    combineRowDigestsKernel<<<gridSize, blockSize, 0, stream>>>(rowDigests, rowCount, groupCount);
 }
 
 template <PixelDataType dtype>

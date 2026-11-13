@@ -99,6 +99,103 @@ __global__ void buildChunkMetadataKernel(int32_t* d_seq_chunk_cumsum, // [batch+
     }
 }
 
+/// Token range of packed sequence b, clamped to the token axis so malformed offsets stay in bounds.
+__device__ __forceinline__ void packedSequenceRange(
+    int32_t const* d_cu_seqlens, int32_t b, int32_t total_tokens, int32_t& start, int32_t& length)
+{
+    start = min(max(d_cu_seqlens[b], 0), total_tokens);
+    length = min(max(d_cu_seqlens[b + 1], start), total_tokens) - start;
+}
+
+/// seq_idx[t] = owning sequence of token t: the last b with cu_seqlens[b] <= t.
+__global__ void buildPackedSeqIdxKernel(
+    int32_t* d_seq_idx, int32_t const* d_cu_seqlens, int32_t num_seqs, int32_t total_tokens)
+{
+    int32_t const t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= total_tokens)
+        return;
+    int32_t lo = 0;
+    int32_t hi = num_seqs;
+    while (hi - lo > 1)
+    {
+        int32_t const mid = (lo + hi) / 2;
+        if (d_cu_seqlens[mid] <= t)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    int32_t start{};
+    int32_t length{};
+    packedSequenceRange(d_cu_seqlens, lo, total_tokens, start, length);
+    d_seq_idx[t] = (t >= start && t < start + length) ? lo : -1;
+}
+
+/// Packed counterpart of buildChunkMetadataKernel: logical chunks are the (sequence, physical chunk) pairs of each
+/// sequence's token range.
+__global__ void buildPackedChunkMetadataKernel(int32_t* d_seq_chunk_cumsum, int32_t* d_chunk_indices,
+    int32_t* d_chunk_offsets, int32_t const* d_cu_seqlens, int32_t num_seqs, int32_t total_tokens, int32_t chunk_size,
+    int32_t total_slots)
+{
+    int32_t const tid = threadIdx.x;
+    extern __shared__ int32_t smem[];
+
+    if (tid < num_seqs)
+    {
+        int32_t start{};
+        int32_t length{};
+        packedSequenceRange(d_cu_seqlens, tid, total_tokens, start, length);
+        smem[tid] = length > 0 ? (start % chunk_size + length + chunk_size - 1) / chunk_size : 0;
+    }
+    __syncthreads();
+
+    if (tid == 0)
+    {
+        int32_t cum = 0;
+        d_seq_chunk_cumsum[0] = 0;
+        for (int32_t b = 0; b < num_seqs; ++b)
+        {
+            int32_t start{};
+            int32_t length{};
+            packedSequenceRange(d_cu_seqlens, b, total_tokens, start, length);
+            int32_t const count = min(smem[b], total_slots - cum);
+            int32_t flat = start;
+            int32_t remaining = length;
+            for (int32_t c = 0; c < count; ++c)
+            {
+                int32_t const offset = flat % chunk_size;
+                d_chunk_indices[cum + c] = flat / chunk_size;
+                d_chunk_offsets[cum + c] = offset;
+                int32_t const chunk_tokens = min(chunk_size - offset, remaining);
+                flat += chunk_tokens;
+                remaining -= chunk_tokens;
+            }
+            cum += count;
+            d_seq_chunk_cumsum[b + 1] = cum;
+        }
+        smem[num_seqs] = cum;
+    }
+    __syncthreads();
+
+    for (int32_t k = smem[num_seqs] + tid; k < total_slots; k += blockDim.x)
+    {
+        d_chunk_indices[k] = -1;
+        d_chunk_offsets[k] = 0;
+    }
+}
+
+__global__ void fillValidLensFromCuSeqlensKernel(
+    int32_t* d_valid_lens, int32_t const* d_cu_seqlens, int32_t num_seqs, int32_t total_tokens)
+{
+    int32_t const idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < num_seqs)
+    {
+        int32_t start{};
+        int32_t length{};
+        packedSequenceRange(d_cu_seqlens, idx, total_tokens, start, length);
+        d_valid_lens[idx] = length;
+    }
+}
+
 /// Fill valid_lens[0..batch) with uniform seq_len.
 __global__ void fillUniformValidLensKernel(int32_t* d_valid_lens, int32_t batch, int32_t seq_len)
 {
@@ -116,6 +213,30 @@ void fillUniformValidLens(int32_t* d_valid_lens, int32_t batch, int32_t seq_len,
     int32_t const block = 64;
     int32_t const grid = (batch + block - 1) / block;
     fillUniformValidLensKernel<<<grid, block, 0, stream>>>(d_valid_lens, batch, seq_len);
+}
+
+void buildSSDPackedVarlenMetadata(int32_t* d_seq_idx, int32_t* d_chunk_indices, int32_t* d_chunk_offsets,
+    int32_t* d_seq_chunk_cumsum, int32_t const* d_cu_seqlens, int32_t num_seqs, int32_t total_tokens,
+    int32_t chunk_size, int32_t total_slots, cudaStream_t stream)
+{
+    int32_t const threads = (num_seqs <= 256) ? 256 : ((num_seqs + 31) / 32) * 32;
+    size_t const smem_bytes = static_cast<size_t>(num_seqs + 1) * sizeof(int32_t);
+    buildPackedChunkMetadataKernel<<<1, threads, smem_bytes, stream>>>(d_seq_chunk_cumsum, d_chunk_indices,
+        d_chunk_offsets, d_cu_seqlens, num_seqs, total_tokens, chunk_size, total_slots);
+    if (total_tokens > 0)
+    {
+        int32_t const threadsX = 128;
+        buildPackedSeqIdxKernel<<<(total_tokens + threadsX - 1) / threadsX, threadsX, 0, stream>>>(
+            d_seq_idx, d_cu_seqlens, num_seqs, total_tokens);
+    }
+}
+
+void fillValidLensFromCuSeqlens(
+    int32_t* d_valid_lens, int32_t const* d_cu_seqlens, int32_t num_seqs, int32_t total_tokens, cudaStream_t stream)
+{
+    int32_t const block = 64;
+    fillValidLensFromCuSeqlensKernel<<<(num_seqs + block - 1) / block, block, 0, stream>>>(
+        d_valid_lens, d_cu_seqlens, num_seqs, total_tokens);
 }
 
 void buildSSDVarlenMetadata(int32_t* d_seq_idx, int32_t* d_chunk_indices, int32_t* d_chunk_offsets,

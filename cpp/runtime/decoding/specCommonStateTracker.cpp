@@ -22,7 +22,6 @@
 
 #include <cstddef>
 #include <limits>
-#include <utility>
 
 namespace trt_edgellm::rt
 {
@@ -53,9 +52,40 @@ void SpecCommonStateTracker::initialize(DecodingInferenceContext const& context)
     }
 }
 
-void SpecCommonStateTracker::materializePending(int32_t generationRound, int32_t activeBatchSize)
+void SpecCommonStateTracker::reserve(int32_t rows)
 {
-    if (generationRound <= 0 || mCommonMaterializedStateLengths.empty())
+    mCommonMaterializedStateLengths.reserve(static_cast<size_t>(rows));
+    mPendingDraftAcceptLengths.reserve(static_cast<size_t>(rows));
+    mCompactedValues.reserve(static_cast<size_t>(rows));
+    mCompactedSlotFilled.reserve(static_cast<size_t>(rows));
+}
+
+void SpecCommonStateTracker::appendRow(int32_t row)
+{
+    ELLM_CHECK(row >= 0 && static_cast<size_t>(row) <= mCommonMaterializedStateLengths.size()
+            && mPendingDraftAcceptLengths.size() == mCommonMaterializedStateLengths.size(),
+        "Speculative common-state tracking does not cover the rows before the appended one");
+    // A tracker left over from a blocking request holds rows the session does not: the batch starts over.
+    mCommonMaterializedStateLengths.resize(static_cast<size_t>(row));
+    mPendingDraftAcceptLengths.resize(static_cast<size_t>(row));
+    mCommonMaterializedStateLengths.push_back(0);
+    mPendingDraftAcceptLengths.push_back(0);
+}
+
+void SpecCommonStateTracker::seatRow(int32_t row, int32_t materializedLength, int32_t pendingLength)
+{
+    ELLM_CHECK(row >= 0 && static_cast<size_t>(row) < mCommonMaterializedStateLengths.size(),
+        "Speculative common-state tracking has no row for the seated sequence");
+    ELLM_CHECK(materializedLength >= 0 && pendingLength >= 0, "Speculative seated lengths must be non-negative");
+    mCommonMaterializedStateLengths[static_cast<size_t>(row)] = materializedLength;
+    mPendingDraftAcceptLengths[static_cast<size_t>(row)] = pendingLength;
+}
+
+void SpecCommonStateTracker::materializePending(int32_t activeBatchSize)
+{
+    // Pending lengths start at zero, so the first round after a prefill materializes nothing new -- but a sequence
+    // seated mid-flight carries its held-back prompt position into the round it first decodes in.
+    if (mCommonMaterializedStateLengths.empty())
     {
         return;
     }
@@ -98,24 +128,26 @@ void SpecCommonStateTracker::compact(
         }
         ELLM_CHECK(values.size() == static_cast<size_t>(oldActiveBatch),
             "Speculative common-state tracking does not match the old active batch");
-        std::vector<int32_t> compacted(static_cast<size_t>(newActiveBatch));
-        std::vector<bool> assigned(static_cast<size_t>(newActiveBatch), false);
+        // Staged through reserved scratch and copied back, so the tracked vectors keep their reserved capacity.
+        mCompactedValues.assign(static_cast<size_t>(newActiveBatch), 0);
+        mCompactedSlotFilled.assign(static_cast<size_t>(newActiveBatch), 0);
         for (int32_t oldSlot = 0; oldSlot < oldActiveBatch; ++oldSlot)
         {
             int32_t const newSlot = batchMapping[static_cast<size_t>(oldSlot)];
             ELLM_CHECK(newSlot >= -1 && newSlot < newActiveBatch, "Speculative batch mapping is invalid");
             if (newSlot >= 0)
             {
-                ELLM_CHECK(!assigned[static_cast<size_t>(newSlot)], "Speculative batch mapping is not one-to-one");
-                compacted[static_cast<size_t>(newSlot)] = values[static_cast<size_t>(oldSlot)];
-                assigned[static_cast<size_t>(newSlot)] = true;
+                ELLM_CHECK(
+                    !mCompactedSlotFilled[static_cast<size_t>(newSlot)], "Speculative batch mapping is not one-to-one");
+                mCompactedValues[static_cast<size_t>(newSlot)] = values[static_cast<size_t>(oldSlot)];
+                mCompactedSlotFilled[static_cast<size_t>(newSlot)] = 1;
             }
         }
-        for (bool const present : assigned)
+        for (char const filled : mCompactedSlotFilled)
         {
-            ELLM_CHECK(present, "Speculative batch mapping does not cover the new active batch");
+            ELLM_CHECK(filled != 0, "Speculative batch mapping does not cover the new active batch");
         }
-        values = std::move(compacted);
+        values.assign(mCompactedValues.begin(), mCompactedValues.end());
     };
     compactVector(mCommonMaterializedStateLengths);
     compactVector(mPendingDraftAcceptLengths);

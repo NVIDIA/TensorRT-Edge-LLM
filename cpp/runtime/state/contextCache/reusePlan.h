@@ -95,6 +95,10 @@ struct ReusePlan
     std::optional<RecordId> hybridRecord;
     std::optional<int32_t> recurrentSnapshotBinding;
     std::optional<int32_t> partialKvSnapshotBinding;
+    //! SWA state at reuseTokenLength; present only for a bounded-SWA vanilla manager.
+    std::optional<SwaWindowState> swaWindowState{};
+    //! Exact record that owns swaWindowState and its coherent base prefix.
+    std::optional<RecordId> swaRecord{};
     ResourceDemand demand;
     ReusePlanKind kind{ReusePlanKind::kStandard};
     SpecReplayMode specReplayMode{SpecReplayMode::kNone};

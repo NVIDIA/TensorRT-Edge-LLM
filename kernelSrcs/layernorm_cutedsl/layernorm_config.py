@@ -55,7 +55,7 @@ SUPPORTED_HIDDEN_SIZES = (4096, 4097, 5120, 7168, 8192)
 
 # Must stay in sync with _LAYERNORM_SUPPORTED_SMS in kernelSrcs/build_cutedsl.py
 # and with the static_assert in cpp/kernels/layerNorm/cuteDslLayerNormRunner.cpp.
-SUPPORTED_TARGET_SMS = (80, 86, 87, 90, 100, 101, 110, 120, 121)
+SUPPORTED_TARGET_SMS = (80, 86, 87, 90, 100, 101, 103, 110, 120, 121)
 
 # Per-target opt-in shared memory per block, in bytes. Static rather than
 # queried: the export runs on the build host, not the target board, so
@@ -67,6 +67,7 @@ SHARED_MEMORY_PER_BLOCK_OPTIN = {
     90: 233472,
     100: 233472,
     101: 233472,
+    103: 232448,
     110: 233472,
     120: 101376,
     121: 101376,
@@ -95,6 +96,7 @@ SCHEDULE_BY_SM = {
     90: "W",  # H100 - not measured
     100: "W",  # B100 - not measured
     101: "W",  # not measured
+    103: "W",  # GB300 - not measured
     110: "S",  # Thor - selected schedule validated over the full matrix
     120: "W",  # RTX 50xx - not measured
     121: "W",  # GB10 - retained after full-matrix validation

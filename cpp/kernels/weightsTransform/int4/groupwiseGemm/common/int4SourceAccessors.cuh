@@ -45,17 +45,23 @@ struct GptqInt4Accessor
     int32_t const* qzeros;
     int32_t const* activationPermutation;
     int32_t N;
+    int32_t K;
     int32_t groupSize;
     int32_t zeroPointOffset;
+    bool outputMajor;
 
     __device__ uint8_t operator()(int32_t n, int32_t k) const
     {
         int32_t const sourceK = activationPermutation == nullptr ? k : activationPermutation[k];
-        int32_t const word = qweight[static_cast<size_t>(sourceK / 8) * N + n];
+        int32_t const word = outputMajor ? qweight[static_cast<size_t>(n) * (K / 8) + sourceK / 8]
+                                         : qweight[static_cast<size_t>(sourceK / 8) * N + n];
         int32_t value = (word >> (4 * (sourceK % 8))) & 0xF;
         if (qzeros != nullptr)
         {
-            int32_t const zeroWord = qzeros[static_cast<size_t>(k / groupSize) * (N / 8) + static_cast<size_t>(n / 8)];
+            int32_t const group = k / groupSize;
+            int32_t const zeroWord = outputMajor
+                ? qzeros[static_cast<size_t>(n / 8) * (K / groupSize) + group]
+                : qzeros[static_cast<size_t>(group) * (N / 8) + static_cast<size_t>(n / 8)];
             int32_t const zero = (zeroWord >> (4 * (n % 8))) & 0xF;
             value = max(0, min(15, value - zero - zeroPointOffset + 8));
         }
@@ -66,19 +72,14 @@ struct GptqInt4Accessor
 struct AwqInt4Accessor
 {
     int32_t const* qweight;
-    int32_t const* qzeros;
     int32_t N;
-    int32_t groupSize;
 
     __device__ uint8_t operator()(int32_t n, int32_t k) const
     {
         constexpr int32_t reverseOrder[8] = {0, 4, 1, 5, 2, 6, 3, 7};
         int32_t const packedIndex = reverseOrder[n % 8];
         int32_t const word = qweight[static_cast<size_t>(k) * (N / 8) + static_cast<size_t>(n / 8)];
-        int32_t const zeroWord = qzeros[static_cast<size_t>(k / groupSize) * (N / 8) + static_cast<size_t>(n / 8)];
-        int32_t const value = (word >> (4 * packedIndex)) & 0xF;
-        int32_t const zero = (zeroWord >> (4 * packedIndex)) & 0xF;
-        return static_cast<uint8_t>(max(0, min(15, value - zero + 8)));
+        return static_cast<uint8_t>((word >> (4 * packedIndex)) & 0xF);
     }
 };
 

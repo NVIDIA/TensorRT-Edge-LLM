@@ -54,14 +54,14 @@ FIXTURE_FLAC = os.path.join(REPO_ROOT, "examples", "multimodal", "audio",
 
 @pytest.fixture(scope="module")
 def runtime():
-    # The pybind module may be built by test_build_project_with_pybind earlier in the same
+    # The nanobind module may be built by test_build_project_with_nanobind earlier in the same
     # pytest process; refresh the import caches so a path entry that was empty
     # at startup is rescanned.
     importlib.invalidate_caches()
     try:
         import _edgellm_runtime  # type: ignore
     except ImportError:
-        pytest.skip("_edgellm_runtime pybind extension is not importable; "
+        pytest.skip("_edgellm_runtime nanobind extension is not importable; "
                     "build with -DBUILD_PYTHON_BINDINGS=ON")
     return _edgellm_runtime
 
@@ -92,7 +92,7 @@ def _diff_stats(a: np.ndarray, b: np.ndarray) -> Tuple[float, float, float]:
 
 
 # ---------------------------------------------------------------------------
-# Accuracy: C++ pybind vs HuggingFace transformers feature extractors
+# Accuracy: C++ nanobind vs HuggingFace transformers feature extractors
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +151,7 @@ def test_mel_accuracy_parakeet(runtime, audio_pair):
 
 
 # ---------------------------------------------------------------------------
-# End-to-end smoke: full pybind path (decode + extract + GPU upload)
+# End-to-end smoke: full nanobind path (decode + extract + GPU upload)
 # ---------------------------------------------------------------------------
 
 
@@ -247,7 +247,7 @@ def test_extract_mel_round_trip_synthetic(runtime, fe_type, container,
 def _resolve(item):
     import sys
     sys.path.insert(0, REPO_ROOT)
-    from experimental.server.media import audio_preprocess
+    from tensorrt_edgellm.server.media import audio_preprocess
     return audio_preprocess.resolve_audio_message(item)
 
 
@@ -273,7 +273,7 @@ def test_resolve_input_audio_missing_data():
 def test_resolve_audio_url_fetches_remote(url, monkeypatch):
     import sys
     sys.path.insert(0, REPO_ROOT)
-    from experimental.server.media import audio_preprocess
+    from tensorrt_edgellm.server.media import audio_preprocess
 
     calls = []
     monkeypatch.setattr(

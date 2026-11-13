@@ -19,6 +19,7 @@
 
 #include "common/tensor.h"
 #include "runtime/hybridCacheManager.h"
+#include "runtime/preprocess/qwen4ExpNgramPreprocessor.h"
 #include "runtime/state/residentSlotPool.h"
 
 #include <cstdint>
@@ -110,6 +111,18 @@ public:
     //! that prefilled the whole sequence.
     void setReusedPrefixLengths(std::vector<int32_t> lengths);
 
+    //! \brief Also dump the rows the n-gram injection gathered for the step.
+    //!
+    //! Everything that produces them runs on the host, so unlike the engine's own output past its
+    //! first MoE they are bit-reproducible, which is what lets a chunking or padding difference be
+    //! looked for by exact equality. The preprocessor outlives every dump.
+    //!
+    //! \param[in] preprocessor Owner of the rows, or null to dump nothing
+    void setNgramPreprocessor(Qwen4ExpNgramPreprocessor* preprocessor) noexcept
+    {
+        mNgram = preprocessor;
+    }
+
     //! @brief Write all buffered rounds to a single safetensors file.
     //! @param stream CUDA stream (forwarded to the safetensors writer).
     void flush(cudaStream_t stream);
@@ -184,6 +197,7 @@ private:
     int32_t mRequestIdx{0};                          //!< Per-process request index (unique filenames).
     int32_t mRound{0};                               //!< Next round index to assign.
     std::vector<Tensor> mTensors;                    //!< Accumulated tensors across rounds.
+    Qwen4ExpNgramPreprocessor* mNgram{nullptr};      //!< Optional source of gathered n-gram rows.
     std::vector<std::vector<int32_t>> mForcedTokens; //!< Teacher-forcing tokens (empty = disabled).
     std::vector<int32_t> mReusedPrefix;              //!< Context-cache prefix by original row (empty = none).
     int32_t mForcedRowBase{-1};                      //!< Force-tokens row of this request's first sequence.

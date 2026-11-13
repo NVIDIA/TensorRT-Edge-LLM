@@ -13,12 +13,11 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-# Honor TRT_PACKAGE_DIR as the primary root hint (facilitates multi-version x86
-# systems). Falls back to standard system paths (e.g. JetPack).
 if(DEFINED TRT_PACKAGE_DIR AND NOT DEFINED TENSORRT_ROOT)
   set(TENSORRT_ROOT ${TRT_PACKAGE_DIR})
 endif()
-set(_trt_hints ${TENSORRT_ROOT} /usr /opt/tensorrt)
+set(_trt_hints ${TENSORRT_ROOT} $ENV{TENSORRT_ROOT} $ENV{TRT_PACKAGE_DIR} /usr
+               /usr/local/TensorRT /opt/tensorrt)
 set(_trt_lib_suffixes lib lib64 lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu)
 set(_trt_inc_suffixes include include/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu)
 if(CMAKE_SYSTEM_NAME STREQUAL "QNX")
@@ -88,8 +87,10 @@ include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(
   TensorRT
   REQUIRED_VARS TensorRT_LIBRARY TensorRT_INCLUDE_DIR
-  HANDLE_COMPONENTS REASON_FAILURE_MESSAGE
-  "TensorRT not found. Please specify -DTRT_PACKAGE_DIR=/path/to/TRT.")
+  HANDLE_COMPONENTS
+  REASON_FAILURE_MESSAGE
+  "TensorRT was not found in the system paths. Set TRT_PACKAGE_DIR to an extracted SDK root."
+)
 
 mark_as_advanced(TensorRT_INCLUDE_DIR TensorRT_LIBRARY
                  TensorRT_OnnxParser_INCLUDE_DIR TensorRT_OnnxParser_LIBRARY)

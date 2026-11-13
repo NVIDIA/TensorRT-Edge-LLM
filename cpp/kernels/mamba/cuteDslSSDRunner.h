@@ -61,6 +61,11 @@ struct SSDParams
     void* state{};                 ///< [batch, nheads, dim, dstate]         SSM state in/out (fp16)
     void* output{};                ///< [batch, seq_len, nheads, dim]        output (fp16)
     void const* context_lengths{}; ///< [batch] int32 actual length per batch (nullptr = uniform = seq_len for all)
+    //! [batch + 1] int32 offsets of packed sequences on one flat token axis of total_tokens tokens; x, dt, B, C and
+    //! output are then [total_tokens, ...] and seq_len and context_lengths are unused. nullptr selects the
+    //! entry-padded layout. Blackwell path only; every sequence must own at least one token.
+    void const* cu_seqlens{};
+    int32_t total_tokens{};
 
     int32_t batch{};
     int32_t seq_len{};
@@ -79,6 +84,37 @@ struct SSDParams
     void* workspace{}; ///< Pre-allocated workspace for intermediate buffers
 };
 
+//! Contiguous packed FP16 SSD inputs with an in-place state pool.
+//! cuSeqlens is device int32[batch+1], monotonic from 0 to totalTokens.
+//! stateIndices is device int32[batch], unique and in [0, stateSlots).
+//! Empty sequences preserve their state; fresh sequences require zeroed slots.
+//! D and dtBias are required; dt uses softplus and gating is not fused.
+//! All pointers must be 16-byte aligned. Metadata validity is the caller's contract.
+struct PackedSSDParams
+{
+    void* x{};            //!< [totalTokens, nheads, dim], FP16
+    void* dt{};           //!< [totalTokens, nheads], FP16
+    void* A{};            //!< [nheads], FP32
+    void* B{};            //!< [totalTokens, ngroups, dstate], FP16
+    void* C{};            //!< [totalTokens, ngroups, dstate], FP16
+    void* D{};            //!< [nheads], FP16
+    void* dtBias{};       //!< [nheads], FP16
+    void* cuSeqlens{};    //!< [batch+1], INT32
+    void* stateIndices{}; //!< [batch], INT32
+    void* state{};        //!< [stateSlots, nheads, dim, dstate], FP16 in/out
+    void* output{};       //!< [totalTokens, nheads, dim], FP16
+    void* workspace{};    //!< Caller-owned scratch, at least workspaceSize bytes
+    size_t workspaceSize{};
+    int32_t totalTokens{};
+    int32_t batch{};
+    int32_t stateSlots{};
+    int32_t nheads{};
+    int32_t dim{};
+    int32_t dstate{};
+    int32_t ngroups{};
+    int32_t smVersion{};
+};
+
 /// Loads AOT-compiled SSD kernel, fills tensor structs from SSDParams, calls generated wrapper.
 class CuteDslSSDRunner
 {
@@ -92,8 +128,28 @@ public:
     //!
     //! SM80+: dim ∈ {64, 128}, dstate ∈ {64, 128} (SM80 cp.async kernel, runs on all GPUs).
     //! SM100-110: dim == 64 uses the Blackwell persistent kernel.
-    //! SM100/101/110: dim == 80, dstate == 128 uses one persistent launch with two D64 work tiles.
+    //! SM100/101/103/110: dim == 80, dstate == 128 uses one persistent launch with two D64 work tiles.
     static bool canImplement(int32_t dim, int32_t dstate, int32_t smVersion);
+
+    //! Whether packed (cu_seqlens) prefill is available: the Blackwell persistent kernel for (dim, dstate) on
+    //! SM100/101/103/110.
+    static bool canImplementPacked(int32_t dim, int32_t dstate, int32_t smVersion);
+
+    //! Whether padded prefill has a kernel that does not read the initial state buffer.
+    static bool supportsZeroInitialState(int32_t dim, int32_t dstate, int32_t smVersion);
+
+    //! Workspace for any packed call with at most \p maxSeqs sequences on at most \p maxTokens tokens.
+    static size_t getPackedWorkspaceSize(int32_t maxSeqs, int32_t maxTokens, int32_t nheads, int32_t dim);
+
+    //! Packed state-pool SM120/121 capability, including whether its AOT modules were built.
+    static bool canImplementPackedStatePool(int32_t dim, int32_t dstate, int32_t smVersion);
+
+    //! Bytes for two FP32 [totalTokens,nheads] scratch arrays, each span rounded to 256 bytes.
+    static size_t getPackedWorkspaceSize(int32_t totalTokens, int32_t nheads);
+
+    //! Run packed prefill on the explicit stream; warm up once before graph capture.
+    //! Validates host descriptors without reading device metadata or synchronizing.
+    int32_t runPacked(PackedSSDParams const& params, cudaStream_t stream);
 
     //! Load only the module selected by \p params. The plugin calls this before
     //! its state copy so a load failure cannot mutate output buffers.
@@ -105,6 +161,10 @@ public:
     /// Workspace size in bytes for intermediate buffers.
     static size_t getWorkspaceSize(
         int32_t batch, int32_t seqLen, int32_t nheads, int32_t dim, int32_t dstate, int32_t ngroups);
+
+    /// Maximum workspace for padded matrices whose total physical rows do not exceed maxTokens.
+    static size_t getWorkspaceSizeForTokenBudget(
+        int32_t maxBatch, int32_t maxTokens, int32_t nheads, int32_t dim, int32_t dstate, int32_t ngroups);
 
 private:
     int runPrefill(SSDParams const& params, cudaStream_t stream);

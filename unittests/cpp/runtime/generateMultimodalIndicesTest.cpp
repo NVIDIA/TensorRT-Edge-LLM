@@ -29,7 +29,7 @@ namespace
 // Helper to create a CPU INT32 tensor from a flat vector with shape [batchSize, seqLen].
 rt::Tensor makeCpuIds(std::vector<int32_t> const& ids, int64_t batchSize, int64_t seqLen)
 {
-    rt::Tensor t({batchSize, seqLen}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32);
+    rt::Tensor t({batchSize, seqLen}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32);
     std::memcpy(t.rawPointer(), ids.data(), ids.size() * sizeof(int32_t));
     return t;
 }

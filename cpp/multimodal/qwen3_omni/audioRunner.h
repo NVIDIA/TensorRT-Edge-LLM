@@ -57,7 +57,8 @@ public:
     //! \param[in] engineDir Directory containing the audio encoder engine
     //! \param[in] stream CUDA stream for execution
     //! \throws std::runtime_error if engine loading fails or configuration is invalid
-    Qwen3OmniAudioRunner(std::string const& engineDir, cudaStream_t stream);
+    //! \param checkpointDir Optional override for checkpoint-backed weights, loaded before context creation.
+    Qwen3OmniAudioRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
 
     ~Qwen3OmniAudioRunner() noexcept = default;
 
@@ -179,8 +180,11 @@ private:
     rt::Tensor mCuSeqlensHost{};      //!< Host staging for mCuSeqlens
     rt::Tensor mKvLengths{};          //!< [num_windows + 1] Separate copy of cu_seqlens (TRT-native attention)
     rt::Tensor mAudioEmbedding{};     //!< [total_audio_tokens, hidden_dim] Encoder output, every clip in the batch
+    rt::Tensor mMaxSeqLenCarrier{};   //!< [max_window_len] shape-only carrier for the attention plugin
     bool mHasCuSeqlens{false};        //!< True when engine exposes cu_seqlens input
     bool mHasKvLengths{false};        //!< True when engine exposes kv_lengths input
+    bool mHasAttentionMask{false};    //!< True when engine exposes the dense attention_mask input
+    bool mHasMaxSeqLenCarrier{false}; //!< True when engine exposes max_seqlen_carrier input
 
     // Online GPU fbank state (persistent across clips). When mFbankReady is
     // false (unsupported SM / non-128 melBins / GEMM module unavailable) the

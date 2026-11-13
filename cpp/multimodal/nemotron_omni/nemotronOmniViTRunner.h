@@ -74,10 +74,11 @@ public:
     //! \brief Constructor for NemotronOmniViTRunner
     //! \param[in] engineDir Directory containing the TensorRT engine files
     //! \param[in] stream CUDA stream for execution
+    //! \param[in] checkpointDir HF checkpoint directory used by runtime weight loading
     //! \throws std::runtime_error if engineDir does not contain valid engine files
     //! \throws std::runtime_error if buffer allocation fails
     //! \throws std::runtime_error if a CUDA error occurs
-    NemotronOmniViTRunner(std::string const& engineDir, cudaStream_t stream);
+    NemotronOmniViTRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
 
     ~NemotronOmniViTRunner() noexcept = default;
 
@@ -91,6 +92,9 @@ public:
     bool preprocess(rt::LLMGenerationRequest const& request, std::vector<std::vector<int32_t>>& batchedInputIds,
         tokenizer::Tokenizer const* tokenizer, [[maybe_unused]] rt::OptionalOutputTensor mropeCosSinOut,
         cudaStream_t stream, bool imageOnly = false, bool skipEncoderWork = false) override;
+
+    //! \brief True for a request with a video: its tubelet token counts come from EVS, which runs the encoder.
+    bool tokenLayoutNeedsEncoder(rt::LLMGenerationRequest const& request) const noexcept override;
 
     //! \brief Run inference on the vision encoder
     //! \param[in] stream CUDA stream for execution

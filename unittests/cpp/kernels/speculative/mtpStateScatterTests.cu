@@ -33,11 +33,6 @@ namespace
 
 constexpr float kSentinel = -999.0f;
 
-inline float refRecurrent(int32_t layer, int32_t batch, int32_t step, int32_t elem)
-{
-    return static_cast<float>(layer * 1000000 + batch * 10000 + step * 100 + (elem % 100));
-}
-
 inline float refConv(int32_t layer, int32_t batch, int32_t step, int32_t elem)
 {
     return static_cast<float>(layer * 1000 + batch * 100 + step * 10 + (elem % 10));
@@ -63,275 +58,6 @@ std::vector<int32_t> identityStateIndices(int32_t batchSize)
 }
 
 } // anonymous namespace
-
-// ============================================================================
-// FP32 Recurrent State Scatter Tests (batched across layers)
-// ============================================================================
-
-class MTPStateScatterRecurrentTest : public ::testing::Test
-{
-protected:
-    /// Run the batched recurrent scatter and verify per-(layer, batch).
-    /// stateElements must be divisible by 8.  acceptLengths is 1-based (matching eagleAccept).
-    void runTest(int32_t numLayers, int32_t batchSize, int32_t verifyTreeSize, int32_t stateElements,
-        std::vector<int32_t> const& acceptLengthsHost)
-    {
-        ASSERT_EQ(static_cast<int32_t>(acceptLengthsHost.size()), batchSize);
-        ASSERT_EQ(stateElements % 8, 0) << "stateElements must be divisible by 8";
-
-        int64_t const srcPerLayer = static_cast<int64_t>(batchSize) * verifyTreeSize * stateElements;
-        int64_t const dstPerLayer = static_cast<int64_t>(batchSize) * stateElements;
-
-        // Allocate per-layer device buffers, populate src.
-        std::vector<float*> dstPerLayerDev(numLayers);
-        std::vector<float*> srcPerLayerDev(numLayers);
-        std::vector<std::vector<float>> hSrc(numLayers, std::vector<float>(srcPerLayer));
-        std::vector<std::vector<float>> hDst(numLayers, std::vector<float>(dstPerLayer, kSentinel));
-
-        std::vector<MtpLayerInfo> hostInfos(numLayers);
-        for (int32_t L = 0; L < numLayers; ++L)
-        {
-            for (int32_t b = 0; b < batchSize; ++b)
-            {
-                for (int32_t t = 0; t < verifyTreeSize; ++t)
-                {
-                    for (int32_t e = 0; e < stateElements; ++e)
-                    {
-                        int64_t const idx = (static_cast<int64_t>(b) * verifyTreeSize + t) * stateElements + e;
-                        hSrc[L][idx] = refRecurrent(L, b, t, e);
-                    }
-                }
-            }
-            cudaMalloc(&srcPerLayerDev[L], srcPerLayer * sizeof(float));
-            cudaMalloc(&dstPerLayerDev[L], dstPerLayer * sizeof(float));
-            cudaMemcpy(srcPerLayerDev[L], hSrc[L].data(), srcPerLayer * sizeof(float), cudaMemcpyHostToDevice);
-            cudaMemcpy(dstPerLayerDev[L], hDst[L].data(), dstPerLayer * sizeof(float), cudaMemcpyHostToDevice);
-
-            // The recurrent variant only reads recurrentDst/recurrentSrc; conv pointers are unused.
-            hostInfos[L] = {dstPerLayerDev[L], srcPerLayerDev[L], nullptr, nullptr};
-        }
-
-        // Upload MtpLayerInfo array + acceptLengths.
-        MtpLayerInfo* dInfos = uploadVec(hostInfos);
-        int32_t* dAccept = uploadVec(acceptLengthsHost);
-        int32_t* dStateIndices = uploadVec(identityStateIndices(batchSize));
-
-        mtpScatterRecurrentStates(
-            dInfos, numLayers, batchSize, batchSize, verifyTreeSize, stateElements, dAccept, dStateIndices, nullptr);
-        cudaDeviceSynchronize();
-
-        // Read back and verify.
-        for (int32_t L = 0; L < numLayers; ++L)
-        {
-            std::vector<float> result(dstPerLayer);
-            cudaMemcpy(result.data(), dstPerLayerDev[L], dstPerLayer * sizeof(float), cudaMemcpyDeviceToHost);
-
-            for (int32_t b = 0; b < batchSize; ++b)
-            {
-                int32_t const acceptLen = acceptLengthsHost[b];
-                int32_t const step = acceptLen - 1;
-                int64_t const dstBase = static_cast<int64_t>(b) * stateElements;
-
-                if (step < 0 || step >= verifyTreeSize)
-                {
-                    for (int32_t e = 0; e < stateElements; ++e)
-                    {
-                        EXPECT_EQ(result[dstBase + e], kSentinel) << "L=" << L << " b=" << b << " e=" << e;
-                    }
-                }
-                else
-                {
-                    for (int32_t e = 0; e < stateElements; ++e)
-                    {
-                        EXPECT_EQ(result[dstBase + e], refRecurrent(L, b, step, e))
-                            << "L=" << L << " b=" << b << " step=" << step << " e=" << e;
-                    }
-                }
-            }
-            cudaFree(srcPerLayerDev[L]);
-            cudaFree(dstPerLayerDev[L]);
-        }
-        cudaFree(dInfos);
-        cudaFree(dAccept);
-        cudaFree(dStateIndices);
-    }
-};
-
-TEST_F(MTPStateScatterRecurrentTest, SingleLayer_PartialReject)
-{
-    runTest(/*numLayers=*/1, /*batchSize=*/1, /*verifyTreeSize=*/4, /*stateElements=*/128, /*acceptLengths=*/{1});
-}
-
-TEST_F(MTPStateScatterRecurrentTest, SingleLayer_AllAccept)
-{
-    runTest(1, 1, 4, 128, {4});
-}
-
-TEST(MTPStateScatterRecurrentResidentSlotTest, CommitsFullAndPartialAcceptsToSelectedSlots)
-{
-    constexpr int32_t batchSize = 2;
-    constexpr int32_t verifyTreeSize = 4;
-    constexpr int32_t stateElements = 8;
-    constexpr int32_t poolRows = 5;
-
-    std::vector<float> source(static_cast<size_t>(batchSize) * verifyTreeSize * stateElements);
-    for (int32_t batch = 0; batch < batchSize; ++batch)
-    {
-        for (int32_t step = 0; step < verifyTreeSize; ++step)
-        {
-            for (int32_t element = 0; element < stateElements; ++element)
-            {
-                source[(static_cast<size_t>(batch) * verifyTreeSize + step) * stateElements + element]
-                    = refRecurrent(0, batch, step, element);
-            }
-        }
-    }
-    std::vector<float> destination(static_cast<size_t>(poolRows) * stateElements, kSentinel);
-    std::vector<int32_t> const acceptLengths{verifyTreeSize, 2};
-    std::vector<int32_t> const stateIndices{3, 1};
-
-    float* sourceDevice = uploadVec(source);
-    float* destinationDevice = uploadVec(destination);
-    MtpLayerInfo* layerInfoDevice
-        = uploadVec(std::vector<MtpLayerInfo>{{destinationDevice, sourceDevice, nullptr, nullptr}});
-    int32_t* acceptLengthsDevice = uploadVec(acceptLengths);
-    int32_t* stateIndicesDevice = uploadVec(stateIndices);
-
-    mtpScatterRecurrentStates(layerInfoDevice, 1, batchSize, poolRows, verifyTreeSize, stateElements,
-        acceptLengthsDevice, stateIndicesDevice, nullptr);
-    cudaDeviceSynchronize();
-    cudaMemcpy(destination.data(), destinationDevice, destination.size() * sizeof(float), cudaMemcpyDeviceToHost);
-
-    for (int32_t slot = 0; slot < poolRows; ++slot)
-    {
-        for (int32_t element = 0; element < stateElements; ++element)
-        {
-            float expected = kSentinel;
-            if (slot == stateIndices[0])
-            {
-                expected = refRecurrent(0, 0, verifyTreeSize - 1, element);
-            }
-            else if (slot == stateIndices[1])
-            {
-                expected = refRecurrent(0, 1, acceptLengths[1] - 1, element);
-            }
-            EXPECT_EQ(destination[static_cast<size_t>(slot) * stateElements + element], expected)
-                << "slot=" << slot << " element=" << element;
-        }
-    }
-
-    cudaFree(sourceDevice);
-    cudaFree(destinationDevice);
-    cudaFree(layerInfoDevice);
-    cudaFree(acceptLengthsDevice);
-    cudaFree(stateIndicesDevice);
-}
-
-TEST_F(MTPStateScatterRecurrentTest, SingleLayer_Skip)
-{
-    runTest(1, 1, 4, 128, {0});
-}
-
-TEST_F(MTPStateScatterRecurrentTest, SingleLayer_MixedBatch)
-{
-    runTest(1, 4, 4, 256, {2, 4, 0, 3});
-}
-
-// 4 layers, 2 batches — verifies layer indexing via blockIdx.y.
-TEST_F(MTPStateScatterRecurrentTest, MultiLayer)
-{
-    runTest(4, 2, 4, 128, {2, 1});
-}
-
-// Large state: vectorized path with vecCount > blockDim (grid z > 1).
-TEST_F(MTPStateScatterRecurrentTest, MultiLayer_LargeState)
-{
-    runTest(3, 2, 4, 4096, {2, 3});
-}
-
-// Regression: src buffer allocated with maxAlloc rows per batch but the plugin packed
-// data with a smaller verifyTreeSize stride. The kernel must use the verifyTreeSize
-// argument (not the buffer's allocation size) when computing the per-batch offset,
-// otherwise bs >= 1 reads garbage.
-//
-// Layout: srcBuf[b * verifyTreeSize * stateElements + step * stateElements] = data
-//         (rest of the [maxAlloc - verifyTreeSize] rows per batch is sentinel and unread)
-TEST(MTPStateScatterRecurrentPackedStrideTest, BatchedReadStride)
-{
-    constexpr int32_t numLayers = 2;
-    constexpr int32_t batchSize = 2;
-    constexpr int32_t verifyTreeSize = 4;
-    constexpr int32_t maxAlloc = 8; // > verifyTreeSize on purpose
-    constexpr int32_t stateElements = 128;
-
-    std::vector<int32_t> acceptLengthsHost = {2, 3}; // step=1 / step=2
-
-    int64_t const allocPerLayer = static_cast<int64_t>(batchSize) * maxAlloc * stateElements;
-    int64_t const dstPerLayer = static_cast<int64_t>(batchSize) * stateElements;
-
-    std::vector<float*> dstDev(numLayers);
-    std::vector<float*> srcDev(numLayers);
-    std::vector<MtpLayerInfo> hostInfos(numLayers);
-
-    for (int32_t L = 0; L < numLayers; ++L)
-    {
-        // Initialise the entire src allocation with sentinel; only fill the packed region.
-        std::vector<float> hSrc(allocPerLayer, kSentinel);
-        for (int32_t b = 0; b < batchSize; ++b)
-        {
-            for (int32_t t = 0; t < verifyTreeSize; ++t)
-            {
-                for (int32_t e = 0; e < stateElements; ++e)
-                {
-                    int64_t const idx = (static_cast<int64_t>(b) * verifyTreeSize + t) * stateElements + e;
-                    hSrc[idx] = refRecurrent(L, b, t, e);
-                }
-            }
-        }
-        std::vector<float> hDst(dstPerLayer, kSentinel);
-
-        cudaMalloc(&srcDev[L], allocPerLayer * sizeof(float));
-        cudaMalloc(&dstDev[L], dstPerLayer * sizeof(float));
-        cudaMemcpy(srcDev[L], hSrc.data(), allocPerLayer * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(dstDev[L], hDst.data(), dstPerLayer * sizeof(float), cudaMemcpyHostToDevice);
-
-        hostInfos[L] = {dstDev[L], srcDev[L], nullptr, nullptr};
-    }
-
-    MtpLayerInfo* dInfos = uploadVec(hostInfos);
-    int32_t* dAccept = uploadVec(acceptLengthsHost);
-    int32_t* dStateIndices = uploadVec(identityStateIndices(batchSize));
-
-    // Pass verifyTreeSize = verifyTreeSize (NOT maxAlloc).
-    mtpScatterRecurrentStates(
-        dInfos, numLayers, batchSize, batchSize, verifyTreeSize, stateElements, dAccept, dStateIndices, nullptr);
-    cudaDeviceSynchronize();
-
-    for (int32_t L = 0; L < numLayers; ++L)
-    {
-        std::vector<float> result(dstPerLayer);
-        cudaMemcpy(result.data(), dstDev[L], dstPerLayer * sizeof(float), cudaMemcpyDeviceToHost);
-        for (int32_t b = 0; b < batchSize; ++b)
-        {
-            int32_t const step = acceptLengthsHost[b] - 1;
-            int64_t const dstBase = static_cast<int64_t>(b) * stateElements;
-            for (int32_t e = 0; e < stateElements; ++e)
-            {
-                EXPECT_EQ(result[dstBase + e], refRecurrent(L, b, step, e))
-                    << "L=" << L << " b=" << b << " step=" << step << " e=" << e;
-            }
-        }
-        cudaFree(srcDev[L]);
-        cudaFree(dstDev[L]);
-    }
-    cudaFree(dInfos);
-    cudaFree(dAccept);
-    cudaFree(dStateIndices);
-}
-
-// ============================================================================
-// FP16 Conv State Scatter Tests (batched across layers)
-// ============================================================================
 
 class MTPStateScatterConvTest : public ::testing::Test
 {
@@ -437,8 +163,146 @@ TEST_F(MTPStateScatterConvTest, MultiLayer_Mixed)
     runTest(3, 4, 2, 16384, {1, 2, 1, 0});
 }
 
-TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId)
+TEST(MTPStateScatterConvResidentSlotTest, CommitsFullAndPartialAcceptsToSelectedSlots)
 {
+    // Given remapped resident slots, when full and partial prefixes commit, then only their selected rows change.
+    constexpr int32_t batchSize = 2;
+    constexpr int32_t verifyTreeSize = 4;
+    constexpr int32_t stateElements = 8;
+    constexpr int32_t poolRows = 5;
+
+    std::vector<__half> source(static_cast<size_t>(batchSize) * verifyTreeSize * stateElements);
+    for (int32_t batch = 0; batch < batchSize; ++batch)
+    {
+        for (int32_t step = 0; step < verifyTreeSize; ++step)
+        {
+            for (int32_t element = 0; element < stateElements; ++element)
+            {
+                source[(static_cast<size_t>(batch) * verifyTreeSize + step) * stateElements + element]
+                    = __float2half(refConv(0, batch, step, element));
+            }
+        }
+    }
+    std::vector<__half> destination(static_cast<size_t>(poolRows) * stateElements, __float2half(kSentinel));
+    std::vector<int32_t> const acceptLengths{verifyTreeSize, 2};
+    std::vector<int32_t> const stateIndices{3, 1};
+
+    __half* sourceDevice = uploadVec(source);
+    __half* destinationDevice = uploadVec(destination);
+    MtpLayerInfo* layerInfoDevice
+        = uploadVec(std::vector<MtpLayerInfo>{{nullptr, nullptr, destinationDevice, sourceDevice}});
+    int32_t* acceptLengthsDevice = uploadVec(acceptLengths);
+    int32_t* stateIndicesDevice = uploadVec(stateIndices);
+
+    mtpScatterConvStates(layerInfoDevice, 1, batchSize, poolRows, verifyTreeSize, stateElements, acceptLengthsDevice,
+        stateIndicesDevice, nullptr);
+    cudaDeviceSynchronize();
+    cudaMemcpy(destination.data(), destinationDevice, destination.size() * sizeof(__half), cudaMemcpyDeviceToHost);
+
+    for (int32_t slot = 0; slot < poolRows; ++slot)
+    {
+        for (int32_t element = 0; element < stateElements; ++element)
+        {
+            float expected = kSentinel;
+            if (slot == stateIndices[0])
+            {
+                expected = refConv(0, 0, verifyTreeSize - 1, element);
+            }
+            else if (slot == stateIndices[1])
+            {
+                expected = refConv(0, 1, acceptLengths[1] - 1, element);
+            }
+            EXPECT_EQ(__half2float(destination[static_cast<size_t>(slot) * stateElements + element]), expected)
+                << "slot=" << slot << " element=" << element;
+        }
+    }
+
+    cudaFree(sourceDevice);
+    cudaFree(destinationDevice);
+    cudaFree(layerInfoDevice);
+    cudaFree(acceptLengthsDevice);
+    cudaFree(stateIndicesDevice);
+}
+
+TEST(MTPStateScatterConvPackedStrideTest, BatchedReadStride)
+{
+    // Given packed verify rows in a larger allocation, when two batches commit, then reads use the active stride.
+    constexpr int32_t numLayers = 2;
+    constexpr int32_t batchSize = 2;
+    constexpr int32_t verifyTreeSize = 4;
+    constexpr int32_t maxAlloc = 8; // > verifyTreeSize on purpose
+    constexpr int32_t stateElements = 128;
+
+    std::vector<int32_t> acceptLengthsHost = {2, 3}; // step=1 / step=2
+
+    int64_t const allocPerLayer = static_cast<int64_t>(batchSize) * maxAlloc * stateElements;
+    int64_t const dstPerLayer = static_cast<int64_t>(batchSize) * stateElements;
+
+    std::vector<__half*> dstDev(numLayers);
+    std::vector<__half*> srcDev(numLayers);
+    std::vector<MtpLayerInfo> hostInfos(numLayers);
+
+    for (int32_t L = 0; L < numLayers; ++L)
+    {
+        // Initialise the entire src allocation with sentinel; only fill the packed region.
+        std::vector<__half> hSrc(allocPerLayer, __float2half(kSentinel));
+        for (int32_t b = 0; b < batchSize; ++b)
+        {
+            for (int32_t t = 0; t < verifyTreeSize; ++t)
+            {
+                for (int32_t e = 0; e < stateElements; ++e)
+                {
+                    int64_t const idx = (static_cast<int64_t>(b) * verifyTreeSize + t) * stateElements + e;
+                    hSrc[idx] = __float2half(refConv(L, b, t, e));
+                }
+            }
+        }
+        std::vector<__half> hDst(dstPerLayer, __float2half(kSentinel));
+
+        cudaMalloc(&srcDev[L], allocPerLayer * sizeof(__half));
+        cudaMalloc(&dstDev[L], dstPerLayer * sizeof(__half));
+        cudaMemcpy(srcDev[L], hSrc.data(), allocPerLayer * sizeof(__half), cudaMemcpyHostToDevice);
+        cudaMemcpy(dstDev[L], hDst.data(), dstPerLayer * sizeof(__half), cudaMemcpyHostToDevice);
+
+        hostInfos[L] = {nullptr, nullptr, dstDev[L], srcDev[L]};
+    }
+
+    MtpLayerInfo* dInfos = uploadVec(hostInfos);
+    int32_t* dAccept = uploadVec(acceptLengthsHost);
+    int32_t* dStateIndices = uploadVec(identityStateIndices(batchSize));
+
+    // Pass verifyTreeSize = verifyTreeSize (NOT maxAlloc).
+    mtpScatterConvStates(
+        dInfos, numLayers, batchSize, batchSize, verifyTreeSize, stateElements, dAccept, dStateIndices, nullptr);
+    cudaDeviceSynchronize();
+
+    for (int32_t L = 0; L < numLayers; ++L)
+    {
+        std::vector<__half> result(dstPerLayer);
+        cudaMemcpy(result.data(), dstDev[L], dstPerLayer * sizeof(__half), cudaMemcpyDeviceToHost);
+        for (int32_t b = 0; b < batchSize; ++b)
+        {
+            int32_t const step = acceptLengthsHost[b] - 1;
+            int64_t const dstBase = static_cast<int64_t>(b) * stateElements;
+            for (int32_t e = 0; e < stateElements; ++e)
+            {
+                EXPECT_EQ(__half2float(result[dstBase + e]), refConv(L, b, step, e))
+                    << "L=" << L << " b=" << b << " step=" << step << " e=" << e;
+            }
+        }
+        cudaFree(srcDev[L]);
+        cudaFree(dstDev[L]);
+    }
+    cudaFree(dInfos);
+    cudaFree(dAccept);
+    cudaFree(dStateIndices);
+}
+
+// ============================================================================
+// FP16 Conv State Scatter Tests (batched across layers)
+TEST(MTPStateScatterAcceptedTreeConvTest, UsesLastNonNegativeAcceptedNodeId)
+{
+    // Given padded accepted paths, when conv snapshots commit, then the last valid in-range node wins.
     constexpr int32_t kNumLayers = 2;
     constexpr int32_t kBatchSize = 3;
     constexpr int32_t kVerifyTreeSize = 6;
@@ -448,7 +312,6 @@ TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId
     constexpr int32_t kRecurrentStateSize = 8;
     constexpr int32_t kConvDim = 8;
     constexpr int32_t kConvKernel = 2;
-    constexpr int32_t kRecurrentElements = kRecurrentHeads * kRecurrentHeadDim * kRecurrentStateSize;
     constexpr int32_t kConvElements = kConvDim * kConvKernel;
 
     rt::MambaCacheManager::Config cfg{};
@@ -460,22 +323,18 @@ TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId
     cfg.convDim = kConvDim;
     cfg.convKernel = kConvKernel;
     cfg.maxIntermediateSeqLen = kVerifyTreeSize;
-    cfg.recurrentStateType = nvinfer1::DataType::kFLOAT;
-    cfg.convStateType = nvinfer1::DataType::kHALF;
+    cfg.recurrentStateType = trt_edgellm::DataType::kFLOAT;
+    cfg.convStateType = trt_edgellm::DataType::kHALF;
 
     rt::MambaCacheManager mgr(cfg, nullptr);
     mgr.reshapeIntermediateStates(kBatchSize, kVerifyTreeSize);
 
-    int64_t const recSrcSize = static_cast<int64_t>(kBatchSize) * kVerifyTreeSize * kRecurrentElements;
-    int64_t const recDstSize = static_cast<int64_t>(kBatchSize) * kRecurrentElements;
     int64_t const convSrcSize = static_cast<int64_t>(kBatchSize) * kVerifyTreeSize * kConvElements;
     int64_t const convDstSize = static_cast<int64_t>(kBatchSize) * kConvElements;
 
     __half const hSentinel = __float2half(kSentinel);
     for (int32_t layer = 0; layer < kNumLayers; ++layer)
     {
-        std::vector<float> hRecSrc(recSrcSize);
-        std::vector<float> hRecDst(recDstSize, kSentinel);
         std::vector<__half> hConvSrc(convSrcSize);
         std::vector<__half> hConvDst(convDstSize, hSentinel);
 
@@ -483,11 +342,6 @@ TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId
         {
             for (int32_t node = 0; node < kVerifyTreeSize; ++node)
             {
-                for (int32_t e = 0; e < kRecurrentElements; ++e)
-                {
-                    int64_t const idx = (static_cast<int64_t>(b) * kVerifyTreeSize + node) * kRecurrentElements + e;
-                    hRecSrc[idx] = refRecurrent(layer, b, node, e);
-                }
                 for (int32_t e = 0; e < kConvElements; ++e)
                 {
                     int64_t const idx = (static_cast<int64_t>(b) * kVerifyTreeSize + node) * kConvElements + e;
@@ -496,10 +350,6 @@ TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId
             }
         }
 
-        cudaMemcpy(mgr.getIntermediateRecurrentState(layer).rawPointer(), hRecSrc.data(), recSrcSize * sizeof(float),
-            cudaMemcpyHostToDevice);
-        cudaMemcpy(mgr.getRecurrentState(layer).rawPointer(), hRecDst.data(), recDstSize * sizeof(float),
-            cudaMemcpyHostToDevice);
         cudaMemcpy(mgr.getIntermediateConvState(layer).rawPointer(), hConvSrc.data(), convSrcSize * sizeof(__half),
             cudaMemcpyHostToDevice);
         cudaMemcpy(mgr.getConvState(layer).rawPointer(), hConvDst.data(), convDstSize * sizeof(__half),
@@ -507,9 +357,9 @@ TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId
     }
 
     rt::Tensor acceptedNodeIds(
-        {kBatchSize, kMaxAcceptLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "acceptedNodeIds");
-    rt::Tensor acceptLengths({kBatchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "acceptLengths");
-    rt::Tensor stateIndices({kBatchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "stateIndices");
+        {kBatchSize, kMaxAcceptLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "acceptedNodeIds");
+    rt::Tensor acceptLengths({kBatchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "acceptLengths");
+    rt::Tensor stateIndices({kBatchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "stateIndices");
 
     std::vector<int32_t> hAcceptedNodeIds{
         0, 5, -1, -1, // batch 0: bonus token at the end, scatter node 5
@@ -525,29 +375,28 @@ TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId
     cudaMemcpy(stateIndices.rawPointer(), hStateIndices.data(), hStateIndices.size() * sizeof(int32_t),
         cudaMemcpyHostToDevice);
 
-    mgr.scatterAcceptedTreeStates(acceptedNodeIds, acceptLengths, stateIndices, nullptr);
+    std::vector<MtpLayerInfo> infos;
+    for (int32_t layer = 0; layer < kNumLayers; ++layer)
+        infos.push_back(
+            {nullptr, nullptr, mgr.getConvState(layer).rawPointer(), mgr.getIntermediateConvState(layer).rawPointer()});
+    MtpLayerInfo* deviceInfos = uploadVec(infos);
+    mtpScatterAcceptedTreeConvStates(deviceInfos, kNumLayers, kBatchSize, kBatchSize, kVerifyTreeSize, kConvElements,
+        acceptedNodeIds.dataPointer<int32_t>(), kMaxAcceptLen, acceptLengths.dataPointer<int32_t>(),
+        stateIndices.dataPointer<int32_t>(), nullptr);
     cudaDeviceSynchronize();
+    cudaFree(deviceInfos);
 
     std::vector<int32_t> const expectedNodeIds{5, 1, -1};
     for (int32_t layer = 0; layer < kNumLayers; ++layer)
     {
-        std::vector<float> recResult(recDstSize);
         std::vector<__half> convResult(convDstSize);
-        cudaMemcpy(recResult.data(), mgr.getRecurrentState(layer).rawPointer(), recDstSize * sizeof(float),
-            cudaMemcpyDeviceToHost);
         cudaMemcpy(convResult.data(), mgr.getConvState(layer).rawPointer(), convDstSize * sizeof(__half),
             cudaMemcpyDeviceToHost);
 
         for (int32_t b = 0; b < kBatchSize; ++b)
         {
-            int64_t const recDstBase = static_cast<int64_t>(b) * kRecurrentElements;
             int64_t const convDstBase = static_cast<int64_t>(b) * kConvElements;
             int32_t const expectedNodeId = expectedNodeIds[b];
-            for (int32_t e = 0; e < kRecurrentElements; ++e)
-            {
-                float const expected = expectedNodeId >= 0 ? refRecurrent(layer, b, expectedNodeId, e) : kSentinel;
-                EXPECT_EQ(recResult[recDstBase + e], expected) << "layer=" << layer << " batch=" << b << " elem=" << e;
-            }
             for (int32_t e = 0; e < kConvElements; ++e)
             {
                 float const expected

@@ -63,7 +63,7 @@ inline int64_t padUp64(int64_t value, int64_t alignment)
 
 inline bool isSupportedSm(int32_t smVersion)
 {
-    return smVersion == 100 || smVersion == 101 || smVersion == 110;
+    return smVersion == 100 || smVersion == 101 || smVersion == 103 || smVersion == 110;
 }
 
 inline int64_t maxPermutedRows(int64_t routedRows, int64_t numExperts)
@@ -245,22 +245,22 @@ int32_t CuteDslNvfp4MoeSm110Runner::run(CuteDslNvfp4MoeSm110Params const& params
 
     kernel::MoELayoutBuffers layoutBuffers{};
     layoutBuffers.tileIdxToGroupIdx
-        = rt::Tensor(tileGroup, {L.numTileEntries}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        = rt::Tensor(tileGroup, {L.numTileEntries}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     layoutBuffers.tileIdxToMnLimit
-        = rt::Tensor(tileLimit, {L.numTileEntries}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        = rt::Tensor(tileLimit, {L.numTileEntries}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     layoutBuffers.permutedIdxToExpandedIdx
-        = rt::Tensor(permutedToExpanded, {L.permutedM}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    layoutBuffers.numNonExitingTiles = rt::Tensor(numTiles, {1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        = rt::Tensor(permutedToExpanded, {L.permutedM}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    layoutBuffers.numNonExitingTiles = rt::Tensor(numTiles, {1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     rt::Tensor hiddenT(const_cast<void*>(params.hiddenStates), {params.numTokens, params.hiddenSize},
-        rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor topkIdsT(const_cast<int32_t*>(params.topkIds), {params.numTokens, params.topK}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kINT32);
+        trt_edgellm::DataType::kINT32);
     rt::Tensor inputScaleT(const_cast<float*>(params.inputGlobalScale), {params.numExperts}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT);
+        trt_edgellm::DataType::kFLOAT);
     rt::Tensor inputFP4T(
-        inputFP4, {routedRows, params.hiddenSize / 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        inputFP4, {routedRows, params.hiddenSize / 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
     rt::Tensor inputSFT(
-        inputSF, {routedRows, params.hiddenSize / kNvfp4SfVecSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        inputSF, {routedRows, params.hiddenSize / kNvfp4SfVecSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     // FC1 clears output after its dependency wait. FC2's existing dependent
     // wait remains the completion and visibility boundary.

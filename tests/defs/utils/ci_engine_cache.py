@@ -33,6 +33,8 @@ import typing
 import uuid
 
 ci_cache_event = None
+ci_engine_diagnostics = None
+ci_image_identity = None
 
 _COLD_ENVIRONMENT = (
     "EDGE_LLM_CACHE_FORCE_COLD",
@@ -117,11 +119,11 @@ def _cache_event(logger,
         payload["detail"] = detail
     _log(logger, "info", "EDGE_LLM_CACHE_RESULT=%s",
          json.dumps(payload, sort_keys=True))
-    if ci_cache_event is None or operation == "key":
+    if ci_cache_event is None:
         return
 
-    telemetry_decision = decision
-    reason = detail or decision
+    telemetry_decision = "skipped" if operation == "key" else decision
+    reason = "fingerprint" if operation == "key" else (detail or decision)
     rejected = {
         "corruption", "descriptor-change", "deserialization-failure",
         "invalid-inventory", "invalid-manifest", "not-found",
@@ -132,6 +134,8 @@ def _cache_event(logger,
     elif decision == "error":
         if "quota" in detail:
             telemetry_decision = reason = "oversized"
+        elif "Permission denied" in detail:
+            reason = "permission-denied"
         else:
             reason = "error"
 
@@ -147,6 +151,10 @@ def _cache_event(logger,
     if key:
         event["key_prefix"] = key[:12]
     if result is not None:
+        if result.get("diagnostics"):
+            event["diagnostics"] = result["diagnostics"]
+        if result.get("field"):
+            event["field"] = result["field"]
         if result.get("namespace"):
             event["namespace"] = result["namespace"].lower()
         if result.get("files") is not None:
@@ -274,10 +282,15 @@ def _plugin_libraries(executable: pathlib.Path) -> typing.List[pathlib.Path]:
     current = executable.parent
     for _ in range(6):
         paths.extend(current.glob("libNvInfer_edgellm_plugin.so*"))
+        paths.extend(
+            plugin for directory in (current / "lib", current / "lib64")
+            for plugin in directory.glob("libNvInfer_edgellm_plugin.so*"))
         if current == current.parent:
             break
         current = current.parent
-    return [path.resolve(strict=True) for path in paths if path.is_file()]
+    return sorted(
+        {path.resolve(strict=True)
+         for path in paths if path.is_file()})
 
 
 def _builder_descriptor(
@@ -392,8 +405,8 @@ def _target_descriptor() -> typing.Dict[str, typing.Any]:
     }
 
 
-def _platform_descriptor(target=None) -> typing.Dict[str, typing.Any]:
-    descriptor = dict(target or _target_descriptor())
+def _platform_descriptor() -> typing.Dict[str, typing.Any]:
+    descriptor = _target_descriptor()
     descriptor.update({
         "cuda_version":
         os.environ.get("CUDA_VERSION", "<unset>"),
@@ -402,7 +415,7 @@ def _platform_descriptor(target=None) -> typing.Dict[str, typing.Any]:
         "trt_rtx_version":
         os.environ.get("TRT_RTX_VERSION", "<unset>"),
         "job_image":
-        os.environ.get("CI_JOB_IMAGE", os.environ.get("IMAGE", "<unset>")),
+        ci_image_identity.current(),
         "lunowud":
         os.environ.get("__LUNOWUD", "<unset>"),
     })
@@ -424,8 +437,8 @@ def _remote_descriptor(commands, runner):
     if line is None:
         raise CacheError("remote engine cache fingerprint is missing")
     descriptor = json.loads(line[len(_REMOTE_DESCRIPTOR_MARKER):])
-    if descriptor.get(
-            "schema_version") != "edgellm-ci-remote-engine-descriptor/v1":
+    if (not isinstance(descriptor, dict) or descriptor.get("schema_version")
+            != "edgellm-ci-remote-engine-descriptor/v2"):
         raise CacheError("remote engine cache fingerprint schema is invalid")
     builders = descriptor.get("builders")
     plugins = descriptor.get("plugins")
@@ -434,6 +447,14 @@ def _remote_descriptor(commands, runner):
             or not all(isinstance(value, str) for value in plugins)
             or not isinstance(target, dict)):
         raise CacheError("remote engine cache fingerprint payload is invalid")
+    required = ("system", "machine", "cuda_version", "trt_version",
+                "trt_rtx_version", "job_image", "lunowud")
+    gpu = target.get("gpu")
+    if (any(not isinstance(target.get(name), str) or not target[name]
+            for name in required) or not isinstance(gpu, dict) or any(
+                not isinstance(gpu.get(name), str) or not gpu[name]
+                for name in ("name", "compute_capability", "driver_version"))):
+        raise CacheError("remote engine cache platform identity is incomplete")
     return builders, [pathlib.Path(value) for value in plugins], target
 
 
@@ -521,7 +542,7 @@ def _configured_limit():
     name = ("EDGE_LLM_ENGINE_MR_CACHE_BYTES"
             if os.environ.get("CI_MERGE_REQUEST_IID") else
             "EDGE_LLM_ENGINE_TRUSTED_CACHE_BYTES")
-    default = 20 * 1024**3 if os.environ.get(
+    default = 100 * 1024**3 if os.environ.get(
         "CI_MERGE_REQUEST_IID") else 200 * 1024**3
     value = os.environ.get(name, str(default))
     if not value.isdecimal():
@@ -652,7 +673,10 @@ def _install_bundle(source_base: pathlib.Path, target_base: pathlib.Path,
 def _probe_engines(bundle: pathlib.Path,
                    plugin_paths: typing.Sequence[pathlib.Path]) -> bool:
     try:
-        import tensorrt
+        if os.environ.get("TRT_RTX_VERSION"):
+            import tensorrt_rtx as tensorrt
+        else:
+            import tensorrt
         for plugin in plugin_paths:
             ctypes.CDLL(str(plugin), mode=ctypes.RTLD_GLOBAL)
         logger = tensorrt.Logger(tensorrt.Logger.ERROR)
@@ -721,11 +745,14 @@ def _read_metadata(entry: pathlib.Path, key: str,
         raise CacheError("engine bundle identity does not match the request")
 
 
-def _allow_shared_read(root: pathlib.Path) -> None:
-    os.chmod(root, root.stat().st_mode | 0o055)
+def _allow_shared_read(root: pathlib.Path,
+                       shared_writes: bool = False) -> None:
+    directory_mode = 0o077 if shared_writes else 0o055
+    os.chmod(root, root.stat().st_mode | directory_mode)
     for candidate in root.rglob("*"):
         mode = candidate.stat().st_mode
-        os.chmod(candidate, mode | (0o055 if candidate.is_dir() else 0o044))
+        os.chmod(candidate,
+                 mode | (directory_mode if candidate.is_dir() else 0o044))
 
 
 class EngineBundleCache:
@@ -792,9 +819,8 @@ class EngineBundleCache:
                 if not trtexec_path:
                     raise CacheError(
                         "remote engine validation requires trtexec")
-                builders, self._plugin_paths, target = _remote_descriptor(
+                builders, self._plugin_paths, platform_identity = _remote_descriptor(
                     commands, remote_runner)
-                platform_identity = _platform_descriptor(target)
 
                 def remote_probe(bundle, plugins):
                     return _remote_probe_engines(bundle, plugins,
@@ -869,8 +895,29 @@ class EngineBundleCache:
                          "lookup",
                          key_started,
                          decision,
-                         detail=decision)
+                         detail=("unresolved-image-identity" if str(error)
+                                 == "unresolved-image-identity" else decision))
             self._mode = CacheMode.OFF
+
+    @classmethod
+    def from_descriptor(cls, base, roots, descriptor, logical, plugins):
+        """Reuse bundle storage for a CI adapter with an independently verified key."""
+        instance = cls.__new__(cls)
+        instance._logger = None
+        instance._commands = []
+        instance._probe = _probe_engines
+        instance._mode = _cache_mode()
+        instance._base = pathlib.Path(base)
+        instance._roots = roots
+        instance._cache_root = _cache_root()
+        instance._read_namespaces, instance._write_namespace = _namespace_policy(
+        )
+        instance._plugin_paths = plugins
+        instance._remote = False
+        instance._engine_descriptor = descriptor
+        instance.key = _content_key(descriptor)
+        instance._kind = "server-engine-" + _content_key(logical)[:24]
+        return instance
 
     @property
     def enabled(self) -> bool:
@@ -914,10 +961,15 @@ class EngineBundleCache:
                          detail="forced-cold")
             return False
         miss_reason = "not-found"
+        miss_field = ""
+        diagnostics = []
         self._base.parent.mkdir(parents=True, exist_ok=True)
         for namespace in self._read_namespaces:
             entry = _cache_entry(self._cache_root, namespace, self._kind)
             if not entry.is_dir() or entry.is_symlink():
+                if ci_engine_diagnostics:
+                    ci_engine_diagnostics.append(diagnostics, namespace,
+                                                 "not-found")
                 continue
             try:
                 _read_metadata(entry, self.key, self._roots)
@@ -934,7 +986,10 @@ class EngineBundleCache:
                         )
                     files, size = _tree_size(target)
                     _install_bundle(target, self._base, self._roots)
+                if ci_engine_diagnostics:
+                    ci_engine_diagnostics.append(diagnostics, namespace, "hit")
                 result = {
+                    "diagnostics": diagnostics,
                     "namespace": namespace,
                     "files": files,
                     "bytes": size,
@@ -958,6 +1013,15 @@ class EngineBundleCache:
                     miss_reason = "deserialization-failure"
                 elif "identity" in detail:
                     miss_reason = "descriptor-change"
+                    if ci_cache_event:
+                        try:
+                            metadata = json.loads(
+                                (entry / _BUNDLE_MANIFEST).read_text())
+                            miss_field = ci_cache_event.changed_field(
+                                metadata.get("key_descriptor", {}),
+                                self._engine_descriptor)
+                        except (OSError, ValueError, AttributeError):
+                            miss_field = "unknown"
                 elif "missing" in detail or "unsafe" in detail:
                     miss_reason = "invalid-inventory"
                 else:
@@ -970,12 +1034,20 @@ class EngineBundleCache:
                 _log(self._logger, "warning",
                      "Ignoring TensorRT engine cache entry %s: %s", namespace,
                      error)
+            if ci_engine_diagnostics:
+                ci_engine_diagnostics.append(diagnostics, namespace,
+                                             miss_reason, entry,
+                                             self._engine_descriptor)
         _cache_event(self._logger,
                      self._kind,
                      "restore",
                      started,
                      "miss",
                      self.key,
+                     result={
+                         "field": miss_field,
+                         "diagnostics": diagnostics
+                     },
                      detail=miss_reason)
         return False
 
@@ -995,8 +1067,6 @@ class EngineBundleCache:
                     "refusing to publish an invalid TensorRT engine bundle")
             shutil.rmtree(str(temporary), ignore_errors=True)
             _copy_bundle(self._base, temporary, self._roots)
-            if self._remote:
-                _allow_shared_read(temporary)
             files, size = _tree_size(temporary)
             if size > _configured_limit():
                 raise CacheError(
@@ -1012,6 +1082,12 @@ class EngineBundleCache:
                 indent=2,
                 sort_keys=True) + "\n",
                                                       encoding="utf-8")
+            # MR publishers and cleanup run under different NFS identities.
+            _allow_shared_read(temporary,
+                               shared_writes=bool(
+                                   re.fullmatch(
+                                       r"project-[A-Za-z0-9._-]+-mr-[0-9]+",
+                                       self._write_namespace)))
             _replace_directory(temporary, entry)
             result = {
                 "namespace": self._write_namespace,
@@ -1043,10 +1119,10 @@ def _describe_remote(builders_json: str) -> typing.Dict[str, typing.Any]:
     descriptors, plugins = _builder_descriptor([([value], 0)
                                                 for value in builders])
     return {
-        "schema_version": "edgellm-ci-remote-engine-descriptor/v1",
+        "schema_version": "edgellm-ci-remote-engine-descriptor/v2",
         "builders": descriptors,
         "plugins": [str(path) for path in plugins],
-        "target": _target_descriptor(),
+        "target": _platform_descriptor(),
     }
 
 

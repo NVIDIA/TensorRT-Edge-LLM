@@ -37,6 +37,7 @@ the checkpoint precision and the consuming operation contract.
 | `int4/groupwiseGemm/v1` | `Int4GroupwiseGemmPlugin` | ModelOpt AWQ, AWQ, GPTQ |
 | `int4/groupwiseGemm/v2` | `Int4GroupwiseGemmPluginV2` | ModelOpt AWQ, AWQ, GPTQ |
 | `int4/moe/gptqMarlin` | `Int4MoePlugin` Marlin weights and scales | GPTQ |
+| `iq2_xxs` | `W2A16GemmPlugin` and `W2A16MoePlugin` payload and FP16 bases | GGUF IQ2_XXS blocks (byte reorder only) |
 | `nvfp4/moe/sm110` | `Nvfp4MoePlugin` | ModelOpt NVFP4, 64-row-interleaved FC1 |
 | `nvfp4/moe/sm120` | `NvFP4MoEPluginGeforce` | ModelOpt NVFP4, concatenated FC1 |
 

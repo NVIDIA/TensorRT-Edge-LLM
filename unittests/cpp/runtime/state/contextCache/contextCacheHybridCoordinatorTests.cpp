@@ -35,7 +35,6 @@
 #include <utility>
 #include <vector>
 
-using namespace nvinfer1;
 using namespace trt_edgellm;
 using namespace trt_edgellm::rt;
 
@@ -140,13 +139,7 @@ protected:
     {
         ASSERT_GT(snapshotSlots, 0);
         ContextCachePhysicalResources resources{*mCache, *mPageTable, nullptr, nullptr};
-        ContextCacheConfig config{/*.enabled=*/true, /*.maxRecords=*/16,
-            /*.recurrentSnapshotPoolBytes=*/
-            static_cast<int64_t>(static_cast<size_t>(snapshotSlots)
-                * HybridSnapshotStorage::recurrentBytesPerSlot(mCache->getMambaCacheManager().getConfig())),
-            /*.partialKvSnapshotPoolBytes=*/
-            static_cast<int64_t>(static_cast<size_t>(snapshotSlots)
-                * HybridSnapshotStorage::partialKvBytesPerSlot(mCache->getKVCacheManager().getConfig()))};
+        ContextCacheConfig config{/*.enabled=*/true, /*.maxRecords=*/16, /*.maxSnapshots=*/snapshotSlots};
         mCoordinator = std::make_unique<ContextCacheCoordinator>(config, mDeployment,
             validateContextCacheDeployment(mDeployment), resources, mStream, std::move(synchronizer));
     }
@@ -168,11 +161,12 @@ protected:
         createCoordinator();
     }
 
-    ContextCacheCoordinator::AdmissionResult begin(std::vector<int32_t> tokens, BlockKeyExtras keyExtras = {})
+    ContextCacheCoordinator::AdmissionResult begin(
+        std::vector<int32_t> tokens, BlockKeyExtras keyExtras = {}, ResidentRef resident = ResidentRef{0, 1})
     {
         ContextCacheBatchAdmission admission;
         admission.sequences.push_back(
-            ContextCacheSequenceAdmission{std::move(tokens), std::move(keyExtras), {}, ResidentRef{0, 1}});
+            ContextCacheSequenceAdmission{std::move(tokens), std::move(keyExtras), {}, resident});
         ContextCacheCoordinator::BeginRequestResult result
             = mCoordinator->beginRequest(admission, DecodingKvHeadroom{1, 0}, mStream);
         EXPECT_EQ(result.status, ContextCacheCoordinatorStatus::kOk);
@@ -180,7 +174,7 @@ protected:
         return std::move(*result.admission);
     }
 
-    void seedRecurrent(uint8_t recurrentPattern, uint8_t convPattern)
+    void seedRecurrent(uint8_t recurrentPattern, uint8_t convPattern, int32_t batchSlot = 0)
     {
         MambaCacheManager& mamba = mCache->getMambaCacheManager();
         MambaCacheManager::Config const& config = mamba.getConfig();
@@ -188,11 +182,15 @@ protected:
                                           * config.recurrentStateSize)
             * sizeof(half);
         size_t const convBytes = static_cast<size_t>(config.convDim * config.convKernel) * sizeof(half);
-        CUDA_CHECK(cudaMemsetAsync(mamba.getRecurrentState(0).rawPointer(), recurrentPattern, recurrentBytes, mStream));
-        CUDA_CHECK(cudaMemsetAsync(mamba.getConvState(0).rawPointer(), convPattern, convBytes, mStream));
+        CUDA_CHECK(cudaMemsetAsync(static_cast<uint8_t*>(mamba.getRecurrentState(0).rawPointer())
+                + static_cast<size_t>(batchSlot) * recurrentBytes,
+            recurrentPattern, recurrentBytes, mStream));
+        CUDA_CHECK(cudaMemsetAsync(
+            static_cast<uint8_t*>(mamba.getConvState(0).rawPointer()) + static_cast<size_t>(batchSlot) * convBytes,
+            convPattern, convBytes, mStream));
     }
 
-    void expectRecurrent(uint8_t recurrentPattern, uint8_t convPattern)
+    void expectRecurrent(uint8_t recurrentPattern, uint8_t convPattern, int32_t batchSlot = 0)
     {
         MambaCacheManager& mamba = mCache->getMambaCacheManager();
         MambaCacheManager::Config const& config = mamba.getConfig();
@@ -202,10 +200,15 @@ protected:
         size_t const convBytes = static_cast<size_t>(config.convDim * config.convKernel) * sizeof(half);
         std::vector<uint8_t> recurrent(recurrentBytes);
         std::vector<uint8_t> conv(convBytes);
-        ASSERT_EQ(cudaMemcpy(recurrent.data(), mamba.getRecurrentState(0).rawPointer(), recurrentBytes,
-                      cudaMemcpyDeviceToHost),
+        ASSERT_EQ(cudaMemcpy(recurrent.data(),
+                      static_cast<uint8_t const*>(mamba.getRecurrentState(0).rawPointer())
+                          + static_cast<size_t>(batchSlot) * recurrentBytes,
+                      recurrentBytes, cudaMemcpyDeviceToHost),
             cudaSuccess);
-        ASSERT_EQ(cudaMemcpy(conv.data(), mamba.getConvState(0).rawPointer(), convBytes, cudaMemcpyDeviceToHost),
+        ASSERT_EQ(cudaMemcpy(conv.data(),
+                      static_cast<uint8_t const*>(mamba.getConvState(0).rawPointer())
+                          + static_cast<size_t>(batchSlot) * convBytes,
+                      convBytes, cudaMemcpyDeviceToHost),
             cudaSuccess);
         EXPECT_TRUE(std::all_of(recurrent.begin(), recurrent.end(),
             [recurrentPattern](uint8_t value) { return value == recurrentPattern; }));
@@ -292,6 +295,103 @@ TEST_F(ContextCacheHybridCoordinatorTests, PrefillCheckpointRestoresRecurrentAnd
     expectKvPrefix(mPageTable->hostRow(0)[1], 1, 0x21, 0x71);
     EXPECT_EQ(mCoordinator->metrics().hybridRestores, 1U);
     EXPECT_EQ(mCoordinator->finish(consumer.request), ContextCacheCoordinatorStatus::kOk);
+}
+
+TEST_F(ContextCacheHybridCoordinatorTests, LiveAdmissionRestoresAndPublishesOnlyTheJoiningHybridSlot)
+{
+    ASSERT_EQ(mCoordinator->shutdown(), ContextCacheCoordinatorStatus::kOk);
+    mCoordinator.reset();
+    int32_t captureSyncs{};
+    createCoordinator([&](cudaStream_t stream) {
+        ++captureSyncs;
+        return cudaStreamSynchronize(stream);
+    });
+
+    constexpr int32_t kCheckpointLength{kTOKENS_PER_PAGE + 1};
+    auto producer = begin(makeTokens(kCheckpointLength));
+    ASSERT_EQ(mCoordinator->preparePrefill(producer.request), ContextCacheCoordinatorStatus::kOk);
+    seedRecurrent(0x31, 0x61);
+    seedKvPage(mPageTable->hostRow(0)[1], 0x21, 0x71);
+    publishPrefill(producer, kCheckpointLength, 9001);
+    ASSERT_EQ(mCoordinator->finish(producer.request), ContextCacheCoordinatorStatus::kOk);
+
+    std::vector<int32_t> firstTokens(static_cast<size_t>(kCheckpointLength), 12000);
+    auto first = begin(std::move(firstTokens), {}, ResidentRef{1, 1});
+    ASSERT_EQ(mCoordinator->preparePrefill(first.request), ContextCacheCoordinatorStatus::kOk);
+    seedRecurrent(0x42, 0x72, 1);
+    publishPrefill(first, kCheckpointLength, 9002);
+
+    std::vector<int32_t> joiningTokens = makeTokens(kCheckpointLength + 1);
+    ASSERT_TRUE(mCoordinator->supportsLiveSequenceAdmission());
+    ContextCacheCoordinator::AdmitSequenceResult admitted = mCoordinator->admitSequence(first.request,
+        ContextCacheSequenceAdmission{joiningTokens, {}, {}, ResidentRef{0, 2}}, DecodingKvHeadroom{1, 0});
+    ASSERT_EQ(admitted.status, ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(admitted.prefillStart, kCheckpointLength);
+    ASSERT_EQ(mCoordinator->prepareSequenceAdmission(first.request, 1), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+    expectRecurrent(0x42, 0x72, 1);
+    expectRecurrent(0x31, 0x61, 0);
+    expectKvPrefix(mPageTable->hostRow(0)[1], 1, 0x21, 0x71);
+
+    seedRecurrent(0x53, 0x73, 0);
+    seedKvPage(mPageTable->hostRow(0)[1], 0x23, 0x74);
+    ASSERT_EQ(mCoordinator->enqueueSequenceAdmissionCapture(first.request, 1), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+    ASSERT_EQ(mCoordinator->completeSequenceAdmissionDeviceWork(first.request, 1), ContextCacheCoordinatorStatus::kOk);
+    int32_t const lookahead = 9003;
+    ASSERT_EQ(mCoordinator->finalizeSequenceAdmission(first.request, 1,
+                  ContextCacheSequenceAdvance{&lookahead, 1, static_cast<int32_t>(joiningTokens.size())}),
+        ContextCacheCoordinatorStatus::kOk);
+    EXPECT_EQ(captureSyncs, 0) << "live admission must use the runtime's existing prefill synchronization";
+    ASSERT_EQ(mCoordinator->finish(first.request), ContextCacheCoordinatorStatus::kOk);
+
+    joiningTokens.push_back(13000);
+    auto reader = begin(std::move(joiningTokens));
+    ASSERT_EQ(reader.prefillStarts, std::vector<int32_t>{kCheckpointLength + 1});
+    ASSERT_EQ(mCoordinator->preparePrefill(reader.request), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+    expectRecurrent(0x53, 0x73);
+    expectKvPrefix(mPageTable->hostRow(0)[1], 2, 0x23, 0x74);
+    EXPECT_EQ(mCoordinator->metrics().hybridRestores, 2U);
+    EXPECT_EQ(mCoordinator->finish(reader.request), ContextCacheCoordinatorStatus::kOk);
+}
+
+TEST_F(ContextCacheHybridCoordinatorTests, LiveColdAdmissionZerosOnlyTheJoiningHybridSlot)
+{
+    ASSERT_EQ(mCoordinator->shutdown(), ContextCacheCoordinatorStatus::kOk);
+    mCoordinator.reset();
+    int32_t failureDrainSyncs{};
+    createCoordinator([&](cudaStream_t stream) {
+        ++failureDrainSyncs;
+        return cudaStreamSynchronize(stream);
+    });
+
+    constexpr int32_t kFirstLength{kTOKENS_PER_PAGE + 1};
+    std::vector<int32_t> firstTokens(static_cast<size_t>(kFirstLength), 12000);
+    auto first = begin(std::move(firstTokens));
+    ASSERT_EQ(mCoordinator->preparePrefill(first.request), ContextCacheCoordinatorStatus::kOk);
+    seedRecurrent(0x42, 0x72, 0);
+    seedRecurrent(0x55, 0x75, 1);
+    publishPrefill(first, kFirstLength, 9001);
+
+    std::vector<int32_t> const joiningTokens{kFirstLength + 2, kFirstLength + 3};
+    ContextCacheCoordinator::AdmitSequenceResult admitted = mCoordinator->admitSequence(first.request,
+        ContextCacheSequenceAdmission{joiningTokens, {}, {}, ResidentRef{1, 1}}, DecodingKvHeadroom{1, 0});
+    ASSERT_EQ(admitted.status, ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(admitted.prefillStart, 0);
+    ASSERT_EQ(mCoordinator->prepareSequenceAdmission(first.request, 1), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->enqueueSequenceAdmissionCapture(first.request, 1), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->abortSequenceAdmission(first.request, 1), ContextCacheCoordinatorStatus::kOk);
+    EXPECT_EQ(failureDrainSyncs, 1) << "failed seated prefill must drain prepared hybrid device work";
+    expectRecurrent(0x42, 0x72, 0);
+    expectRecurrent(0, 0, 1);
+
+    mCache->setActiveBatchSize(2);
+    Tensor deviceMapping({2}, rt::DeviceType::kGPU, DataType::kINT32, "hybridAdmissionFailureMapping");
+    ASSERT_EQ(mCoordinator->beginBatchCompaction(first.request, {0, -1}, 1, deviceMapping),
+        ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->compactBatch(first.request), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->finish(first.request), ContextCacheCoordinatorStatus::kOk);
 }
 
 TEST_F(ContextCacheHybridCoordinatorTests, CandidateHashMatchesPublishedAlignedAndPartialPrefixesWithExtras)
@@ -386,6 +486,30 @@ TEST_F(ContextCacheHybridCoordinatorTests, SnapshotPressureSkipsCaptureAndPreser
     EXPECT_EQ(metrics.partialKvSnapshots.free, 0);
     EXPECT_EQ(metrics.partialKvSnapshots.capacity, 1);
     EXPECT_EQ(mCoordinator->finish(consumer.request), ContextCacheCoordinatorStatus::kOk);
+}
+
+// Given a hybrid deployment with two batch slots
+// When its context cache leaves maxSnapshots unset or sets it
+// Then both snapshot pools hold four snapshots per batch slot, or the count that was set
+TEST_F(ContextCacheHybridCoordinatorTests, SnapshotPoolsHoldFourPerBatchSlotUnlessSet)
+{
+    struct Case
+    {
+        int32_t maxSnapshots;
+        int32_t snapshots;
+    };
+    for (Case const& c : {Case{0, 4 * kMAX_BATCH}, Case{5, 5}})
+    {
+        ASSERT_EQ(mCoordinator->shutdown(), ContextCacheCoordinatorStatus::kOk);
+        mCoordinator.reset();
+        ContextCachePhysicalResources resources{*mCache, *mPageTable, nullptr, nullptr};
+        mCoordinator = std::make_unique<ContextCacheCoordinator>(
+            ContextCacheConfig{/*.enabled=*/true, /*.maxRecords=*/16, c.maxSnapshots}, mDeployment,
+            validateContextCacheDeployment(mDeployment), resources, mStream);
+        ContextCacheMetrics const metrics = mCoordinator->metrics();
+        EXPECT_EQ(metrics.recurrentSnapshots.capacity, c.snapshots);
+        EXPECT_EQ(metrics.partialKvSnapshots.capacity, c.snapshots);
+    }
 }
 
 TEST_F(ContextCacheHybridCoordinatorTests, PureRecurrentCheckpointNeedsNoKvPage)

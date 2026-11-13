@@ -53,6 +53,12 @@ _NUM_EXPERTS = 128
 _HIDDEN_SIZE = 128
 _INTER_SIZE = 128
 _MAX_TOKENS = 16 * 9
+_SUPPORTED_SMS = frozenset({100, 101, 103, 110})
+
+
+def _device_sm():
+    major, minor = torch.cuda.get_device_capability()
+    return major * 10 + minor
 
 
 def _pack_test_weight(dense_weight):
@@ -185,8 +191,8 @@ def _round_trip(runner):
 )
 def test_rank2_is_stable_after_engine_round_trip(activation_type, routing_mode,
                                                  top_k, gated):
-    if torch.cuda.get_device_capability() != (11, 0):
-        pytest.skip("Nvfp4MoePlugin test requires SM110 (Thor)")
+    if _device_sm() not in _SUPPORTED_SMS:
+        pytest.skip("Nvfp4MoePlugin test requires SM100/101/103/110")
     original = _build(False, activation_type, routing_mode, top_k, gated)
     restored = _build(False, activation_type, routing_mode, top_k, gated)
     _round_trip(restored)
@@ -235,8 +241,8 @@ def test_rank2_is_stable_after_engine_round_trip(activation_type, routing_mode,
                          ["Nvfp4MoePlugin", "NvFP4MoEPluginGeforce"])
 def test_rank3_hidden_states_are_rejected(activation_type, routing_mode, top_k,
                                           gated, plugin_name):
-    if torch.cuda.get_device_capability() != (11, 0):
-        pytest.skip("Nvfp4MoePlugin test requires SM110 (Thor)")
+    if _device_sm() not in _SUPPORTED_SMS:
+        pytest.skip("Nvfp4MoePlugin test requires SM100/101/103/110")
     with pytest.raises(PluginUnsupportedError):
         _build(True,
                activation_type,

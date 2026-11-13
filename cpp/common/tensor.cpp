@@ -22,8 +22,6 @@
 #include "common/checkMacros.h"
 #include <sstream>
 
-using namespace nvinfer1;
-
 namespace trt_edgellm
 {
 namespace rt
@@ -114,17 +112,6 @@ int64_t Coords::volume() const noexcept
     return vol;
 }
 
-nvinfer1::Dims Coords::getTRTDims() const noexcept
-{
-    nvinfer1::Dims dims;
-    dims.nbDims = mNumDims;
-    for (int32_t i = 0; i < mNumDims; ++i)
-    {
-        dims.d[i] = mDims[i];
-    }
-    return dims;
-}
-
 std::string Coords::formatString() const
 {
     std::stringstream ss;
@@ -141,14 +128,10 @@ std::string Coords::formatString() const
     return ss.str();
 }
 
-Tensor::Tensor(Coords const& shape, DeviceType deviceType, nvinfer1::DataType dataType, std::string const& name)
+Tensor::Tensor(Coords const& shape, DeviceType deviceType, trt_edgellm::DataType dataType, std::string const& name)
 {
     ELLM_CHECK(shape.volume() > 0, "Construction of Tensor object with zero volume is prohibited");
-#if NV_TENSORRT_MAJOR >= 10 && NV_TENSORRT_MINOR >= 8
     if (dataType == DataType::kINT4 || dataType == DataType::kFP4)
-#else
-    if (dataType == DataType::kINT4)
-#endif
     {
         throw std::runtime_error("Sub-type like kInt4 or kFP4 are not supported");
     }
@@ -175,7 +158,7 @@ Tensor::Tensor(Coords const& shape, DeviceType deviceType, nvinfer1::DataType da
 }
 
 Tensor::Tensor(
-    void* data, Coords const& shape, DeviceType deviceType, nvinfer1::DataType dataType, std::string const& name)
+    void* data, Coords const& shape, DeviceType deviceType, trt_edgellm::DataType dataType, std::string const& name)
 {
     // Populate the tensor information and only serve as a data container with shape.
     mShape = shape;
@@ -305,17 +288,6 @@ int64_t Tensor::getStride(int32_t idx) const
         throw std::out_of_range("Tensor: indexing of strides out of range");
     }
     return mStrides[idx];
-}
-
-Dims Tensor::getTRTDims() const noexcept
-{
-    Dims dims;
-    dims.nbDims = mShape.getNumDims();
-    for (int32_t i = 0; i < mShape.getNumDims(); ++i)
-    {
-        dims.d[i] = mShape[i];
-    }
-    return dims;
 }
 
 bool Tensor::isEmpty() const noexcept

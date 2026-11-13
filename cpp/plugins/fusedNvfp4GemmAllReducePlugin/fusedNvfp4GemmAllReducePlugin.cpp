@@ -19,6 +19,7 @@
 
 #include "common/checkMacros.h"
 #include "common/cudaMacros.h"
+#include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "common/tensor.h"
 #include "common/trtUtils.h"
@@ -45,6 +46,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -125,8 +127,10 @@ struct FusedAllReduceExecutionContext
     void const* weight;
     void* const* outputs;
     uint8_t const* globalActScaleTiled;
+    void const* rawActScale;
     uint8_t const* weightScaleTiled;
-    void const* weightScale2;
+    void const* outputScale;
+    bool useRawSfaM1;
     int32_t m;
     int32_t n;
     int32_t k;
@@ -150,9 +154,13 @@ AllReduceExecutionStatus executeGemmNcclAllReducePath(
         LOG_INFO("FusedNvfp4GemmAllReducePlugin: using GEMM + ncclAllReduce path");
     }
 
-    cudaError_t const gemmError = context.gemmRunner->run(context.activation, context.weight,
-        context.globalActScaleTiled, context.weightScaleTiled, context.outputs[kOUT_TENSOR_IDX], context.weightScale2,
-        context.m, context.n, context.k, context.stream);
+    cudaError_t const gemmError = context.useRawSfaM1
+        ? context.gemmRunner->runRawSfaM1(context.activation, context.weight, context.rawActScale,
+              context.weightScaleTiled, context.outputs[kOUT_TENSOR_IDX], context.outputScale, context.m, context.n,
+              context.k, context.stream)
+        : context.gemmRunner->run(context.activation, context.weight, context.globalActScaleTiled,
+              context.weightScaleTiled, context.outputs[kOUT_TENSOR_IDX], context.outputScale, context.m, context.n,
+              context.k, context.stream);
     if (gemmError != cudaSuccess)
     {
         LOG_ERROR("FusedNvfp4GemmAllReducePlugin: FP16 CuTe DSL GEMM (NCCL fallback) failed: %s",
@@ -387,7 +395,14 @@ bool FusedNvfp4GemmAllReducePlugin::supportsFormatCombination(
 #endif
                 ;
         }
-        return (pos == kFP4_ACT_SCALE_IDX || pos == kEXTERNAL_WEIGHT_F32_SCALE_IDX) && desc.type == DataType::kFLOAT;
+        if (pos == kFP4_ACT_SCALE_IDX)
+        {
+            // New fused-path engines pass the raw FP8 block scale so the
+            // plugin can repack it directly. Keep FP32 support for serialized
+            // engines that contain the older DequantizeLinear output.
+            return desc.type == DataType::kFP8 || desc.type == DataType::kFLOAT;
+        }
+        return pos == kEXTERNAL_WEIGHT_F32_SCALE_IDX && desc.type == DataType::kFLOAT;
     }
     if (pos == kFP4_ACT_IDX || pos == kFP4_WEIGHT_IDX)
     {
@@ -399,7 +414,7 @@ bool FusedNvfp4GemmAllReducePlugin::supportsFormatCombination(
     }
     if (pos == kFP4_ACT_SCALE_IDX)
     {
-        return desc.type == DataType::kFLOAT;
+        return desc.type == DataType::kFP8 || desc.type == DataType::kFLOAT;
     }
     if (pos == kFP4_WEIGHT_F8_SCALE_IDX)
     {
@@ -491,11 +506,15 @@ int32_t FusedNvfp4GemmAllReducePlugin::enqueue(PluginTensorDesc const* inputDesc
         }
         int currentDevice = -1;
         CUDA_CHECK(cudaGetDevice(&currentDevice));
+        if (mSMVersion == 0)
+        {
+            mSMVersion = getSMVersion();
+        }
 
         bool const externalWeight = mExternalWeightResourceId >= 0;
         void const* weight = nullptr;
         void const* weightScale = nullptr;
-        void const* weightScale2 = nullptr;
+        void const* outputScale = nullptr;
         int32_t N = 0;
         int32_t wNumRows = 0;
         int32_t wNumKBlocks = 0;
@@ -507,7 +526,7 @@ int32_t FusedNvfp4GemmAllReducePlugin::enqueue(PluginTensorDesc const* inputDesc
             }
             weight = mExternalWeight;
             weightScale = mExternalWeightScale;
-            weightScale2 = inputs[kEXTERNAL_WEIGHT_F32_SCALE_IDX];
+            outputScale = inputs[kEXTERNAL_WEIGHT_F32_SCALE_IDX];
             N = mWeightOutFeatures;
             wNumRows = mWeightOutFeatures;
             wNumKBlocks = mWeightScaleCols;
@@ -522,7 +541,7 @@ int32_t FusedNvfp4GemmAllReducePlugin::enqueue(PluginTensorDesc const* inputDesc
             }
             weight = inputs[kFP4_WEIGHT_IDX];
             weightScale = inputs[kFP4_WEIGHT_F8_SCALE_IDX];
-            weightScale2 = inputs[kFP4_WEIGHT_F32_SCALE_IDX];
+            outputScale = inputs[kFP4_WEIGHT_F32_SCALE_IDX];
             N = wDesc.dims.d[0];
             auto const& wScaleDims = inputDesc[kFP4_WEIGHT_F8_SCALE_IDX].dims;
             wNumKBlocks = wScaleDims.d[wScaleDims.nbDims - 1];
@@ -563,6 +582,8 @@ int32_t FusedNvfp4GemmAllReducePlugin::enqueue(PluginTensorDesc const* inputDesc
 
         AllReducePathRegistrations const registrations = snapshotAllReducePathRegistrationsForDevice(currentDevice);
         int64_t const outElements = M * N;
+        bool useRawSfaM1 = kernels::CuteDslGemmNvFp4Runner::canImplementRawSfaM1(mSMVersion) && m == 1
+            && inputDesc[kFP4_ACT_SCALE_IDX].type == DataType::kFP8;
 
         // Cache weight scale UE4M3 + SfAtom tiled layout when the stream is not
         // being captured. During CUDA graph capture, use the TRT workspace path.
@@ -605,6 +626,8 @@ int32_t FusedNvfp4GemmAllReducePlugin::enqueue(PluginTensorDesc const* inputDesc
         std::byte* workspaceCursor = static_cast<std::byte*>(workspace);
         uint8_t* globalActScaleTiled = nullptr;
         int64_t globalActTiledSize = 0;
+        void const* rawActScale = useRawSfaM1 ? inputs[kFP4_ACT_SCALE_IDX] : nullptr;
+        if (!useRawSfaM1)
         {
             auto const& actScaleDims = inputDesc[kFP4_ACT_SCALE_IDX].dims;
             int32_t actNumKBlocks = actScaleDims.d[actScaleDims.nbDims - 1];
@@ -619,8 +642,16 @@ int32_t FusedNvfp4GemmAllReducePlugin::enqueue(PluginTensorDesc const* inputDesc
             rt::Tensor globalActScaleTiledTensor
                 = assignTensorFromWorkspace(workspaceCursor, rt::Coords{globalActTiledSize}, DataType::kINT8);
             globalActScaleTiled = static_cast<uint8_t*>(globalActScaleTiledTensor.rawPointer());
-            kernels::fusedFp32ToSfAtom(static_cast<float const*>(inputs[kFP4_ACT_SCALE_IDX]), globalActScaleTiled,
-                actNumRows, actNumKBlocks, stream);
+            if (inputDesc[kFP4_ACT_SCALE_IDX].type == DataType::kFP8)
+            {
+                kernels::repackE4m3ScalesToSfAtom(static_cast<__nv_fp8_e4m3 const*>(inputs[kFP4_ACT_SCALE_IDX]),
+                    globalActScaleTiled, actNumRows, actNumKBlocks, stream);
+            }
+            else
+            {
+                kernels::fusedFp32ToSfAtom(static_cast<float const*>(inputs[kFP4_ACT_SCALE_IDX]), globalActScaleTiled,
+                    actNumRows, actNumKBlocks, stream);
+            }
         }
 
         uint8_t const* weightSFB = mCachedWeightScaleTiled;
@@ -636,8 +667,10 @@ int32_t FusedNvfp4GemmAllReducePlugin::enqueue(PluginTensorDesc const* inputDesc
         }
 
         FusedAllReduceExecutionContext const executionContext{mGemmRunner, inputs[kFP4_ACT_IDX], weight, outputs,
-            globalActScaleTiled, weightSFB, weightScale2, m, N, K, mTpSize, currentDevice, outElements, stream};
+            globalActScaleTiled, rawActScale, weightSFB, outputScale, useRawSfaM1, m, N, K, mTpSize, currentDevice,
+            outElements, stream};
         AllReduceExecutionStatus status = AllReduceExecutionStatus::kUnavailable;
+
 
         status = executeGemmNcclAllReducePath(registrations.nccl, executionContext);
         if (status == AllReduceExecutionStatus::kSuccess)
@@ -672,7 +705,13 @@ int32_t FusedNvfp4GemmAllReducePlugin::onShapeChange(
 
 IPluginV3* FusedNvfp4GemmAllReducePlugin::attachToContext(IPluginResourceContext* /* context */) noexcept
 {
-    return clone();
+    auto* plugin = static_cast<FusedNvfp4GemmAllReducePlugin*>(clone());
+    if (plugin != nullptr && !plugin->initializeWeightScaleCache())
+    {
+        delete plugin;
+        plugin = nullptr;
+    }
+    return plugin;
 }
 
 PluginFieldCollection const* FusedNvfp4GemmAllReducePlugin::getFieldsToSerialize() noexcept
@@ -716,6 +755,15 @@ bool FusedNvfp4GemmAllReducePlugin::ensureGemmRunners() noexcept
 {
     try
     {
+        if (mSMVersion == 0)
+        {
+            mSMVersion = getSMVersion();
+        }
+        if (!kernels::CuteDslGemmNvFp4Runner::canImplement(mSMVersion, /*mmaTilerN=*/64))
+        {
+            LOG_ERROR("FusedNvfp4GemmAllReducePlugin: CuTe DSL NVFP4 GEMM is unavailable for SM%d", mSMVersion);
+            return false;
+        }
         if (!kernels::CuteDslGemmNvFp4Runner::loadKernelModules())
         {
             LOG_ERROR("FusedNvfp4GemmAllReducePlugin: failed to load CuTe DSL NVFP4 GEMM modules");
@@ -723,7 +771,7 @@ bool FusedNvfp4GemmAllReducePlugin::ensureGemmRunners() noexcept
         }
         if (mGemmRunner == nullptr)
         {
-            mGemmRunner = new kernels::CuteDslGemmNvFp4Runner(/*mmaTilerN=*/64);
+            mGemmRunner = new kernels::CuteDslGemmNvFp4Runner(mSMVersion, /*mmaTilerN=*/64);
         }
         return true;
     }
@@ -766,6 +814,74 @@ bool FusedNvfp4GemmAllReducePlugin::resolveExternalWeightResource(int32_t device
     mExternalWeightDevice = deviceId;
     mExternalWeightResourceGeneration = resourceGeneration;
     return true;
+}
+
+bool FusedNvfp4GemmAllReducePlugin::initializeWeightScaleCache() noexcept
+{
+#if !SUPPORTS_FP8
+    return true;
+#else
+    uint8_t* cache = nullptr;
+    cudaStream_t cacheStream = nullptr;
+    try
+    {
+        mSMVersion = getSMVersion();
+        if (mExternalWeightResourceId < 0 || mCachedWeightScaleTiled != nullptr)
+        {
+            return true;
+        }
+
+        int32_t deviceId = -1;
+        CUDA_CHECK(cudaGetDevice(&deviceId));
+        ExternalWeightResource resource{};
+        uint64_t resourceGeneration{0};
+        if (!snapshotExternalWeightResource(deviceId, mExternalWeightResourceId, resource, resourceGeneration))
+        {
+            // TensorRT may attach a build-time clone before runtime resources
+            // are registered. In that case enqueue retains the workspace path.
+            return true;
+        }
+        if (resource.outFeatures != mWeightOutFeatures || resource.inFeatures != mWeightInFeatures
+            || resource.scaleCols != mWeightScaleCols)
+        {
+            LOG_ERROR("FusedNvfp4GemmAllReducePlugin: external weight resource %d shape does not match the engine",
+                mExternalWeightResourceId);
+            return false;
+        }
+
+        int64_t const cacheSize = kernels::getSfAtomTiledBufferSize(mWeightOutFeatures, mWeightScaleCols);
+        CUDA_CHECK(cudaMalloc(&cache, cacheSize));
+        CUDA_CHECK(cudaStreamCreateWithFlags(&cacheStream, cudaStreamNonBlocking));
+        kernels::repackE4m3ScalesToSfAtom(static_cast<__nv_fp8_e4m3 const*>(resource.scale), cache, mWeightOutFeatures,
+            mWeightScaleCols, cacheStream);
+        CUDA_CHECK(cudaStreamSynchronize(cacheStream));
+        CUDA_CHECK(cudaStreamDestroy(cacheStream));
+        cacheStream = nullptr;
+
+        mExternalWeight = resource.weight;
+        mExternalWeightScale = resource.scale;
+        mExternalWeightDevice = deviceId;
+        mExternalWeightResourceGeneration = resourceGeneration;
+        mCachedWeightScaleTiled = cache;
+        mCachedWeightScaleTiledSize = cacheSize;
+        mCachedWeightNumRows = mWeightOutFeatures;
+        mCachedWeightNumKBlocks = mWeightScaleCols;
+        return true;
+    }
+    catch (std::exception const& e)
+    {
+        if (cacheStream != nullptr)
+        {
+            cudaStreamDestroy(cacheStream);
+        }
+        if (cache != nullptr)
+        {
+            cudaFree(cache);
+        }
+        LOG_ERROR("FusedNvfp4GemmAllReducePlugin weight-scale cache initialization failed: %s", e.what());
+        return false;
+    }
+#endif // SUPPORTS_FP8
 }
 
 // ========================== Creator Implementation ==========================

@@ -32,7 +32,7 @@ protected:
     //! Helper to create a simple GPU tensor with the given shape and a name.
     static rt::Tensor makeGpuTensor(rt::Coords const& shape, std::string const& name)
     {
-        return rt::Tensor(shape, DeviceType::kGPU, nvinfer1::DataType::kHALF, name);
+        return rt::Tensor(shape, DeviceType::kGPU, trt_edgellm::DataType::kHALF, name);
     }
 
     //! Build a weight map with two bindings for testing.

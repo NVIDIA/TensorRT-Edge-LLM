@@ -150,7 +150,7 @@ void EncoderEmbeddingCache::store(
 }
 
 void EncoderEmbeddingCache::storeSlice(Hash128 key, void const* devicePtr, int64_t numTokens, int64_t hiddenSize,
-    nvinfer1::DataType dtype, cudaStream_t stream, std::vector<std::reference_wrapper<Tensor>> const& features,
+    trt_edgellm::DataType dtype, cudaStream_t stream, std::vector<std::reference_wrapper<Tensor>> const& features,
     int64_t tokenOffset)
 {
     if (mBudgetBytes <= 0 || numTokens == 0)

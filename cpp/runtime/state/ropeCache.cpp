@@ -152,8 +152,8 @@ rt::Tensor& RopeCache::getOrCreate(RopeConfig const& config, int32_t rotaryDim, 
     newEntry.maxSeqLen = maxSeqLen;
 
     // Allocate the cos/sin cache tensor: shape [1, maxSeqLen, rotaryDim].
-    newEntry.tensor
-        = rt::Tensor({1, maxSeqLen, rotaryDim}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "RopeCache::cosSinCache");
+    newEntry.tensor = rt::Tensor(
+        {1, maxSeqLen, rotaryDim}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "RopeCache::cosSinCache");
 
     // Initialize the cache based on RoPE type.
     bool initialized{false};
@@ -170,9 +170,9 @@ rt::Tensor& RopeCache::getOrCreate(RopeConfig const& config, int32_t rotaryDim, 
         else
         {
             rt::Tensor shortCosSinCache = rt::Tensor({1, maxSeqLen, rotaryDim}, rt::DeviceType::kGPU,
-                nvinfer1::DataType::kFLOAT, "RopeCache::shortCosSinCache");
+                trt_edgellm::DataType::kFLOAT, "RopeCache::shortCosSinCache");
             rt::Tensor longCosSinCache = rt::Tensor({1, maxSeqLen, rotaryDim}, rt::DeviceType::kGPU,
-                nvinfer1::DataType::kFLOAT, "RopeCache::longCosSinCache");
+                trt_edgellm::DataType::kFLOAT, "RopeCache::longCosSinCache");
             initialized = initializeLongRopeCosSinCache(shortCosSinCache, longCosSinCache, config, stream);
             if (initialized)
             {

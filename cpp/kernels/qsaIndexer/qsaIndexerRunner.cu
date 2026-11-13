@@ -24,6 +24,7 @@
 #include <cub/cub.cuh>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+#include <limits>
 // The cub:: iterator facades were removed from CCCL 3.0 (CUDA 13); the Thrust iterators are
 // the stable spelling on both CUDA 12 and 13.
 #include <thrust/iterator/counting_iterator.h>
@@ -48,11 +49,6 @@ constexpr int64_t kMaxSortKeyElements = 8388608;
 //! Row-chunk floor so tiny numBlocks still batch enough segments per sort call.
 constexpr int64_t kMinRowChunk = 256;
 
-constexpr int32_t ceilDiv(int32_t a, int32_t b)
-{
-    return (a + b - 1) / b;
-}
-
 size_t alignUp(size_t size)
 {
     return (size + kWorkspaceAlignment - 1) / kWorkspaceAlignment * kWorkspaceAlignment;
@@ -75,14 +71,19 @@ int32_t getRowChunk(int32_t batchSize, int32_t seqLen, int32_t numBlocks)
     return static_cast<int32_t>(std::min(totalRows, cappedRows));
 }
 
-//! Fixed-width segment offsets for cub: segment i begins at i * numBlocks.
+// CUDA 11.x CUB requires the begin and end offsets to have the same iterator type.
 struct SegmentOffsetOp
 {
     int32_t numBlocks;
+    int32_t numRows;
+    int32_t const* visibleCounts;
+    bool isEnd;
 
     __host__ __device__ __forceinline__ int32_t operator()(int32_t i) const
     {
-        return i * numBlocks;
+        // An empty trailing segment keeps max(endOffsets) equal to the capacity-sized num_items.
+        int32_t const count = !isEnd || i == numRows ? 0 : (visibleCounts == nullptr ? numBlocks : visibleCounts[i]);
+        return i * numBlocks + count;
     }
 };
 
@@ -94,119 +95,126 @@ size_t getCubSortTempBytes(int32_t numRows, int32_t numBlocks)
     size_t tempBytes = 0;
     cub::DoubleBuffer<float> keys(nullptr, nullptr);
     cub::DoubleBuffer<int32_t> values(nullptr, nullptr);
-    SegmentOffsetIterator const beginOffsets(thrust::counting_iterator<int32_t>(0), SegmentOffsetOp{numBlocks});
-    SegmentOffsetIterator const endOffsets(thrust::counting_iterator<int32_t>(1), SegmentOffsetOp{numBlocks});
+    SegmentOffsetIterator const beginOffsets(
+        thrust::counting_iterator<int32_t>(0), SegmentOffsetOp{numBlocks, numRows, nullptr, false});
+    SegmentOffsetIterator const endOffsets(
+        thrust::counting_iterator<int32_t>(0), SegmentOffsetOp{numBlocks, numRows, nullptr, true});
     CUDA_CHECK(cub::DeviceSegmentedRadixSort::SortPairsDescending(nullptr, tempBytes, keys, values, numRows * numBlocks,
-        numRows, beginOffsets, endOffsets, 0, static_cast<int>(sizeof(float) * 8)));
+        numRows + 1, beginOffsets, endOffsets, 0, static_cast<int>(sizeof(float) * 8)));
     return tempBytes;
 }
 
 } // namespace
 
-size_t getQsaIndexerWorkspaceSize(int32_t batchSize, int32_t maxSeqLen)
+size_t getQsaIndexerWorkspaceSize(int32_t batchSize, int32_t seqLen, int32_t maxBlocks, bool paged)
 {
-    ELLM_CHECK(batchSize > 0 && maxSeqLen > 0, "getQsaIndexerWorkspaceSize: batchSize and maxSeqLen must be positive");
-
-    constexpr size_t kElemSize = 2; // half / bfloat16
-    int32_t const numBlocks = ceilDiv(maxSeqLen, kQSA_COMPRESS_RATIO);
-    int32_t const rowChunk = getRowChunk(batchSize, maxSeqLen, numBlocks);
-    int64_t const totalRows = static_cast<int64_t>(batchSize) * maxSeqLen;
-    // Runtime chunkItems = rowChunk(S) * MB(S) = min(totalRows * MB, floor(K / MB) * MB or
-    // kMinRowChunk * MB) is NOT monotone in seqLen (floor(K / MB) * MB peaks when MB divides
-    // K exactly). Size the sort slots with the monotone upper bound
-    //   boundItems(S) = min(totalRows * MB, max(K, kMinRowChunk * MB))
-    // which dominates the runtime value at every seqLen <= maxSeqLen, so a workspace sized
-    // at the profile max always covers the runtime carve.
-    int64_t const boundItems = std::min(totalRows * numBlocks, std::max(kMaxSortKeyElements, kMinRowChunk * numBlocks));
-
-    size_t size = 0;
-    // Slot 0: qNormed [B, S, 4, 128] T.
-    size += alignUp(static_cast<size_t>(totalRows) * kQSA_INDEXER_NUM_HEADS * kQSA_INDEXER_HEAD_DIM * kElemSize);
-    // Slot 1: kbar [B, MB, 128] T.
-    size += alignUp(static_cast<size_t>(batchSize) * numBlocks * kQSA_INDEXER_HEAD_DIM * kElemSize);
-    // Slots 2-3: sort keys (logits) + alternate, FP32, boundItems elements.
+    ELLM_CHECK(batchSize > 0 && seqLen > 0 && maxBlocks > 0, "getQsaIndexerWorkspaceSize: dimensions must be positive");
+    int64_t const totalRows = static_cast<int64_t>(batchSize) * seqLen;
+    ELLM_CHECK(totalRows <= std::numeric_limits<int32_t>::max(),
+        "getQsaIndexerWorkspaceSize: query row count exceeds INT32 range");
+    int32_t const rowChunk = getRowChunk(batchSize, seqLen, maxBlocks);
+    ELLM_CHECK(static_cast<int64_t>(rowChunk) * maxBlocks <= std::numeric_limits<int32_t>::max(),
+        "getQsaIndexerWorkspaceSize: sort item count exceeds INT32 range");
+    int64_t const boundItems = std::min(totalRows * maxBlocks, std::max(kMaxSortKeyElements, kMinRowChunk * maxBlocks));
+    constexpr size_t kElemSize = 2;
+    size_t size = alignUp(static_cast<size_t>(totalRows) * kQSA_INDEXER_NUM_HEADS * kQSA_INDEXER_HEAD_DIM * kElemSize);
+    if (!paged)
+    {
+        size += alignUp(static_cast<size_t>(batchSize) * maxBlocks * kQSA_INDEXER_HEAD_DIM * kElemSize);
+    }
+    // This monotone bound covers the row-chunk rounding at every smaller profile shape.
     size += 2 * alignUp(static_cast<size_t>(boundItems) * sizeof(float));
-    // Slots 4-5: sort values (block ids) + alternate, INT32, boundItems elements.
     size += 2 * alignUp(static_cast<size_t>(boundItems) * sizeof(int32_t));
-    // Slot 6: cub segmented radix sort temp storage. The DoubleBuffer overload needs only
-    // bookkeeping-scale temp storage; budget the probe at the max shape plus a fixed 1 MiB
-    // floor to stay safe against smaller-shape probes and CCCL version drift.
-    size += alignUp(std::max(getCubSortTempBytes(rowChunk, numBlocks), static_cast<size_t>(1) << 20));
+    // Reserve counts for all rows so the bound stays monotone when a smaller capacity enlarges rowChunk.
+    size += alignUp(static_cast<size_t>(totalRows) * sizeof(int32_t));
+    // DoubleBuffer uses bookkeeping-scale CUB scratch; the 1 MiB floor adds headroom for
+    // smaller-profile probe variation while retaining any larger queried requirement.
+    size += alignUp(std::max(getCubSortTempBytes(rowChunk, maxBlocks), static_cast<size_t>(1) << 20));
     return size;
 }
 
 template <typename T>
-void runQsaIndexerPrefill(int32_t* outIdx, T const* indexQk, float const* cosSin, int32_t const* contextLengths,
-    T const* wQ, T const* wK, float rmsEps, void* workspace, size_t workspaceBytes, int32_t batchSize, int32_t seqLen,
-    QsaIndexerPoolState const* poolState, cudaStream_t stream)
+void runQsaIndexerPrefill(int32_t* outIdx, T const* indexQk, float const* cosSin, int32_t const* queryLengths,
+    int32_t const* pastLengths, T const* wQ, T const* wK, float rmsEps, QsaIndexerPoolState const* poolState,
+    void* workspace, size_t workspaceBytes, int32_t batchSize, int32_t seqLen, int32_t maxBlocks, cudaStream_t stream)
 {
-    ELLM_CHECK(outIdx != nullptr && indexQk != nullptr && cosSin != nullptr && contextLengths != nullptr
-            && wQ != nullptr && wK != nullptr && workspace != nullptr,
+    ELLM_CHECK(outIdx != nullptr && indexQk != nullptr && cosSin != nullptr && queryLengths != nullptr && wQ != nullptr
+            && wK != nullptr && workspace != nullptr,
         "runQsaIndexerPrefill: null pointer argument");
-    ELLM_CHECK(batchSize > 0 && seqLen > 0, "runQsaIndexerPrefill: batchSize and seqLen must be positive");
+    ELLM_CHECK(poolState != nullptr || pastLengths == nullptr,
+        "runQsaIndexerPrefill: a cached prefix requires paged pool state");
+    ELLM_CHECK(pastLengths != nullptr
+            || maxBlocks >= (static_cast<int64_t>(seqLen) + kQSA_COMPRESS_RATIO - 1) / kQSA_COMPRESS_RATIO,
+        "runQsaIndexerPrefill: maxBlocks must cover ceilDiv(seqLen, 4) when pastLengths is null");
     ELLM_CHECK(reinterpret_cast<uintptr_t>(workspace) % kWorkspaceAlignment == 0,
         "runQsaIndexerPrefill: workspace must be 128-byte aligned");
-    ELLM_CHECK(workspaceBytes >= getQsaIndexerWorkspaceSize(batchSize, seqLen),
-        "runQsaIndexerPrefill: workspace too small; need "
-            + std::to_string(getQsaIndexerWorkspaceSize(batchSize, seqLen)) + " bytes, got "
+    size_t const requiredBytes = getQsaIndexerWorkspaceSize(batchSize, seqLen, maxBlocks, poolState != nullptr);
+    ELLM_CHECK(workspaceBytes >= requiredBytes,
+        "runQsaIndexerPrefill: workspace too small; need " + std::to_string(requiredBytes) + " bytes, got "
             + std::to_string(workspaceBytes));
 
-    int32_t const numBlocks = ceilDiv(seqLen, kQSA_COMPRESS_RATIO);
-    int32_t const rowChunk = getRowChunk(batchSize, seqLen, numBlocks);
+    int32_t const rowChunk = getRowChunk(batchSize, seqLen, maxBlocks);
     int64_t const totalRows = static_cast<int64_t>(batchSize) * seqLen;
-    int64_t const chunkItems = static_cast<int64_t>(rowChunk) * numBlocks;
-
-    // Carve the workspace; layout documented at getQsaIndexerWorkspaceSize.
+    int64_t const chunkItems = static_cast<int64_t>(rowChunk) * maxBlocks;
     std::byte* cursor = static_cast<std::byte*>(workspace);
     T* const qNormed = assignFromWorkspace<T>(
         cursor, static_cast<size_t>(totalRows) * kQSA_INDEXER_NUM_HEADS * kQSA_INDEXER_HEAD_DIM * sizeof(T));
-    T* const kbar = assignFromWorkspace<T>(
-        cursor, static_cast<size_t>(batchSize) * numBlocks * kQSA_INDEXER_HEAD_DIM * sizeof(T));
+    T* const kbar = poolState == nullptr
+        ? assignFromWorkspace<T>(cursor, static_cast<size_t>(batchSize) * maxBlocks * kQSA_INDEXER_HEAD_DIM * sizeof(T))
+        : nullptr;
     float* const sortKeys = assignFromWorkspace<float>(cursor, static_cast<size_t>(chunkItems) * sizeof(float));
     float* const sortKeysAlt = assignFromWorkspace<float>(cursor, static_cast<size_t>(chunkItems) * sizeof(float));
     int32_t* const sortValues = assignFromWorkspace<int32_t>(cursor, static_cast<size_t>(chunkItems) * sizeof(int32_t));
     int32_t* const sortValuesAlt
         = assignFromWorkspace<int32_t>(cursor, static_cast<size_t>(chunkItems) * sizeof(int32_t));
-    size_t const cubTempBytes = getCubSortTempBytes(rowChunk, numBlocks);
+    int32_t* const visibleCounts
+        = assignFromWorkspace<int32_t>(cursor, static_cast<size_t>(rowChunk) * sizeof(int32_t));
+    size_t const cubTempBytes = getCubSortTempBytes(rowChunk, maxBlocks);
     void* const cubTemp = assignFromWorkspace<std::byte>(cursor, cubTempBytes);
 
-    // K1a + K1b: prep all query heads and compressed keys once. With a pool state the K1b
-    // paged variant additionally persists each kbar to the pool V-tails (dense output
-    // bit-identical), and the tail scatter persists the raw index-K of the trailing
-    // incomplete block — the decode pipeline's B1/B2 read exactly this state.
-    launchQsaIndexQPrep<T>(qNormed, indexQk, cosSin, contextLengths, wQ, rmsEps, batchSize, seqLen, stream);
+    if (pastLengths != nullptr)
+    {
+        launchQsaIndexerSeal<T>(pastLengths, wK, rmsEps, *poolState, batchSize, stream);
+    }
+    launchQsaIndexQPrep<T>(qNormed, indexQk, cosSin, queryLengths, wQ, rmsEps, batchSize, seqLen, stream);
     if (poolState != nullptr)
     {
-        launchQsaRawKTailWritePrefill<T>(indexQk, contextLengths, *poolState, batchSize, seqLen, stream);
-        launchQsaIndexKCompressPaged<T>(kbar, indexQk, cosSin, contextLengths, wK, rmsEps, *poolState, batchSize,
-            seqLen, numBlocks, /* blockBegin = */ 0, /* blockEnd = */ numBlocks, /* pastLen = */ 0, stream);
+        launchQsaIndexKCompressAppend<T>(
+            indexQk, cosSin, queryLengths, pastLengths, wK, rmsEps, *poolState, batchSize, seqLen, stream);
+        launchQsaRawKTailWritePrefill<T>(
+            indexQk, cosSin, queryLengths, pastLengths, *poolState, batchSize, seqLen, stream);
     }
     else
     {
-        launchQsaIndexKCompress<T>(kbar, indexQk, cosSin, contextLengths, wK, rmsEps, batchSize, seqLen, numBlocks,
-            /* blockBegin = */ 0, /* blockEnd = */ numBlocks, /* pastLen = */ 0, stream);
+        launchQsaIndexKCompress<T>(
+            kbar, indexQk, cosSin, queryLengths, wK, rmsEps, batchSize, seqLen, maxBlocks, stream);
     }
 
-    SegmentOffsetIterator const beginOffsets(thrust::counting_iterator<int32_t>(0), SegmentOffsetOp{numBlocks});
-    SegmentOffsetIterator const endOffsets(thrust::counting_iterator<int32_t>(1), SegmentOffsetOp{numBlocks});
-
+    SegmentOffsetIterator const beginOffsets(
+        thrust::counting_iterator<int32_t>(0), SegmentOffsetOp{maxBlocks, rowChunk, nullptr, false});
     for (int64_t rowStart = 0; rowStart < totalRows; rowStart += rowChunk)
     {
         int32_t const numRows = static_cast<int32_t>(std::min<int64_t>(rowChunk, totalRows - rowStart));
-
-        launchQsaIndexIdsFill(sortValues, numRows, numBlocks, stream);
-        launchQsaIndexScores<T>(sortKeys, qNormed, kbar, contextLengths, batchSize, seqLen, numBlocks,
-            static_cast<int32_t>(rowStart), numRows, stream);
-
-        // Per-row descending sort of (logit, blockId) over fixed-width segments. DoubleBuffer
-        // halves the temp storage; Current() tells which buffer holds the sorted values.
+        launchQsaIndexIdsFill(sortValues, numRows, maxBlocks, stream);
+        if (poolState != nullptr)
+        {
+            launchQsaIndexScoresPaged<T>(sortKeys, visibleCounts, qNormed, queryLengths, pastLengths, *poolState,
+                batchSize, seqLen, maxBlocks, static_cast<int32_t>(rowStart), numRows, stream);
+        }
+        else
+        {
+            launchQsaIndexScores<T>(sortKeys, visibleCounts, qNormed, kbar, queryLengths, batchSize, seqLen, maxBlocks,
+                static_cast<int32_t>(rowStart), numRows, stream);
+        }
         cub::DoubleBuffer<float> keys(sortKeys, sortKeysAlt);
         cub::DoubleBuffer<int32_t> values(sortValues, sortValuesAlt);
         size_t tempBytes = cubTempBytes;
-        CUDA_CHECK(cub::DeviceSegmentedRadixSort::SortPairsDescending(cubTemp, tempBytes, keys, values,
-            numRows * numBlocks, numRows, beginOffsets, endOffsets, 0, static_cast<int>(sizeof(float) * 8), stream));
-
-        launchQsaIndexExpand(outIdx, values.Current(), contextLengths, batchSize, seqLen, numBlocks,
+        SegmentOffsetIterator const endOffsets(
+            thrust::counting_iterator<int32_t>(0), SegmentOffsetOp{maxBlocks, numRows, visibleCounts, true});
+        CUDA_CHECK(
+            cub::DeviceSegmentedRadixSort::SortPairsDescending(cubTemp, tempBytes, keys, values, numRows * maxBlocks,
+                numRows + 1, beginOffsets, endOffsets, 0, static_cast<int>(sizeof(float) * 8), stream));
+        launchQsaIndexExpand(outIdx, values.Current(), queryLengths, pastLengths, batchSize, seqLen, maxBlocks,
             static_cast<int32_t>(rowStart), numRows, stream);
     }
 }
@@ -256,17 +264,68 @@ void runQsaIndexerDecode(int32_t* outIdx, T const* indexQk, float const* cosSin,
 }
 
 // Explicit instantiations for the supported activation types.
-template void runQsaIndexerPrefill<half>(int32_t*, half const*, float const*, int32_t const*, half const*, half const*,
-    float, void*, size_t, int32_t, int32_t, QsaIndexerPoolState const*, cudaStream_t);
-template void runQsaIndexerPrefill<__nv_bfloat16>(int32_t*, __nv_bfloat16 const*, float const*, int32_t const*,
-    __nv_bfloat16 const*, __nv_bfloat16 const*, float, void*, size_t, int32_t, int32_t, QsaIndexerPoolState const*,
+template void runQsaIndexerPrefill<half>(int32_t*, half const*, float const*, int32_t const*, int32_t const*,
+    half const*, half const*, float, QsaIndexerPoolState const*, void*, size_t, int32_t, int32_t, int32_t,
     cudaStream_t);
+template void runQsaIndexerPrefill<__nv_bfloat16>(int32_t*, __nv_bfloat16 const*, float const*, int32_t const*,
+    int32_t const*, __nv_bfloat16 const*, __nv_bfloat16 const*, float, QsaIndexerPoolState const*, void*, size_t,
+    int32_t, int32_t, int32_t, cudaStream_t);
 
 template void runQsaIndexerDecode<half>(int32_t*, half const*, float const*, int32_t const*, half const*, half const*,
     float, QsaIndexerPoolState const&, int32_t*, void*, size_t, int32_t, int32_t, cudaStream_t);
 template void runQsaIndexerDecode<__nv_bfloat16>(int32_t*, __nv_bfloat16 const*, float const*, int32_t const*,
     __nv_bfloat16 const*, __nv_bfloat16 const*, float, QsaIndexerPoolState const&, int32_t*, void*, size_t, int32_t,
     int32_t, cudaStream_t);
+
+size_t getQsaIndexerVerifyWorkspaceSize(int32_t batchSize, int32_t seqLen, int32_t maxBlocks)
+{
+    ELLM_CHECK(batchSize > 0 && seqLen > 0 && seqLen <= kQSA_VERIFY_MAX_NODES && maxBlocks > 0
+            && maxBlocks <= std::numeric_limits<int32_t>::max() / kQSA_COMPRESS_RATIO,
+        "getQsaIndexerVerifyWorkspaceSize: invalid dimensions");
+    int64_t const rows = static_cast<int64_t>(batchSize) * seqLen;
+    ELLM_CHECK(rows <= std::numeric_limits<int32_t>::max(), "getQsaIndexerVerifyWorkspaceSize: too many rows");
+    constexpr size_t kElemBytes = 2;
+    size_t size = alignUp(rows * kQSA_INDEXER_NUM_HEADS * kQSA_INDEXER_HEAD_DIM * kElemBytes);
+    size += alignUp(rows * kQSA_INDEXER_HEAD_DIM * kElemBytes);
+    size += alignUp(rows * seqLen * sizeof(int32_t));
+    size += alignUp(rows * sizeof(int32_t));
+    size += alignUp(rows * maxBlocks * sizeof(float));
+    return size;
+}
+
+template <typename T>
+void runQsaIndexerVerify(int32_t* outIdx, T const* indexQk, float const* cosSin, int32_t const* parents,
+    int32_t const* depths, int32_t const* queryLengths, int32_t const* pastLengths, T const* wQ, T const* wK,
+    float rmsEps, QsaIndexerPoolState const& poolState, void* workspace, size_t workspaceBytes, int32_t batchSize,
+    int32_t seqLen, int32_t maxBlocks, cudaStream_t stream)
+{
+    ELLM_CHECK(outIdx != nullptr && indexQk != nullptr && cosSin != nullptr && parents != nullptr && depths != nullptr
+            && queryLengths != nullptr && pastLengths != nullptr && wQ != nullptr && wK != nullptr
+            && workspace != nullptr && stream != nullptr,
+        "runQsaIndexerVerify: null pointer or default stream");
+    ELLM_CHECK(reinterpret_cast<uintptr_t>(workspace) % kWorkspaceAlignment == 0,
+        "runQsaIndexerVerify: workspace must be 128-byte aligned");
+    ELLM_CHECK(workspaceBytes >= getQsaIndexerVerifyWorkspaceSize(batchSize, seqLen, maxBlocks),
+        "runQsaIndexerVerify: insufficient workspace");
+    size_t const rows = static_cast<size_t>(batchSize) * seqLen;
+    std::byte* cursor = static_cast<std::byte*>(workspace);
+    QsaIndexerVerifyScratch scratch{};
+    scratch.qNormed = assignFromWorkspace<T>(cursor, rows * kQSA_INDEXER_NUM_HEADS * kQSA_INDEXER_HEAD_DIM * sizeof(T));
+    scratch.newKbar = assignFromWorkspace<T>(cursor, rows * kQSA_INDEXER_HEAD_DIM * sizeof(T));
+    scratch.paths = assignFromWorkspace<int32_t>(cursor, rows * seqLen * sizeof(int32_t));
+    scratch.logicalLengths = assignFromWorkspace<int32_t>(cursor, rows * sizeof(int32_t));
+    scratch.logits = assignFromWorkspace<float>(cursor, rows * maxBlocks * sizeof(float));
+    launchQsaIndexerSeal<T>(pastLengths, wK, rmsEps, poolState, batchSize, stream);
+    launchQsaIndexerVerify(outIdx, indexQk, cosSin, parents, depths, queryLengths, pastLengths, wQ, wK, rmsEps,
+        poolState, scratch, batchSize, seqLen, maxBlocks, stream);
+}
+
+template void runQsaIndexerVerify<half>(int32_t*, half const*, float const*, int32_t const*, int32_t const*,
+    int32_t const*, int32_t const*, half const*, half const*, float, QsaIndexerPoolState const&, void*, size_t, int32_t,
+    int32_t, int32_t, cudaStream_t);
+template void runQsaIndexerVerify<__nv_bfloat16>(int32_t*, __nv_bfloat16 const*, float const*, int32_t const*,
+    int32_t const*, int32_t const*, int32_t const*, __nv_bfloat16 const*, __nv_bfloat16 const*, float,
+    QsaIndexerPoolState const&, void*, size_t, int32_t, int32_t, int32_t, cudaStream_t);
 
 } // namespace kernel
 } // namespace trt_edgellm

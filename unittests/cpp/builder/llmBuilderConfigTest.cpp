@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include "builder/builderUtils.h"
 #include "builder/llmBuilder.h"
 #include "common/pagedKvTypes.h"
 
@@ -110,7 +111,7 @@ TEST(LLMBuilderConfigTest, DraftRoleResolvesTreeSizedRaggedCapacity)
 {
     LLMBuilderConfig config = makeConfig();
     config.maxInputLen = 8;
-    config.maxDraftTreeSize = 16;
+    config.maxSpecDraftTokens = 16;
     config.specDraft = true;
 
     EXPECT_EQ(config.resolvedMaxQueryLength(), 16);
@@ -118,22 +119,115 @@ TEST(LLMBuilderConfigTest, DraftRoleResolvesTreeSizedRaggedCapacity)
     EXPECT_EQ(config.raggedMultiTokenGenerationProfileRange(config.resolvedRoleQueryLength()).max.physicalTokens, 32);
 }
 
+TEST(LLMBuilderConfigTest, OfficialDSparkDefaultIncludesFalseAnchorRow)
+{
+    // Given the official builder default and a DSpark checkpoint,
+    // when the capacity flag is omitted, then only false-anchor drafts reserve the extra physical row.
+    Json falseAnchor = {{"spec_decode_type", "dspark"}, {"dspark_config", {{"sample_from_anchor", false}}}};
+    Json trueAnchor = {{"spec_decode_type", "dspark"}, {"dspark_config", {{"sample_from_anchor", true}}}};
+
+    EXPECT_EQ(resolveOfficialMaxSpecDraftTokens(falseAnchor, 60, /*explicitlySet=*/false), 61);
+    EXPECT_EQ(resolveOfficialMaxSpecDraftTokens(falseAnchor, 60, /*explicitlySet=*/true), 60);
+    EXPECT_EQ(resolveOfficialMaxSpecDraftTokens(trueAnchor, 60, /*explicitlySet=*/false), 60);
+}
+
+//! DFlash V2 base and draft capacities must cover the checkpoint-owned block width.
+TEST(LLMBuilderConfigTest, DFlash2BuildCapacitiesCoverCheckpointBlock)
+{
+    // Given a DFlash V2 checkpoint with block_size=8, when either engine has capacity seven or eight, then only the
+    // capacity covering all checkpoint rows is accepted.
+    Json config{{"spec_decode_type", "dflash"}, {"engine_role", "draft"},
+        {"dflash_config", {{"version", 2}, {"block_size", 8}}}};
+    LLMBuilderConfig builderConfig = makeConfig();
+    builderConfig.specDraft = true;
+    builderConfig.maxSpecDraftTokens = 7;
+    EXPECT_FALSE(dFlashV2BuildCapacityCoversCheckpoint(config, builderConfig));
+    builderConfig.maxSpecDraftTokens = 8;
+    EXPECT_TRUE(dFlashV2BuildCapacityCoversCheckpoint(config, builderConfig));
+
+    config["engine_role"] = "base";
+    builderConfig.specDraft = false;
+    builderConfig.specBase = true;
+    builderConfig.maxSpecVerifyTokens = 7;
+    EXPECT_FALSE(dFlashV2BuildCapacityCoversCheckpoint(config, builderConfig));
+    builderConfig.maxSpecVerifyTokens = 8;
+    EXPECT_TRUE(dFlashV2BuildCapacityCoversCheckpoint(config, builderConfig));
+
+    config["spec_decode_type"] = "dflash2";
+    config["engine_role"] = "draft";
+    config["dflash_config"].erase("version");
+    builderConfig.specBase = false;
+    builderConfig.specDraft = true;
+    builderConfig.maxSpecDraftTokens = 7;
+    EXPECT_FALSE(dFlashV2BuildCapacityCoversCheckpoint(config, builderConfig));
+    builderConfig.maxSpecDraftTokens = 8;
+    EXPECT_TRUE(dFlashV2BuildCapacityCoversCheckpoint(config, builderConfig));
+}
+
+TEST(LLMBuilderConfigTest, SpeculativeCapacitiesUseTokenContractNames)
+{
+    // Given a target and draft capacity expressed in physical token rows,
+    // when builder metadata is serialized and parsed, then only the unified
+    // root-inclusive verify and physical draft capacity names survive.
+    LLMBuilderConfig config = makeConfig();
+    config.specBase = true;
+    config.specDraft = true;
+    config.maxSpecVerifyTokens = 24;
+    config.maxSpecDraftTokens = 16;
+
+    Json const json = config.toJson();
+    EXPECT_EQ(json.at("max_spec_verify_tokens"), 24);
+    EXPECT_EQ(json.at("max_spec_draft_tokens"), 16);
+    EXPECT_FALSE(json.contains("max_verify_tree_size"));
+    EXPECT_FALSE(json.contains("max_draft_tree_size"));
+
+    LLMBuilderConfig const parsed = LLMBuilderConfig::fromJson(json);
+    EXPECT_EQ(parsed.maxSpecVerifyTokens, 24);
+    EXPECT_EQ(parsed.maxSpecDraftTokens, 16);
+}
+
 TEST(LLMBuilderConfigTest, BaseRoleResolvesVerifyTreeSizedRaggedCapacity)
 {
     LLMBuilderConfig config = makeConfig();
     config.maxInputLen = 8;
-    config.maxVerifyTreeSize = 24;
+    config.maxSpecVerifyTokens = 24;
     config.specBase = true;
 
     EXPECT_EQ(config.resolvedMaxQueryLength(), 24);
     EXPECT_EQ(config.resolvedMaxPhysicalTokens(), 48);
 }
 
+// Given a spec base config whose verify budget sits exactly at the shared tree limit (128),
+// When the role query length is resolved,
+// Then the build proceeds with that budget, so the documented 128-token JetSpec recipe still builds.
+TEST(LLMBuilderConfigTest, BaseRoleAcceptsVerifyBudgetAtTheTreeLimit)
+{
+    LLMBuilderConfig config = makeConfig();
+    config.maxInputLen = 8;
+    config.maxSpecVerifyTokens = kMAX_SPEC_VERIFY_TREE_TOKENS;
+    config.specBase = true;
+
+    EXPECT_EQ(config.resolvedRoleQueryLength(), kMAX_SPEC_VERIFY_TREE_TOKENS);
+}
+
+// Given a spec base config whose verify budget exceeds the shared tree limit by one token,
+// When the role query length is resolved,
+// Then the build is rejected, so an engine no tree verifier or decode kernel can serve is never produced.
+TEST(LLMBuilderConfigTest, BaseRoleRejectsVerifyBudgetPastTheTreeLimit)
+{
+    LLMBuilderConfig config = makeConfig();
+    config.maxInputLen = 8;
+    config.maxSpecVerifyTokens = kMAX_SPEC_VERIFY_TREE_TOKENS + 1;
+    config.specBase = true;
+
+    EXPECT_THROW(config.resolvedRoleQueryLength(), std::runtime_error);
+}
+
 TEST(LLMBuilderConfigTest, RoleProfileDoesNotExpandToLargerPrefillWidth)
 {
     LLMBuilderConfig config = makeConfig();
     config.maxInputLen = 128;
-    config.maxDraftTreeSize = 16;
+    config.maxSpecDraftTokens = 16;
     config.specDraft = true;
 
     EXPECT_EQ(config.resolvedRoleQueryLength(), 16);
@@ -331,4 +425,42 @@ TEST(LLMBuilderConfigTest, UnifiedDFlashTypeDoesNotPromoteVersionOneOrBase)
 
     EXPECT_FALSE(isDFlashV2DraftConfig(versionOne));
     EXPECT_FALSE(isDFlashV2DraftConfig(base));
+}
+
+TEST(LLMBuilderConfigTest, LiLiCorrDraftCapacityMustEqualCheckpointBlock)
+{
+    // Given a LiLiCorr draft checkpoint with block_size=8 and a selector DFlash V2 draft with the same block
+    // When the draft engine capacity is seven, eight, or sixteen rows per sequence
+    // Then LiLiCorr accepts only exactly eight, while the selector draft still accepts any capacity covering eight
+    Json lilicorr{{"spec_decode_type", "dflash"}, {"engine_role", "draft"},
+        {"dflash_config", {{"version", 2}, {"block_size", 8}, {"projector_type", "lilicorr"}}}};
+    Json const selector{{"spec_decode_type", "dflash"}, {"engine_role", "draft"},
+        {"dflash_config", {{"version", 2}, {"block_size", 8}}}};
+    LLMBuilderConfig builderConfig = makeConfig();
+    builderConfig.specDraft = true;
+
+    builderConfig.maxSpecDraftTokens = 7;
+    EXPECT_FALSE(dFlashV2BuildCapacityCoversCheckpoint(lilicorr, builderConfig));
+    builderConfig.maxSpecDraftTokens = 8;
+    EXPECT_TRUE(dFlashV2BuildCapacityCoversCheckpoint(lilicorr, builderConfig));
+    builderConfig.maxSpecDraftTokens = 16;
+    EXPECT_FALSE(dFlashV2BuildCapacityCoversCheckpoint(lilicorr, builderConfig));
+    EXPECT_TRUE(dFlashV2BuildCapacityCoversCheckpoint(selector, builderConfig));
+}
+
+TEST(LLMBuilderConfigTest, LiLiCorrDraftProfileRunsWholeBlocks)
+{
+    // Given a LiLiCorr and a selector DFlash V2 draft built with maxBatchSize=2 and maxSpecDraftTokens=8
+    // When the builder derives the minimum inputs_embeds rows of the draft profiles
+    // Then LiLiCorr starts at one whole 8-row block, while the selector draft keeps its 2-row minimum
+    Json const lilicorr{{"spec_decode_type", "dflash"}, {"engine_role", "draft"},
+        {"dflash_config", {{"version", 2}, {"block_size", 8}, {"projector_type", "lilicorr"}}}};
+    Json const selector{{"spec_decode_type", "dflash"}, {"engine_role", "draft"},
+        {"dflash_config", {{"version", 2}, {"block_size", 8}}}};
+    LLMBuilderConfig builderConfig = makeConfig();
+    builderConfig.specDraft = true;
+    builderConfig.maxSpecDraftTokens = 8;
+
+    EXPECT_EQ(dFlashDraftMinProposalRows(lilicorr, builderConfig), 8);
+    EXPECT_EQ(dFlashDraftMinProposalRows(selector, builderConfig), 2);
 }

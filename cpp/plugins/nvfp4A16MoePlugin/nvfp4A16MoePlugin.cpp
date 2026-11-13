@@ -21,6 +21,7 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "kernels/moe/moeActivationKernels.h"
 #include "kernels/moe/moeAlignSumKernels.h"
 #include "kernels/moe/moeMarlinIndicesKernels.h"
@@ -51,6 +52,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -880,12 +882,12 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
         float* topkWeightsPadded = static_cast<float*>(
             assignTensorFromWorkspace(workspacePtr, {mMaxRoutedRows}, DataType::kFLOAT).rawPointer());
 
-        Tensor routerLogits(
-            const_cast<void*>(inputs[kInRouterLogits]), {numTokens, mNumExperts}, DeviceType::kGPU, DataType::kFLOAT);
-        Tensor topkWeightsTensor(topkWeights, {numTokens, mTopK}, DeviceType::kGPU, DataType::kFLOAT);
-        Tensor topkIndicesTensor(topkIndices, {numTokens, mTopK}, DeviceType::kGPU, DataType::kINT32);
-        Tensor expertScoreBias(
-            const_cast<void*>(inputs[kInExpertScoreBias]), {mNumExperts}, DeviceType::kGPU, DataType::kFLOAT);
+        Tensor routerLogits(const_cast<void*>(inputs[kInRouterLogits]), {numTokens, mNumExperts}, DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT);
+        Tensor topkWeightsTensor(topkWeights, {numTokens, mTopK}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        Tensor topkIndicesTensor(topkIndices, {numTokens, mTopK}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor expertScoreBias(const_cast<void*>(inputs[kInExpertScoreBias]), {mNumExperts}, DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT);
         OptionalInputTensor expertScoreBiasOpt = expertScoreBias;
         {
             NVTX_SCOPED_RANGE(nvtx_routing, "Nvfp4A16MoePlugin::routing", nvtx_colors::ORANGE);
@@ -916,7 +918,7 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
                 slotsPerExpert, paddedCounts, paddedOffsets, numTokensPostPadded, mNumExperts, moeBlockSize, stream);
             CUDA_CHECK(cudaGetLastError());
             CUDA_CHECK(cudaMemsetAsync(slotsPerExpert, 0, mNumExperts * sizeof(int32_t), stream));
-            launchBuildSlotListsKernel(
+            launchBuildStableSlotListsKernel(
                 topkIndices, slotsByExpert, slotsPerExpert, numTokens, mTopK, mNumExperts, stream);
             CUDA_CHECK(cudaGetLastError());
             launchBuildMarlinIndicesKernel(slotsByExpert, slotsPerExpert, paddedCounts, paddedOffsets, topkWeights,
@@ -924,22 +926,25 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
             CUDA_CHECK(cudaGetLastError());
         }
 
-        Tensor hiddenStates(
-            const_cast<void*>(inputs[kInHiddenStates]), {numTokens, mHiddenSize}, DeviceType::kGPU, activationDataType);
+        Tensor hiddenStates(const_cast<void*>(inputs[kInHiddenStates]), {numTokens, mHiddenSize}, DeviceType::kGPU,
+            fromTrt(activationDataType));
         Tensor fc1QWeights(const_cast<void*>(inputs[kInFc1QWeights]),
-            {mNumExperts, mHiddenSize / kNvfp4GroupSize, 2 * fc1OutDim}, DeviceType::kGPU, DataType::kINT32);
+            {mNumExperts, mHiddenSize / kNvfp4GroupSize, 2 * fc1OutDim}, DeviceType::kGPU,
+            trt_edgellm::DataType::kINT32);
         Tensor fc1BlockScales(const_cast<void*>(inputs[kInFc1BlockScales]),
-            {mNumExperts, mHiddenSize / kNvfp4GroupSize, fc1OutDim}, DeviceType::kGPU, DataType::kINT8);
-        Tensor fc1GlobalScales(
-            const_cast<void*>(inputs[kInFc1GlobalScales]), {mNumExperts}, DeviceType::kGPU, activationDataType);
+            {mNumExperts, mHiddenSize / kNvfp4GroupSize, fc1OutDim}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+        Tensor fc1GlobalScales(const_cast<void*>(inputs[kInFc1GlobalScales]), {mNumExperts}, DeviceType::kGPU,
+            fromTrt(activationDataType));
         Tensor fc1ProjectionGlobalScales(const_cast<void*>(inputs[kInFc1GlobalScales]),
-            {getFc1ProjectionCount(mActivationType), mNumExperts}, DeviceType::kGPU, activationDataType);
-        Tensor sortedTokenIdsTensor(sortedTokenIds, {mMaxRoutedRows}, DeviceType::kGPU, DataType::kINT32);
-        Tensor expertIdsTensor(expertIds, {maxPaddedBlocks}, DeviceType::kGPU, DataType::kINT32);
-        Tensor numTokensPostPaddedTensor(numTokensPostPadded, {1}, DeviceType::kGPU, DataType::kINT32);
-        Tensor topkWeightsFlatTensor(topkWeightsFlat, {mMaxRoutedRows}, DeviceType::kGPU, DataType::kFLOAT);
-        Tensor marlinWorkspaceTensor(marlinWorkspace, {marlinWorkspaceElements}, DeviceType::kGPU, DataType::kINT32);
-        Tensor fc1OutputTensor(fc1Output, {totalSlots, fc1OutDim}, DeviceType::kGPU, activationDataType);
+            {getFc1ProjectionCount(mActivationType), mNumExperts}, DeviceType::kGPU, fromTrt(activationDataType));
+        Tensor sortedTokenIdsTensor(sortedTokenIds, {mMaxRoutedRows}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor expertIdsTensor(expertIds, {maxPaddedBlocks}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor numTokensPostPaddedTensor(numTokensPostPadded, {1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor topkWeightsFlatTensor(
+            topkWeightsFlat, {mMaxRoutedRows}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        Tensor marlinWorkspaceTensor(
+            marlinWorkspace, {marlinWorkspaceElements}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor fc1OutputTensor(fc1Output, {totalSlots, fc1OutDim}, DeviceType::kGPU, fromTrt(activationDataType));
 
         {
             NVTX_SCOPED_RANGE(nvtx_fc1, "Nvfp4A16MoePlugin::fc1", nvtx_colors::BLUE);
@@ -952,12 +957,12 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
         }
 
         Tensor activationOutputTensor(
-            activationOutput, {totalSlots, mMoeInterSize}, DeviceType::kGPU, activationDataType);
+            activationOutput, {totalSlots, mMoeInterSize}, DeviceType::kGPU, fromTrt(activationDataType));
         {
             NVTX_SCOPED_RANGE(nvtx_activation, "Nvfp4A16MoePlugin::activation", nvtx_colors::GREEN);
             if (getFc1ProjectionCount(mActivationType) == 2)
             {
-                Tensor expertIndicesFlat(topkIndices, {totalSlots}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+                Tensor expertIndicesFlat(topkIndices, {totalSlots}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
                 moeScaledGatedActivation(fc1OutputTensor, activationOutputTensor, fc1ProjectionGlobalScales,
                     expertIndicesFlat, totalSlots, mMoeInterSize, mActivationType, stream);
             }
@@ -970,19 +975,22 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
         }
 
         Tensor fc2QWeights(const_cast<void*>(inputs[kInFc2QWeights]),
-            {mNumExperts, mMoeInterSize / kNvfp4GroupSize, 2 * mHiddenSize}, DeviceType::kGPU, DataType::kINT32);
+            {mNumExperts, mMoeInterSize / kNvfp4GroupSize, 2 * mHiddenSize}, DeviceType::kGPU,
+            trt_edgellm::DataType::kINT32);
         Tensor fc2BlockScales(const_cast<void*>(inputs[kInFc2BlockScales]),
-            {mNumExperts, mMoeInterSize / kNvfp4GroupSize, mHiddenSize}, DeviceType::kGPU, DataType::kINT8);
-        Tensor fc2GlobalScales(
-            const_cast<void*>(inputs[kInFc2GlobalScales]), {mNumExperts}, DeviceType::kGPU, activationDataType);
-        Tensor fc2OutputTensor(fc2Output, {totalSlots, mHiddenSize}, DeviceType::kGPU, activationDataType);
+            {mNumExperts, mMoeInterSize / kNvfp4GroupSize, mHiddenSize}, DeviceType::kGPU,
+            trt_edgellm::DataType::kINT8);
+        Tensor fc2GlobalScales(const_cast<void*>(inputs[kInFc2GlobalScales]), {mNumExperts}, DeviceType::kGPU,
+            fromTrt(activationDataType));
+        Tensor fc2OutputTensor(fc2Output, {totalSlots, mHiddenSize}, DeviceType::kGPU, fromTrt(activationDataType));
 
         // FC2 applies routing weights by the original slot ID from sortedTokenIds, so keep weights in [token, topK]
         // order.
         CUDA_CHECK(cudaMemsetAsync(topkWeightsPadded, 0, mMaxRoutedRows * sizeof(float), stream));
         CUDA_CHECK(cudaMemcpyAsync(
             topkWeightsPadded, topkWeights, totalSlots * sizeof(float), cudaMemcpyDeviceToDevice, stream));
-        Tensor topkWeightsPaddedTensor(topkWeightsPadded, {mMaxRoutedRows}, DeviceType::kGPU, DataType::kFLOAT);
+        Tensor topkWeightsPaddedTensor(
+            topkWeightsPadded, {mMaxRoutedRows}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
 
         {
             NVTX_SCOPED_RANGE(nvtx_fc2, "Nvfp4A16MoePlugin::fc2", nvtx_colors::PURPLE);

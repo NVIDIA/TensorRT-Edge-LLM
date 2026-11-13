@@ -25,7 +25,7 @@ import traceback
 from tensorrt_edgellm.scripts import _dependency_errors
 
 
-@_dependency_errors.optional_dependencies("tools")
+@_dependency_errors.optional_dependencies("vocab")
 def main(argv=None, *, prog="tensorrt-edgellm-reduce-vocab") -> None:
     """Generate ``vocab_map.safetensors`` from calibration data."""
 

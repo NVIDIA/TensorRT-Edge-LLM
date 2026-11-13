@@ -49,6 +49,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .policy_geometry import (DEFAULT_HEIGHT, DEFAULT_NUM_FRAMES,
+                              DEFAULT_WIDTH, VAE_SPATIAL_DOWNSAMPLE_FACTOR)
+
 logger = logging.getLogger(__name__)
 
 # Frames of features cached per causal conv between temporal chunks.
@@ -305,10 +308,15 @@ class Cosmos3VaeEncoder(nn.Module):
     pipeline conditions on.
     """
 
-    def __init__(self, vae_config: dict) -> None:
+    def __init__(self,
+                 vae_config: dict,
+                 content_height: "int | None" = None,
+                 content_width: "int | None" = None) -> None:
         super().__init__()
         self.patch_size = int(vae_config["patch_size"])
         self.z_dim = int(vae_config["z_dim"])
+        self.content_height = content_height
+        self.content_width = content_width
         assert vae_config.get("is_residual", False), \
             "Cosmos3 uses the Wan 2.2 residual-down-block VAE"
         assert not vae_config.get("attn_scales"), \
@@ -359,17 +367,27 @@ class Cosmos3VaeEncoder(nn.Module):
         latent = self.quant_conv(out)[:, :self.z_dim]  # posterior mean
         latent = (latent - self.latents_mean.to(latent.dtype)) / \
             self.latents_std.to(latent.dtype)
+        if self.content_height is not None:
+            latent = latent[:, :, :, :self.content_height //
+                            VAE_SPATIAL_DOWNSAMPLE_FACTOR, :]
+        if self.content_width is not None:
+            latent = latent[:, :, :, :, :self.content_width //
+                            VAE_SPATIAL_DOWNSAMPLE_FACTOR]
         return latent.float()
 
 
-def build_cosmos3_vae_encoder(vae_dir: str,
-                              dtype: torch.dtype) -> Cosmos3VaeEncoder:
+def build_cosmos3_vae_encoder(
+        vae_dir: str,
+        dtype: torch.dtype,
+        content_height: "int | None" = None,
+        content_width: "int | None" = None) -> Cosmos3VaeEncoder:
     """Build the from-scratch encoder and load the ``vae/`` checkpoint weights."""
     from safetensors import safe_open
 
     with open(os.path.join(vae_dir, "config.json")) as f:
         vae_config = json.load(f)
-    model = Cosmos3VaeEncoder(vae_config).to(dtype)
+    model = Cosmos3VaeEncoder(vae_config, content_height,
+                              content_width).to(dtype)
 
     weights = {}
     for name in sorted(os.listdir(vae_dir)):
@@ -396,18 +414,11 @@ def build_cosmos3_vae_encoder(vae_dir: str,
     return model
 
 
-# Canonical policy request geometry: one conditioning image broadcast to
-# num_frames=17 rollout frames at 544x736.
-VAE_NUM_FRAMES = 17
-VAE_HEIGHT = 544
-VAE_WIDTH = 736
-
-
-def get_vae_onnx_export_args(height: int = VAE_HEIGHT,
-                             width: int = VAE_WIDTH,
+def get_vae_onnx_export_args(height: int = DEFAULT_HEIGHT,
+                             width: int = DEFAULT_WIDTH,
                              device: str = "cpu",
                              dtype: torch.dtype = torch.float16,
-                             num_frames: int = VAE_NUM_FRAMES):
+                             num_frames: int = DEFAULT_NUM_FRAMES):
     """Full-clip inputs + names + dynamic shapes for VAE encoder export.
 
     The policy pipeline VAE-encodes the *full* conditioning clip
@@ -438,10 +449,14 @@ def get_vae_onnx_export_args(height: int = VAE_HEIGHT,
 # ---------------------------------------------------------------------------
 
 
-def make_vae_encoder_config(height: int = VAE_HEIGHT,
-                            width: int = VAE_WIDTH,
-                            num_frames: int = VAE_NUM_FRAMES) -> dict:
+def make_vae_encoder_config(height: int = DEFAULT_HEIGHT,
+                            width: int = DEFAULT_WIDTH,
+                            num_frames: int = DEFAULT_NUM_FRAMES,
+                            content_height: "int | None" = None,
+                            content_width: "int | None" = None) -> dict:
     """Return the VAE encoder component ``config.json`` payload."""
+    content_height = height if content_height is None else content_height
+    content_width = width if content_width is None else content_width
     return {
         "component": "vae_encoder",
         "onnx_filename": "model.onnx",
@@ -465,6 +480,8 @@ def make_vae_encoder_config(height: int = VAE_HEIGHT,
             "max_batch_size": 1,
             "height": height,
             "width": width,
+            "content_height": content_height,
+            "content_width": content_width,
             "num_frames": num_frames,
         },
     }

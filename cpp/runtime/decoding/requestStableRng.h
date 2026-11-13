@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "common/counterRng.h"
+
 #include <cstdint>
 
 #if defined(__CUDACC__)
@@ -39,42 +41,26 @@ enum class SpecRandomPurpose : uint64_t
     kBonus = 0x589965CC75374CC3ULL,
 };
 
-EDGELLM_RNG_HD constexpr bool shouldUseRequestStableSampling(
-    bool supportsLosslessSampling, bool hasExplicitSeed) noexcept
-{
-    return supportsLosslessSampling || hasExplicitSeed;
-}
-
 EDGELLM_RNG_HD constexpr uint64_t requestStableNextAbsolutePosition(
     uint64_t fullPromptTokenCount, uint64_t generatedTokenCount) noexcept
 {
     return fullPromptTokenCount + generatedTokenCount;
 }
 
-EDGELLM_RNG_HD constexpr uint64_t requestStableMix64(uint64_t value) noexcept
-{
-    value += 0x9E3779B97F4A7C15ULL;
-    value = (value ^ (value >> 30U)) * 0xBF58476D1CE4E5B9ULL;
-    value = (value ^ (value >> 27U)) * 0x94D049BB133111EBULL;
-    return value ^ (value >> 31U);
-}
-
 EDGELLM_RNG_HD constexpr uint64_t requestStableRandomBits(
     uint64_t requestSeed, uint64_t absolutePosition, SpecRandomPurpose purpose, uint64_t lane) noexcept
 {
-    uint64_t value = requestStableMix64(requestSeed);
-    value ^= requestStableMix64(absolutePosition + 0xD1B54A32D192ED03ULL);
-    value ^= requestStableMix64(static_cast<uint64_t>(purpose));
-    value ^= requestStableMix64(lane + 0xDB4F0B9175AE2165ULL);
-    return requestStableMix64(value);
+    uint64_t value = counter_rng::splitMix64(requestSeed);
+    value ^= counter_rng::splitMix64(absolutePosition + 0xD1B54A32D192ED03ULL);
+    value ^= counter_rng::splitMix64(static_cast<uint64_t>(purpose));
+    value ^= counter_rng::splitMix64(lane + 0xDB4F0B9175AE2165ULL);
+    return counter_rng::splitMix64(value);
 }
 
 EDGELLM_RNG_HD constexpr float requestStableUniform(
     uint64_t requestSeed, uint64_t absolutePosition, SpecRandomPurpose purpose, uint64_t lane) noexcept
 {
-    uint32_t const mantissa = static_cast<uint32_t>(
-        (requestStableRandomBits(requestSeed, absolutePosition, purpose, lane) >> 40U) & 0xFFFFFFULL);
-    return (static_cast<float>(mantissa) + 0.5F) * (1.0F / 16777216.0F);
+    return counter_rng::uniformFromBits(requestStableRandomBits(requestSeed, absolutePosition, purpose, lane));
 }
 
 } // namespace rt

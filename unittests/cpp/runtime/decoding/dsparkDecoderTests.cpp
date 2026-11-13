@@ -17,7 +17,11 @@
 
 // DSpark speculative decoding assembled around two substitute engines.
 
+#include "specSessionSupport.h"
 #include "substituteEngine.h"
+
+#include <array>
+#include <numeric>
 
 using namespace trt_edgellm;
 using namespace substitute_engine;
@@ -76,7 +80,8 @@ void writeDSparkHeadsSidecar(std::filesystem::path const& dir, int32_t draftVoca
     std::vector<rt::Tensor> heads;
     for (char const* name : {"markov_w1", "markov_w2"})
     {
-        rt::Tensor matrix({draftVocabSize, kDSparkMarkovRank}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, name);
+        rt::Tensor matrix(
+            {draftVocabSize, kDSparkMarkovRank}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, name);
         CUDA_CHECK(cudaMemsetAsync(
             matrix.rawPointer(), 0, static_cast<size_t>(matrix.getShape().volume()) * sizeof(half), stream));
         heads.push_back(std::move(matrix));
@@ -88,7 +93,34 @@ void writeDSparkHeadsSidecar(std::filesystem::path const& dir, int32_t draftVoca
     }
 }
 
-class DSparkAssemblyTest : public SpecAssemblyTest
+void writeReducedDSparkSidecars(
+    std::filesystem::path const& dir, int32_t targetVocabSize, int32_t draftVocabSize, cudaStream_t stream)
+{
+    std::vector<rt::Tensor> heads;
+    for (auto const& [name, rows] :
+        std::array<std::pair<char const*, int32_t>, 2>{{{"markov_w1", targetVocabSize}, {"markov_w2", draftVocabSize}}})
+    {
+        rt::Tensor matrix({rows, kDSparkMarkovRank}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, name);
+        CUDA_CHECK(cudaMemsetAsync(
+            matrix.rawPointer(), 0, static_cast<size_t>(matrix.getShape().volume()) * sizeof(half), stream));
+        heads.push_back(std::move(matrix));
+    }
+    rt::Tensor vocabMap({draftVocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "draft_vocab_map");
+    std::vector<int32_t> hostMap(static_cast<size_t>(draftVocabSize));
+    std::iota(hostMap.begin(), hostMap.end(), 0);
+    CUDA_CHECK(cudaMemcpyAsync(
+        vocabMap.rawPointer(), hostMap.data(), hostMap.size() * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    std::vector<rt::Tensor> vocabMapTensors;
+    vocabMapTensors.push_back(std::move(vocabMap));
+    if (!rt::safetensors::saveSafetensors(dir / binding_names::kDSparkHeadsFileName, heads, stream)
+        || !rt::safetensors::saveSafetensors(dir / binding_names::kDraftVocabMapFileName, vocabMapTensors, stream))
+    {
+        throw std::runtime_error("failed to write reduced-vocabulary DSpark sidecars");
+    }
+}
+
+class DSparkAssemblyTest : public SpecSessionAssemblyTest
 {
 protected:
     std::filesystem::path stageModelDir() override
@@ -101,9 +133,9 @@ protected:
     rt::SpecDecodeDraftingConfig drafting() const override
     {
         rt::SpecDecodeDraftingConfig config{};
-        config.draftingTopK = 1;
-        config.draftingStep = 1;
-        config.verifySize = kDSparkBlockSize;
+        config.draftTopK = 1;
+        config.proposalTokens = kDSparkBlockSize - 1;
+        config.verifyTokens = kDSparkBlockSize;
         return config;
     }
 };
@@ -128,7 +160,7 @@ TEST_F(DSparkAssemblyTest, RejectsAHeadsSidecarWhoseMarkovMatricesAreTheWrongSha
     for (char const* name : {"markov_w1", "markov_w2"})
     {
         rt::Tensor matrix({static_cast<int64_t>(kVocabSize), kDSparkMarkovRank + 1}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, name);
+            trt_edgellm::DataType::kHALF, name);
         CUDA_CHECK(cudaMemsetAsync(
             matrix.rawPointer(), 0, static_cast<size_t>(matrix.getShape().volume()) * sizeof(half), mStream));
         heads.push_back(std::move(matrix));
@@ -161,6 +193,101 @@ TEST_F(DSparkAssemblyTest, CompactsTheBatchWhenOneSlotFinishesAheadOfTheOther)
     expectSurvivorKeepsDecodingAfterCompaction(kDSparkBlockSize);
 }
 
+// Given a pending DSpark proposal for two requests, one of which finishes during prefill,
+// When the surviving request consumes its pending proposal after batch compaction,
+// Then its acceptance bounds remain aligned and it accepts the full matching block.
+TEST_F(DSparkAssemblyTest, CompactsPendingAcceptanceBoundsAfterPrefillCompletion)
+{
+    using ::testing::_;
+    auto baseEngine = makeEngine();
+    auto draftEngine = makeEngine();
+    auto& base = *baseEngine;
+    auto& draft = *draftEngine;
+    ON_CALL(draft, execute(_)).WillByDefault(emit(agreedLogitsRows(kAgreedToken)));
+    auto artifacts = makeArtifacts(std::move(baseEngine), std::move(draftEngine));
+    int32_t const eosId = static_cast<int32_t>(artifacts.tokenizer->getEosId());
+    {
+        ::testing::InSequence sequence;
+        EXPECT_CALL(base, execute(_)).WillOnce(emit({eosId, kAgreedToken}));
+        EXPECT_CALL(base, execute(_)).WillOnce(emit(agreedLogitsRows(kAgreedToken)));
+    }
+    EXPECT_CALL(draft, execute(_)).Times(1);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), "", {}, drafting(), mStream,
+        rt::ContextCacheConfig{/*enabled=*/true, /*maxRecords=*/16}};
+    auto request = makeGreedyRequest(kShortPrompt, kDSparkBlockSize);
+    request.requests.push_back(makeGreedyRequest(kLongPrompt, kDSparkBlockSize).requests.front());
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+    ASSERT_EQ(response.outputIds.size(), 2U);
+    EXPECT_THAT(response.outputIds[0], ::testing::ElementsAre(eosId));
+    EXPECT_EQ(response.finishReasons[0], rt::FinishReason::kEndId);
+    EXPECT_THAT(
+        response.outputIds[1], ::testing::AllOf(::testing::SizeIs(kDSparkBlockSize), ::testing::Each(kAgreedToken)));
+    EXPECT_EQ(response.finishReasons[1], rt::FinishReason::kLength);
+}
+
+// Given a runtime that has already compacted a pending greedy chain proposal once,
+// When the next request batch again finishes one of its two requests during prefill,
+// Then that compaction succeeds too and the survivor accepts the full matching block.
+TEST_F(DSparkAssemblyTest, CompactsPendingProposalAgainOnTheNextRequest)
+{
+    using ::testing::_;
+    auto baseEngine = makeEngine();
+    auto draftEngine = makeEngine();
+    auto& base = *baseEngine;
+    auto& draft = *draftEngine;
+    ON_CALL(draft, execute(_)).WillByDefault(emit(agreedLogitsRows(kAgreedToken)));
+    auto artifacts = makeArtifacts(std::move(baseEngine), std::move(draftEngine));
+    int32_t const eosId = static_cast<int32_t>(artifacts.tokenizer->getEosId());
+    constexpr int32_t kRequests = 2;
+    {
+        ::testing::InSequence sequence;
+        for (int32_t round = 0; round < kRequests; ++round)
+        {
+            EXPECT_CALL(base, execute(_)).WillOnce(emit({eosId, kAgreedToken}));
+            EXPECT_CALL(base, execute(_)).WillOnce(emit(agreedLogitsRows(kAgreedToken)));
+        }
+    }
+    EXPECT_CALL(draft, execute(_)).Times(kRequests);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), "", {}, drafting(), mStream,
+        rt::ContextCacheConfig{/*enabled=*/true, /*maxRecords=*/16}};
+    for (int32_t round = 0; round < kRequests; ++round)
+    {
+        SCOPED_TRACE(::testing::Message() << "request " << round);
+        auto request = makeGreedyRequest(kShortPrompt, kDSparkBlockSize);
+        request.requests.push_back(makeGreedyRequest(kLongPrompt, kDSparkBlockSize).requests.front());
+        rt::LLMGenerationResponse response;
+        ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+        ASSERT_EQ(response.outputIds.size(), 2U);
+        EXPECT_THAT(response.outputIds[0], ::testing::ElementsAre(eosId));
+        EXPECT_THAT(response.outputIds[1],
+            ::testing::AllOf(::testing::SizeIs(kDSparkBlockSize), ::testing::Each(kAgreedToken)));
+    }
+}
+
+TEST_F(DSparkAssemblyTest, ReducedVocabularySamplingFallsBackBeforeDraftExecution)
+{
+    // Given a reduced-vocabulary DSpark draft, when a request uses stochastic sampling, then vanilla decoding is
+    // selected before the draft engine can execute or mutate its cache state.
+    constexpr int32_t kReducedVocabSize = static_cast<int32_t>(kVocabSize / 2);
+    auto draftConfig = makeDSparkDraftConfig();
+    draftConfig["reduced_vocab_size"] = kReducedVocabSize;
+    std::ofstream(mModelDir / "draft_config.json") << draftConfig.dump(2);
+    writeReducedDSparkSidecars(mModelDir, static_cast<int32_t>(kVocabSize), kReducedVocabSize, mStream);
+
+    using ::testing::_;
+    auto baseEngine = makeEngine();
+    auto draftEngine = makeEngine();
+    EXPECT_CALL(*draftEngine, execute(_)).Times(0);
+    auto runtime = makeRuntime(makeArtifacts(std::move(baseEngine), std::move(draftEngine)));
+
+    auto request = makeGreedyRequest("a", 2);
+    request.temperature = 1.0F;
+    request.topK = 2;
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+}
+
 // Hybrid DSpark base-engine tree metadata ABI.
 // --------------------------------------------------------------------------
 
@@ -185,7 +312,7 @@ Json makeHybridDsparkBaseConfig()
         {"markov_head_type", "vanilla"}, {"markov_rank", 16}, {"enable_confidence_head", true},
         {"confidence_head_with_markov", true}, {"target_layer_ids", Json::array({0, 1})}};
     config["builder_config"]["spec_base"] = true;
-    config["builder_config"]["max_verify_tree_size"] = kDSparkTreeVerifySize;
+    config["builder_config"]["max_spec_verify_tokens"] = kDSparkTreeVerifySize;
     sizeSpeculativeKvPool(config);
     return config;
 }
@@ -203,7 +330,7 @@ Json makeHybridDsparkDraftConfig()
         {"confidence_head_with_markov", true}, {"target_layer_ids", Json::array({0, 1})}};
     config["builder_config"].erase("spec_base");
     config["builder_config"]["spec_draft"] = true;
-    config["builder_config"]["max_draft_tree_size"] = kDSparkTreeBlockSize;
+    config["builder_config"]["max_spec_draft_tokens"] = kDSparkTreeBlockSize;
     sizeSpeculativeKvPool(config);
     return config;
 }
@@ -211,9 +338,9 @@ Json makeHybridDsparkDraftConfig()
 rt::SpecDecodeDraftingConfig makeDsparkDrafting(bool useTree)
 {
     rt::SpecDecodeDraftingConfig drafting{};
-    drafting.draftingTopK = useTree ? 4 : 1;
-    drafting.draftingStep = 1;
-    drafting.verifySize = kDSparkTreeVerifySize;
+    drafting.draftTopK = useTree ? 4 : 1;
+    drafting.proposalTokens = kDSparkTreeBlockSize;
+    drafting.verifyTokens = kDSparkTreeVerifySize;
     return drafting;
 }
 
@@ -242,8 +369,8 @@ protected:
     }
 
     std::unique_ptr<::testing::NiceMock<MockEngineExecutor>> makeBaseEngine(bool hasParent, bool hasDepth,
-        nvinfer1::DataType parentType = nvinfer1::DataType::kINT32,
-        nvinfer1::DataType depthType = nvinfer1::DataType::kINT32)
+        trt_edgellm::DataType parentType = trt_edgellm::DataType::kINT32,
+        trt_edgellm::DataType depthType = trt_edgellm::DataType::kINT32)
     {
         using ::testing::_;
 
@@ -251,7 +378,7 @@ protected:
         ON_CALL(*engine, hasIOTensor(_)).WillByDefault([hasParent, hasDepth](char const* name) {
             std::string const binding{name};
             return (binding == binding_names::kTreeParentIds && hasParent)
-                || (binding == binding_names::kTreeDepths && hasDepth);
+                || (binding == binding_names::kTreeDepths && hasDepth) || binding == binding_names::kSpecVerifyLayout;
         });
         ON_CALL(*engine, getBindingDataType(_)).WillByDefault([parentType, depthType](char const* name) {
             return std::string{name} == binding_names::kTreeParentIds ? parentType : depthType;
@@ -264,7 +391,7 @@ protected:
     {
         try
         {
-            rt::validateDsparkTreeMetadataBindings(deployment, engine);
+            rt::validateRecurrentVerifyMetadataBindings(deployment, engine);
             FAIL() << "Expected DSpark tree engine ABI validation to fail";
         }
         catch (std::exception const& e)
@@ -281,7 +408,7 @@ TEST_F(DSparkTreeEngineAbiTest, TreeRequiresBothMetadataBindings)
 {
     auto const deployment = makeDeployment(/*useTree=*/true);
     auto const engine = makeBaseEngine(/*hasParent=*/false, /*hasDepth=*/false);
-    expectValidationError(deployment, *engine, "Hybrid DSpark DDTree requires a tree-base engine");
+    expectValidationError(deployment, *engine, "must expose both INT32 tree metadata bindings");
 }
 
 TEST_F(DSparkTreeEngineAbiTest, RejectsEitherIncompleteMetadataPair)
@@ -297,27 +424,28 @@ TEST_F(DSparkTreeEngineAbiTest, RejectsEitherIncompleteMetadataPair)
 TEST_F(DSparkTreeEngineAbiTest, RejectsNonInt32Metadata)
 {
     auto const deployment = makeDeployment(/*useTree=*/true);
-    auto const engine
-        = makeBaseEngine(/*hasParent=*/true, /*hasDepth=*/true, nvinfer1::DataType::kINT32, nvinfer1::DataType::kHALF);
+    auto const engine = makeBaseEngine(
+        /*hasParent=*/true, /*hasDepth=*/true, trt_edgellm::DataType::kINT32, trt_edgellm::DataType::kHALF);
     expectValidationError(deployment, *engine, "tree metadata bindings must be INT32");
 }
 
-TEST_F(DSparkTreeEngineAbiTest, AcceptsMatchingTreeAndLinearEngineAbis)
+TEST_F(DSparkTreeEngineAbiTest, AcceptsSameEngineForTreeAndLinear)
 {
     auto const treeDeployment = makeDeployment(/*useTree=*/true);
     auto const treeEngine = makeBaseEngine(/*hasParent=*/true, /*hasDepth=*/true);
-    EXPECT_NO_THROW(rt::validateDsparkTreeMetadataBindings(treeDeployment, *treeEngine));
+    EXPECT_NO_THROW(rt::validateRecurrentVerifyMetadataBindings(treeDeployment, *treeEngine));
 
     auto const linearDeployment = makeDeployment(/*useTree=*/false);
-    auto const linearEngine = makeBaseEngine(/*hasParent=*/false, /*hasDepth=*/false);
-    EXPECT_NO_THROW(rt::validateDsparkTreeMetadataBindings(linearDeployment, *linearEngine));
+    auto const linearEngine = makeBaseEngine(/*hasParent=*/true, /*hasDepth=*/true);
+    EXPECT_NO_THROW(rt::validateRecurrentVerifyMetadataBindings(linearDeployment, *linearEngine));
 }
 
-TEST_F(DSparkTreeEngineAbiTest, RejectsTreeEngineForLinearRuntime)
+TEST_F(DSparkTreeEngineAbiTest, SameVerifyEngineSupportsLinearRuntime)
 {
     auto const deployment = makeDeployment(/*useTree=*/false);
     auto const engine = makeBaseEngine(/*hasParent=*/true, /*hasDepth=*/true);
-    expectValidationError(deployment, *engine, "runtime is configured for linear DSpark");
+    // Given a fixed recurrent ABI, when selecting chain at runtime, then the same engine is valid.
+    EXPECT_NO_THROW(rt::validateRecurrentVerifyMetadataBindings(deployment, *engine));
 }
 
 TEST_F(DSparkTreeEngineAbiTest, InjectedArtifactsRunTheSameValidation)
@@ -336,8 +464,95 @@ TEST_F(DSparkTreeEngineAbiTest, InjectedArtifactsRunTheSameValidation)
     }
     catch (std::exception const& e)
     {
-        EXPECT_THAT(e.what(), ::testing::HasSubstr("Hybrid DSpark DDTree requires a tree-base engine"));
+        EXPECT_THAT(e.what(), ::testing::HasSubstr("must expose both INT32 tree metadata bindings"));
     }
 }
 
+// Given a DSpark deployment whose draft and base verify rows genuinely agree on kAgreedToken (a real, unambiguous
+// argmax winner, not the all-zero literal tie kDefaultRowToken depends on)
+// When one round runs
+// Then the draft runs exactly once and the whole block is accepted, the same shape as DFlash's cached-block draft
+//
+// This used to need three verify rounds to fill the same budget under an all-zero tie-break fixture. Switching to
+// a genuine (non-tied) argmax agreement instead of a literal all-vocab tie collapsed that back to one round. That
+// is strong evidence the old 3-round behavior was itself a tie-break-kernel collision (two independent top-1
+// kernels disagreeing on which index wins an all-zero tie) rather than a genuine property of
+// kernel::dsparkGreedyAccept.
+TEST_F(DSparkAssemblyTest, SpendsOneDraftForwardPerRoundRatherThanAChain)
+{
+    using ::testing::_;
+
+    auto baseEngine = makeEngine();
+    auto draftEngine = makeEngine();
+    auto& base = *baseEngine;
+    auto& draft = *draftEngine;
+    ON_CALL(base, execute(_)).WillByDefault(emit(agreedLogitsRows(kAgreedToken)));
+    ON_CALL(draft, execute(_)).WillByDefault(emit(agreedLogitsRows(kAgreedToken)));
+
+    EXPECT_CALL(draft, prepare(kPrefillProfile, _, _, _)).Times(1);
+    EXPECT_CALL(draft, prepare(kDecodeProfile, _, _, _)).Times(0);
+    EXPECT_CALL(base, prepare(kPrefillProfile, _, _, _)).Times(1);
+    EXPECT_CALL(base, prepare(kDecodeProfile, _, _, _)).Times(1);
+
+    auto artifacts = makeArtifacts(std::move(baseEngine), std::move(draftEngine));
+    auto runtime = makeRuntime(std::move(artifacts));
+
+    auto const request = makeGreedyRequest("a", kDSparkBlockSize);
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+
+    expectResponseCoversEverySlot(response, 1);
+    ASSERT_EQ(response.outputIds.size(), 1U);
+    EXPECT_THAT(
+        response.outputIds[0], ::testing::AllOf(::testing::SizeIs(kDSparkBlockSize), ::testing::Each(kAgreedToken)))
+        << "every draft position genuinely matches the base's own argmax, so the whole block should be accepted";
+    EXPECT_EQ(response.finishReasons[0], rt::FinishReason::kLength);
+}
+
+// Given a draft config that does not set dspark_config.sample_from_anchor at all (a legacy-style config, the shape
+// every DSpark deployment predating that flag has, e.g. Qwen3-8B)
+// When the runtime is assembled
+// Then the draft block is sized as if sample_from_anchor were true (anchor-inclusive: block length ==
+// proposalLen, not proposalLen + 1)
+//
+// Regression lock for the config-contract concern raised on !1474 (adding Nemotron-3.5's DSpark support): the new
+// draft model's block layout is selectable via sample_from_anchor, but older draft models never declared that
+// field and were built assuming anchor-inclusive sampling. llmEngineConfig.cpp resolves the unset case to `true`
+// specifically to preserve that legacy layout -- if a future change flipped the JSON default, every deployment
+// that predates the flag would silently get a block one slot wider than the draft engine it's paired with was
+// built for, with no config validation error to catch it.
+TEST_F(DSparkAssemblyTest, DraftBlockIsAnchorInclusiveWhenSampleFromAnchorIsUnset)
+{
+    using ::testing::_;
+    using ::testing::AllOf;
+    using ::testing::Field;
+
+    auto baseEngine = makeEngine();
+    auto draftEngine = makeEngine();
+    auto& draft = *draftEngine;
+
+    // proposalLen (= verifyTokenCount - 1, non-tree DSpark) is the anchor-inclusive block width;
+    // sample_from_anchor=false would need proposalLen + 1 instead.
+    constexpr int64_t kAnchorInclusiveBlockLen{kDSparkBlockSize - 1};
+    EXPECT_CALL(draft, prepare(kPrefillProfile, Field(&rt::InferenceDims::seqLen, kAnchorInclusiveBlockLen), _, _));
+
+    auto artifacts = makeArtifacts(std::move(baseEngine), std::move(draftEngine));
+    auto runtime = makeRuntime(std::move(artifacts));
+
+    // maxGenerateLength must reach a full round (kDSparkBlockSize): a request satisfied entirely out of prefill's
+    // own sampled token never runs decodeStep(), so the draft engine is never touched at all -- same gotcha noted
+    // elsewhere in this session's fixtures (e.g. Gemma4MtpAssemblyTest's round-trip test).
+    auto const request = makeGreedyRequest("a", kDSparkBlockSize);
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+}
+
 } // namespace
+
+// Given a DSpark deployment and two prompts
+// When the second is seated into a running session while the first is mid-generation, or retired unseated
+// Then each decodes exactly as it does alone: the seated draft state moved no token and no round
+TEST_F(DSparkAssemblyTest, Seating)
+{
+    expectSeating();
+}

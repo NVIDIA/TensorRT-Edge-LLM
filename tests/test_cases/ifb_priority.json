@@ -1,0 +1,230 @@
+{
+    "name": "ifb_priority",
+    "description": "Priority IFB trace. Low-priority p0/p1 decode and p2 (> 512 tokens, arriving at p0 token 4) is still prefilling or has just started decoding when the high-priority h0 (priority -1, > 512 tokens) arrives at p0 token 5. Variants: preemption pause with a free fourth slot; preemption none with a free fourth slot; and priority_reserved_slots=1 with p3 also low priority so every non-reserved slot is busy and h0 must enter through the reserved slot. Under preemption none h0 asks for a different max_generate_length than the residents and must still start beside them (expect.joins_running) instead of waiting for them to finish. Under pause the engine must pause residents while h0 prefills (expect_metrics), and h0 itself is never paused and runs its prompt in one step (expect.stats); with the reserved slot h0 is admitted before p2, which arrived first (expect.admitted_before).",
+    "num_logprobs": 20,
+    "expect_policy": "mixed",
+    "engine": {
+        "max_batch_size": 4,
+        "scheduling_policy": "priority",
+        "max_chunk_tokens": 512
+    },
+    "variants": [
+        {
+            "name": "pause",
+            "engine": {
+                "preemption": "pause",
+                "priority_reserved_slots": 0
+            },
+            "requests_exclude": [
+                "p3_low_fill"
+            ],
+            "expect_metrics": {
+                "paused_resident_steps": {
+                    "min": 1
+                }
+            },
+            "request_overrides": {
+                "h0_high": {
+                    "expect": {
+                        "stats": {
+                            "paused_steps": {
+                                "max": 0
+                            },
+                            "prompt_chunks": {
+                                "max": 1
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "name": "free_slot_other_length",
+            "engine": {
+                "preemption": "none",
+                "priority_reserved_slots": 0
+            },
+            "requests_exclude": [
+                "p3_low_fill"
+            ],
+            "request_overrides": {
+                "h0_high": {
+                    "max_generate_length": 24,
+                    "expect": {
+                        "joins_running": [
+                            "p0_low_decode",
+                            "p1_low_decode",
+                            "p2_low_prefill"
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "name": "reserved_other_length",
+            "engine": {
+                "preemption": "none",
+                "priority_reserved_slots": 1
+            },
+            "request_overrides": {
+                "h0_high": {
+                    "max_generate_length": 24,
+                    "expect": {
+                        "joins_running": [
+                            "p0_low_decode",
+                            "p1_low_decode",
+                            "p3_low_fill"
+                        ],
+                        "admitted_before": [
+                            "p2_low_prefill"
+                        ]
+                    }
+                }
+            }
+        }
+    ],
+    "request_defaults": {
+        "max_generate_length": 48,
+        "enable_thinking": false,
+        "priority": 1
+    },
+    "snippets": {
+        "bees": "A honeybee colony behaves almost like a single organism. The queen lays eggs, sometimes more than a thousand in a day, while thousands of workers divide the remaining tasks according to their age. Young workers clean cells and feed larvae, middle-aged bees build wax comb and guard the entrance, and the oldest bees fly out to collect nectar and pollen. A forager that finds a rich patch of flowers returns to the hive and performs a waggle dance whose angle and duration tell her sisters the direction and distance of the food. In winter the colony forms a tight cluster and the bees shiver their flight muscles to keep the center warm, slowly eating the honey they stored during summer.",
+        "bread": "Baking bread is a lesson in patience and chemistry. Flour, water, salt, and yeast are mixed into a dough, and kneading stretches the gluten proteins into a network that can hold gas. As the yeast feeds on sugars it releases carbon dioxide, and the dough slowly rises. A long, cool fermentation develops more flavor than a quick, warm one, which is why many bakers prepare their dough the night before. In the oven the trapped gas expands, the starches set, and the surface browns as sugars and proteins react to form a crisp crust. Sourdough bakers replace commercial yeast with a living starter of wild yeast and bacteria, which gives the loaf its tangy taste and chewy texture.",
+        "currents": "The oceans are never still. Winds push the surface water into great circular currents called gyres, and the rotation of the earth bends these flows to the right in the northern hemisphere and to the left in the southern. Deep below the surface a slower circulation is driven by differences in temperature and salt. Near the poles, cold salty water sinks and spreads along the sea floor, while warmer water moves toward the poles to replace it. This global conveyor carries heat from the tropics to higher latitudes and helps keep some coastal regions much milder than their latitude would suggest. Changes in this circulation could alter rainfall, storm tracks, and sea level along many coasts.",
+        "libraries": "Public libraries began as small collections shared by members who paid a subscription, but during the nineteenth century many cities opened libraries free to everyone. The idea was simple and radical: anyone, regardless of income, should be able to read, study, and learn. Librarians developed classification systems so that readers could find a book on any subject, and card catalogs filled long wooden cabinets. Today libraries lend not only books but also music, films, and digital resources, and they offer quiet places to work, internet access, and classes for children and adults. In many neighborhoods the library is one of the few indoor public spaces where people can stay as long as they like without buying anything.",
+        "lighthouses": "Before satellites and radio, sailors relied on lighthouses to find their way along dangerous coasts. Early towers burned wood or coal in open fires, which gave a weak and smoky light. Later builders used oil lamps with polished reflectors, and in the nineteenth century the Fresnel lens changed everything: rings of glass prisms bent the light into a narrow beam that could be seen more than twenty miles away. Each lighthouse was given its own pattern of flashes so that a navigator could identify it at night. Keepers lived at the stations with their families, trimming wicks, winding clockwork, and recording the weather. Most lights are automated today, but many towers still stand as landmarks and museums.",
+        "railways": "The first public railways appeared in the early nineteenth century, and within a few decades they had changed how people thought about distance and time. Goods that once took weeks to move by canal or road could cross a country in a day. Towns along the new lines grew quickly, while places the tracks avoided often declined. Railways also forced countries to adopt standard time, because every town keeping its own local noon made timetables impossible to read. Building the lines required enormous effort: workers dug cuttings and tunnels by hand, raised embankments across marshes, and threw iron bridges over rivers. Many of those routes are still in use, now carrying electric trains at speeds the early engineers could hardly imagine.",
+        "rivers": "Rivers shape the land they cross. Over thousands of years a river carves its valley, carries sand and silt downstream, and builds wide plains where it slows down near the sea. When the current loses speed at the mouth, the sediment settles and forms a delta, a fan of channels and islands that shifts with every flood. Farmers have settled on these plains since the earliest villages because the soil is fertile and water is close, but the same floods that bring new soil can also destroy homes and fields. Engineers now build levees, reservoirs, and spillways to control the water, yet each change upstream alters how the river moves sediment, and the delta downstream slowly responds to those changes.",
+        "volcanoes": "A volcano forms where molten rock from deep inside the earth finds a path to the surface. Some volcanoes erupt gently, with rivers of runny lava that flow for miles and slowly build broad shield-shaped mountains. Others explode violently because their thick magma traps gas until the pressure becomes too great, throwing ash high into the atmosphere. Large eruptions can cool the climate for a year or more, as fine particles in the upper air reflect sunlight back into space. Scientists watch active volcanoes with seismometers, gas sensors, and satellite measurements of the ground surface, looking for the small swelling and earthquakes that often come before an eruption. Even so, predicting the exact timing remains difficult."
+    },
+    "requests": [
+        {
+            "id": "p0_low_decode",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Write a paragraph about the history of the bicycle."
+                }
+            ],
+            "arrival": "at_start"
+        },
+        {
+            "id": "p1_low_decode",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Describe how a refrigerator keeps food cold."
+                }
+            ],
+            "arrival": "at_start"
+        },
+        {
+            "id": "p3_low_fill",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Explain why leaves change color in autumn."
+                }
+            ],
+            "arrival": "at_start"
+        },
+        {
+            "id": "p2_low_prefill",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "snippet": "libraries"
+                        },
+                        {
+                            "snippet": "currents"
+                        },
+                        {
+                            "snippet": "bread"
+                        },
+                        {
+                            "snippet": "rivers"
+                        },
+                        {
+                            "snippet": "bees"
+                        },
+                        {
+                            "snippet": "railways"
+                        },
+                        "Summarize the passages above in five sentences."
+                    ]
+                }
+            ],
+            "arrival": {
+                "after": {
+                    "request": "p0_low_decode",
+                    "tokens": 4
+                }
+            },
+            "expect": {
+                "prompt_tokens": {
+                    "min": 640,
+                    "max": 1010,
+                    "not_multiple_of": 128
+                }
+            }
+        },
+        {
+            "id": "h0_high",
+            "priority": -1,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "snippet": "rivers"
+                        },
+                        {
+                            "snippet": "lighthouses"
+                        },
+                        {
+                            "snippet": "bees"
+                        },
+                        {
+                            "snippet": "railways"
+                        },
+                        {
+                            "snippet": "volcanoes"
+                        },
+                        "Which passage describes a natural process and which a human invention? Answer briefly."
+                    ]
+                }
+            ],
+            "arrival": {
+                "after": {
+                    "request": "p0_low_decode",
+                    "tokens": 5
+                }
+            },
+            "expect": {
+                "prompt_tokens": {
+                    "min": 513,
+                    "max": 1000,
+                    "not_multiple_of": 128
+                }
+            }
+        },
+        {
+            "id": "p4_low_late",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Suggest a name for a small bakery and explain the choice."
+                }
+            ],
+            "arrival": {
+                "after": {
+                    "request": "h0_high",
+                    "tokens": 2
+                }
+            }
+        }
+    ]
+}

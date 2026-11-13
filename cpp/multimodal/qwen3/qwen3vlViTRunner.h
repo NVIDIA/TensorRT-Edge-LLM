@@ -24,6 +24,17 @@ namespace trt_edgellm
 namespace rt
 {
 
+namespace qwen3vl
+{
+
+//! Expand media placeholders (video timestamps included) before tokenizing so text and timestamps share the
+//! Hugging Face processor's BPE boundaries, then expand each visual pad id to its span's token count.
+std::vector<int32_t> tokenizeExpandedPrompt(std::string const& formattedPrompt,
+    std::vector<rt::imageUtils::ImageData> const& media, std::vector<VisionSpan> const& spans, size_t spanBegin,
+    size_t spanEnd, QwenViTConfig const& config, trt_edgellm::tokenizer::Tokenizer const& tokenizer);
+
+} // namespace qwen3vl
+
 //! \brief Qwen3-VL / Qwen3.5 vision encoder. Extends the Qwen2-VL base with FAST-POS-EMBED + DEEPSTACK, a 3D
 //!        temporal resize budget, and per-frame timestamped video sub-spans. Mirror of HF modeling_qwen3_vl.py.
 class Qwen3VLViTRunner : public QwenViTRunner
@@ -32,6 +43,15 @@ public:
     using QwenViTRunner::QwenViTRunner;
 
     std::vector<std::reference_wrapper<rt::Tensor>> getDeepstackFeatures() override;
+
+    //! Mutable encoder outputs in order: embedding, then deepstack features.
+    std::vector<std::reference_wrapper<rt::Tensor>> const& getOutputTensors() noexcept;
+
+    bool infer(cudaStream_t stream) noexcept override;
+
+    //! Encode a local shard at a token offset in every output's existing allocation.
+    //! Tensor shapes remain local; ordinary infer(stream) binds the outputs at offset zero.
+    bool infer(cudaStream_t stream, int64_t outputTokenOffset) noexcept;
 
 protected:
     bool validateExtraConfig(nlohmann::json const& jsonConfig) override;
@@ -59,6 +79,8 @@ protected:
     rt::Tensor mFastPosEmbIdx{};                  //!< Fast position embeddings index tensor
     rt::Tensor mFastPosEmbWeight{};               //!< Fast position embeddings weight tensor
     std::vector<rt::Tensor> mDeepstackFeatures{}; //!< Deepstack features tensors (empty for Qwen3.5)
+    std::vector<std::reference_wrapper<rt::Tensor>>
+        mOutputTensors{}; //!< Stable references, populated at initialization.
 };
 
 } // namespace rt

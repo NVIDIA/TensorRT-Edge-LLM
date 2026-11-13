@@ -21,7 +21,7 @@ import pathlib
 import pytest
 
 from experimental.frontend import config
-from experimental.server.runtime import engine
+from tensorrt_edgellm.server.runtime import engine
 
 from . import helpers
 
@@ -131,13 +131,17 @@ def test_structured_launch_option_precedence_and_build_defaults(
     monkeypatch.setenv("EDGELLM_STOP", '["environment"]')
     monkeypatch.setenv("EDGELLM_CONTEXT_CACHE_CONFIG", '{"enabled":true}')
     result = helpers.settings(tmp_path, "--config", str(path), "--stop", "CLI",
-                              "--no-clear-engine-cache", "--tp-size", "1")
+                              "--no-clear-engine-cache", "--tp-size", "1",
+                              "--max-spec-verify-tokens", "16",
+                              "--max-spec-draft-tokens", "8")
     assert result.sampling.stop == ["CLI"]
     assert not result.runtime["clear_engine_cache"]
     assert result.runtime["context_cache_config"].enabled
     build = result.runtime["build_options"]
     assert (build.max_input_len, build.max_batch_size,
             build.max_kv_cache_capacity) == (4096, 1, 8192)
+    assert (build.max_spec_verify_tokens, build.max_spec_draft_tokens) == (16,
+                                                                           8)
 
 
 @pytest.mark.parametrize("options", [
@@ -146,6 +150,7 @@ def test_structured_launch_option_precedence_and_build_defaults(
     ["--context-cache-config", '{"enabled":false,"max_records":8}'],
     ["--logit-bias", '{"42":101}'],
     ["--guided-decoding", '{"regex":"a","ebnf":"b"}'],
+    ["--guided-decoding", '{"jump_forward":true}'],
     ["--num-logprobs", "-1"],
 ])
 def test_invalid_launch_options_fail_before_loading(tmp_path, options):

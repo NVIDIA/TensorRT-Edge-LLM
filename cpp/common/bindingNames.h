@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace trt_edgellm
@@ -55,14 +56,6 @@ inline constexpr char const* kAttentionSequenceLengths = "attention_sequence_len
 inline constexpr char const* kStateIndices = "state_indices";
 //! Physical token-row selection for logits: [L] INT64.
 inline constexpr char const* kLogitsIndices = "logits_indices";
-
-/*!
- * @brief Gemma4 per-layer token-identity embedding input template.
- *
- * Template: "ple_token_embeds_{layer_idx}"
- * Shape: [physical_tokens, ple_hidden_size] (FLOAT16/BFLOAT16)
- */
-inline constexpr char const* kPleTokenEmbedsTemplate = "ple_token_embeds";
 
 /*!
  * @brief Legacy/non-decoder context-length binding
@@ -156,11 +149,39 @@ inline constexpr char const* kDFlashDeltaTokenToSequence = "dflash_delta_token_t
  */
 inline constexpr char const* kDFlashDeltaLengths = "dflash_delta_lengths";
 
-//! DFlash2 draft-engine outputs consumed by the runtime candidate selector.
+//! DFlash2 draft-engine outputs consumed by the runtime candidate selector. EAGLE candidate-head drafts also emit
+//! `spec_proposal_support_ids` ([rows, Kc] INT32, full-vocabulary IDs).
 inline constexpr char const* kSpecProposalSupportIds = "spec_proposal_support_ids";
+//! EAGLE candidate-head draft output: log_softmax over the exact logits of the support IDs, [rows, Kc] FP32.
+inline constexpr char const* kSpecProposalSupportLogProbs = "spec_proposal_support_log_probs";
 inline constexpr char const* kSpecProposalUnaryValues = "spec_proposal_unary_values";
 inline constexpr char const* kSpecProposalProjectedHidden = "spec_proposal_projected_hidden";
 inline constexpr char const* kDFlash2SelectorFileName = "dflash2_selector.safetensors";
+
+/*!
+ * @brief LiLiCorr draft-engine output: per-slot candidate transition scores, indexed [b, s, prev, next].
+ *
+ * Shape: [batch_size, proposal_length, candidate_topk, candidate_topk] (FLOAT32)
+ */
+inline constexpr char const* kSpecLiLiCorrTransitionScores = "spec_lilicorr_transition_scores";
+
+/*!
+ * @brief LiLiCorr draft-engine input: the runtime's target input-embedding table, gathered for the candidates.
+ *
+ * Shape: [vocab_size, hidden_size] (FLOAT16)
+ */
+inline constexpr char const* kLiLiCorrEmbeddingTable = "lilicorr_embedding_table";
+//! `dflash_config.projector_type` value selecting the LiLiCorr projector; such drafts ship no selector sidecar.
+inline constexpr char const* kDFlashLiLiCorrProjectorType = "lilicorr";
+//! Largest supported `lilicorr_candidate_topk`, the exporter's limit; the chain walk needs at most 32 (one warp).
+inline constexpr int32_t kLiLiCorrMaxTopK = 16;
+
+//! Domino draft engine candidate-pool outputs and runtime correction-head sidecar.
+inline constexpr char const* kSpecPoolCandidateIds = "spec_pool_candidate_ids";
+inline constexpr char const* kSpecPoolBaseLogits = "spec_pool_base_logits";
+inline constexpr char const* kSpecPoolCodebook = "spec_pool_codebook";
+inline constexpr char const* kSpecProposalZProj = "spec_proposal_zproj";
+inline constexpr char const* kDominoHeadsFileName = "domino_heads.safetensors";
 
 /*!
  * @brief DSpark draft model output: final proposal hidden states.
@@ -174,14 +195,7 @@ inline constexpr char const* kDSparkHiddenStates = "dspark_hidden_states";
  */
 inline constexpr char const* kDSparkHeadsFileName = "dspark_heads.safetensors";
 inline constexpr char const* kDSparkHeadsInfoFileName = "dspark_heads_info.json";
-
-/*!
- * @brief Gemma4 PLE token-identity embedding table sidecar.
- *
- * Contains tensor "weight" with shape [vocab_size_per_layer_input,
- * num_ple_inputs * ple_hidden_size].
- */
-inline constexpr char const* kPleEmbeddingFileName = "ple_embedding.safetensors";
+inline constexpr char const* kDSparkW2Nvfp4FileName = "dspark_w2_nvfp4.safetensors";
 
 /*! @} */
 
@@ -372,6 +386,42 @@ inline constexpr char const* kConvStateTemplate = "conv_state";
 inline constexpr char const* kPresentConvStateTemplate = "present_conv_state";
 
 /*!
+ * @brief Past state of the n-gram injection's dilated convolution.
+ *
+ * Template: "ngram_conv_state_{ngram_layer_idx}"
+ * Shape: [batch_size, hc_count * hidden_size, (kernel - 1) * ngram_size]
+ * Data type: `ngram_conv_state_dtype` from config.json.
+ *
+ * Indexed over the injected layers, not over the recurrent ones: an injected layer that is also
+ * recurrent carries this state in addition to its own conv state.
+ */
+inline constexpr char const* kNgramConvStateTemplate = "ngram_conv_state";
+
+/*!
+ * @brief Present state of the n-gram injection's dilated convolution.
+ *
+ * Template: "present_ngram_conv_state_{ngram_layer_idx}"
+ * Shape: same as kNgramConvStateTemplate.
+ */
+inline constexpr char const* kPresentNgramConvStateTemplate = "present_ngram_conv_state";
+
+/*!
+ * @brief State index of the n-gram injection's convolution state within its layer.
+ *
+ * Index 0 is the layer's own mixer state, so the injection takes the next one; the numbering
+ * matches the reference implementation's.
+ */
+inline constexpr int32_t kNgramConvStateIdx = 1;
+
+/*!
+ * @brief Per-token n-gram injection conv state written during speculative verify.
+ *
+ * Template: "intermediate_ngram_conv_state_{ngram_layer_idx}"
+ * Shape: [T_exec, ngram_conv_dim, (kernel - 1) * ngram_size] (FLOAT16)
+ */
+inline constexpr char const* kIntermediateNgramConvStateTemplate = "intermediate_ngram_conv_state";
+
+/*!
  * @brief Intermediate conv state output template for MTP speculative decoding
  *
  * Template: "intermediate_conv_state_{recurrent_layer_idx}"
@@ -450,16 +500,28 @@ inline constexpr char const* kActionAttentionPosId = "attention_pos_id";
  * The INT32 payload is ignored.
  */
 inline constexpr char const* kExecutionPhaseMarker = "execution_phase_marker";
+//! Shape-only speculative verification layout carrier: [0] inactive, [1] chain, [2] tree.
+inline constexpr char const* kSpecVerifyLayout = "spec_verify_layout";
 //! Shape-only context/decode partition carrier: [N_context] INT32. Payload is never read.
 inline constexpr char const* kContextSequenceCountCarrier = "context_sequence_count_carrier";
 
 /*!
- * @brief Runtime skip-softmax override carrier (optional AttentionPlugin input).
+ * @brief Prefill skip-softmax scale table (optional AttentionPlugin input).
  *
- * 1-D INT8 dummy whose SHAPE (dims[0] = integer scale factor S) conveys the
- * override; 0 keeps the engine-carried calibrated default.
+ * 1-D INT32 of flattened (seqlen_bin, S) pairs, bins ascending; a flat S is the one-row
+ * table [0, S]. The kernel floor-looks-up S by each sequence's KV length. Read by the
+ * prefill modes only; constant for the life of the runtime. Bound at length 0 the plugin
+ * dispatches the dense FMHA cubin.
  */
-inline constexpr char const* kSkipSoftmaxScale = "skip_softmax_scale";
+inline constexpr char const* kSkipSoftmaxPrefillScale = "skip_softmax_prefill_scale";
+
+/*!
+ * @brief Decode skip-softmax scale table (optional AttentionPlugin input).
+ *
+ * Same row format as `skip_softmax_prefill_scale`; read by vanilla decode steps only and
+ * constant for the life of the runtime. Bound at length 0 decode runs dense.
+ */
+inline constexpr char const* kSkipSoftmaxDecodeScale = "skip_softmax_decode_scale";
 
 /*!
  * @brief DDTree parent node ids for hybrid DFlash base verification
@@ -851,6 +913,19 @@ inline std::string formatConvStateName(int32_t recurrentLayerIdx, bool isPast = 
 }
 
 /*!
+ * @brief Format the n-gram injection's conv state binding name
+ *
+ * @param ngramLayerIdx Index into the injected layers (0-based, only counting injected layers)
+ * @param isPast Whether this is past (true) or present (false) state
+ * @return Formatted binding name like "ngram_conv_state_0" or "present_ngram_conv_state_0"
+ */
+inline std::string formatNgramConvStateName(int32_t ngramLayerIdx, bool isPast = true)
+{
+    return std::string(isPast ? kNgramConvStateTemplate : kPresentNgramConvStateTemplate) + "_"
+        + std::to_string(ngramLayerIdx);
+}
+
+/*!
  * @brief Check if a binding name is a conv state tensor
  *
  * @param bindingName The tensor binding name to check
@@ -858,7 +933,10 @@ inline std::string formatConvStateName(int32_t recurrentLayerIdx, bool isPast = 
  */
 inline bool isConvStateBinding(std::string const& bindingName)
 {
-    if (bindingName.find(kIntermediateConvStateTemplate) != std::string::npos)
+    // Both templates below are substrings of the n-gram injection's own state names, which belong
+    // to a different cache and must not be routed as recurrent-layer conv state.
+    if (bindingName.find(kIntermediateConvStateTemplate) != std::string::npos
+        || bindingName.find(kNgramConvStateTemplate) != std::string::npos)
     {
         return false;
     }
@@ -886,6 +964,17 @@ inline std::string formatIntermediateRecurrentStateName(int32_t recurrentLayerId
 inline std::string formatIntermediateConvStateName(int32_t recurrentLayerIdx)
 {
     return std::string(kIntermediateConvStateTemplate) + "_" + std::to_string(recurrentLayerIdx);
+}
+
+/*!
+ * @brief Format the n-gram injection's intermediate conv state binding name
+ *
+ * @param ngramLayerIdx Index into the injected layers (0-based, only counting injected layers)
+ * @return Formatted binding name like "intermediate_ngram_conv_state_0"
+ */
+inline std::string formatIntermediateNgramConvStateName(int32_t ngramLayerIdx)
+{
+    return std::string(kIntermediateNgramConvStateTemplate) + "_" + std::to_string(ngramLayerIdx);
 }
 
 /*!
@@ -961,18 +1050,14 @@ inline std::string formatDeepstackEmbedsName(int32_t embedIdx)
     return std::string(kDeepstackEmbedsTemplate) + "_" + std::to_string(embedIdx);
 }
 
-/*!
- * @brief Format Gemma4 PLE token embedding input binding name.
- *
- * @param layerIdx The decoder layer index
- * @return Formatted binding name like "ple_token_embeds_0"
- */
-inline std::string formatPleTokenEmbedsName(int32_t layerIdx)
-{
-    return std::string(kPleTokenEmbedsTemplate) + "_" + std::to_string(layerIdx);
-}
-
 /*! @} */
+
+//! FP16 scratch storage used only by action denoising.
+constexpr char const* kActionPageTable = "action_page_table";
+inline std::string formatActionKVCacheName(int32_t layer)
+{
+    return "action_key_values_" + std::to_string(layer);
+}
 
 } // namespace binding_names
 } // namespace trt_edgellm

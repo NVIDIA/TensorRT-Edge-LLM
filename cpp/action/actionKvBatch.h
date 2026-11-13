@@ -19,6 +19,7 @@
 
 #include "common/tensor.h"
 #include "runtime/exec/scheduledStep.h"
+#include "runtime/state/contextCache/contextCacheManager.h"
 #include "runtime/state/kvPageTable.h"
 
 #include <cuda_runtime_api.h>
@@ -30,7 +31,7 @@
 namespace trt_edgellm::rt
 {
 
-//! Dense logical KV batch consumed by an action model after language generation completes.
+//! Retained read-only LLM prefixes, compacted into action request order.
 struct ActionKvBatchView
 {
     KVPageTable const& pageTable;
@@ -40,21 +41,24 @@ struct ActionKvBatchView
     int32_t batchSize{};
 };
 
-//! Collects request-local terminal KV rows and materializes the final dense action batch.
+//! Collects request-local terminal KV rows and materializes the final action-local paged batch.
 class ActionKvBatchCollector
 {
 public:
-    ActionKvBatchCollector(int32_t maxBatch, int32_t maxPagesPerSeq, int32_t numPages);
+    ActionKvBatchCollector(
+        int32_t maxBatch, int32_t maxPagesPerSeq, int32_t numPages, ContextCacheManager* pageManager = nullptr);
 
     void beginRequest(std::vector<bool> const& actionSlots, std::vector<int64_t> const& mropeDeltas);
     void captureFinished(KVPageTable const& pageTable, Tensor const& deviceKvLengths,
         std::vector<int8_t> const& finished, std::vector<int32_t> const& originalIndices,
         std::vector<ResidentRef> const& residentRefs, cudaStream_t stream);
-    //! Consume queued length copies after the caller has synchronized the enqueue stream.
+    //! Complete pending snapshots after length transfers finish. Managed snapshots complete inside captureFinished.
     void completeCapture();
 
-    //! Validate completeness and materialize one dense, action-local logical KV batch.
+    //! Validate completeness and materialize one action-local logical KV batch.
     ActionKvBatchView materialize(cudaStream_t stream);
+    //! Release retained prefix pins after all dependent GPU work on stream is terminal.
+    void releaseMaterialized(cudaStream_t stream);
 
     std::vector<int32_t> const& originalRequestIndices() const noexcept;
 
@@ -67,6 +71,8 @@ private:
 
     int32_t mMaxBatch{};
     KVPageTable mPageTable;
+    ContextCacheManager* mPageManager{};
+    std::vector<CacheRequestLease> mCapturedPageLeases;
     Tensor mHostLengths;
     Tensor mDeviceLengths;
     std::vector<bool> mActionSlots;

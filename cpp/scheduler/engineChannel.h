@@ -124,9 +124,9 @@ public:
         mLiveRecords.erase(id);
     }
 
-    //! @brief Any thread: plant the cancel flag on a live request by id, exactly as
-    //! RequestHandle::cancel() does through its own record. Lossless -- no queue is involved, so
-    //! overload cannot drop it -- and a no-op for an id that is unknown or already retired.
+    //! @brief Any thread: cancel a live request by id, exactly as RequestHandle::cancel() does
+    //! through its own record. Lossless -- no queue is involved, so overload cannot drop it -- and
+    //! a no-op for an id that is unknown or already retired.
     //! @return whether a live record was found.
     bool cancelRecord(RequestId id) noexcept
     {
@@ -144,12 +144,7 @@ public:
         {
             return false;
         }
-        record->channel->cancel();
-        if (record->runtimeChannel != nullptr && record->runtimeChannel != record->channel)
-        {
-            record->runtimeChannel->cancel();
-        }
-        record->wakeWaiters();
+        record->cancel();
         return true;
     }
 

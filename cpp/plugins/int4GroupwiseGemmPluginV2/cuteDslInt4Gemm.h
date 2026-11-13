@@ -71,7 +71,7 @@ int64_t cuteDslInt4LockCount(int32_t M, int32_t N, int32_t bM, int32_t bN);
 //! fp16 (also serves as the workspace placeholder); locks: zero-initialized int32
 //! [cuteDslInt4LockCount]; swizzle: grouped-M width. Returns 0 on success.
 int32_t cuteDslInt4GemmLaunch(CuteDslInt4Variant const& v, void const* A, void const* fragW, void const* scales,
-    void* C, void* locks, int32_t M, int32_t N, int32_t K, int32_t swizzle, cudaStream_t stream);
+    void* C, void* locks, int32_t M, int32_t N, int32_t K, int32_t groupSize, int32_t swizzle, cudaStream_t stream);
 
 } // namespace plugins
 } // namespace trt_edgellm

@@ -13,32 +13,197 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-End-to-end tests for the experimental Python server (pybind11 runtime).
+End-to-end tests for the Python server (nanobind runtime).
 
-Tests the full pipeline: build pybind extension -> load TRT engine via
+Tests the full pipeline: build nanobind extension -> load TRT engine via
 Python API -> run inference -> validate output.
 """
 import json
 import logging
 import os
 import shlex
-from typing import Dict, Optional
+from copy import deepcopy
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import pytest
 from conftest import EnvironmentConfig, RemoteConfig
 from pytest_helpers import run_command, timer_context
 
-from .config import ModelType, TaskType, TestConfig
+from .config import (ModelType, TaskType, TestConfig,
+                     infer_checkpoint_export_model_type)
+from .utils.command_execution import _sync_remote_output_file
 
-# Server-deps venv provisioned by test_build_pybind, relative to the repo root
+# Server-deps venv provisioned by test_build_nanobind, relative to the repo root
 # (workspace root remotely, LLM_SDK_DIR locally).
 _SERVER_VENV = 'venv/server'
 
+_OPENAI_REQUEST_FIELDS = {
+    "add_generation_prompt",
+    "apply_chat_template",
+    "audio",
+    "cache_generated_tokens",
+    "chat_template_kwargs",
+    "disable_spec_decode",
+    "enable_thinking",
+    "frequency_penalty",
+    "guided_decoding",
+    "logit_bias",
+    "logprobs",
+    "max_completion_tokens",
+    "max_tokens",
+    "messages",
+    "modalities",
+    "model",
+    "n",
+    "parallel_tool_calls",
+    "presence_penalty",
+    "reasoning_effort",
+    "response_format",
+    "reuse_context",
+    "seed",
+    "stop",
+    "stream",
+    "stream_options",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_logprobs",
+    "top_p",
+}
 
-def test_build_pybind(env_config: EnvironmentConfig,
-                      remote_config: Optional[RemoteConfig],
-                      test_logger: logging.Logger):
-    """Build the pybind extension by reconfiguring the existing build directory.
+
+def _openai_messages(messages: Any, location: str) -> List[Dict[str, Any]]:
+    if (not isinstance(messages, list) or not messages
+            or any(not isinstance(message, Mapping) for message in messages)):
+        raise ValueError(f"{location}.messages must be a non-empty list")
+
+    converted = deepcopy(messages)
+    for message in converted:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for index, item in enumerate(content):
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    f"{location}.messages content must be a mapping")
+            media_type = item.get("type")
+            if media_type not in {"image", "video", "audio"}:
+                continue
+            source = item.get(media_type)
+            if not isinstance(source, str) or not source:
+                raise ValueError(
+                    f"{location}.messages {media_type} source must be a string"
+                )
+            openai_item = dict(item)
+            openai_item.pop(media_type)
+            openai_item["type"] = f"{media_type}_url"
+            openai_item[f"{media_type}_url"] = {"url": source}
+            content[index] = openai_item
+    return converted
+
+
+def _convert_openai_request(document: Mapping[str, Any], request: Any,
+                            location: str) -> Dict[str, Any]:
+    if not isinstance(request, Mapping):
+        raise ValueError(f"{location} must be a mapping")
+
+    payload = {
+        name: deepcopy(document[name])
+        for name in _OPENAI_REQUEST_FIELDS if name in document
+    }
+    payload.update({
+        name: deepcopy(request[name])
+        for name in _OPENAI_REQUEST_FIELDS if name in request
+    })
+    payload["messages"] = _openai_messages(request.get("messages"), location)
+
+    max_tokens = request.get("max_generate_length",
+                             document.get("max_generate_length"))
+    if max_tokens is not None and "max_tokens" not in payload:
+        payload["max_tokens"] = max_tokens
+
+    num_logprobs = request.get("num_logprobs", document.get("num_logprobs"))
+    if num_logprobs is not None:
+        if (isinstance(num_logprobs, bool)
+                or not isinstance(num_logprobs, int) or num_logprobs < 0):
+            raise ValueError(f"{location}.num_logprobs must be non-negative")
+        payload["logprobs"] = num_logprobs > 0
+        if num_logprobs:
+            payload["top_logprobs"] = min(num_logprobs, 50)
+
+    lookup_policy = request.get(
+        "context_cache_lookup_policy",
+        document.get("context_cache_lookup_policy", "use_cache"))
+    if lookup_policy not in {"use_cache", "bypass"}:
+        raise ValueError(f"{location}.context_cache_lookup_policy is invalid")
+    payload["reuse_context"] = lookup_policy == "use_cache"
+
+    commit_policy = request.get(
+        "context_cache_commit_policy",
+        document.get("context_cache_commit_policy",
+                     "including_generated_tokens"))
+    if commit_policy not in {
+            "including_generated_tokens", "prefill_state_only"
+    }:
+        raise ValueError(f"{location}.context_cache_commit_policy is invalid")
+    payload["cache_generated_tokens"] = \
+        commit_policy == "including_generated_tokens"
+    return payload
+
+
+def _openai_requests_from_inputs(inferences: Sequence[Mapping[str, Any]],
+                                 repo_root: str) -> List[Dict[str, Any]]:
+    payloads = []
+    for inference in inferences:
+        path = Path(inference["input_file"])
+        if not path.is_absolute():
+            path = Path(repo_root) / path
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"cannot read server input file {path}: {error}") \
+                from error
+        if not isinstance(document, Mapping):
+            raise ValueError(
+                f"server input file {path} must contain an object")
+        requests = document.get("requests")
+        if not isinstance(requests, list) or not requests:
+            raise ValueError(
+                f"server input file {path} must contain non-empty requests")
+        payloads.extend(
+            _convert_openai_request(document, request,
+                                    f"{path}.requests[{index}]")
+            for index, request in enumerate(requests))
+    return payloads
+
+
+def _ifb_mixed_step_failures(result: Mapping[str, Any]) -> List[str]:
+    """Reasons a run_ifb_trace.py run-mode result did not execute mixed steps."""
+    runs = result.get("runs") if result.get("mode") == "run" else None
+    if not runs:
+        return ["the trace result holds no run-mode runs"]
+    failures = []
+    for run in runs:
+        label = run.get("label", "?")
+        resolved = (run.get("policy") or {}).get("resolved")
+        if resolved != "mixed":
+            failures.append(
+                f"{label}: resolved policy {resolved!r} != 'mixed'")
+        delta = run.get("metrics_delta") or {}
+        for metric in ("mixed_steps", "partial_prompt_chunks"):
+            value = delta.get(metric)
+            if isinstance(value,
+                          bool) or not isinstance(value, int) or value <= 0:
+                failures.append(f"{label}: {metric}={value!r}, expected > 0")
+    return failures
+
+
+def test_build_nanobind(env_config: EnvironmentConfig,
+                        remote_config: Optional[RemoteConfig],
+                        test_logger: logging.Logger):
+    """Build the nanobind extension by reconfiguring the existing build directory.
 
     Uses subdirectory mode (BUILD_PYTHON_BINDINGS=ON) so all cmake
     variables (CUDA, TRT, toolchain) are inherited from the prior
@@ -47,69 +212,72 @@ def test_build_pybind(env_config: EnvironmentConfig,
     build_dir = env_config.build_dir
 
     repo_root = '.' if remote_config else env_config.llm_sdk_dir
-    pybind_venv = _SERVER_VENV
+    nanobind_venv = _SERVER_VENV
     install_cmd = (f'cd {shlex.quote(repo_root)}'
-                   f' && python3 -m venv {pybind_venv}'
-                   f' && {pybind_venv}/bin/pip install -q'
-                   ' -e ".[server,server-tools,native-build]"')
+                   f' && python3 -m venv {nanobind_venv}'
+                   f' && {nanobind_venv}/bin/pip install -q'
+                   ' -e ".[builder,runtime]"')
     if env_config.trt_package_dir:
         trt_python_dir = shlex.quote(
             os.path.join(env_config.trt_package_dir, "python"))
         install_cmd += (
-            f' && PY_TAG=$({pybind_venv}/bin/python -c '
+            f' && PY_TAG=$({nanobind_venv}/bin/python -c '
             "'import sys; print(\"cp%d%d\" % sys.version_info[:2])')"
             f' && TRT_WHL=$(find {trt_python_dir} -maxdepth 1 -type f '
             "-name \"tensorrt-*${PY_TAG}*.whl\" -print -quit)"
             ' && test -n "$TRT_WHL"'
-            f' && {pybind_venv}/bin/pip install -q "$TRT_WHL"')
+            f' && {nanobind_venv}/bin/pip install -q "$TRT_WHL"')
+    # A fresh venv installs the builder and runtime extras from the package
+    # index, which can take minutes.
     result = run_command(cmd=['bash', '-c', install_cmd],
                          remote_config=remote_config,
-                         timeout=120,
+                         timeout=int(
+                             os.environ.get('CI_PIP_INSTALL_TIMEOUT_SECONDS',
+                                            '1200')),
                          logger=test_logger)
     if not result['success']:
         pytest.fail(
             f"Failed to install server dependencies: {result.get('error')}")
 
-    pybind_python = f'{repo_root}/{pybind_venv}/bin/python'
-    pybind11_dir_expr = (
-        f'$({shlex.quote(pybind_python)}'
-        ' -c "import pybind11; print(pybind11.get_cmake_dir())")')
-    build_cmd = (f'PYBIND11_DIR={pybind11_dir_expr}'
+    nanobind_python = f'{repo_root}/{nanobind_venv}/bin/python'
+    nanobind_dir_expr = (f'$({shlex.quote(nanobind_python)}'
+                         ' -c "import nanobind; print(nanobind.cmake_dir())")')
+    build_cmd = (f'NANOBIND_DIR={nanobind_dir_expr}'
                  f' && cd {build_dir}'
                  f' && cmake .. -DBUILD_PYTHON_BINDINGS=ON'
-                 f' -Dpybind11_DIR=$PYBIND11_DIR'
+                 f' -Dnanobind_DIR=$NANOBIND_DIR'
                  f' && make -j$(nproc) _edgellm_runtime')
 
-    with timer_context("Building pybind extension", test_logger):
+    with timer_context("Building nanobind extension", test_logger):
         result = run_command(cmd=['bash', '-c', build_cmd],
                              remote_config=remote_config,
                              timeout=600,
                              logger=test_logger)
 
     if not result['success']:
-        pytest.fail(f"Pybind build failed: {result.get('error')}")
+        pytest.fail(f"Nanobind build failed: {result.get('error')}")
 
-    pybind_output_dir = f'{build_dir}/pybind'
+    nanobind_output_dir = f'{build_dir}/lib'
     result = run_command(
-        cmd=['bash', '-c', f'ls {pybind_output_dir}/*_edgellm_runtime*.so'],
+        cmd=['bash', '-c', f'ls {nanobind_output_dir}/*_edgellm_runtime*.so'],
         remote_config=remote_config,
         timeout=10,
         logger=test_logger)
     if not result['success']:
         pytest.fail(
-            f"_edgellm_runtime.so not found in {pybind_output_dir} after build"
+            f"_edgellm_runtime.so not found in {nanobind_output_dir} after build"
         )
 
 
 class TestServerPipeline:
-    """E2E tests for inference via the experimental Python server API."""
+    """E2E tests for inference via the Python server API."""
 
     def test_server_inference(self, test_param: str,
                               executable_files: Dict[str, str],
                               remote_config: Optional[RemoteConfig],
                               test_logger: logging.Logger,
                               env_config: EnvironmentConfig) -> None:
-        """Test inference using the pybind Python runtime directly."""
+        """Test inference using the nanobind Python runtime directly."""
         is_vlm = "-mnit" in test_param
         model_type = ModelType.VLM if is_vlm else ModelType.LLM
         config = TestConfig.from_param_string(test_param, model_type,
@@ -123,18 +291,18 @@ class TestServerPipeline:
             test_logger.info("Using visual engine dir: %s",
                              multimodal_engine_dir)
 
-        pybind_build_dir = os.path.join(env_config.build_dir, "pybind")
+        nanobind_build_dir = os.path.join(env_config.build_dir, "lib")
         prompt = "Please introduce the company NVIDIA and its CEO."
         max_tokens = 128
 
         script = f"""\
 import sys, os
-sys.path.insert(0, {pybind_build_dir!r})
+sys.path.insert(0, {nanobind_build_dir!r})
 import importlib.util
-so_files = [f for f in os.listdir({pybind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
+so_files = [f for f in os.listdir({nanobind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
 if not so_files:
-    raise RuntimeError('_edgellm_runtime.so not found in ' + {pybind_build_dir!r})
-spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({pybind_build_dir!r}, so_files[0]))
+    raise RuntimeError('_edgellm_runtime.so not found in ' + {nanobind_build_dir!r})
+spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({nanobind_build_dir!r}, so_files[0]))
 rt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rt)
 
@@ -201,7 +369,7 @@ print('SERVER_INFERENCE_PASSED')
             self, test_param: str, executable_files: Dict[str, str],
             remote_config: Optional[RemoteConfig], test_logger: logging.Logger,
             env_config: EnvironmentConfig) -> None:
-        """Audio pybind path: in-memory PCM -> AudioData -> Request.audio_buffers -> runtime."""
+        """Audio nanobind path: in-memory PCM -> AudioData -> Request.audio_buffers -> runtime."""
         is_asr = "-asr" in test_param
         is_omni = "-omni" in test_param
         if not (is_asr or is_omni):
@@ -220,12 +388,12 @@ print('SERVER_INFERENCE_PASSED')
         if not test_wav:
             pytest.skip("AUDIO_TEST_WAV not set")
 
-        pybind_build_dir = os.path.join(env_config.build_dir, "pybind")
+        nanobind_build_dir = os.path.join(env_config.build_dir, "lib")
         script = f"""\
 import sys, os, importlib.util
-sys.path.insert(0, {pybind_build_dir!r})
-so_files = [f for f in os.listdir({pybind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
-spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({pybind_build_dir!r}, so_files[0]))
+sys.path.insert(0, {nanobind_build_dir!r})
+so_files = [f for f in os.listdir({nanobind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
+spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({nanobind_build_dir!r}, so_files[0]))
 rt = importlib.util.module_from_spec(spec); spec.loader.exec_module(rt)
 with open({test_wav!r}, 'rb') as _f: _audio_bytes = _f.read()
 runtime = rt.LLMRuntime({engine_dir!r}, {audio_engine_dir!r}, {{}})
@@ -264,25 +432,25 @@ print('SERVER_INFERENCE_WITH_AUDIO_PASSED')
                               remote_config: Optional[RemoteConfig],
                               test_logger: logging.Logger,
                               env_config: EnvironmentConfig) -> None:
-        """Test streaming inference using StreamChannel via pybind."""
+        """Test streaming inference using StreamChannel via nanobind."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
 
         engine_dir = config.get_llm_engine_dir()
         test_logger.info("Using engine dir: %s", engine_dir)
 
-        pybind_build_dir = os.path.join(env_config.build_dir, "pybind")
+        nanobind_build_dir = os.path.join(env_config.build_dir, "lib")
         prompt = "Count from 1 to 10."
         max_tokens = 128
 
         script = f"""\
 import sys, os, threading
-sys.path.insert(0, {pybind_build_dir!r})
+sys.path.insert(0, {nanobind_build_dir!r})
 import importlib.util
-so_files = [f for f in os.listdir({pybind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
+so_files = [f for f in os.listdir({nanobind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
 if not so_files:
-    raise RuntimeError('_edgellm_runtime.so not found in ' + {pybind_build_dir!r})
-spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({pybind_build_dir!r}, so_files[0]))
+    raise RuntimeError('_edgellm_runtime.so not found in ' + {nanobind_build_dir!r})
+spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({nanobind_build_dir!r}, so_files[0]))
 rt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rt)
 
@@ -387,7 +555,7 @@ print('SERVER_STREAMING_PASSED')
         test_logger.info("Streaming with guided decoding: engine=%s",
                          engine_dir)
 
-        pybind_build_dir = os.path.join(env_config.build_dir, "pybind")
+        nanobind_build_dir = os.path.join(env_config.build_dir, "lib")
         prompt = "Give me a person record with a name and an age."
         schema = json.dumps(
             {
@@ -406,12 +574,12 @@ print('SERVER_STREAMING_PASSED')
 
         script = f"""\
 import sys, os, json, threading
-sys.path.insert(0, {pybind_build_dir!r})
+sys.path.insert(0, {nanobind_build_dir!r})
 import importlib.util
-so_files = [f for f in os.listdir({pybind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
+so_files = [f for f in os.listdir({nanobind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
 if not so_files:
-    raise RuntimeError('_edgellm_runtime.so not found in ' + {pybind_build_dir!r})
-spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({pybind_build_dir!r}, so_files[0]))
+    raise RuntimeError('_edgellm_runtime.so not found in ' + {nanobind_build_dir!r})
+spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({nanobind_build_dir!r}, so_files[0]))
 rt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rt)
 
@@ -502,14 +670,14 @@ print('SERVER_STREAMING_WITH_GUIDED_DECODING_PASSED')
             self, test_param: str, executable_files: Dict[str, str],
             remote_config: Optional[RemoteConfig], test_logger: logging.Logger,
             env_config: EnvironmentConfig) -> None:
-        """Test non-streaming inference returns per-token logprobs via pybind."""
+        """Test non-streaming inference returns per-token logprobs via nanobind."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
         engine_dir = config.get_llm_engine_dir()
         test_logger.info("Server inference with logprobs: engine=%s",
                          engine_dir)
 
-        pybind_build_dir = os.path.join(env_config.build_dir, "pybind")
+        nanobind_build_dir = os.path.join(env_config.build_dir, "lib")
         prompt = "Count from 1 to 5."
         max_tokens = 32
         num_logprobs = 3
@@ -517,12 +685,12 @@ print('SERVER_STREAMING_WITH_GUIDED_DECODING_PASSED')
         script = f"""\
 import sys, os
 sys.path.insert(0, os.getcwd())
-sys.path.insert(0, {pybind_build_dir!r})
+sys.path.insert(0, {nanobind_build_dir!r})
 import importlib.util
-so_files = [f for f in os.listdir({pybind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
+so_files = [f for f in os.listdir({nanobind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
 if not so_files:
-    raise RuntimeError('_edgellm_runtime.so not found in ' + {pybind_build_dir!r})
-spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({pybind_build_dir!r}, so_files[0]))
+    raise RuntimeError('_edgellm_runtime.so not found in ' + {nanobind_build_dir!r})
+spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({nanobind_build_dir!r}, so_files[0]))
 rt = importlib.util.module_from_spec(spec)
 sys.modules['_edgellm_runtime'] = rt  # make the HLAPI reuse this exact module
 spec.loader.exec_module(rt)
@@ -561,7 +729,7 @@ for step in lps:
         assert isinstance(e.piece, bytes), f'piece should be bytes, got {{type(e.piece)}}'
 
 # Also exercise the OpenAI-compatible formatting layer on the same raw response.
-from experimental.server.api.serving_chat import _format_logprob_steps
+from tensorrt_edgellm.server.api.serving_chat import _format_logprob_steps
 obj = _format_logprob_steps(ids, lps, True)
 assert obj is not None and 'content' in obj, f'missing content: {{obj}}'
 oc = obj['content']
@@ -609,26 +777,26 @@ print('SERVER_INFERENCE_LOGPROBS_PASSED')
             self, test_param: str, executable_files: Dict[str, str],
             remote_config: Optional[RemoteConfig], test_logger: logging.Logger,
             env_config: EnvironmentConfig) -> None:
-        """Test streaming inference delivers per-token logprobs on each chunk via pybind."""
+        """Test streaming inference delivers per-token logprobs on each chunk via nanobind."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
         engine_dir = config.get_llm_engine_dir()
         test_logger.info("Server streaming with logprobs: engine=%s",
                          engine_dir)
 
-        pybind_build_dir = os.path.join(env_config.build_dir, "pybind")
+        nanobind_build_dir = os.path.join(env_config.build_dir, "lib")
         prompt = "Count from 1 to 5."
         max_tokens = 32
         num_logprobs = 3
 
         script = f"""\
 import sys, os, threading
-sys.path.insert(0, {pybind_build_dir!r})
+sys.path.insert(0, {nanobind_build_dir!r})
 import importlib.util
-so_files = [f for f in os.listdir({pybind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
+so_files = [f for f in os.listdir({nanobind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
 if not so_files:
-    raise RuntimeError('_edgellm_runtime.so not found in ' + {pybind_build_dir!r})
-spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({pybind_build_dir!r}, so_files[0]))
+    raise RuntimeError('_edgellm_runtime.so not found in ' + {nanobind_build_dir!r})
+spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({nanobind_build_dir!r}, so_files[0]))
 rt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rt)
 
@@ -722,20 +890,20 @@ print('SERVER_STREAMING_LOGPROBS_PASSED')
                                         remote_config: Optional[RemoteConfig],
                                         test_logger: logging.Logger,
                                         env_config: EnvironmentConfig) -> None:
-        """Non-streaming pybind path: Request.stop_strings + response.finish_reasons round-trip."""
+        """Non-streaming nanobind path: Request.stop_strings + response.finish_reasons round-trip."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
         engine_dir = config.get_llm_engine_dir()
-        pybind_build_dir = os.path.join(env_config.build_dir, "pybind")
+        nanobind_build_dir = os.path.join(env_config.build_dir, "lib")
         prompt = "List three colors, separated by commas. End your list with '###'."
         stop = "###"
 
         script = f"""\
 import sys, os
-sys.path.insert(0, {pybind_build_dir!r})
+sys.path.insert(0, {nanobind_build_dir!r})
 import importlib.util
-so_files = [f for f in os.listdir({pybind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
-spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({pybind_build_dir!r}, so_files[0]))
+so_files = [f for f in os.listdir({nanobind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
+spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({nanobind_build_dir!r}, so_files[0]))
 rt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rt)
 
@@ -799,20 +967,20 @@ print('SERVER_INFERENCE_WITH_STOP_PASSED')
                                         remote_config: Optional[RemoteConfig],
                                         test_logger: logging.Logger,
                                         env_config: EnvironmentConfig) -> None:
-        """Streaming pybind path: stop string trims chunk text, terminal chunk has STOP_WORDS reason."""
+        """Streaming nanobind path: stop string trims chunk text, terminal chunk has STOP_WORDS reason."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
         engine_dir = config.get_llm_engine_dir()
-        pybind_build_dir = os.path.join(env_config.build_dir, "pybind")
+        nanobind_build_dir = os.path.join(env_config.build_dir, "lib")
         prompt = "List three colors, separated by commas. End your list with '###'."
         stop = "###"
 
         script = f"""\
 import sys, os, threading
-sys.path.insert(0, {pybind_build_dir!r})
+sys.path.insert(0, {nanobind_build_dir!r})
 import importlib.util
-so_files = [f for f in os.listdir({pybind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
-spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({pybind_build_dir!r}, so_files[0]))
+so_files = [f for f in os.listdir({nanobind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
+spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({nanobind_build_dir!r}, so_files[0]))
 rt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rt)
 
@@ -892,15 +1060,15 @@ print('SERVER_STREAMING_WITH_STOP_PASSED')
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
         engine_dir = config.get_llm_engine_dir()
-        pybind_build_dir = os.path.join(env_config.build_dir, "pybind")
+        nanobind_build_dir = os.path.join(env_config.build_dir, "lib")
         prompt = "Write a long detailed essay about transformer neural networks."
 
         script = f"""\
 import sys, os
-sys.path.insert(0, {pybind_build_dir!r})
+sys.path.insert(0, {nanobind_build_dir!r})
 import importlib.util
-so_files = [f for f in os.listdir({pybind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
-spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({pybind_build_dir!r}, so_files[0]))
+so_files = [f for f in os.listdir({nanobind_build_dir!r}) if '_edgellm_runtime' in f and f.endswith('.so')]
+spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({nanobind_build_dir!r}, so_files[0]))
 rt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rt)
 
@@ -955,6 +1123,64 @@ print('SERVER_INFERENCE_LENGTH_REASON_PASSED')
                 f"Length-reason test did not produce expected output. Output:\n{result.get('output', '')}"
             )
 
+    def test_ifb_trace(self, test_param: str, executable_files: Dict[str, str],
+                       remote_config: Optional[RemoteConfig],
+                       test_logger: logging.Logger,
+                       env_config: EnvironmentConfig) -> None:
+        """Mixed in-flight-batching steps form on the built engine and match
+        the single-cohort reference outputs."""
+        config = TestConfig.from_param_string(test_param, ModelType.LLM,
+                                              TaskType.INFERENCE, env_config)
+        engine_dir = config.get_llm_engine_dir()
+        repo_root = '.' if remote_config else env_config.llm_sdk_dir
+        build_lib = os.path.join(env_config.build_dir, 'lib')
+        plugin = os.path.join(build_lib, 'libNvInfer_edgellm_plugin.so')
+        out_dir = os.path.join(config.test_log_dir,
+                               f"{config.param_str}-ifb-trace")
+        trace_timeout = 900
+        command = [
+            'bash', f'{repo_root}/tests/ifb/ifb_test.sh', '--tier', 'quick',
+            '--traces', config.test_case, '--mode', 'mixed', '--engine',
+            engine_dir, '--out', out_dir, '--python',
+            f'{repo_root}/{_SERVER_VENV}/bin/python3', '--nanobind-dir',
+            build_lib, '--timeout',
+            str(trace_timeout)
+        ]
+        # A stale run JSON would let the checker pass a run that never wrote one.
+        cmd = [
+            'bash', '-c', f'rm -rf -- {shlex.quote(out_dir)} && '
+            f'{shlex.join(command)}'
+        ]
+        library_path = f"{build_lib}:$LD_LIBRARY_PATH"
+        if env_config.trt_package_dir:
+            library_path += f":{env_config.trt_package_dir}/lib"
+        env_vars = {
+            'LD_LIBRARY_PATH': library_path,
+            'EDGELLM_PLUGIN_LIB': plugin,
+            'EDGELLM_PLUGIN_PATH': plugin,
+        }
+
+        with timer_context(f"IFB trace for {config.model_name}", test_logger):
+            result = run_command(cmd=cmd,
+                                 remote_config=remote_config,
+                                 timeout=2 * trace_timeout + 600,
+                                 logger=test_logger,
+                                 env_vars=env_vars)
+        if not result['success']:
+            pytest.fail(f"IFB trace check failed:\n{result.get('output', '')}"
+                        f"{result.get('error', '')}")
+
+        run_file = os.path.join(out_dir,
+                                os.path.basename(os.path.normpath(engine_dir)),
+                                f"{config.test_case}.run.mixed.json")
+        with open(_sync_remote_output_file(run_file, remote_config,
+                                           test_logger),
+                  encoding='utf-8') as handle:
+            failures = _ifb_mixed_step_failures(json.load(handle))
+        if failures:
+            pytest.fail("IFB trace did not run mixed steps:\n" +
+                        "\n".join(failures))
+
 
 class TestHLAPI:
     """E2E tests for checkpoint-direct high-level Python inference."""
@@ -963,12 +1189,16 @@ class TestHLAPI:
     def _checkpoint_config(test_param: str, model_type: ModelType,
                            env_config: EnvironmentConfig) -> TestConfig:
         """Parse inference options with checkpoint-direct path validation."""
-        env_config.validate_for_checkpoint_builder_tests()
-        return TestConfig.from_param_string(test_param,
-                                            model_type,
-                                            TaskType.INFERENCE,
-                                            env_config,
-                                            validate_environment=False)
+        config = TestConfig.from_param_string(test_param,
+                                              model_type,
+                                              TaskType.INFERENCE,
+                                              env_config,
+                                              validate_environment=False)
+        if config.checkpoint_dir:
+            env_config.validate_for_checkpoint_runtime_tests()
+        else:
+            env_config.validate_for_checkpoint_builder_tests()
+        return config
 
     @staticmethod
     def _stage_remote_checkpoint(model_dir: str,
@@ -1033,32 +1263,48 @@ class TestHLAPI:
     def _hlapi_python(env_config: EnvironmentConfig,
                       remote_config: Optional[RemoteConfig]) -> str:
         """Interpreter for the injected HLAPI script: the server/build venv
-        created by test_build_pybind under the same repository root."""
+        created by test_build_nanobind under the same repository root."""
         repo_root = '.' if remote_config else env_config.llm_sdk_dir
         return f'{repo_root}/{_SERVER_VENV}/bin/python3'
 
     @staticmethod
-    def _llm_init_script(config: TestConfig, env_config: EnvironmentConfig,
-                         remote_config: Optional[RemoteConfig],
-                         test_logger: logging.Logger) -> str:
-        """Construct the public checkpoint/cache API with the CI profile."""
+    def _spec_type(config: TestConfig) -> str:
+        if config.is_mtp:
+            return "mtp"
+        if config.is_dflash:
+            return "dflash"
+        if config.is_jetspec:
+            return "jetspec"
+        if config.is_domino:
+            return "domino"
+        if config.is_dspark:
+            return "dspark"
+        if config.is_eagle:
+            return "eagle3"
+        return "none"
+
+    @staticmethod
+    def _checkpoint_model_and_spec(
+            config: TestConfig, remote_config: Optional[RemoteConfig],
+            test_logger: logging.Logger) -> Tuple[str, str, str]:
+        """Resolve model and optional draft paths for checkpoint-direct APIs."""
         try:
             model_dir = config.get_torch_model_dir()
-            spec_type = "none"
             draft_model_dir = ""
-            if config.is_mtp:
-                spec_type = "mtp"
+            spec_type = TestHLAPI._spec_type(config)
+            if spec_type == "mtp":
                 if config.model_name.lower().startswith("gemma-"):
                     draft_model_dir = \
                         config.get_gemma4_mtp_assistant_model_dir()
-            elif config.is_dflash:
-                spec_type = "dflash"
+            elif spec_type == "dflash":
                 draft_model_dir = config.get_dflash_draft_model_dir()
-            elif config.is_dspark:
-                spec_type = "dspark"
+            elif spec_type == "jetspec":
+                draft_model_dir = config.get_jetspec_draft_model_dir()
+            elif spec_type == "domino":
+                draft_model_dir = config.get_domino_draft_model_dir()
+            elif spec_type == "dspark":
                 draft_model_dir = config.get_dspark_draft_model_dir()
-            elif config.is_eagle:
-                spec_type = "eagle3"
+            elif spec_type == "eagle3":
                 draft_model_dir = config.get_eagle_draft_checkpoint_dir()
 
             model_dir = TestHLAPI._stage_remote_checkpoint(
@@ -1067,17 +1313,104 @@ class TestHLAPI:
                 draft_model_dir = TestHLAPI._stage_remote_checkpoint(
                     draft_model_dir, remote_config, test_logger)
         except ValueError as exc:
-            pytest.skip("checkpoint-direct HLAPI source is unavailable on "
+            pytest.skip("checkpoint-direct source is unavailable on "
                         f"this runner: {exc}")
+        return model_dir, spec_type, draft_model_dir
+
+    @staticmethod
+    def _server_cli_args(config: TestConfig, env_config: EnvironmentConfig,
+                         remote_config: Optional[RemoteConfig],
+                         test_logger: logging.Logger) -> List[str]:
+        """Build the public server command for one model-owned case."""
+        model_dir, spec_type, draft_model_dir = \
+            TestHLAPI._checkpoint_model_and_spec(config, remote_config,
+                                                 test_logger)
+
+        repo_root = '.' if remote_config else env_config.llm_sdk_dir
+        max_kv = config.max_kv_cache_capacity or config.max_seq_len
+        command = [
+            f'{repo_root}/{_SERVER_VENV}/bin/tensorrt-edgellm-serve',
+            model_dir,
+            '--host',
+            '127.0.0.1',
+            '--cache-dir',
+            os.path.join(config.engine_dir, 'experimental-server-cache'),
+            '--max-input-len',
+            str(config.max_input_len),
+            '--max-batch-size',
+            str(config.max_batch_size),
+            '--max-kv-cache-capacity',
+            str(max_kv),
+            '--allowed-local-media-path',
+            '.',
+            '--max-queued-requests',
+            '0',
+            '--queue-timeout',
+            '5',
+            '--log-level',
+            'info' if config.context_reuse else 'error',
+        ]
+        if config.max_image_tokens is not None:
+            command.extend(
+                ['--max-image-tokens',
+                 str(config.max_image_tokens)])
+        if config.max_image_tokens_per_image is not None:
+            command.extend([
+                '--max-image-tokens-per-image',
+                str(config.max_image_tokens_per_image)
+            ])
+        if spec_type != "none":
+            speculative = {'method': spec_type}
+            if draft_model_dir:
+                speculative['model'] = draft_model_dir
+            command.extend([
+                '--speculative-config',
+                json.dumps(speculative, separators=(',', ':')),
+                '--draft-top-k',
+                str(config.eagle_draft_top_k),
+                '--spec-verify-tokens',
+                str(config.max_spec_verify_tokens),
+            ])
+            if spec_type in {"mtp", "eagle3"}:
+                command.extend(
+                    ['--spec-draft-step',
+                     str(config.eagle_draft_step)])
+        if config.context_reuse:
+            command.append('--enable-context-reuse')
+            if config.context_cache_max_snapshots:
+                command.extend([
+                    '--context-cache-max-snapshots',
+                    str(config.context_cache_max_snapshots)
+                ])
+        if config.in_flight_batching:
+            command.append('--enable-in-flight-batching')
+        return command
+
+    @staticmethod
+    def _llm_init_script(config: TestConfig, env_config: EnvironmentConfig,
+                         remote_config: Optional[RemoteConfig],
+                         test_logger: logging.Logger) -> str:
+        """Construct the public checkpoint/cache API with the CI profile."""
+        model_dir, spec_type, draft_model_dir = \
+            TestHLAPI._checkpoint_model_and_spec(config, remote_config,
+                                                 test_logger)
 
         cache_dir = os.path.join(config.engine_dir,
                                  "experimental-server-cache")
-        plugin_path = os.path.join(env_config.build_dir,
+        plugin_path = os.path.join(env_config.build_dir, "lib",
                                    "libNvInfer_edgellm_plugin.so")
         max_kv = config.max_kv_cache_capacity or config.max_seq_len
+        draft_step = (config.eagle_draft_step
+                      if spec_type in {"mtp", "eagle3"} else None)
+        verify_tokens = (config.max_spec_verify_tokens
+                         if spec_type != "none" else None)
 
         return f"""\
-from experimental.server.runtime.engine_build import BuildOptions
+from tensorrt_edgellm.server.runtime.engine_build import BuildOptions
+import sys
+sys.path.insert(0, "tests")
+from defs.utils import ci_server_cache
+ci_server_cache.install()
 llm = LLM(
     model={model_dir!r},
     cache_dir={cache_dir!r},
@@ -1085,8 +1418,13 @@ llm = LLM(
     max_batch_size={config.max_batch_size},
     max_kv_cache_capacity={max_kv},
     draft_top_k={config.eagle_draft_top_k},
-    draft_step={config.eagle_draft_step},
-    verify_tree_size={config.max_verify_tree_size},
+    draft_step={draft_step!r},
+    proposal_tokens=None,
+    verify_tokens={verify_tokens!r},
+    context_cache_config={{
+        'enabled': {bool(config.context_reuse)!r},
+        'max_snapshots': {config.context_cache_max_snapshots or 0},
+    }},
     build_options=BuildOptions(
         spec_type={spec_type!r},
         draft_model_dir={draft_model_dir!r},
@@ -1104,54 +1442,30 @@ llm = LLM(
                                    remote_config: Optional[RemoteConfig],
                                    test_logger: logging.Logger,
                                    env_config: EnvironmentConfig) -> None:
-        """Exercise the real ASGI API, including stream cancellation."""
-        config = self._checkpoint_config(test_param, ModelType.LLM, env_config)
+        """Exercise the installed server CLI and its OpenAI HTTP API."""
+        model_type = infer_checkpoint_export_model_type(test_param)
+        config = self._checkpoint_config(test_param, model_type, env_config)
         test_logger.info("HTTP server lifecycle: model=%s", config.model_name)
 
-        setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
-        llm_init = self._llm_init_script(config, env_config, remote_config,
-                                         test_logger)
+        requests = _openai_requests_from_inputs(
+            getattr(test_param, "inference", ()), env_config.llm_sdk_dir)
+
+        server_command = self._server_cli_args(config, env_config,
+                                               remote_config, test_logger)
+        spec_type = self._spec_type(config)
         script = f"""\
-{setup}
 import http.client
 import json
+import re
 import socket
-import threading
+import subprocess
+import tempfile
 import time
-
-import uvicorn
-
-from experimental.server import LLM
-from experimental.server.api.app import create_app
-from experimental.server.config import ApiConfig
-from experimental.server.runtime.engine_client import EngineClient
-
-{llm_init}
-api_config = ApiConfig(max_queued_requests=0, queue_timeout=5.0)
-engine_client = EngineClient(llm, api_config)
-app = create_app(engine_client, api_config)
 
 
 with socket.socket() as probe:
     probe.bind(('127.0.0.1', 0))
     port = probe.getsockname()[1]
-
-server = uvicorn.Server(uvicorn.Config(
-    app,
-    host='127.0.0.1',
-    port=port,
-    log_level='error',
-    access_log=False,
-))
-server_error = []
-
-
-def run_server():
-    try:
-        server.run()
-    except BaseException as error:
-        server_error.append(error)
-
 
 def request(path, *, payload=None, raw=None, method='POST'):
     body = raw
@@ -1169,93 +1483,124 @@ def request(path, *, payload=None, raw=None, method='POST'):
         connection.close()
 
 
-worker = threading.Thread(target=run_server, daemon=True)
-worker.start()
-deadline = time.monotonic() + 60
-while not server.started and worker.is_alive() and time.monotonic() < deadline:
-    time.sleep(0.05)
-assert server.started and not server_error, server_error
+command = {server_command!r} + ['--port', str(port)]
+with tempfile.TemporaryFile(mode='w+') as server_log:
+    process = subprocess.Popen(command, stdout=server_log,
+                               stderr=subprocess.STDOUT, text=True)
+    try:
+        deadline = time.monotonic() + 7200
+        health = None
+        while process.poll() is None and time.monotonic() < deadline:
+            try:
+                status, _, body = request('/health', method='GET')
+                if status == 200:
+                    health = json.loads(body)
+                    break
+            except OSError:
+                pass
+            time.sleep(0.25)
+        if health is None:
+            server_log.flush()
+            server_log.seek(0)
+            raise AssertionError('server did not become ready:\\n' +
+                                 server_log.read())
 
-try:
-    status, _, body = request('/health', method='GET')
-    health = json.loads(body)
-    assert status == 200 and health['status'] == 'healthy'
-    # Under in-flight batching the overlap dimension is the engine batch; the
-    # blocking path serves one sequence at a time.
-    expected_seqs = ({config.max_batch_size}
-                     if health['capabilities'].get('in_flight_batching')
-                     else 1)
-    assert health['capabilities']['max_num_seqs'] == expected_seqs, health
+        assert health['status'] == 'healthy'
+        assert health['capabilities']['context_reuse'] is \
+            {bool(config.context_reuse)!r}
+        assert health['capabilities']['speculative_decoding'] is \
+            {bool(spec_type != 'none')!r}
+        assert health['capabilities']['speculative_method'] == {spec_type!r}
+        in_flight_batching = {bool(config.in_flight_batching)!r}
+        assert health['capabilities']['in_flight_batching'] is \
+            in_flight_batching, health
+        # Under in-flight batching the overlap dimension is the engine batch;
+        # the blocking path serves one sequence at a time.
+        expected_seqs = {config.max_batch_size} if in_flight_batching else 1
+        assert health['capabilities']['max_num_seqs'] == expected_seqs, health
 
-    status, _, body = request('/v1/models', method='GET')
-    models = json.loads(body)
-    assert status == 200 and models['data'][0]['id']
+        status, _, body = request('/v1/models', method='GET')
+        models = json.loads(body)
+        assert status == 200 and models['data'][0]['id']
 
-    status, _, body = request('/v1/chat/completions',
-                              raw=b'{{\"messages\":')
-    assert status == 400
-    assert json.loads(body)['error']['type'] == 'invalid_request_error'
-    assert engine_client.active_requests == 0
+        status, _, body = request('/v1/chat/completions',
+                                  raw=b'{{\"messages\":')
+        assert status == 400
+        assert json.loads(body)['error']['type'] == 'invalid_request_error'
 
-    completion = {{
-        'messages': [{{'role': 'user', 'content': 'Say hello briefly.'}}],
-        'temperature': 0,
-        'max_tokens': 16,
-    }}
-    status, _, body = request('/v1/chat/completions', payload=completion)
-    result = json.loads(body)
-    assert status == 200, result
-    assert result['choices'][0]['message']['content']
-    assert result['usage']['completion_tokens'] > 0
+        for payload in {requests!r}:
+            if payload.get('stream'):
+                payload.setdefault('stream_options', {{'include_usage': True}})
+            status, headers, body = request('/v1/chat/completions',
+                                            payload=payload)
+            assert status == 200, body.decode(errors='replace')
+            if not payload.get('stream'):
+                result = json.loads(body)
+                choice = result['choices'][0]
+                assert (choice['message']['content']
+                        or (payload.get('stop')
+                            and choice['finish_reason'] == 'stop'))
+                assert result['usage']['completion_tokens'] > 0
+                continue
 
-    streaming = {{
-        'messages': [{{
-            'role': 'user',
-            'content': 'Count from one to five, one number per line.',
-        }}],
-        'temperature': 0,
-        'max_tokens': 32,
-        'stream': True,
-        'stream_options': {{'include_usage': True}},
-    }}
-    status, headers, body = request('/v1/chat/completions',
-                                    payload=streaming)
-    assert status == 200
-    assert headers['content-type'].startswith('text/event-stream')
-    frames = [frame for frame in body.decode().split('\\n\\n') if frame]
-    assert frames[-1] == 'data: [DONE]'
-    payloads = [json.loads(frame.removeprefix('data: '))
-                for frame in frames[:-1]]
-    choices = [item['choices'][0] for item in payloads
-               if item.get('choices')]
-    assert choices[0]['delta']['role'] == 'assistant'
-    assert any(choice['delta'].get('content') for choice in choices)
-    assert any(choice.get('finish_reason') for choice in choices)
-    usage = [item['usage'] for item in payloads if item.get('usage')]
-    assert len(usage) == 1 and usage[0]['completion_tokens'] > 0
-    assert engine_client.active_requests == 0
-    assert engine_client.queued_requests == 0
+            assert headers['content-type'].startswith('text/event-stream')
+            frames = [frame for frame in body.decode().split('\\n\\n') if frame]
+            assert frames[-1] == 'data: [DONE]'
+            payloads = [json.loads(frame.removeprefix('data: '))
+                        for frame in frames[:-1]]
+            choices = [item['choices'][0] for item in payloads
+                       if item.get('choices')]
+            assert choices[0]['delta']['role'] == 'assistant'
+            assert any(choice['delta'].get('content') for choice in choices)
+            assert any(choice.get('finish_reason') for choice in choices)
+            usage = [item['usage'] for item in payloads if item.get('usage')]
+            assert len(usage) == 1 and usage[0]['completion_tokens'] > 0
+
+        # In-flight batching logs no per-request reuse line; its cumulative
+        # counters are on /health.
+        reused = []
+        if in_flight_batching and {bool(config.context_reuse)!r}:
+            status, _, body = request('/health', method='GET')
+            assert status == 200
+            reused = [json.loads(body)['context_cache']['reused_tokens']]
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=180)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        server_log.flush()
+        server_log.seek(0)
+        server_output = server_log.read()
+        print(server_output)
+    if {bool(config.context_reuse)!r}:
+        reused += [int(value) for value in re.findall(
+            r'cumulative: reused=([0-9]+)', server_output)]
+        assert reused and max(reused) > 0, server_output[-4000:]
     print('HTTP_SERVER_LIFECYCLE_PASSED')
-finally:
-    server.should_exit = True
-    worker.join(timeout=180)
-    assert not worker.is_alive(), 'HTTP server did not shut down'
-    assert not server_error, server_error
 """
         python = self._hlapi_python(env_config, remote_config)
         cmd = ['bash', '-c', f'{python} -c {shlex.quote(script)}']
-        env_vars = None
+        env_vars = {
+            'BUILD_DIR':
+            env_config.build_dir,
+            'EDGELLM_PLUGIN_PATH':
+            os.path.join(env_config.build_dir, 'lib',
+                         'libNvInfer_edgellm_plugin.so'),
+            'EDGELLM_NANOBIND_DIR':
+            os.path.join(env_config.build_dir, 'lib'),
+        }
         if env_config.trt_package_dir:
-            env_vars = {
-                "LD_LIBRARY_PATH":
+            env_vars['LD_LIBRARY_PATH'] = \
                 f"$LD_LIBRARY_PATH:{env_config.trt_package_dir}/lib"
-            }
 
         with timer_context(f"HTTP server lifecycle for {config.model_name}",
                            test_logger):
             result = run_command(cmd=cmd,
                                  remote_config=remote_config,
-                                 timeout=900,
+                                 timeout=7500,
                                  logger=test_logger,
                                  env_vars=env_vars)
 
@@ -1263,6 +1608,257 @@ finally:
         if (not result['success']
                 or 'HTTP_SERVER_LIFECYCLE_PASSED' not in output):
             pytest.fail(f"HTTP server lifecycle failed:\n{output}")
+
+    def test_ifb_http_server(self, test_param: str,
+                             executable_files: Dict[str, str],
+                             remote_config: Optional[RemoteConfig],
+                             test_logger: logging.Logger,
+                             env_config: EnvironmentConfig) -> None:
+        """The in-flight batching server applies its scheduling flags end to
+        end: /health reports the policy it resolved, concurrent requests all
+        complete, a priority -1 request starts at once in the reserved slot
+        while every other slot is busy and pauses the others while it
+        prefills, a priority below --min-request-priority gets HTTP 400, and
+        an option the engine refuses stops the launch naming the flag."""
+        config = self._checkpoint_config(test_param, ModelType.LLM, env_config)
+        if config.max_batch_size != 4:
+            pytest.fail("ifb_server is written for max_batch_size: 4, got "
+                        f"{config.max_batch_size}")
+        scheduling_flags = [
+            '--ifb-scheduling-mode', 'mixed', '--scheduling-policy',
+            'priority', '--preemption', 'pause', '--priority-reserved-slots',
+            '1', '--max-pause-steps', '4', '--max-num-tokens', '1024',
+            '--max-chunk-tokens', '256', '--min-request-priority', '-1'
+        ]
+        server_command = self._server_cli_args(
+            config, env_config, remote_config, test_logger) + scheduling_flags
+        script = f"""\
+import http.client
+import json
+import socket
+import subprocess
+import tempfile
+import threading
+import time
+
+
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+
+port = free_port()
+
+
+def request(path, *, payload=None, method='POST'):
+    body = None if payload is None else json.dumps(payload).encode()
+    headers = {{'content-type': 'application/json'}} if body else {{}}
+    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=180)
+    try:
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        return response.status, response.read()
+    finally:
+        connection.close()
+
+
+def stream(payload, record):
+    \"\"\"Streams one completion into record: when it was sent, its status,
+    the time of its first and last chunk, its text and finish reason, or the
+    error.\"\"\"
+    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=600)
+    record['sent'] = time.monotonic()
+    try:
+        connection.request('POST', '/v1/completions',
+                           body=json.dumps({{**payload, 'stream': True}}).encode(),
+                           headers={{'content-type': 'application/json'}})
+        response = connection.getresponse()
+        record['status'] = response.status
+        if response.status != 200:
+            record['error'] = response.read().decode(errors='replace')
+            return
+        record['text'] = ''
+        for raw in response:
+            line = raw.decode().strip()
+            if not line.startswith('data: '):
+                continue
+            if line == 'data: [DONE]':
+                break
+            chunk = json.loads(line.removeprefix('data: '))
+            if 'error' in chunk:
+                record['error'] = chunk['error']
+                break
+            for choice in chunk.get('choices', []):
+                if choice.get('text'):
+                    record.setdefault('first', time.monotonic())
+                    record['text'] += choice['text']
+                if choice.get('finish_reason'):
+                    record['finish_reason'] = choice['finish_reason']
+    except Exception as error:
+        record['error'] = repr(error)
+    finally:
+        record['done'] = time.monotonic()
+        connection.close()
+
+
+def launch(command, log):
+    return subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                            text=True)
+
+
+def stop(process):
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=180)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def output_of(log):
+    log.flush()
+    log.seek(0)
+    return log.read()
+
+
+command = {server_command!r}
+with tempfile.TemporaryFile(mode='w+') as server_log:
+    process = launch(command + ['--port', str(port)], server_log)
+    try:
+        deadline = time.monotonic() + 7200
+        health = None
+        while process.poll() is None and time.monotonic() < deadline:
+            try:
+                status, body = request('/health', method='GET')
+                if status == 200:
+                    health = json.loads(body)
+                    break
+            except OSError:
+                pass
+            time.sleep(0.25)
+        assert health is not None, 'server did not become ready:\\n' + output_of(server_log)
+
+        assert health['status'] == 'healthy', health
+        assert health['capabilities']['in_flight_batching'] is True, health
+        assert health['capabilities']['max_num_seqs'] == 4, health
+        assert health['engine'] == dict(
+            serving=True, unavailable_reason=None, scheduling_mode='mixed',
+            scheduling_mode_source='requested', scheduling_reason=None,
+            execution='compact', scheduling_policy='priority',
+            preemption='pause', max_num_tokens=1024, max_chunk_tokens=256,
+            priority_reserved_slots=1, max_pause_steps=4, warnings=[],
+            compact_unavailable_reason=None), health['engine']
+        status, body = request('/health/ready', method='GET')
+        assert status == 200 and json.loads(body)['status'] == 'ready', body
+
+        status, body = request('/v1/completions',
+                               payload={{'prompt': 'Hello', 'priority': -2}})
+        assert status == 400, body
+        assert json.loads(body)['error']['param'] == 'priority', body
+
+        sampling = {{'temperature': 0.0}}
+        story = 'Write a long story about a lighthouse keeper and the sea.'
+        # Each runs to its own length, so one leaves while the others decode.
+        normal = [{{'prompt': story, 'max_tokens': tokens, 'ignore_eos': True,
+                    **sampling}} for tokens in (1500, 1700, 1900)]
+        records = [{{}} for _ in normal]
+        threads = [threading.Thread(target=stream, args=(payload, record))
+                   for payload, record in zip(normal, records)]
+        for thread in threads:
+            thread.start()
+        started = time.monotonic() + 300
+        while (not all('first' in record or 'done' in record for record in records)
+               and time.monotonic() < started):
+            time.sleep(0.01)
+        assert all('first' in record for record in records), records
+
+        # Three residents leave one free slot, which the priority -1 request
+        # reserves: this 600-token prompt waits for a resident to leave and
+        # then runs in 256-token chunks beside the others' decoding.
+        waiting, urgent = {{}}, {{}}
+        long_prompt = ' '.join(['The tide rose over the rocks below the old lighthouse.'] * 50)
+        later = [
+            threading.Thread(target=stream, args=(
+                {{'prompt': long_prompt, 'max_tokens': 32, **sampling}}, waiting)),
+            threading.Thread(target=stream, args=(
+                {{'prompt': 'What is the capital of France?', 'max_tokens': 16,
+                  'priority': -1, **sampling}}, urgent)),
+        ]
+        later[0].start()
+        time.sleep(0.2)
+        later[1].start()
+        for thread in threads + later:
+            thread.join(timeout=900)
+
+        for record in records + [waiting, urgent]:
+            assert record.get('status') == 200 and not record.get('error'), record
+            assert record['text'].strip() and record.get('finish_reason'), record
+        assert all(record['finish_reason'] == 'length' for record in records), records
+        first_departure = min(record['done'] for record in records)
+        print('urgent: sent %.3f s, first token %.3f s, waiting request first token %.3f s, '
+              'after the first running request left at %.3f s' % tuple(
+                  t - records[0]['sent'] for t in (urgent['sent'], urgent['first'],
+                                                   waiting['first'], first_departure)))
+        assert urgent['sent'] < first_departure, (
+            'a running request finished before the others were sent; raise its max_tokens')
+        assert urgent['first'] < first_departure, (
+            'the priority -1 request waited for a running request to leave')
+        assert waiting['first'] > first_departure, (
+            'a priority 0 request took the reserved slot')
+
+        status, body = request('/health', method='GET')
+        scheduling = json.loads(body)['scheduling']
+        assert scheduling['paused_resident_steps'] >= 1, scheduling
+        assert scheduling['mixed_steps'] >= 1, scheduling
+        assert scheduling['partial_prompt_chunks'] >= 1, scheduling
+        assert scheduling['completed'] >= 5 and scheduling['failed'] == 0, scheduling
+    finally:
+        stop(process)
+        print(output_of(server_log))
+
+# The engine, not the argument parser, refuses this budget (B + P = 132):
+# the launch fails naming the flag.
+with tempfile.TemporaryFile(mode='w+') as refused_log:
+    refused = launch(command + ['--port', str(free_port()),
+                                '--max-num-tokens', '131'], refused_log)
+    try:
+        refused.wait(timeout=1800)
+    finally:
+        stop(refused)
+    output = output_of(refused_log)
+    assert refused.returncode != 0, output
+    assert 'invalid server configuration:' in output, output
+    assert '--max-num-tokens 131 must be in [B + P, T_max] = [132, 4096]' in output, output
+print('IFB_HTTP_SERVER_PASSED')
+"""
+        python = self._hlapi_python(env_config, remote_config)
+        cmd = ['bash', '-c', f'{python} -c {shlex.quote(script)}']
+        env_vars = {
+            'BUILD_DIR':
+            env_config.build_dir,
+            'EDGELLM_PLUGIN_PATH':
+            os.path.join(env_config.build_dir, 'lib',
+                         'libNvInfer_edgellm_plugin.so'),
+            'EDGELLM_NANOBIND_DIR':
+            os.path.join(env_config.build_dir, 'lib'),
+        }
+        if env_config.trt_package_dir:
+            env_vars['LD_LIBRARY_PATH'] = \
+                f"$LD_LIBRARY_PATH:{env_config.trt_package_dir}/lib"
+
+        with timer_context(f"IFB HTTP server for {config.model_name}",
+                           test_logger):
+            result = run_command(cmd=cmd,
+                                 remote_config=remote_config,
+                                 timeout=9600,
+                                 logger=test_logger,
+                                 env_vars=env_vars)
+
+        output = result.get('output', '')
+        if not result['success'] or 'IFB_HTTP_SERVER_PASSED' not in output:
+            pytest.fail(f"IFB HTTP server check failed:\n{output}")
 
     def test_hlapi_generate(self, test_param: str, executable_files: Dict[str,
                                                                           str],
@@ -1285,7 +1881,7 @@ finally:
 
         script = f"""\
 {setup}
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 
 {llm_init}
 outputs = llm.generate(
@@ -1348,7 +1944,7 @@ print('HLAPI_GENERATE_PASSED')
 
         script = f"""\
 {setup}
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 
 {llm_init}
 outputs = llm.generate(
@@ -1443,7 +2039,7 @@ wav_bytes = buf.getvalue()"""
 import base64
 {wav_setup}
 wav_b64 = base64.b64encode(wav_bytes).decode()
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 {llm_init}
 messages = [{{'role': 'user', 'content': [
     {{'type': 'input_audio', 'input_audio': {{'data': wav_b64, 'format': 'wav'}}}}
@@ -1503,7 +2099,7 @@ print('HLAPI_STREAM_WITH_AUDIO_PASSED')
 {setup}
 import json
 import os
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 
 def pick_positive_bias_target_id(model_dir):
     tokenizer_path = os.path.join(model_dir, 'tokenizer.json')
@@ -1642,7 +2238,7 @@ print('HLAPI_GENERATE_WITH_LOGIT_BIAS_PASSED')
 {setup}
 import json
 import re
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 
 {llm_init}
 
@@ -1670,7 +2266,7 @@ text = generate('What is an email address for support?',
 print(f'HLAPI_GUIDED_REGEX={{text!r}}')
 assert re.fullmatch(pattern, text), f'{{text!r}} does not match {{pattern!r}}'
 
-from experimental.server.runtime.engine import _import_runtime
+from tensorrt_edgellm.server.runtime.engine import _import_runtime
 runtime = _import_runtime()
 params = runtime.GuidedDecodingParams(
     runtime.GuideType.JSON_SCHEMA, json.dumps({{'type': 'integer', 'multipleOf': 5}}))
@@ -1756,7 +2352,7 @@ container.close()"""
         script = f"""\
 {setup}
 {clip_setup}
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 {llm_init}
 messages = [{{'role': 'user', 'content': [
     {{'type': 'video', 'video': clip_path, 'nframes': {nframes}}},
@@ -1825,7 +2421,7 @@ print('HLAPI_VIDEO_TOO_LONG_PASSED')
 
         script = f"""\
 {setup}
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 
 {llm_init}
 chunks = list(llm.generate_stream(
@@ -1888,7 +2484,7 @@ print('HLAPI_STREAMING_PASSED')
 
         script = f"""\
 {setup}
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 
 {llm_init}
 chunks = list(llm.generate_stream(
@@ -1916,10 +2512,10 @@ for chunk in chunks:
 # nested top_logprobs.
 import asyncio as _asyncio
 import json as _json
-from experimental.server.config import ApiConfig
-from experimental.server.api.protocol import ChatCompletionRequest
-from experimental.server.api.serving_chat import OpenAIServingChat
-from experimental.server.runtime.engine_client import EngineClient
+from tensorrt_edgellm.server.config import ApiConfig
+from tensorrt_edgellm.server.api.protocol import ChatCompletionRequest
+from tensorrt_edgellm.server.api.serving_chat import OpenAIServingChat
+from tensorrt_edgellm.server.runtime.engine_client import EngineClient
 _request = ChatCompletionRequest(
     messages=[{{"role": "user", "content": {prompt!r}}}],
     stream=True,
@@ -1992,7 +2588,7 @@ print('HLAPI_STREAMING_LOGPROBS_PASSED')
 
         script = f"""\
 {setup}
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 
 {llm_init}
 outputs = llm.generate(
@@ -2048,7 +2644,7 @@ print('HLAPI_GENERATE_WITH_STOP_PASSED')
 
         script = f"""\
 {setup}
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 
 {llm_init}
 chunks = list(llm.generate_stream(
@@ -2103,7 +2699,7 @@ print('HLAPI_STREAMING_WITH_STOP_PASSED')
 
         script = f"""\
 {setup}
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 
 {llm_init}
 outputs = llm.generate(
@@ -2153,7 +2749,7 @@ print('HLAPI_GENERATE_LENGTH_REASON_PASSED')
 
         script = f"""\
 {setup}
-from experimental.server import LLM, SamplingParams
+from tensorrt_edgellm.server import LLM, SamplingParams
 
 {llm_init}
 chunks = list(llm.generate_stream(

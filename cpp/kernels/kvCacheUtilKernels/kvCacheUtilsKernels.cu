@@ -28,6 +28,11 @@ namespace trt_edgellm
 namespace kernel
 {
 
+namespace
+{
+constexpr int32_t kKV_COMPONENTS{2};
+}
+
 __global__ void incrementLengthTensorKernel(
     int32_t* lengthTensor, int32_t const* incrementLength, int32_t increment, int32_t activeBatchSize)
 {
@@ -48,8 +53,8 @@ __global__ void incrementLengthTensorKernel(
 void incrementLengthTensor(rt::Tensor& lengthTensor, int32_t increment, cudaStream_t stream)
 {
     check::check(lengthTensor.getDeviceType() == rt::DeviceType::kGPU, "The lengthTensor shall reside on GPU.");
-    check::check(
-        lengthTensor.getDataType() == nvinfer1::DataType::kINT32, "The lengthTensor shall have data type of int32_t.");
+    check::check(lengthTensor.getDataType() == trt_edgellm::DataType::kINT32,
+        "The lengthTensor shall have data type of int32_t.");
 
     constexpr int32_t kBLOCK_SIZE = 32;
     constexpr int32_t kGRID_SIZE = 1;
@@ -66,8 +71,8 @@ void incrementLengthTensor(rt::Tensor& lengthTensor, rt::Tensor const& newIncrem
     check::check(lengthTensor.getDeviceType() == rt::DeviceType::kGPU
             && newIncrementTensor.getDeviceType() == rt::DeviceType::kGPU,
         "Both input tensors shall reside on GPU.");
-    check::check(lengthTensor.getDataType() == nvinfer1::DataType::kINT32
-            && newIncrementTensor.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(lengthTensor.getDataType() == trt_edgellm::DataType::kINT32
+            && newIncrementTensor.getDataType() == trt_edgellm::DataType::kINT32,
         "Both input tensors shall have data type of int32_t.");
 
     constexpr int32_t kBLOCK_SIZE = 32;
@@ -75,6 +80,29 @@ void incrementLengthTensor(rt::Tensor& lengthTensor, rt::Tensor const& newIncrem
     int32_t const activeBatchSize = lengthTensor.getShape()[0];
     incrementLengthTensorKernel<<<kGRID_SIZE, kBLOCK_SIZE, 0, stream>>>(
         lengthTensor.dataPointer<int32_t>(), newIncrementTensor.dataPointer<int32_t>(), 0, activeBatchSize);
+}
+
+__global__ void swapLengthTensorEntriesKernel(int32_t* lengthTensor, int32_t entryA, int32_t entryB)
+{
+    int32_t const valueA = lengthTensor[entryA];
+    lengthTensor[entryA] = lengthTensor[entryB];
+    lengthTensor[entryB] = valueA;
+}
+
+void swapLengthTensorEntries(rt::Tensor& lengthTensor, int32_t entryA, int32_t entryB, cudaStream_t stream)
+{
+    check::check(lengthTensor.getDeviceType() == rt::DeviceType::kGPU, "The lengthTensor shall reside on GPU.");
+    check::check(lengthTensor.getDataType() == trt_edgellm::DataType::kINT32,
+        "The lengthTensor shall have data type of int32_t.");
+    int64_t const entries = lengthTensor.getShape().volume();
+    check::check(entryA >= 0 && entryA < entries && entryB >= 0 && entryB < entries,
+        "Swapped length entries are outside the length tensor.");
+    if (entryA == entryB)
+    {
+        return;
+    }
+    swapLengthTensorEntriesKernel<<<1, 1, 0, stream>>>(lengthTensor.dataPointer<int32_t>(), entryA, entryB);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 //=============================================================================
@@ -450,6 +478,66 @@ void gatherPagedKVToHeadMajor(void const* pool, void* kDst, void* vDst, int32_t 
     gatherPagedKVToHeadMajorKernel<<<grid, kTHREADS_PER_BLOCK, 0, stream>>>(static_cast<uint8_t const*>(pool),
         static_cast<uint8_t*>(kDst), static_cast<uint8_t*>(vDst), pageTable, kvSeqLens, maxPagesPerSeq, seqLen,
         numKVHeads, headDim, elemSize);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void mergeGatheredSplitKVToHeadMajorKernel(half const* __restrict__ gathered, half* __restrict__ kDst,
+    half* __restrict__ vDst, int32_t tensorParallelSize, int32_t batchSize, int32_t gatheredSeqLen, int32_t dstSeqLen,
+    int32_t localKVHeads, int32_t headDim)
+{
+    size_t const totalElements
+        = static_cast<size_t>(tensorParallelSize) * kKV_COMPONENTS * batchSize * dstSeqLen * localKVHeads * headDim;
+    size_t const globalKVHeads = static_cast<size_t>(tensorParallelSize) * localKVHeads;
+    size_t const threadIndex = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    size_t const gridStride = static_cast<size_t>(blockDim.x) * gridDim.x;
+    for (size_t index = threadIndex; index < totalElements; index += gridStride)
+    {
+        size_t coordinate = index;
+        int32_t const dim = static_cast<int32_t>(coordinate % headDim);
+        coordinate /= headDim;
+        int32_t const localHead = static_cast<int32_t>(coordinate % localKVHeads);
+        coordinate /= localKVHeads;
+        int32_t const token = static_cast<int32_t>(coordinate % dstSeqLen);
+        coordinate /= dstSeqLen;
+        int32_t const batch = static_cast<int32_t>(coordinate % batchSize);
+        coordinate /= batchSize;
+        int32_t const kv = static_cast<int32_t>(coordinate % kKV_COMPONENTS);
+        int32_t const rank = static_cast<int32_t>(coordinate / kKV_COMPONENTS);
+
+        size_t const globalHead = static_cast<size_t>(rank) * localKVHeads + localHead;
+        size_t const dstIndex
+            = (((static_cast<size_t>(batch) * globalKVHeads + globalHead) * dstSeqLen + token) * headDim) + dim;
+        if (token < gatheredSeqLen)
+        {
+            size_t const srcIndex
+                = (((((static_cast<size_t>(rank) * kKV_COMPONENTS + kv) * batchSize + batch) * gatheredSeqLen + token)
+                           * localKVHeads
+                       + localHead)
+                      * headDim)
+                + dim;
+            (kv == 0 ? kDst : vDst)[dstIndex] = gathered[srcIndex];
+        }
+        else
+        {
+            (kv == 0 ? kDst : vDst)[dstIndex] = __float2half(0.0F);
+        }
+    }
+}
+
+void mergeGatheredSplitKVToHeadMajor(void const* gathered, void* kDst, void* vDst, int32_t tensorParallelSize,
+    int32_t batchSize, int32_t gatheredSeqLen, int32_t dstSeqLen, int32_t localKVHeads, int32_t headDim,
+    cudaStream_t stream)
+{
+    check::check(gathered != nullptr && kDst != nullptr && vDst != nullptr,
+        "mergeGatheredSplitKVToHeadMajor: input and output pointers are required.");
+    check::check(tensorParallelSize > 0 && batchSize > 0 && gatheredSeqLen > 0 && gatheredSeqLen <= dstSeqLen
+            && localKVHeads > 0 && headDim > 0,
+        "mergeGatheredSplitKVToHeadMajor: dimensions must be positive.");
+    constexpr int32_t kTHREADS_PER_BLOCK{256};
+    constexpr int32_t kBLOCKS{256};
+    mergeGatheredSplitKVToHeadMajorKernel<<<kBLOCKS, kTHREADS_PER_BLOCK, 0, stream>>>(
+        static_cast<half const*>(gathered), static_cast<half*>(kDst), static_cast<half*>(vDst), tensorParallelSize,
+        batchSize, gatheredSeqLen, dstSeqLen, localKVHeads, headDim);
     CUDA_CHECK(cudaGetLastError());
 }
 

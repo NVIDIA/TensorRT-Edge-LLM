@@ -27,7 +27,7 @@
 #include "cutedsl_all.h"
 #undef CUTE_DSL_CUDA_ERROR_CHECK
 
-#include <NvInferRuntime.h>
+#include "common/dataType.h"
 #include <climits>
 #include <cstdint>
 #include <cuda_fp16.h>
@@ -37,7 +37,7 @@ namespace trt_edgellm
 {
 
 /**
- * @brief Unified runner for CuTe DSL compiled FMHA kernels (Blackwell SM100/101/110).
+ * @brief Unified runner for CuTe DSL compiled FMHA kernels (Blackwell SM100/101/103/110).
  *
  * Supports two execution modes via AOT-compiled kernel variants:
  *
@@ -60,22 +60,29 @@ public:
     CuteDslFMHARunner& operator=(CuteDslFMHARunner const&) = delete;
 
     static bool canImplement(int32_t headSize, int32_t smVersion);
-    //! Returns whether the optimized Blackwell AOT family covers packed-Q/O native paged attention.
+    //! Packed-Q/O native paged attention supports optional FP32 per-query-head sinks for FP16 and FP8 input.
     static bool canImplementPagedRagged(int32_t numQHeads, int32_t numKVHeads, int32_t headSize, int32_t smVersion,
-        nvinfer1::DataType inputDataType, CuteDslFMHAMaskType maskType);
+        trt_edgellm::DataType inputDataType, CuteDslFMHAMaskType maskType);
     static bool canImplementViT(int32_t headSize, int32_t smVersion);
+
+    //! Dense/skip cubin dispatch predicate: the skip-softmax variant is dispatched only when a scale table is bound
+    //! (at least one (seqlen_bin, S) pair). An empty table runs the dense cubin, which the runtime uses for batches
+    //! that could skip nothing: the two variants are independently compiled cubins, so the skip kernel's
+    //! register/branch tax never reaches dense work.
+    static bool shouldDispatchSkipSoftmax(int32_t const* skipSoftmaxScaleTable, int32_t skipSoftmaxScaleTableLen);
 
     //! Ensures the exact dense LLM variant selected by run() is loaded.
     bool preflightLlm(cudaStream_t stream, int32_t slidingWindowSize = INT_MAX, bool fp8Input = false,
-        float skipSoftmaxScaleFactor = 0.0F);
+        int32_t const* skipSoftmaxScaleTable = nullptr, int32_t skipSoftmaxScaleTableLen = 0);
 
     //! Ensures the exact paged LLM variant selected by runPaged() is loaded.
     bool preflightPaged(cudaStream_t stream, int32_t slidingWindowSize = INT_MAX, bool fp8Input = false,
-        bool isCausal = true, float skipSoftmaxScaleFactor = 0.0F, bool useBidirectional = false);
+        bool isCausal = true, int32_t const* skipSoftmaxScaleTable = nullptr, int32_t skipSoftmaxScaleTableLen = 0,
+        bool useBidirectional = false);
 
     //! Ensures the exact ragged paged LLM variant selected by runPagedRagged() is loaded.
     bool preflightPagedRagged(cudaStream_t stream, int32_t slidingWindowSize = INT_MAX,
-        nvinfer1::DataType inputDataType = nvinfer1::DataType::kHALF);
+        trt_edgellm::DataType inputDataType = trt_edgellm::DataType::kHALF, bool useBidirectional = false);
 
     //! Ensures the exact packed ViT variant selected by run() is loaded.
     bool preflightViT(cudaStream_t stream);
@@ -99,15 +106,20 @@ public:
      * @param qScale Q dequant scale (quant→orig), ignored when fp8Input=false
      * @param kScale K dequant scale (quant→orig), ignored when fp8Input=false
      * @param vScale V dequant scale (quant→orig), applied to the attention output and ignored when fp8Input=false
-     * @param skipSoftmaxScaleFactor Skip-softmax (BLASST) calibrated scale factor S; the kernel derives the
-     * per-sequence threshold log2(S / seqlen_kv) itself (trtllm-gen parity). A finite positive value (lambda in (0,1))
-     * dispatches the skip-softmax kernel variant, which skips the P*V GEMM of KV tiles whose contribution is negligible
-     * — approximate, FP16 causal only. 0.0 (the default, log2 of the degenerate lambda = 1) disables skip, mirroring
-     * the slidingWindowSize = INT_MAX sentinel convention.
+     * @param skipSoftmaxScaleTable Skip-softmax (BLASST) scale table, device Int32 of flattened (seqlen_bin, S)
+     * pairs with bins ascending; a flat S is the one-row table {0, S}. When bound the skip-softmax variant
+     * is dispatched (FP16 causal only): per sequence the kernel floor-looks-up S by its KV length, derives the
+     * threshold log2(S / seqlen_kv) and skips the P*V GEMM of KV tiles whose contribution is negligible —
+     * approximate. Sequences below the first bin or with S >= seqlen_kv skip nothing (dense result to fp16
+     * rounding).
+     * @param skipSoftmaxScaleTableLen Element count of the table; 0 (the default) dispatches the dense cubin.
+     * @param skipSoftmaxCuKVSeqLens Actual cumulative KV lengths [B + 1] for the lookup when cuKVSeqLens is
+     * padded to the batch's longest query (bottom-right alignment); nullptr = cuKVSeqLens is already actual.
      */
     bool run(void const* qPtr, void const* kvPtr, void* oPtr, int32_t const* cuKVSeqLens, cudaStream_t stream,
         float attentionScale, int32_t slidingWindowSize = INT_MAX, bool fp8Input = false, float qScale = 1.0F,
-        float kScale = 1.0F, float vScale = 1.0F, float skipSoftmaxScaleFactor = 0.0F);
+        float kScale = 1.0F, float vScale = 1.0F, int32_t const* skipSoftmaxScaleTable = nullptr,
+        int32_t skipSoftmaxScaleTableLen = 0, int32_t const* skipSoftmaxCuKVSeqLens = nullptr);
 
     /**
      * @brief LLM FMHA over a paged KV cache.
@@ -138,8 +150,9 @@ public:
      * @param kScale K dequant scale, ignored when fp8Input=false
      * @param vScale V dequant scale, ignored when fp8Input=false
      * @param isCausal Whether to dispatch a causal or dense non-causal variant
-     * @param skipSoftmaxScaleFactor Skip-softmax calibrated scale factor S (kernel derives per-seq log2(S/seqlen_kv)),
-     * or 0 to disable
+     * @param skipSoftmaxScaleTable Skip-softmax scale table (see run()); nullptr / length 0 = dense cubin
+     * @param skipSoftmaxScaleTableLen Element count of skipSoftmaxScaleTable
+     * @param skipSoftmaxCuKVSeqLens Actual cumulative KV lengths [B + 1] (see run()); nullptr = cuKVSeqLens
      * @param bidirectionalBlockBegin Optional inclusive bidirectional-block begin positions [B, S_q].
      * Text/padding rows use -1; every row in a disjoint contiguous vision run
      * must repeat that run's begin position.
@@ -149,13 +162,14 @@ public:
      */
     bool runPaged(void const* qPtr, void const* pagedKVPoolPtr, int32_t const* kvCachePageList, void* oPtr,
         int32_t const* cuKVSeqLens, int32_t numPages, int32_t maxPagesPerSeq, int32_t tokensPerPage,
-        nvinfer1::DataType kvDataType, cudaStream_t stream, float attentionScale, int32_t slidingWindowSize = INT_MAX,
-        bool fp8Input = false, float qScale = 1.0F, float kScale = 1.0F, float vScale = 1.0F, bool isCausal = true,
-        float skipSoftmaxScaleFactor = 0.0F, int32_t const* bidirectionalBlockBegin = nullptr,
-        int32_t const* bidirectionalBlockEnd = nullptr);
+        trt_edgellm::DataType kvDataType, cudaStream_t stream, float attentionScale,
+        int32_t slidingWindowSize = INT_MAX, bool fp8Input = false, float qScale = 1.0F, float kScale = 1.0F,
+        float vScale = 1.0F, bool isCausal = true, int32_t const* skipSoftmaxScaleTable = nullptr,
+        int32_t skipSoftmaxScaleTableLen = 0, int32_t const* skipSoftmaxCuKVSeqLens = nullptr,
+        int32_t const* bidirectionalBlockBegin = nullptr, int32_t const* bidirectionalBlockEnd = nullptr);
 
     /**
-     * @brief Runs causal or sliding-causal FMHA over packed Q/O and a native paged KV pool.
+     * @brief Runs causal or sliding-causal FMHA with optional vision blocks over packed Q/O and native paged KV.
      *
      * cuQSeqLens and cuKVSeqLens are monotonic prefix arrays of length batchSize + 1. cuQSeqLens starts at zero and
      * ends at totalQSeqLen. cuKVSeqLens contains the complete logical KV history, including prior cached tokens.
@@ -179,12 +193,18 @@ public:
      * @param qScale Q dequant scale, ignored for FP16 input
      * @param kScale K dequant scale, ignored for FP16 input
      * @param vScale V dequant scale, ignored for FP16 input
+     * @param bidirectionalBlockBegin Optional device Int32 [totalQSeqLen] inclusive sequence-relative KV begins.
+     * @param bidirectionalBlockEnd Optional device Int32 [totalQSeqLen] inclusive sequence-relative KV ends.
+     * Both boundaries must be bound together (FP16 D512 only). Each image row repeats its contiguous image
+     * interval; text rows use -1. Row indices follow packed Q order, while values include cached KV history.
+     * @param attentionSinks Optional device FP32 logits [H_q], in the scaled attention logit domain
      */
     bool runPagedRagged(void const* qPtr, void const* pagedKVPoolPtr, int32_t const* kvCachePageList, void* oPtr,
         int32_t const* cuQSeqLens, int32_t const* cuKVSeqLens, int32_t totalQSeqLen, int32_t maxQSeqLen,
         int32_t numFlatPages, int32_t maxPagesPerSeq, int32_t tokensPerPage, cudaStream_t stream, float attentionScale,
-        int32_t slidingWindowSize = INT_MAX, nvinfer1::DataType inputDataType = nvinfer1::DataType::kHALF,
-        float qScale = 1.0F, float kScale = 1.0F, float vScale = 1.0F);
+        int32_t slidingWindowSize = INT_MAX, trt_edgellm::DataType inputDataType = trt_edgellm::DataType::kHALF,
+        float qScale = 1.0F, float kScale = 1.0F, float vScale = 1.0F, float const* attentionSinks = nullptr,
+        int32_t const* bidirectionalBlockBegin = nullptr, int32_t const* bidirectionalBlockEnd = nullptr);
 
     /**
      * @brief ViT FMHA: packed varlen separate Q/K/V, bidirectional.
@@ -278,6 +298,8 @@ private:
     static detail::LazyKernelModule<fmha_d128_packed_paged_Kernel_Module_t> sLLM_d128_packed_paged;
     static detail::LazyKernelModule<fmha_d256_packed_paged_Kernel_Module_t> sLLM_d256_packed_paged;
     static detail::LazyKernelModule<fmha_d512_packed_paged_Kernel_Module_t> sLLM_d512_packed_paged;
+    static detail::LazyKernelModule<fmha_d512_packed_paged_bidirectional_Kernel_Module_t>
+        sLLM_d512_packed_paged_bidirectional;
     static detail::LazyKernelModule<fmha_d64_packed_sw_paged_Kernel_Module_t> sLLM_d64_packed_sw_paged;
     static detail::LazyKernelModule<fmha_d128_packed_sw_paged_Kernel_Module_t> sLLM_d128_packed_sw_paged;
     static detail::LazyKernelModule<fmha_d256_packed_sw_paged_Kernel_Module_t> sLLM_d256_packed_sw_paged;

@@ -17,8 +17,8 @@ and action models on NVIDIA edge platforms.
    user_guide/getting_started/support-matrix.md
    user_guide/getting_started/supported-models.md
    user_guide/getting_started/installation.md
-   user_guide/getting_started/quick-start-guide.md
    user_guide/getting_started/cli.md
+   user_guide/getting_started/quick-start-guide.md
    user_guide/getting_started/direct-engine-builder.md
    user_guide/getting_started/limitations.md
 
@@ -33,10 +33,16 @@ and action models on NVIDIA edge platforms.
    user_guide/examples/phi4.md
    user_guide/examples/asr.md
    user_guide/examples/tts.md
+   user_guide/examples/minimax-h3.md
    user_guide/examples/vla/index.md
    user_guide/examples/omni.md
-   user_guide/examples/experimental-server.md
-   user_guide/examples/nemo-evaluator.md
+   user_guide/examples/server.md
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Integration
+
+   user_guide/examples/integration/index.md
 
 .. toctree::
    :maxdepth: 2
@@ -54,6 +60,7 @@ and action models on NVIDIA edge platforms.
    user_guide/features/kv-cache-reuse.md
    user_guide/features/in-flight-batching.md
    user_guide/features/codepredictor-speculative-decoding.md
+   user_guide/features/skip-softmax.md
 
 .. toctree::
    :maxdepth: 2
@@ -77,6 +84,7 @@ and action models on NVIDIA edge platforms.
    developer_guide/software-design/quantization-design.md
    developer_guide/software-design/engine-builder.md
    developer_guide/software-design/cpp-runtime-overview.md
+   developer_guide/software-design/multi-stage-graph.md
    developer_guide/software-design/llm-inference-runtime.md
    developer_guide/software-design/llm-streaming.md
    developer_guide/software-design/in-flight-batching.md
@@ -90,6 +98,7 @@ and action models on NVIDIA edge platforms.
    developer_guide/models/cosmos3.md
    developer_guide/models/nemotron3_5_asr.md
    developer_guide/models/pi05.md
+   developer_guide/models/gr00t_n1d7.md
 
 .. toctree::
    :maxdepth: 2

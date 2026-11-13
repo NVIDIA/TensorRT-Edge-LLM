@@ -50,7 +50,8 @@ from ...config import ModelConfig
 from ..linear import (FP16Linear, NVFP4A16Linear, NVFP4LinearMethod,
                       ReplicatedLinear, TPMode, is_int4_linear,
                       is_nvfp4_linear, make_linear)
-from ..ops import KV_PAGE_SIZE, attention_plugin, qkv_concat
+from ..ops import (KV_PAGE_SIZE, SKIP_SOFTMAX_SCALE_TABLE_MAX_LEN,
+                   attention_plugin, qkv_concat)
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +112,8 @@ def _make_flat_wrapper_ragged(model: nn.Module,
             "query_lengths", "past_lengths", "attention_sequence_lengths",
             "state_indices", "execution_phase_marker",
             "context_sequence_count_carrier", "kv_page_table", "logits_indices"
-        ] + [f"deepstack_embeds_{i}"
-             for i in range(Nd)] + ["skip_softmax_scale"])
+        ] + [f"deepstack_embeds_{i}" for i in range(Nd)] +
+        ["skip_softmax_prefill_scale", "skip_softmax_decode_scale"])
     if tree_attention:
         param_names += [
             "attention_position_ids", "packed_attention_mask",
@@ -135,7 +136,7 @@ def _make_flat_wrapper_ragged(model: nn.Module,
         f"past_lengths, attention_sequence_lengths, "
         f"state_indices, execution_phase_marker, context_sequence_count_carrier, "
         f"kv_page_table, logits_indices, "
-        f"{deepstack_tuple}, skip_softmax_scale{tree_kwargs})\n"
+        f"{deepstack_tuple}, skip_softmax_prefill_scale, skip_softmax_decode_scale{tree_kwargs})\n"
         f"    logits, hidden_states, present_key_values = outputs\n"
         f"    if hidden_states is None:\n"
         f"        return (logits,) + tuple(present_key_values)\n"
@@ -214,8 +215,10 @@ class Attention(nn.Module):
         self.attention_scale = config.attention_scaling
         self.enable_fp8_kv_cache = config.quant.kv_cache_quant == "fp8"
         self.sliding_window_size = config.sliding_window_size  # -1 means no sliding window
-        # Skip-softmax (BLASST) calibrated scale factor S (0.0 = disabled).
-        self.skip_softmax_scale_factor = config.skip_softmax_scale_factor
+        # Each deployed skip-softmax table wires its own scale-table input.
+        self.skip_softmax_prefill_enabled = config.skip_softmax_prefill_enabled
+        self.skip_softmax_decode_enabled = config.skip_softmax_decode_enabled
+        self.tp_size = config.tp_size
         module_prefix = f"layers.{layer_idx}.self_attn"
 
         self.q_proj = make_linear(config,
@@ -308,7 +311,8 @@ class Attention(nn.Module):
         kv_page_table: torch.Tensor,
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -339,12 +343,17 @@ class Attention(nn.Module):
             "attention_scale": self.attention_scale,
             "enable_context_mask_selector": False,
             "enable_vision_block_attention": False,
-            "skip_softmax_scale_factor": self.skip_softmax_scale_factor,
+            "skip_softmax_prefill_input":
+            int(self.skip_softmax_prefill_enabled),
+            "tp_size": self.tp_size,
         }
-        # Wire the runtime override carrier iff skip-softmax is enabled (scale
-        # factor > 0).
-        if skip_softmax_scale is not None and self.skip_softmax_scale_factor > 0.0:
-            kwargs["skip_softmax_scale"] = skip_softmax_scale
+        if (skip_softmax_prefill_scale is not None
+                and self.skip_softmax_prefill_enabled):
+            kwargs["skip_softmax_prefill_scale"] = skip_softmax_prefill_scale
+        if (skip_softmax_decode_scale is not None
+                and self.skip_softmax_decode_enabled):
+            kwargs["skip_softmax_decode_scale"] = skip_softmax_decode_scale
+            kwargs["skip_softmax_decode_input"] = 1
         if enable_tree:
             kwargs["attention_mask"] = attention_mask
             kwargs["attention_pos_id"] = attention_pos_id
@@ -391,7 +400,8 @@ class Attention(nn.Module):
         execution_phase_marker: torch.Tensor,
         context_sequence_count_carrier: torch.Tensor,
         kv_page_table: torch.Tensor,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
         attention_position_ids: "torch.Tensor | None" = None,
         packed_attention_mask: "torch.Tensor | None" = None,
         tree_parent_ids: "torch.Tensor | None" = None,
@@ -417,7 +427,9 @@ class Attention(nn.Module):
             "attention_scale": self.attention_scale,
             "enable_context_mask_selector": False,
             "enable_vision_block_attention": False,
-            "skip_softmax_scale_factor": self.skip_softmax_scale_factor,
+            "skip_softmax_prefill_input":
+            int(self.skip_softmax_prefill_enabled),
+            "tp_size": self.tp_size,
             "qkv_scales": getattr(self, "_qkv_scales_float", [1.0, 1.0, 1.0]),
             "query_start_offsets": query_start_offsets,
             "attention_sequence_lengths": attention_sequence_lengths,
@@ -427,8 +439,13 @@ class Attention(nn.Module):
         if packed_attention_mask is not None:
             kwargs["attention_mask"] = packed_attention_mask
             kwargs["attention_pos_id"] = attention_position_ids
-        if skip_softmax_scale is not None and self.skip_softmax_scale_factor > 0.0:
-            kwargs["skip_softmax_scale"] = skip_softmax_scale
+        if (skip_softmax_prefill_scale is not None
+                and self.skip_softmax_prefill_enabled):
+            kwargs["skip_softmax_prefill_scale"] = skip_softmax_prefill_scale
+        if (skip_softmax_decode_scale is not None
+                and self.skip_softmax_decode_enabled):
+            kwargs["skip_softmax_decode_scale"] = skip_softmax_decode_scale
+            kwargs["skip_softmax_decode_input"] = 1
         if self._q_norm_gamma_list or self._k_norm_gamma_list:
             kwargs["q_norm_gamma"] = self._q_norm_gamma_list
             kwargs["k_norm_gamma"] = self._k_norm_gamma_list
@@ -459,7 +476,8 @@ def _fp8_kv_scales_as_floats(attn: nn.Module) -> List[float]:
     q_buf = getattr(getattr(attn, "q_proj", None), "q_scale", None)
     k_buf = getattr(getattr(attn, "k_proj", None), "k_scale", None)
     v_buf = getattr(getattr(attn, "v_proj", None), "v_scale", None)
-    if v_buf is None and getattr(attn, "attention_k_eq_v", False):
+    if getattr(attn, "attention_k_eq_v", False) and (v_buf is None
+                                                     or v_buf.isnan().any()):
         v_buf = k_buf
     return [
         float(q_buf.item()) if q_buf is not None else 1.0,
@@ -483,6 +501,23 @@ def _can_fuse_nvfp4_scales(attn: "Attention") -> bool:
         if not all(torch.equal(tensors[0], t) for t in tensors[1:]):
             return False
     return True
+
+
+def _can_fuse_nvfp4_a16_scales(attn: "Attention") -> bool:
+    """True if all 3 NVFP4-A16 Q/K/V projections share one global scale.
+
+    The repack replaces the raw ModelOpt scalars with a single per-tensor
+    ``global_scale``, so a fused GEMM is only valid when Q/K/V agree on it.
+    """
+    scales = []
+    for name in _QKV_PROJ_NAMES:
+        proj = getattr(attn, name, None)
+        tensor = getattr(proj, "global_scale",
+                         None) if proj is not None else None
+        if tensor is None:
+            return False
+        scales.append(tensor)
+    return all(torch.equal(scales[0], t) for t in scales[1:])
 
 
 def fuse_qkv_projections(model: nn.Module) -> int:
@@ -530,6 +565,25 @@ def fuse_qkv_projections(model: nn.Module) -> int:
                     "QKV fusion skipped for %s: NVFP4 scalar scales differ "
                     "across projections. Re-quantize with resmoothing "
                     "enabled to equalise scales.", name)
+                continue
+        elif isinstance(first_proj, NVFP4A16Linear):
+            # Marlin packs N on the last axis of a size-1 batched buffer, so the
+            # dim-0 concatenation below does not apply to it.
+            if not getattr(first_proj, "_use_blackwell_gemm", False):
+                continue
+            # A padded projection carries zero rows that a concatenation would
+            # place inside the packed QKV vector, breaking the [q|k|v] contract.
+            if any(
+                    getattr(p, "n_padded", p.out_features) != p.out_features
+                    for p in proj_modules):
+                logger.warning(
+                    "QKV fusion skipped for %s: NVFP4-A16 output width is "
+                    "padded.", name)
+                continue
+            if not _can_fuse_nvfp4_a16_scales(attn):
+                logger.warning(
+                    "QKV fusion skipped for %s: NVFP4-A16 global scales differ "
+                    "across projections.", name)
                 continue
         else:
             # INT4, FP8, MXFP8, etc. — not fusible.
@@ -581,14 +635,28 @@ def fuse_qkv_projections(model: nn.Module) -> int:
         in_features = first_proj.in_features
         has_bias = getattr(first_proj, "bias", None) is not None
         if is_nvfp4_linear(first_proj):
+            quant_method = first_proj.quant_method
             method = NVFP4LinearMethod(
-                group_size=first_proj.quant_method.group_size)
+                group_size=quant_method.group_size,
+                use_generic_allreduce=quant_method.use_generic_allreduce,
+                raw_activation_scale=quant_method.raw_activation_scale)
             fused_linear = ReplicatedLinear(in_features,
                                             fused_out_dim,
                                             bias=has_bias,
                                             dtype=torch.float16,
                                             mapping=first_proj.mapping,
                                             quant_method=method)
+        elif isinstance(first_proj, NVFP4A16Linear):
+            fused_linear = NVFP4A16Linear(in_features, fused_out_dim,
+                                          first_proj.group_size, has_bias)
+            # The repack already consumed the raw ModelOpt buffers; the fused
+            # module carries the packed plugin buffers assigned below.
+            for stale in ("weight", "weight_scale", "weight_scale_2"):
+                fused_linear._buffers.pop(stale, None)
+            for packed in ("qweight", "block_scales", "global_scale"):
+                if packed in fused_buffers:
+                    fused_linear.register_buffer(packed, fused_buffers[packed])
+            fused_linear.n_padded = fused_out_dim
         else:
             fused_linear = FP16Linear(in_features,
                                       fused_out_dim,
@@ -703,7 +771,8 @@ class DecoderLayer(nn.Module):
         kv_page_table: torch.Tensor,
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         residual = hidden_states
         attn_output, present_key_value = self.self_attn(
@@ -715,7 +784,8 @@ class DecoderLayer(nn.Module):
             kv_page_table,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
-            skip_softmax_scale=skip_softmax_scale,
+            skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+            skip_softmax_decode_scale=skip_softmax_decode_scale,
         )
         hidden_states = residual + attn_output
 
@@ -778,7 +848,8 @@ class Transformer(nn.Module):
         deepstack_embeds: Tuple[torch.Tensor, ...] = (),
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
         output_hidden_states: bool = False,
         dflash_target_layer_ids: "List[int] | None" = None,
     ) -> Tuple[torch.Tensor, Tuple, "Tuple | None", "torch.Tensor | None"]:
@@ -801,7 +872,8 @@ class Transformer(nn.Module):
                 kv_page_table,
                 attention_mask=attention_mask,
                 attention_pos_id=attention_pos_id,
-                skip_softmax_scale=skip_softmax_scale,
+                skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+                skip_softmax_decode_scale=skip_softmax_decode_scale,
             )
             present_key_values_list.append(next_key_value)
 
@@ -852,7 +924,8 @@ class Transformer(nn.Module):
         context_sequence_count_carrier: torch.Tensor,
         kv_page_table: torch.Tensor,
         deepstack_embeds: Tuple[torch.Tensor, ...] = (),
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
         output_hidden_states: bool = False,
         target_layer_ids: "List[int] | None" = None,
         **kwargs,
@@ -878,7 +951,8 @@ class Transformer(nn.Module):
                 execution_phase_marker=execution_phase_marker,
                 context_sequence_count_carrier=context_sequence_count_carrier,
                 kv_page_table=kv_page_table,
-                skip_softmax_scale=skip_softmax_scale,
+                skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+                skip_softmax_decode_scale=skip_softmax_decode_scale,
                 **kwargs)
             present_key_values.append(present_kv)
             if layer_index in target_layer_set:
@@ -960,6 +1034,16 @@ class CausalLM(nn.Module):
         self.lm_head.weight = nn.Parameter(embed_weight.detach().clone(),
                                            requires_grad=False)
 
+    def materialize_checkpoint_defaults(self, device: str) -> None:
+        """Materialize the optional Q-cache scale omitted by KV-only checkpoints."""
+        for layer in self.model.layers:
+            q_proj = getattr(getattr(layer, "self_attn", None), "q_proj", None)
+            q_scale = getattr(q_proj, "q_scale", None)
+            if q_scale is not None and q_scale.device.type == "meta":
+                q_proj.q_scale = torch.ones(q_scale.shape,
+                                            dtype=q_scale.dtype,
+                                            device=device)
+
     def onnx_export_spec(self) -> OnnxSpec:
         """Return all model-specific parameters needed for ONNX export.
 
@@ -980,11 +1064,12 @@ class CausalLM(nn.Module):
         dflash_base = getattr(config, 'dflash_base', False)
         jetspec_base = getattr(config, 'jetspec_base', False)
         dspark_base = getattr(config, 'dspark_base', False)
+        mtp_base = getattr(config, 'mtp_base', False)
         target_hidden_base = dflash_base or jetspec_base or dspark_base
-        # DFlash/JetSpec/DSpark base uses the same export structure as Eagle base
-        # (tree-attention inputs + hidden_states output), so we treat it as
+        # DFlash/JetSpec/DSpark/MTP base uses the same export structure as Eagle
+        # base (tree-attention inputs + hidden_states output), so we treat it as
         # eagle_base for the wrapper.
-        eagle_base = config.eagle_base or target_hidden_base
+        eagle_base = config.eagle_base or target_hidden_base or mtp_base
         return self._token_major_onnx_export_spec(tree_attention=eagle_base)
 
     def _token_major_onnx_export_spec(self,
@@ -1057,13 +1142,18 @@ class CausalLM(nn.Module):
                         dtype=torch.float16,
                         device=device) for _ in range(Nd)
         ]
-        skip_softmax_scale = torch.zeros(2, dtype=torch.int8, device=device)
+        skip_softmax_prefill_scale = torch.zeros(2,
+                                                 dtype=torch.int32,
+                                                 device=device)
+        skip_softmax_decode_scale = torch.zeros(2,
+                                                dtype=torch.int32,
+                                                device=device)
         args = (inputs_embeds, *past_key_values, rope_rotary_cos_sin,
                 positions, query_start_offsets, query_lengths, past_lengths,
                 attention_sequence_lengths, state_indices,
                 execution_phase_marker, context_sequence_count_carrier,
                 kv_page_table, logits_indices, *deepstack_embeds,
-                skip_softmax_scale)
+                skip_softmax_prefill_scale, skip_softmax_decode_scale)
         input_names = (
             ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
                 "rope_rotary_cos_sin", "positions", "query_start_offsets",
@@ -1071,13 +1161,15 @@ class CausalLM(nn.Module):
                 "state_indices", "execution_phase_marker",
                 "context_sequence_count_carrier", "kv_page_table",
                 "logits_indices"
-            ] + [f"deepstack_embeds_{i}"
-                 for i in range(Nd)] + ["skip_softmax_scale"])
+            ] + [f"deepstack_embeds_{i}" for i in range(Nd)] +
+            ["skip_softmax_prefill_scale", "skip_softmax_decode_scale"])
         dflash_base = getattr(config, "dflash_base", False)
         jetspec_base = getattr(config, "jetspec_base", False)
         dspark_base = getattr(config, "dspark_base", False)
+        mtp_base = getattr(config, "mtp_base", False)
         has_hidden_output = (self.emit_hidden_states or config.eagle_base
-                             or dflash_base or jetspec_base or dspark_base)
+                             or dflash_base or jetspec_base or dspark_base
+                             or mtp_base)
         output_names = ["logits"
                         ] + [f"present_key_values_{i}" for i in range(Na)]
         if has_hidden_output:
@@ -1095,9 +1187,13 @@ class CausalLM(nn.Module):
         packed_mask_width = torch.export.Dim("packed_mask_width",
                                              min=1,
                                              max=64)
-        skip_dim = torch.export.Dim("skip_softmax_scale_len",
+        skip_dim = torch.export.Dim("skip_softmax_prefill_scale_len",
                                     min=0,
-                                    max=1048576)
+                                    max=SKIP_SOFTMAX_SCALE_TABLE_MAX_LEN)
+        skip_decode_dim = torch.export.Dim(
+            "skip_softmax_decode_scale_len",
+            min=0,
+            max=SKIP_SOFTMAX_SCALE_TABLE_MAX_LEN)
         all_shapes: list = [{0: tokens}]
         all_shapes.extend({1: num_pages} for _ in range(Na))
         all_shapes.extend([
@@ -1138,6 +1234,7 @@ class CausalLM(nn.Module):
         ])
         all_shapes.extend({0: tokens} for _ in range(Nd))
         all_shapes.append({0: skip_dim})
+        all_shapes.append({0: skip_decode_dim})
         if tree_attention:
             attention_position_ids = positions.clone()
             packed_attention_mask = torch.zeros(physical_tokens,
@@ -1194,7 +1291,8 @@ class CausalLM(nn.Module):
         kv_page_table: torch.Tensor,
         logits_indices: torch.Tensor,
         deepstack_embeds: Tuple[torch.Tensor, ...] = (),
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
         attention_position_ids: "torch.Tensor | None" = None,
         packed_attention_mask: "torch.Tensor | None" = None,
         tree_parent_ids: "torch.Tensor | None" = None,
@@ -1215,7 +1313,8 @@ class CausalLM(nn.Module):
             context_sequence_count_carrier,
             kv_page_table,
             deepstack_embeds,
-            skip_softmax_scale,
+            skip_softmax_prefill_scale,
+            skip_softmax_decode_scale,
             attention_position_ids=attention_position_ids,
             packed_attention_mask=packed_attention_mask,
             tree_parent_ids=tree_parent_ids,
@@ -1229,7 +1328,10 @@ class CausalLM(nn.Module):
                                                     logits_indices)
         logits = self.lm_head(selected_hidden_states).to(torch.float32)
         logits = logits.reshape(-1, logits.shape[-1])
-        emitted_hidden = self._ragged_emitted_hidden()
+        # The MTP draft consumes the post-final-norm hidden state of every
+        # verified token, the same hook point as HF ``hidden_states[-1]``.
+        emitted_hidden = (token_hidden_states if getattr(
+            self.config, "mtp_base", False) else self._ragged_emitted_hidden())
         return logits, emitted_hidden, present_key_values
 
     def _target_hidden_layer_ids(self) -> "List[int] | None":
@@ -1250,8 +1352,9 @@ class CausalLM(nn.Module):
         if self.config.eagle_base:
             all_hidden_states = self.model.all_hidden_states
             n_layers = len(all_hidden_states) - 1
-            # The high feature is HF hidden_states[-4], including the final norm.
-            layer_indices = [2, n_layers // 2, n_layers - 3]
+            layer_indices = self.config.eagle3_target_layer_ids or [
+                2, n_layers // 2, n_layers - 3
+            ]
             hidden_states = torch.cat(
                 [all_hidden_states[i] for i in layer_indices],
                 dim=-1).to(torch.float16)
@@ -1273,7 +1376,8 @@ class CausalLM(nn.Module):
         deepstack_embeds: Tuple[torch.Tensor, ...] = (),
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
     ) -> Tuple:
         eagle_base = self.config.eagle_base
         dflash_base = getattr(self.config, 'dflash_base', False)
@@ -1303,7 +1407,8 @@ class CausalLM(nn.Module):
             deepstack_embeds,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
-            skip_softmax_scale=skip_softmax_scale,
+            skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+            skip_softmax_decode_scale=skip_softmax_decode_scale,
             output_hidden_states=eagle_base and not target_hidden_base,
             dflash_target_layer_ids=target_layer_ids
             if target_hidden_base else None,
@@ -1326,20 +1431,20 @@ class CausalLM(nn.Module):
             # runtime passes these to the draft engine per round.
             return logits, target_hidden_concat, present_key_values
 
+        if getattr(self.config, 'mtp_base', False):
+            return logits, hidden_states, present_key_values
+
         if eagle_base and all_hidden_states is not None:
-            # EAGLE3 base: concatenate hidden states from 3 selected layers.
-            # Layer indices: layer 2, middle layer, near-final layer.
-            # Output the full-sequence hidden states (NOT gathered) — the C++
-            # runtime selects accepted tokens from these after verification.
             n_layers = len(
                 all_hidden_states) - 1  # last entry is normed output
-            idx = [2, n_layers // 2, n_layers - 3]
-            eagle_hidden = torch.cat([
-                all_hidden_states[idx[0]],
-                all_hidden_states[idx[1]],
-                all_hidden_states[idx[2]],
-            ],
-                                     dim=-1).to(torch.float16)
+            target_layers = self.config.eagle3_target_layer_ids or [
+                2, n_layers // 2, n_layers - 3
+            ]
+            if any(layer < 0 or layer >= n_layers for layer in target_layers):
+                raise ValueError("EAGLE3 target layer IDs are out of range")
+            eagle_hidden = torch.cat(
+                [all_hidden_states[layer] for layer in target_layers],
+                dim=-1).to(torch.float16)
             return logits, eagle_hidden, present_key_values
 
         if self.emit_hidden_states:

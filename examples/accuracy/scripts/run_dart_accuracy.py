@@ -38,7 +38,7 @@ Example:
         --output_dir tmp/dart_accuracy
 
 Note: for an out-of-tree CMake build directory, pass
---llm_inference_bin <builddir>/examples/llm/llm_inference. EDGELLM_PLUGIN_PATH is derived
+--llm_inference_bin <builddir>/bin/llm_inference. EDGELLM_PLUGIN_PATH is derived
 from the binary location automatically when the variable is not already set.
 """
 
@@ -106,16 +106,16 @@ def read_token_counts(profile_file):
 def make_inference_env(llm_inference_bin):
     """Return the subprocess environment, deriving EDGELLM_PLUGIN_PATH when unset.
 
-    llm_inference dlopens `build/libNvInfer_edgellm_plugin.so` relative to the CWD by
-    default, which fails for out-of-tree build directories. The plugin always sits at the
-    build root, two levels above the binary (<build>/examples/llm/llm_inference).
+    llm_inference dlopens `build/lib/libNvInfer_edgellm_plugin.so` relative to the CWD by
+    default, which fails for out-of-tree build directories. The plugin sits in
+    `<build>/lib`, next to the binary directory.
     """
     env = os.environ.copy()
     if "EDGELLM_PLUGIN_PATH" not in env:
         build_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(
-                os.path.abspath(llm_inference_bin))))
-        candidate = os.path.join(build_root, "libNvInfer_edgellm_plugin.so")
+            os.path.dirname(os.path.abspath(llm_inference_bin)))
+        candidate = os.path.join(build_root, "lib",
+                                 "libNvInfer_edgellm_plugin.so")
         if os.path.exists(candidate):
             env["EDGELLM_PLUGIN_PATH"] = candidate
             print(f"EDGELLM_PLUGIN_PATH not set; using {candidate}")
@@ -321,7 +321,7 @@ def main():
     parser.add_argument("--pivot_image_tokens", type=int, default=4)
     parser.add_argument("--pivot_text_tokens", type=int, default=4)
     parser.add_argument("--llm_inference_bin",
-                        default="./build/examples/llm/llm_inference",
+                        default="./build/bin/llm_inference",
                         help="Path to the llm_inference binary")
     parser.add_argument("--output_dir",
                         default="tmp/dart_accuracy",

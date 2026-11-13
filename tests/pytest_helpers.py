@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import pathlib
+import re
 import shlex
 import subprocess
 import sys
@@ -81,11 +83,50 @@ def _tee_line_to_process_stdout(text: str) -> None:
             pass
 
 
-def run_command(cmd: List[str],
-                remote_config: Optional[RemoteConfig],
-                timeout: int = 300,
-                logger=None,
-                env_vars: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+def run_command(cmd, remote_config, timeout=300, logger=None, env_vars=None):
+    """Record commands without changing their result or exception contract."""
+    if not os.environ.get("CI_JOB_ID") or os.name == "nt":
+        return _run_command(cmd, remote_config, timeout, logger, env_vars)
+    root = pathlib.Path(__file__).resolve().parents[1]
+    target_root = remote_config.remote_workspace if remote_config else str(
+        root)
+    target_scripts = str(
+        pathlib.PurePosixPath(target_root) / ".gitlab/ci/scripts")
+    executable = pathlib.PurePosixPath(cmd[0]).name
+    building = executable in {"cmake", "make", "ninja"}
+    script = "ci_build_command.sh" if building else "ci_run.sh"
+    command = ["bash", target_scripts + "/" + script]
+    if not building:
+        command += [
+            "0", ("Remote " if remote_config else "Local ") + executable, "--"
+        ]
+    command += cmd
+    command = [
+        "bash", "-c", 'if [ -r "$1" ]; then exec bash "$@"; fi; '
+        f'shift {1 if building else 4}; exec "$@"', "ci-wrapper", *command[1:]
+    ]
+    environment = dict(env_vars or {})
+    environment["CI_RUN_QUIET"] = "1"
+    if remote_config:
+        for name in ("CI_JOB_ID", "CI_PROJECT_ID", "CI_PIPELINE_SOURCE",
+                     "CI_MERGE_REQUEST_IID",
+                     "CI_MERGE_REQUEST_TARGET_BRANCH_NAME", "CI_COMMIT_BRANCH",
+                     "CI_COMMIT_REF_PROTECTED", "EDGE_LLM_CI_CACHE_ROOT",
+                     "EDGE_LLM_ENGINE_CACHE_MODE",
+                     "EDGE_LLM_ENGINE_CACHE_EPOCH", "EDGE_LLM_STABILITY_COLD",
+                     "CI_SERVER_CACHE_ENABLED", "EDGELLM_CCACHE_MODE",
+                     "CI_TELEMETRY_ENABLED", "CI_CCACHE_ENABLE_QNX"):
+            if name in os.environ:
+                environment[name] = os.environ[name]
+        environment.update(CI_PROJECT_DIR=target_root, CI_CACHE_REMOTE="1")
+    return _run_command(command, remote_config, timeout, logger, environment)
+
+
+def _run_command(cmd: List[str],
+                 remote_config: Optional[RemoteConfig],
+                 timeout: int = 300,
+                 logger=None,
+                 env_vars: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Unified command execution with comprehensive logging"""
     if remote_config is not None:
         remote_host = f"{remote_config.user}@{remote_config.host}"
@@ -126,7 +167,12 @@ def run_command(cmd: List[str],
     # Prepare environment for local execution
     local_env = os.environ.copy() if env_vars else None
     if env_vars and not remote_config:
-        local_env.update(env_vars)
+        # Values like "$LD_LIBRARY_PATH:/opt/trt/lib" are shell syntax; a local subprocess gets the
+        # dict verbatim, so expand here or the inherited path is replaced instead of extended.
+        local_env.update({
+            key: os.path.expandvars(value).strip(os.pathsep)
+            for key, value in env_vars.items()
+        })
 
     try:
         process = subprocess.Popen(final_cmd,
@@ -227,15 +273,55 @@ def get_file_content(filepath: str,
     return content
 
 
+def safe_sample_name(name):
+    """Dataset sample names become output file names; keep them inside the log dir."""
+    assert isinstance(name, str) and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]*", name), f"Unsafe sample name: {name!r}"
+    return name
+
+
+def run_policy_command(command, env, remote, logger, timeout=1800):
+    if env.trt_package_dir:
+        command = [
+            "bash", "-c",
+            f"export LD_LIBRARY_PATH={shlex.quote(env.trt_package_dir + '/lib')}:"
+            '"${LD_LIBRARY_PATH:-}"; exec ' + shlex.join(map(str, command))
+        ]
+    result = run_command(list(map(str, command)),
+                         remote,
+                         timeout,
+                         logger,
+                         env_vars={
+                             "EDGELLM_PLUGIN_PATH":
+                             os.path.join(env.build_dir, "lib",
+                                          "libNvInfer_edgellm_plugin.so")
+                         })
+    assert result["success"], result["combined_output"]
+    return result["output"]
+
+
 def run_with_trt_env(cmd, remote_config, timeout, logger, env_config):
     """Run command with TensorRT LD_LIBRARY_PATH if available"""
-    env_vars = None
+    env_vars = {}
     if env_config and env_config.trt_package_dir:
         # Unified approach for both local and remote execution
         trt_lib_path = f"{env_config.trt_package_dir}/lib"
-        env_vars = {"LD_LIBRARY_PATH": f"$LD_LIBRARY_PATH:{trt_lib_path}"}
+        env_vars["LD_LIBRARY_PATH"] = f"$LD_LIBRARY_PATH:{trt_lib_path}"
 
-    return run_command(cmd, remote_config, timeout, logger, env_vars)
+    # Cross-machine MPI forwards these values from the launcher to each rank.
+    if os.environ.get("EDGELLM_TP_HOSTS", "").strip():
+        for name in ("EDGELLM_PLUGIN_PATH", "NCCL_SOCKET_IFNAME"):
+            value = os.environ.get(name)
+            if value:
+                env_vars[name] = value
+
+    # Dual-iGPU boards report one PCI address for both GPUs, so upstream NCCL
+    # aborts in ncclTopoAddPci; the Tegra NCCL fork lives off the loader path.
+    nccl_so = os.environ.get("EDGELLM_NCCL_SO_PATH")
+    if nccl_so:
+        env_vars["EDGELLM_NCCL_SO_PATH"] = nccl_so
+
+    return run_command(cmd, remote_config, timeout, logger, env_vars or None)
 
 
 @contextmanager

@@ -38,7 +38,6 @@
 #include <string>
 #include <vector>
 
-using namespace nvinfer1;
 using namespace trt_edgellm;
 
 namespace

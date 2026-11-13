@@ -97,6 +97,8 @@ def test_chat_help_lists_option_groups(capsys):
                         ("Engine and cache", "--max-input-len"),
                         ("Output and diagnostics", "--verbose")):
         assert title in help_text and flag in help_text
+    assert "--max-spec-verify-tokens" in help_text
+    assert "--max-spec-draft-tokens" in help_text
 
 
 @pytest.mark.parametrize("specification", [

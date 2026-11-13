@@ -25,10 +25,9 @@ add_cross_build_link_options(cosmos3_policy_build)
 
 add_executable(cosmos3_policy_inference cosmos3_policy_inference.cpp)
 target_link_libraries(
-  cosmos3_policy_inference PRIVATE cosmos3Experimental edgellmCore exampleUtils
-                                   commonLibraryExt)
+  cosmos3_policy_inference PRIVATE cosmos3Experimental edgellmCore
+                                   edgellmApplicationSupport commonLibraryExt)
 target_include_directories(
-  cosmos3_policy_inference
-  PRIVATE ${CMAKE_SOURCE_DIR}/cpp ${COMMON_INCLUDE_DIRS}
-          ${CMAKE_SOURCE_DIR}/examples/utils)
+  cosmos3_policy_inference PRIVATE ${CMAKE_SOURCE_DIR}/cpp
+                                   ${COMMON_INCLUDE_DIRS})
 add_cross_build_link_options(cosmos3_policy_inference)

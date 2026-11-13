@@ -35,7 +35,8 @@ namespace plugins
 //! parent and child in the proposal tree.
 //!
 //! Required metadata inputs end with `execution_phase_marker` at slot 7 and the shape-only INT32
-//! `context_sequence_count_carrier` at slot 8. DDTree parent/depth inputs, when enabled, occupy slots 9 and 10.
+//! `context_sequence_count_carrier` at slot 8. Verify-capable instances append parent/depth at slots 9/10 and
+//! spec_verify_layout at slot 11.
 class CausalConv1dPlugin : public nvinfer1::IPluginV3,
                            public nvinfer1::IPluginV3OneCore,
                            public nvinfer1::IPluginV3OneBuildV2,
@@ -43,7 +44,7 @@ class CausalConv1dPlugin : public nvinfer1::IPluginV3,
 {
 public:
     CausalConv1dPlugin(std::string const& name, int32_t stride, int32_t padding, int32_t dilation, int32_t groups,
-        bool useSpecVerifyState = false, bool useDDTree = false);
+        bool useSpecVerifyState = false);
     CausalConv1dPlugin(std::string const& name, nvinfer1::PluginFieldCollection const* fc);
 
     CausalConv1dPlugin() = delete;
@@ -85,16 +86,33 @@ public:
     void setPluginNamespace(char const* pluginNamespace) noexcept;
 
 private:
+    //! Phase 8 needs a depthwise layer without spec-verify state and a packed varlen kernel for (\p width, mDilation)
+    //! on mSMVersion. Decides both the phase 8 workspace reservation and enqueue acceptance.
+    bool supportsCompactPhase(int32_t dim, int32_t width) const noexcept;
+
+    //! This layer's name and shape (\p dim channels, kernel \p width) for error logs (describePluginLayer).
+    std::string describeLayer(int32_t dim, int32_t width) const;
+
+    //! Phase 8: packed varlen conv on rows [0, T_p) through dense history state when Np > 0, single-step decode on
+    //! [T_p, T).
+    int32_t enqueueCompact(nvinfer1::PluginTensorDesc const* inputDesc, nvinfer1::PluginTensorDesc const* outputDesc,
+        void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream) noexcept;
+
+    //! Single-step decode of \p numSequences rows starting at token row \p firstRow and sequence \p firstSequence;
+    //! phase 3 passes (0, 0, N), phase 8 passes (T_p, Np, Nd). Throws on invalid kernel arguments.
+    void enqueueDecodeRows(void const* const* inputs, void* const* outputs, int32_t firstRow, int32_t firstSequence,
+        int32_t numSequences, int32_t dim, int32_t stateLen, int32_t statePoolRows, nvinfer1::Dims const& weightDims,
+        nvinfer1::DataType type, cudaStream_t stream) const;
+
     std::string mLayerName;
     std::string mNamespace;
     int32_t mStride{1};
     int32_t mPadding{0};
     int32_t mDilation{1};
     int32_t mGroups{0};
+    int32_t mSMVersion{0};           //!< Captured device SM version used for the profiled chain specialization
     bool mUseSpecVerifyState{false}; //!< Enable spec-verify intermediate_conv_states output
-    bool mUseDDTree{false};          //!< Enable DDTree parent/depth metadata inputs for tree-state execution.
     int32_t mUseSpecVerifyStateField{0};
-    int32_t mUseDDTreeField{0};
 
     std::vector<nvinfer1::PluginField> mDataToSerialize;
     nvinfer1::PluginFieldCollection mFCToSerialize{};

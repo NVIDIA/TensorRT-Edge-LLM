@@ -20,6 +20,7 @@
 #include "common/checkMacros.h"
 #include "common/logger.h"
 #include "common/safetensorsUtils.h"
+#include "common/trtInterop.h"
 #include "kernels/preprocessKernels/imageUtilKernels.h"
 #include "multimodal/common/imageUtils.h"
 #include "multimodal/common/modelTypes.h"
@@ -40,8 +41,8 @@ namespace trt_edgellm
 namespace rt
 {
 
-Phi4MMViTRunner::Phi4MMViTRunner(std::string const& engineDir, cudaStream_t stream)
-    : MultimodalRunner(engineDir, stream)
+Phi4MMViTRunner::Phi4MMViTRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
+    : MultimodalRunner(engineDir, stream, checkpointDir)
     , mEngineDir(engineDir)
 {
     std::string const configPath = engineDir + "/config.json";
@@ -120,7 +121,7 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
         mConfig.maxNumBlocks, mConfig.numChannels, mConfig.blockImageSizeH, mConfig.blockImageSizeW);
     mVitInput
         = rt::Tensor({mConfig.maxNumBlocks, mConfig.numChannels, mConfig.blockImageSizeH, mConfig.blockImageSizeW},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mVitInput");
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "Phi4MMViTRunner::mVitInput");
     setTensorAddressStatus &= mVisualContext->setTensorAddress(binding_names::kVisualInput, mVitInput.rawPointer());
     LOG_INFO("mConfig.maxNumBlocks: %d, mConfig.outHiddenSize: %d", mConfig.maxNumBlocks, mConfig.outHiddenSize);
 
@@ -136,9 +137,9 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
     int64_t const totalCapacity = vitImageTokens + conservativeExtra;
 
     mEngineOutputEmbedding = rt::Tensor({vitImageTokens, mConfig.outHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mEngineOutputEmbedding");
+        trt_edgellm::DataType::kHALF, "Phi4MMViTRunner::mEngineOutputEmbedding");
     mOutputEmbedding = rt::Tensor({totalCapacity, mConfig.outHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mOutputEmbedding");
+        trt_edgellm::DataType::kHALF, "Phi4MMViTRunner::mOutputEmbedding");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kVisualOutput, mEngineOutputEmbedding.rawPointer());
     if (!setTensorAddressStatus)
@@ -153,28 +154,28 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
     mImageStd = mConfig.imageStd;
 
     int64_t const maxImagePixels = mVitInput.getShape().volume();
-    mNormalizedImageDevice = rt::Tensor(
-        {maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mNormalizedImageDevice");
+    mNormalizedImageDevice = rt::Tensor({maxImagePixels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
+        "Phi4MMViTRunner::mNormalizedImageDevice");
 
     // Pre-allocate temporary index tensors for Phi4MM postprocess (assign to members)
     mHBlocks = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "Phi4MMViTRunner::mHBlocks");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "Phi4MMViTRunner::mHBlocks");
     mWBlocks = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "Phi4MMViTRunner::mWBlocks");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "Phi4MMViTRunner::mWBlocks");
     mSrcGlbStart = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSrcGlbStart");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "Phi4MMViTRunner::mSrcGlbStart");
     mSrcSubStart = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSrcSubStart");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "Phi4MMViTRunner::mSrcSubStart");
     mDstOutStart = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mDstOutStart");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "Phi4MMViTRunner::mDstOutStart");
     mSubOutLen = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSubOutLen");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "Phi4MMViTRunner::mSubOutLen");
 
     // Initialize newline embeddings and load from safetensors file
     mSubGNProj = rt::Tensor(
-        {mConfig.outHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mSubGNProj");
+        {mConfig.outHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "Phi4MMViTRunner::mSubGNProj");
     mGlbGNProj = rt::Tensor(
-        {mConfig.outHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mGlbGNProj");
+        {mConfig.outHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "Phi4MMViTRunner::mGlbGNProj");
     CUDA_CHECK(cudaMemsetAsync(mSubGNProj.rawPointer(), 0, mSubGNProj.getMemoryCapacity(), stream));
     CUDA_CHECK(cudaMemsetAsync(mGlbGNProj.rawPointer(), 0, mGlbGNProj.getMemoryCapacity(), stream));
     // Try to load GN tensors from safetensors companion file
@@ -187,7 +188,7 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
         {
             if (t.getName() == "sub_GN")
             {
-                check::check(t.getDataType() == nvinfer1::DataType::kHALF, "sub_GN must be FP16");
+                check::check(t.getDataType() == trt_edgellm::DataType::kHALF, "sub_GN must be FP16");
                 check::check(
                     t.getShape().getNumDims() == 1 && t.getShape()[0] == mConfig.outHiddenSize, "sub_GN size mismatch");
                 CUDA_CHECK(cudaMemcpyAsync(mSubGNProj.rawPointer(), t.rawPointer(),
@@ -195,7 +196,7 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
             }
             else if (t.getName() == "glb_GN")
             {
-                check::check(t.getDataType() == nvinfer1::DataType::kHALF, "glb_GN must be FP16");
+                check::check(t.getDataType() == trt_edgellm::DataType::kHALF, "glb_GN must be FP16");
                 check::check(
                     t.getShape().getNumDims() == 1 && t.getShape()[0] == mConfig.outHiddenSize, "glb_GN size mismatch");
                 CUDA_CHECK(cudaMemcpyAsync(mGlbGNProj.rawPointer(), t.rawPointer(),
@@ -211,17 +212,17 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
 
     // Pre-allocate temporary index CPU buffers for Phi4MM postprocess
     mHBlocksHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "Phi4MMViTRunner::mHBlocksHost");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "Phi4MMViTRunner::mHBlocksHost");
     mWBlocksHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "Phi4MMViTRunner::mWBlocksHost");
-    mSrcGlbStartHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSrcGlbStartHost");
-    mSrcSubStartHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSrcSubStartHost");
-    mDstOutStartHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mDstOutStartHost");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "Phi4MMViTRunner::mWBlocksHost");
+    mSrcGlbStartHost = rt::Tensor({mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
+        "Phi4MMViTRunner::mSrcGlbStartHost");
+    mSrcSubStartHost = rt::Tensor({mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
+        "Phi4MMViTRunner::mSrcSubStartHost");
+    mDstOutStartHost = rt::Tensor({mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
+        "Phi4MMViTRunner::mDstOutStartHost");
     mSubOutLenHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSubOutLenHost");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64, "Phi4MMViTRunner::mSubOutLenHost");
 
     return true;
 }
@@ -514,7 +515,7 @@ bool Phi4MMViTRunner::infer(cudaStream_t stream)
 
         bool setEngineIOStatus{true};
         setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kVisualInput, mVitInput.getShape().getTRTDims());
+            &= mVisualContext->setInputShape(binding_names::kVisualInput, toTrtDims(mVitInput.getShape()));
 
         if (!setEngineIOStatus)
         {

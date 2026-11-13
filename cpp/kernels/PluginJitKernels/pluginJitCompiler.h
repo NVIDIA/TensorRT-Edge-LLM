@@ -17,7 +17,9 @@
 
 #pragma once
 
+#include "pluginJitCompileCache.h"
 #include "pluginJitEmbeddedSources.h"
+#include "pluginJitKey.h"
 
 #include <cstdint>
 #include <string>
@@ -28,7 +30,26 @@ namespace trt_edgellm
 
 int32_t getPluginJitNvrtcMajorVersion();
 
+//! NVRTC-compile `program` with `options` for the real device architecture.
+//! \throws std::runtime_error when compilation fails or the result is empty or not a native cubin
 std::vector<uint8_t> compilePluginJitKernel(
     PluginJitProgram program, std::vector<std::string> const& options, std::string const& description);
+
+//! Compile once per distinct key, process-wide and shared across threads (see
+//! PluginJitCompileCache), and return the key, the native cubin and the digest binding the two.
+//! The caller validates `key` first; `options` is the NVRTC option list derived from it.
+template <typename Key>
+PluginJitKernel<Key> getOrCompilePluginJitKernel(PluginJitProgram const program, Key const& key,
+    std::vector<std::string> const& options, std::string const& description)
+{
+    static PluginJitCompileCache<Key, PluginJitKernel<Key>, PluginJitKeyHasher<Key>> sCache;
+    return sCache.getOrCompile(key, [&] {
+        PluginJitKernel<Key> kernel;
+        kernel.key = key;
+        kernel.cubin = compilePluginJitKernel(program, options, description);
+        kernel.digest = computePluginJitDigest(key, kernel.cubin.data(), kernel.cubin.size());
+        return kernel;
+    });
+}
 
 } // namespace trt_edgellm

@@ -45,7 +45,7 @@ TEST(SpecCommonStateTrackerTests, InitializesFromFullInputsAndTracksAcceptedToke
     tracker.consumeDraftPrefillOutputs();
     int32_t const accepted[]{2, 1};
     tracker.recordAccepted(accepted, 2);
-    tracker.materializePending(1, 2);
+    tracker.materializePending(2);
     EXPECT_EQ(tracker.commonMaterializedStateLengths(), std::vector<int32_t>({5, 6}));
 }
 
@@ -64,13 +64,59 @@ TEST(SpecCommonStateTrackerTests, CompactsAllStateAndPreservesPendingPrefill)
     tracker.compact({1, -1, 0}, 3, 2);
 
     EXPECT_EQ(tracker.commonMaterializedStateLengths(), std::vector<int32_t>({3, 1}));
-    tracker.materializePending(1, 2);
+    tracker.materializePending(2);
     EXPECT_EQ(tracker.commonMaterializedStateLengths(), std::vector<int32_t>({8, 4}));
     EXPECT_TRUE(tracker.draftPrefillOutputsPending());
 
     tracker.compact({-1, -1}, 2, 0);
     EXPECT_TRUE(tracker.commonMaterializedStateLengths().empty());
     EXPECT_FALSE(tracker.draftPrefillOutputsPending());
+}
+
+// A session appends rows one at a time, whatever a blocking request left behind, and a seated row's held-back prompt
+// position materializes in the first round it decodes in.
+TEST(SpecCommonStateTrackerTests, SeatedRow)
+{
+    DecodingInferenceContext context;
+    context.activeBatchSize = 2;
+    context.rawBatchedInputIds = {{1, 2, 3}, {4, 5}};
+    context.effectivePrefillLengths = {3, 2};
+    SpecCommonStateTracker tracker;
+    tracker.initialize(context);
+
+    tracker.appendRow(0);
+    tracker.seatRow(0, /*materializedLength=*/4, /*pendingLength=*/1);
+    tracker.materializePending(1);
+    int32_t const accepted[]{3, 2};
+    tracker.recordAccepted(accepted, 1);
+    tracker.appendRow(1);
+    tracker.seatRow(1, /*materializedLength=*/6, /*pendingLength=*/1);
+    EXPECT_EQ(tracker.commonMaterializedStateLengths(), std::vector<int32_t>({5, 6}));
+    tracker.materializePending(2);
+    EXPECT_EQ(tracker.commonMaterializedStateLengths(), std::vector<int32_t>({8, 7}));
+    EXPECT_THROW(tracker.appendRow(3), std::runtime_error);
+}
+
+// Compaction keeps the reserved storage, so rows appended after an eviction still fit without allocating.
+TEST(SpecCommonStateTrackerTests, CompactionKeepsTheReservedCapacity)
+{
+    SpecCommonStateTracker tracker;
+    tracker.reserve(4);
+    for (int32_t row = 0; row < 3; ++row)
+    {
+        tracker.appendRow(row);
+        tracker.seatRow(row, /*materializedLength=*/row + 1, /*pendingLength=*/1);
+    }
+    size_t const capacity = tracker.commonMaterializedStateLengths().capacity();
+    ASSERT_GE(capacity, 4U);
+
+    tracker.compact({-1, 0, 1}, 3, 2);
+    EXPECT_EQ(tracker.commonMaterializedStateLengths(), std::vector<int32_t>({2, 3}));
+    EXPECT_EQ(tracker.commonMaterializedStateLengths().capacity(), capacity);
+    tracker.appendRow(2);
+    tracker.appendRow(3);
+    EXPECT_EQ(tracker.commonMaterializedStateLengths(), std::vector<int32_t>({2, 3, 0, 0}));
+    EXPECT_EQ(tracker.commonMaterializedStateLengths().capacity(), capacity);
 }
 
 TEST(SpecCommonStateTrackerTests, RejectsInvalidLengthsMappingsAndOverflow)
@@ -88,5 +134,5 @@ TEST(SpecCommonStateTrackerTests, RejectsInvalidLengthsMappingsAndOverflow)
 
     int32_t const accepted[]{std::numeric_limits<int32_t>::max()};
     tracker.recordAccepted(accepted, 1);
-    EXPECT_THROW(tracker.materializePending(1, 1), std::runtime_error);
+    EXPECT_THROW(tracker.materializePending(1), std::runtime_error);
 }

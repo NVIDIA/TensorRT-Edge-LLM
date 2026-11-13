@@ -16,7 +16,7 @@
 import sys
 from types import SimpleNamespace
 
-from tensorrt_edgellm._native import dependencies
+from tensorrt_edgellm._native import dependencies, load
 
 
 def test_pip_tensorrt_runtime_is_loaded_without_system_registration(
@@ -50,3 +50,55 @@ def test_pip_tensorrt_runtime_is_loaded_without_system_registration(
     assert attempts == ["libnvinfer.so.10", str(runtime)]
     assert dependencies.loaded_tensorrt_soname() == "libnvinfer.so.10"
     assert dependencies._TENSORRT_HANDLE is handle
+
+
+def test_runtime_extension_loads_before_global_plugin(monkeypatch, tmp_path):
+    extension = tmp_path / "_edgellm_runtime.abi3.so"
+    plugin = tmp_path / "libNvInfer_edgellm_plugin.so"
+    resolved = load.ResolvedPayload("test-variant", extension, plugin)
+    module = SimpleNamespace()
+    plugin_handle = object()
+    events = []
+
+    monkeypatch.setattr(load, "_MODULE", None)
+    monkeypatch.setattr(load, "_PLUGIN_HANDLE", None)
+    monkeypatch.setattr(load, "_RETAINED_PLUGIN_HANDLES", [])
+    monkeypatch.setattr(load, "resolve_payload", lambda **_kwargs: resolved)
+    monkeypatch.setattr(load, "_existing_extension", lambda _path: None)
+    monkeypatch.setattr(load, "_set_plugin_path", lambda _path: None)
+
+    def import_extension(path):
+        assert path == extension
+        events.append("extension")
+        return module
+
+    def load_plugin(path, mode):
+        assert path == str(plugin)
+        assert mode
+        events.append("plugin")
+        return plugin_handle
+
+    monkeypatch.setattr(load, "_import_extension", import_extension)
+    monkeypatch.setattr(load.ctypes, "CDLL", load_plugin)
+
+    assert load.load_runtime() is module
+    assert events == ["extension", "plugin"]
+    assert load._PLUGIN_HANDLE is plugin_handle
+    assert load._RETAINED_PLUGIN_HANDLES == [plugin_handle]
+
+
+def test_development_runtime_uses_one_module_for_both_import_names(
+        monkeypatch, tmp_path):
+    extension = tmp_path / "_edgellm_runtime.abi3.so"
+    extension.touch()
+    module = SimpleNamespace(__file__=str(extension))
+
+    for module_name in load._EXTENSION_MODULE_NAMES:
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+    monkeypatch.setitem(sys.modules, "tensorrt_edgellm._edgellm_runtime",
+                        module)
+    monkeypatch.setattr(load, "_MODULE", None)
+
+    assert load.load_runtime_from_path(extension) is module
+    assert sys.modules["_edgellm_runtime"] is module
+    assert sys.modules["tensorrt_edgellm._edgellm_runtime"] is module

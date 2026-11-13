@@ -18,7 +18,7 @@ message(STATUS "Configuring experimental model: cosmos3")
 # C++ runtime (policy runner, host UniPC scheduler, VAE-encoder runner, runtime
 # orchestrator) and example CLIs are added as their sources land under cpp/ and
 # examples/. They link the core libraries: edgellmCore, edgellmBuilder,
-# edgellmKernels, commonLibraryExt, exampleUtils.
+# edgellmKernels, commonLibraryExt, edgellmApplicationSupport.
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/CMakeLists.txt)
   add_subdirectory(cpp)
 endif()

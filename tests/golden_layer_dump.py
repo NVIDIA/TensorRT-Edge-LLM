@@ -85,7 +85,8 @@ from golden_quant_linears import (_detect_gptq_zero_point_offset,
                                   _GoldenMXFP8Linear, _GoldenNVFP4Linear)
 from safetensors import safe_open
 from safetensors.torch import save_file
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import (AutoConfig, AutoModelForCausalLM,
+                          AutoModelForImageTextToText, AutoTokenizer)
 
 # Prefer the local Qwen3-0.6B checkpoint; fall back to the HF repo id if it isn't present.
 DEFAULT_CKPT_CANDIDATES = [
@@ -140,6 +141,31 @@ def _pick_ckpt(user_ckpt: str | None) -> str:
         if os.path.isdir(cand):
             return cand
     return DEFAULT_CKPT_CANDIDATES[-1]
+
+
+def _resolve_causal_lm_cls(model_type: str):
+    """Return the AutoModel* class that can build/load this checkpoint's architecture.
+
+    Most decoder-only and VLM-with-a-text-backbone configs (Qwen3.5, Nemotron-H, ...)
+    register under ``AutoModelForCausalLM`` even when they can also take pixel inputs.
+    A few VLM configs (Qwen3-VL) only register under ``AutoModelForImageTextToText``;
+    their top-level class still implements the standard CausalLM forward contract
+    (input_ids/attention_mask/position_ids/past_key_values/cache_position -> .logits/
+    .past_key_values), it just isn't listed in the CausalLM registry. Falling back to
+    ImageTextToText here calls that same forward without ever passing pixel_values, so
+    it runs the pure-text path -- exactly what golden_layer_dump.py needs.
+    """
+    from transformers.models.auto.modeling_auto import (
+        MODEL_FOR_CAUSAL_LM_MAPPING_NAMES,
+        MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES)
+    if model_type in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES:
+        return AutoModelForCausalLM
+    if model_type in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES:
+        return AutoModelForImageTextToText
+    raise ValueError(
+        f"model_type {model_type!r} is registered under neither AutoModelForCausalLM "
+        "nor AutoModelForImageTextToText; golden_layer_dump.py needs a new case"
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -331,19 +357,19 @@ def main() -> None:
             if getattr(cfg_obj, "quantization_config", None) is not None:
                 cfg_obj.quantization_config = None
 
+    model_cls = _resolve_causal_lm_cls(config.model_type)
+
     def _build(attn_impl: str):
         if quantized:
             # Quantized ckpt: HF can't load packed quant weights into nn.Linear, so build the
             # architecture empty, swap the recipe-quantized projections for fake-quant linears,
             # then load the packed weights + scales. Attention stays HF fp16.
-            m = AutoModelForCausalLM.from_config(config,
-                                                 attn_implementation=attn_impl)
+            m = model_cls.from_config(config, attn_implementation=attn_impl)
             return m.to(torch_dtype)
-        return AutoModelForCausalLM.from_pretrained(
-            ckpt,
-            config=config,
-            dtype=torch_dtype,
-            attn_implementation=attn_impl)
+        return model_cls.from_pretrained(ckpt,
+                                         config=config,
+                                         dtype=torch_dtype,
+                                         attn_implementation=attn_impl)
 
     # Prefer SDPA: it accumulates QK^T in fp32 (numerically stable, matching the engine's
     # attention). Plain eager fp16 attention overflows for models without qk-norm whose K can be
@@ -576,8 +602,8 @@ class _GoldenPerExpertMoE(torch.nn.ModuleList):
 
     HF's native module holds ``gate_up_proj`` / ``down_proj`` as single 3D
     ``[num_experts, ...]`` parameters, batched over experts in ``forward``.
-    Quantized Gemma4 and Qwen3.5 MoE checkpoints instead store each expert's
-    gate/up/down projection separately. This exposes those checkpoint paths as
+    Quantized Gemma4, Qwen3-MoE and Qwen3.5 MoE checkpoints instead store each
+    expert's gate/up/down projection separately. This exposes those checkpoint paths as
     Linear modules so the generic quantized-prefix loader can install the
     matching fake-quant implementation without materializing placeholder
     weights.
@@ -631,12 +657,86 @@ class _GoldenPerExpertMoE(torch.nn.ModuleList):
         return final_hidden_states
 
 
+class _GoldenPerExpertUngatedMoE(torch.nn.ModuleList):
+    """Per-expert placeholder for stacked NON-gated MoE modules (Nemotron-H).
+
+    ``NemotronHExperts`` holds ``up_proj`` ``[E, I, in]`` / ``down_proj``
+    ``[E, in, I]`` and computes ``down(act(up(x)))`` with no gate projection
+    (ReLU^2). ModelOpt NVFP4 checkpoints store each expert's ``up_proj`` /
+    ``down_proj`` separately, so expose them as Linear modules for the
+    quantized-prefix loader, exactly like :class:`_GoldenPerExpertMoE` does
+    for the gated families. ``in_dim`` is the MoE latent size when the model
+    uses one, else the hidden size.
+    """
+
+    def __init__(self, num_experts: int, in_dim: int, intermediate_dim: int,
+                 act_fn) -> None:
+        experts = []
+        for _ in range(num_experts):
+            expert = torch.nn.Module()
+            expert.up_proj = torch.nn.Linear(in_dim,
+                                             intermediate_dim,
+                                             bias=False,
+                                             device="meta")
+            expert.down_proj = torch.nn.Linear(intermediate_dim,
+                                               in_dim,
+                                               bias=False,
+                                               device="meta")
+            experts.append(expert)
+        super().__init__(experts)
+        self.act_fn = act_fn
+
+    def forward(self, hidden_states: torch.Tensor, top_k_index: torch.Tensor,
+                top_k_weights: torch.Tensor) -> torch.Tensor:
+        # Accumulate in the hidden dtype like _GoldenPerExpertMoE: the HF
+        # router hands over fp32 weights, and an fp32 result would leak into
+        # the fp16 residual stream (lm_head then fails on mixed dtypes).
+        final_hidden_states = torch.zeros_like(hidden_states)
+        with torch.no_grad():
+            expert_mask = torch.nn.functional.one_hot(top_k_index,
+                                                      num_classes=len(self))
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)),
+                                       0).nonzero()
+        for expert_idx in expert_hit:
+            expert_idx = int(expert_idx[0])
+            expert = self[expert_idx]
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = hidden_states[token_idx]
+            current_hidden_states = expert.down_proj(
+                self.act_fn(expert.up_proj(current_state)))
+            current_hidden_states = current_hidden_states * top_k_weights[
+                token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(
+                0, token_idx,
+                current_hidden_states.to(final_hidden_states.dtype))
+        return final_hidden_states
+
+
 def _swap_stacked_moe_experts(model: torch.nn.Module) -> list[str]:
     """Replace supported stacked expert modules with per-expert projections."""
-    supported_types = {"Gemma4TextExperts", "Qwen3_5MoeExperts"}
+    # transformers >= 5 stacks Qwen3-MoE experts too (Qwen3MoeExperts:
+    # gate_up_proj / down_proj as [E, ...] parameters) with the same
+    # attributes and forward(hidden_states, top_k_index, top_k_weights)
+    # signature as the other two, while ModelOpt NVFP4 checkpoints keep one
+    # quantized Linear per expert.
+    supported_types = {
+        "Gemma4TextExperts", "Qwen3_5MoeExperts", "Qwen3MoeExperts"
+    }
     swapped = []
+    # Non-gated stacked experts (up/down only, ReLU^2); the input width is the
+    # last dim of the stacked up_proj (MoE latent size or hidden size).
+    ungated_types = {"NemotronHExperts"}
     for name, module in list(model.named_modules()):
-        if type(module).__name__ not in supported_types:
+        type_name = type(module).__name__
+        if type_name in ungated_types:
+            replacement = _GoldenPerExpertUngatedMoE(
+                module.num_experts, int(module.up_proj.shape[-1]),
+                module.intermediate_dim, module.act_fn)
+            _set_submodule(model, name, replacement)
+            swapped.append(type_name)
+            continue
+        if type_name not in supported_types:
             continue
         replacement = _GoldenPerExpertMoE(module.num_experts,
                                           module.hidden_dim,

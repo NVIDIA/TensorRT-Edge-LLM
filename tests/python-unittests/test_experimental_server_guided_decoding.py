@@ -16,15 +16,18 @@
 
 import pytest
 
-from experimental.server.runtime.engine import (CompletionOutput,
-                                                _normalize_guided_decoding,
-                                                _normalize_response_format)
-from experimental.server.runtime.engine_layout import BundleLayout, EngineType
+from tensorrt_edgellm.server.runtime.engine import (CompletionOutput,
+                                                    SamplingParams,
+                                                    _normalize_guided_decoding,
+                                                    _normalize_jump_forward,
+                                                    _normalize_response_format)
+from tensorrt_edgellm.server.runtime.engine_layout import (BundleLayout,
+                                                           EngineType)
 
 
 def _create_app(llm):
-    from experimental.server.api.app import create_app
-    from experimental.server.runtime.engine_client import EngineClient
+    from tensorrt_edgellm.server.api.app import create_app
+    from tensorrt_edgellm.server.runtime.engine_client import EngineClient
 
     return create_app(EngineClient(llm))
 
@@ -45,6 +48,17 @@ class _FakeServerModel:
     @staticmethod
     def _complete_prepared_request(*args, **kwargs):
         return CompletionOutput()
+
+
+class _RecordingServerModel(_FakeServerModel):
+    """Keeps the SamplingParams handed to the native request builder."""
+
+    def __init__(self):
+        self.sampling = None
+
+    def _make_generation_request(self, messages, params, **kwargs):
+        self.sampling = params
+        return object()
 
 
 # --------------------------------------------------------------- response_format
@@ -185,6 +199,39 @@ def test_guided_decoding_rejects_unknown_fields():
         _normalize_guided_decoding({"json_schemaa": {}})
 
 
+# --------------------------------------------------------------- jump_forward
+
+
+def test_jump_forward_rides_on_any_mode_and_leaves_the_guide_unchanged():
+    guided = {"regex": "a+", "jump_forward": True}
+    assert _normalize_guided_decoding(guided) == ("regex", "a+")
+    assert _normalize_jump_forward(guided) is True
+    assert _normalize_jump_forward({
+        "json_object": True,
+        "jump_forward": True
+    }) is True
+
+
+@pytest.mark.parametrize("guided_decoding", [
+    None,
+    {
+        "regex": "a+"
+    },
+    {
+        "regex": "a+",
+        "jump_forward": None
+    },
+])
+def test_jump_forward_defaults_to_off(guided_decoding):
+    assert _normalize_jump_forward(guided_decoding) is False
+    assert SamplingParams().jump_forward is False
+
+
+def test_guided_decoding_still_rejects_unknown_fields_beside_jump_forward():
+    with pytest.raises(ValueError, match="unknown field"):
+        _normalize_guided_decoding({"regex": "a+", "jump_forwards": True})
+
+
 # --------------------------------------------------------------- HTTP surface
 
 
@@ -268,3 +315,26 @@ def test_api_accepts_a_supported_schema():
     )
 
     assert response.status_code == 200
+
+
+def test_api_carries_jump_forward_into_the_sampling_params():
+    TestClient = pytest.importorskip("fastapi.testclient").TestClient
+    llm = _RecordingServerModel()
+    response = TestClient(_create_app(llm)).post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{
+                "role": "user",
+                "content": "Answer yes or no."
+            }],
+            "guided_decoding": {
+                "choice": ["yes", "no"],
+                "jump_forward": True
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert llm.sampling.guided_decoding == ("choice", '["yes", "no"]')
+    assert llm.sampling.jump_forward is True

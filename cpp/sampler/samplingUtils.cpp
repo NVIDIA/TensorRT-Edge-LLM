@@ -18,6 +18,8 @@
 #include "sampler/sampling.h"
 
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 
 namespace trt_edgellm
 {
@@ -36,6 +38,30 @@ bool shouldUseNonGreedySampling(float temperature, int64_t topK, float topP) noe
         return false;
     }
     return (topK > 1) || (topP < 1.0f - 1e-6f) || (temperature > 1e-3f && std::fabs(temperature - 1.0f) > 1e-3f);
+}
+
+bool shouldUseNonGreedySampling(RowSamplingParams const& params) noexcept
+{
+    return shouldUseNonGreedySampling(params.temperature, params.topK, params.topP);
+}
+
+bool operator==(RowSamplingParams const& lhs, RowSamplingParams const& rhs) noexcept
+{
+    return lhs.temperature == rhs.temperature && lhs.topK == rhs.topK && lhs.topP == rhs.topP;
+}
+
+bool operator!=(RowSamplingParams const& lhs, RowSamplingParams const& rhs) noexcept
+{
+    return !(lhs == rhs);
+}
+
+RowSamplingParams makeRowSamplingParams(float temperature, int64_t topK, float topP)
+{
+    if (topK > std::numeric_limits<int32_t>::max())
+    {
+        throw std::invalid_argument("top-k does not fit the sampler's int32 top-k");
+    }
+    return RowSamplingParams{temperature, topK < 0 ? int32_t{0} : static_cast<int32_t>(topK), topP};
 }
 
 } // namespace trt_edgellm

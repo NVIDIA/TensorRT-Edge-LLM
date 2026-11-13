@@ -1,0 +1,1440 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# SPDX-FileCopyrightText: Copyright (c) 2025 - 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# Use of this software is governed by the terms and conditions of the
+# NVIDIA End User License Agreement (EULA), available at:
+# https://docs.nvidia.com/cutlass/media/docs/pythonDSL/license.html
+#
+# Any use, reproduction, disclosure, or distribution of this software
+# and related documentation outside the scope permitted by the EULA
+# is strictly prohibited.
+
+# Copied from kernelSrcs/fmha_cutedsl_blackwell/fmha_helpers.py
+# at 52dfc7e00295d8c3d6875aa4acd1962c6003dbb7; math and scheduling are unchanged.
+import enum
+from typing import Optional, Tuple
+
+import cutlass
+import cutlass.cute as cute
+from cutlass._mlir.dialects import llvm, vector
+from cutlass.cute.typing import Boolean
+from cutlass.cutlass_dsl import (Float32, Int32, T, dsl_user_op,
+                                 extract_mlir_values, min,
+                                 new_from_mlir_values)
+from cutlass.utils.hardware_info import HardwareInfo
+
+##############################################################################
+# Fmha static tile scheduler
+##############################################################################
+
+
+class FmhaWorkTileInfo:
+    """Work-tile state supporting FMHA's nested ``(m, 0, (b, h))`` coordinate."""
+
+    def __init__(self, tile_idx: cute.Coord, is_valid_tile: Boolean):
+        self._tile_idx = tile_idx
+        self._is_valid_tile = Boolean(is_valid_tile)
+
+    def __extract_mlir_values__(self):
+        tile_values = extract_mlir_values(self._tile_idx)
+        self._tile_value_count = len(tile_values)
+        return tile_values + extract_mlir_values(self._is_valid_tile)
+
+    def __new_from_mlir_values__(self, values):
+        tile_values = values[:self._tile_value_count]
+        valid_values = values[self._tile_value_count:]
+        tile_idx = new_from_mlir_values(self._tile_idx, tile_values)
+        is_valid_tile = new_from_mlir_values(self._is_valid_tile, valid_values)
+        return FmhaWorkTileInfo(tile_idx, is_valid_tile)
+
+    @property
+    def is_valid_tile(self):
+        return self._is_valid_tile
+
+    @property
+    def tile_idx(self):
+        return self._tile_idx
+
+
+class FmhaStaticTileSchedulerParams:
+    """A class to represent parameters for the FMHA (Fused Multi-Head Attention) static tile scheduler.
+
+    This class holds the configuration parameters needed to initialize and configure
+    the tile scheduler for FMHA operations.
+
+    :ivar is_persistent: Whether to use persistent kernel mode.
+    :type is_persistent: bool
+    :ivar problem_shape_mbh: Problem shape in (M, B, H) format.
+    :type problem_shape_mbh: cute.Shape
+    """
+
+    def __init__(
+        self,
+        is_persistent: bool,
+        problem_shape_mbh: cute.Shape,
+        *,
+        loc=None,
+        ip=None,
+    ):
+        """
+        Initializes the FmhaStaticTileSchedulerParams with the given parameters.
+
+        :param is_persistent: Whether to use persistent kernel mode.
+        :type is_persistent: bool
+        :param problem_shape_mbh: Problem shape in (M, B, H) format.
+        :type problem_shape_mbh: cute.Shape
+        """
+        self.is_persistent = is_persistent
+        self.problem_shape_mbh = problem_shape_mbh
+        self._loc = loc
+        self._ip = ip
+
+    def __extract_mlir_values__(self):
+        values, self._values_pos = [], []
+        for obj in [self.problem_shape_mbh]:
+            obj_values = extract_mlir_values(obj)
+            values += obj_values
+            self._values_pos.append(len(obj_values))
+        return values
+
+    def __new_from_mlir_values__(self, values):
+        obj_list = []
+        for obj, n_items in zip([self.problem_shape_mbh], self._values_pos):
+            obj_list.append(new_from_mlir_values(obj, values[:n_items]))
+            values = values[n_items:]
+        return FmhaStaticTileSchedulerParams(self.is_persistent,
+                                             *(tuple(obj_list)),
+                                             loc=self._loc)
+
+
+class FmhaStaticTileScheduler:
+    """A static tile scheduler for FMHA (Fused Multi-Head Attention) operations.
+
+    This class manages the scheduling of work tiles for FMHA kernels, supporting
+    both persistent and non-persistent kernel modes. It tracks the current work
+    position and advances through the problem space efficiently.
+
+    :ivar _params: Scheduler parameters.
+    :type _params: FmhaStaticTileSchedulerParams
+    :ivar _blk_coord: Block coordinates.
+    :type _blk_coord: cute.Coord
+    :ivar _grid_shape: Grid shape for the kernel.
+    :type _grid_shape: cute.Shape
+    :ivar _is_persistent: Whether to use persistent kernel mode.
+    :type _is_persistent: bool
+    :ivar _current_work_linear_idx: Current linear work index.
+    :type _current_work_linear_idx: Int32
+    :ivar _problem_shape_mbh: Problem shape in (M, B, H) format.
+    :type _problem_shape_mbh: cute.Layout
+    :ivar _num_blocks: Number of blocks in the problem.
+    :type _num_blocks: Int32
+    :ivar _is_first_block: Whether this is the first block.
+    :type _is_first_block: bool
+    :ivar num_persistent_sm: Number of persistent SMs.
+    :type num_persistent_sm: Int32
+    """
+
+    def __init__(
+        self,
+        params: FmhaStaticTileSchedulerParams,
+        current_work_linear_idx: Int32,
+        blk_coord: cute.Coord,
+        grid_shape: cute.Shape,
+        *,
+        loc=None,
+        ip=None,
+    ):
+        """
+        Initializes the FmhaStaticTileScheduler with the given parameters.
+
+        :param params: Scheduler parameters.
+        :type params: FmhaStaticTileSchedulerParams
+        :param current_work_linear_idx: Current linear work index.
+        :type current_work_linear_idx: Int32
+        :param blk_coord: Block coordinates.
+        :type blk_coord: cute.Coord
+        :param grid_shape: Grid shape for the kernel.
+        :type grid_shape: cute.Shape
+        """
+        self._params = params
+        self._blk_coord = blk_coord
+        self._grid_shape = grid_shape
+        self._is_persistent = params.is_persistent
+        self._current_work_linear_idx = current_work_linear_idx
+        self._problem_shape_mbh = cute.make_layout(params.problem_shape_mbh,
+                                                   loc=loc,
+                                                   ip=ip)
+        self._num_blocks = cute.size(self._problem_shape_mbh, loc=loc, ip=ip)
+        self._is_first_block = True
+        self.num_persistent_sm = cute.size(grid_shape, loc=loc, ip=ip)
+        self._loc = loc
+        self._ip = ip
+
+    # called by host
+    @staticmethod
+    def get_grid_shape(
+        params: FmhaStaticTileSchedulerParams,
+        sm_count: Optional[Int32] = None,
+        *,
+        loc=None,
+        ip=None,
+    ) -> cute.Shape:
+        """
+        Determine the grid shape for the FMHA kernel.
+
+        For persistent kernels, the grid shape is limited by the number of SMs
+        (Streaming Multiprocessors) available on the device. For non-persistent
+        kernels, the grid shape matches the problem shape.
+
+        :param params: Scheduler parameters.
+        :type params: FmhaStaticTileSchedulerParams
+
+        :return: Grid shape as (M, B, H) tuple.
+        :rtype: cute.Shape
+        """
+        if params.is_persistent:
+            # sm_count is a runtime value supplied by the caller (AOT wrappers
+            # thread it from a kernel argument so the persistent grid is sized
+            # for the GPU the kernel actually launches on). The HardwareInfo
+            # probe of the local device remains as a JIT-mode fallback only.
+            if sm_count is None:
+                hardware_info = HardwareInfo()
+                sm_count = hardware_info.get_device_multiprocessor_count()
+            return (
+                cutlass.min(
+                    sm_count,
+                    cute.size(params.problem_shape_mbh, loc=loc, ip=ip)),
+                1,
+                1,
+            )
+        else:
+            return params.problem_shape_mbh
+
+    @staticmethod
+    def check_valid_work_for_seqlen_q(
+        q_tiler: int,
+        current_idx: Int32,
+        seqlen_q: Int32,
+    ) -> Boolean:
+        """
+        Check if the current work index is valid for the given query sequence length.
+
+        This method verifies that the current work tile index multiplied by the
+        query tiler size is within the bounds of the query sequence length.
+
+        :param q_tiler: Query tiler size.
+        :type q_tiler: int
+        :param current_idx: Current work index.
+        :type current_idx: Int32
+        :param seqlen_q: Query sequence length.
+        :type seqlen_q: Int32
+
+        :return: True if the work is valid, False otherwise.
+        :rtype: Boolean
+        """
+        return current_idx * q_tiler < seqlen_q
+
+    def get_current_work(self, *, loc=None, ip=None) -> FmhaWorkTileInfo:
+        """
+        Get information about the current work tile.
+
+        Determines if the current work is valid and computes the tile coordinates
+        based on whether the kernel is persistent or non-persistent.
+
+        :return: WorkTileInfo containing tile coordinates and validity flag.
+        :rtype: WorkTileInfo
+        """
+        is_valid = (self._current_work_linear_idx < self._num_blocks
+                    if self._is_persistent else self._is_first_block)
+
+        blk_coord = (0, 0, 0)
+        if self._is_persistent:
+            blk_coord = self._problem_shape_mbh.get_hier_coord(
+                self._current_work_linear_idx, loc=loc, ip=ip)
+        else:
+            blk_coord = self._blk_coord
+
+        # cur_tile_coord is (mid, 0, (bid, hid))
+        cur_tile_coord = (
+            blk_coord[0],
+            0,
+            (blk_coord[1], blk_coord[2]),
+        )
+
+        return FmhaWorkTileInfo(cur_tile_coord, is_valid)
+
+    def initial_work_tile_info(self, *, loc=None, ip=None):
+        """
+        Get the initial work tile information.
+
+        :return: Initial WorkTileInfo.
+        :rtype: WorkTileInfo
+        """
+        return self.get_current_work(loc=loc, ip=ip)
+
+    def advance_to_next_work(self, *, advance_count=1, loc=None, ip=None):
+        """
+        Advance to the next work tile.
+
+        For persistent kernels, advances by the number of persistent SMs.
+        For non-persistent kernels, marks that the first block has been processed.
+
+        :param advance_count: Number of steps to advance (default: 1).
+        :type advance_count: int
+        """
+        if self._is_persistent:
+            self._current_work_linear_idx += advance_count * self.num_persistent_sm
+        self._is_first_block = False
+
+    def __extract_mlir_values__(self):
+        values = []
+        self._value_counts = []
+        for obj in (
+                self._params,
+                self._current_work_linear_idx,
+                self._blk_coord,
+                self._grid_shape,
+        ):
+            obj_values = extract_mlir_values(obj)
+            values.extend(obj_values)
+            self._value_counts.append(len(obj_values))
+        return values
+
+    def __new_from_mlir_values__(self, values):
+        reconstructed = []
+        start = 0
+        for obj, value_count in zip(
+            (
+                self._params,
+                self._current_work_linear_idx,
+                self._blk_coord,
+                self._grid_shape,
+            ),
+                self._value_counts,
+        ):
+            reconstructed.append(
+                new_from_mlir_values(obj, values[start:start + value_count]))
+            start += value_count
+        new_params, new_current_work_linear_idx, new_blk_coord, new_grid_shape = reconstructed
+        return FmhaStaticTileScheduler(new_params, new_current_work_linear_idx,
+                                       new_blk_coord, new_grid_shape)
+
+
+def create_fmha_static_tile_scheduler(
+    params: FmhaStaticTileSchedulerParams,
+    blk_coord: cute.Coord,
+    grid_shape: cute.Shape,
+) -> FmhaStaticTileScheduler:
+    """
+    Create a new FMHA static tile scheduler.
+
+    :param params: Scheduler parameters.
+    :type params: FmhaStaticTileSchedulerParams
+    :param blk_coord: Block coordinates.
+    :type blk_coord: cute.Coord
+    :param grid_shape: Grid shape.
+    :type grid_shape: cute.Shape
+
+    :return: New FmhaStaticTileScheduler instance.
+    :rtype: FmhaStaticTileScheduler
+    """
+    return FmhaStaticTileScheduler(params, blk_coord[0], blk_coord, grid_shape)
+
+
+def create_fmha_static_tile_scheduler_params(
+    is_persistent: bool,
+    problem_shape_mbh: cute.Shape,
+) -> FmhaStaticTileSchedulerParams:
+    """
+    Create FMHA static tile scheduler parameters.
+
+    :param is_persistent: Whether to use persistent kernel mode.
+    :type is_persistent: bool
+    :param problem_shape_mbh: Problem shape in (M, B, H) format.
+    :type problem_shape_mbh: cute.Shape
+
+    :return: New FmhaStaticTileSchedulerParams instance.
+    :rtype: FmhaStaticTileSchedulerParams
+    """
+    return FmhaStaticTileSchedulerParams(is_persistent, problem_shape_mbh)
+
+
+def compute_grid(
+    o_shape: cute.Shape,
+    cta_tiler: Tuple[int, int, int],
+    is_persistent: bool,
+    sm_count: Optional[Int32] = None,
+    head_dim_ctas: int = 1,
+) -> Tuple[FmhaStaticTileSchedulerParams, Tuple[int, int, int]]:
+    """
+    Compute grid parameters for FMHA operation.
+
+    This function calculates the appropriate grid shape and scheduler parameters
+    based on the output tensor shape, CTA (Cooperative Thread Array) tiler,
+    and whether to use persistent kernel mode.
+
+    The output tensor o has shape (s, d, ((h_r, h_k), b)) where:
+    - s: sequence length
+    - d: head dimension
+    - h_r: number of heads for query
+    - h_k: number of heads for key
+    - b: batch size
+
+    :param o_shape: Output tensor shape for grid computation.
+    :type o_shape: cute.Shape
+    :param cta_tiler: CTA tiler dimensions (M, N, K).
+    :type cta_tiler: Tuple[int, int, int]
+    :param is_persistent: Whether to use persistent kernel mode.
+    :type is_persistent: bool
+    :param head_dim_ctas: Number of independent CTAs that split each attention
+        head along the V/O head dimension.
+    :type head_dim_ctas: int
+
+    :return: Tuple of (scheduler_params, grid_shape).
+    :rtype: Tuple[FmhaStaticTileSchedulerParams, Tuple[int, int, int]]
+    """
+    tile_sched_params = create_fmha_static_tile_scheduler_params(
+        is_persistent,
+        (
+            cute.ceil_div(cute.size(o_shape[0]), cta_tiler[0]),
+            cute.size(o_shape[2][0]) * head_dim_ctas,
+            cute.size(o_shape[2][1]),
+        ),
+    )
+    grid = FmhaStaticTileScheduler.get_grid_shape(tile_sched_params, sm_count)
+
+    return tile_sched_params, grid
+
+
+##############################################################################
+# Fused Mask
+##############################################################################
+
+
+class MaskEnum(enum.Enum):
+    """Enumeration of mask types for FMHA operations.
+
+    - RESIDUAL_MASK: Residual mask for handling variable sequence lengths
+    - WINDOW_MASK: Window mask for attention which also includes causal and no mask
+    - WINDOW_MASK_INFERENCE: Same as the window mask, but has the limitation that the end of q is aligned with the end of k
+    - BIDIRECTIONAL: Bottom-right-aligned window mask unioned with an optional
+      inclusive bidirectional interval for each query row
+    - WINDOW_MASK_BWD: Window mask for backward pass
+    - WINDOW_MASK_BWD_INFERENCE: Same as the window mask for backward pass, but has the limitation that the end of q is aligned with the end of k
+    """
+
+    RESIDUAL_MASK = enum.auto()
+    RESIDUAL_MASK_BWD = enum.auto()
+    WINDOW_MASK = enum.auto()
+    WINDOW_MASK_INFERENCE = enum.auto()
+    BIDIRECTIONAL = enum.auto()
+    WINDOW_MASK_BWD = enum.auto()
+    WINDOW_MASK_BWD_INFERENCE = enum.auto()
+
+
+class FusedMask:
+    """A fused mask implementation for FMHA operations.
+
+    This class handles different types of attention masks including no mask,
+    residual mask for variable sequence lengths, and causal mask for
+    autoregressive attention patterns.
+
+    The class provides methods to:
+    - Calculate trip counts for different mask types
+    - Apply masks to attention scores
+    - Handle masked and unmasked trip calculations
+    """
+
+    def get_trip_count(
+        mask_type: MaskEnum,
+        blk_coord: cute.Coord,
+        tile_shape: cute.Shape,
+        seqlen_q: Int32,
+        seqlen_k: Int32,
+        window_size_left: Optional[Int32] = None,
+        window_size_right: Optional[Int32] = None,
+    ) -> Int32:
+        """
+        Calculate the number of trips needed for the current block.
+
+        The trip count depends on the mask type and the block coordinates.
+        For causal masks, it considers the autoregressive constraint.
+
+        :param mask_type: Type of mask to use
+        :type mask_type: utils.MaskEnum
+        :param blk_coord: Block coordinates.
+        :type blk_coord: cute.Coord
+        :param tile_shape: Shape of the tile.
+        :type tile_shape: cute.Shape
+        :param seqlen_q: Query sequence length for attention computation.
+        :type seqlen_q: Int32
+        :param seqlen_k: Key sequence length for attention computation.
+        :type seqlen_k: Int32
+        :param window_size_left: Left-side sliding window size for attention masking.
+        :type window_size_left: Optional[Int32]
+        :param window_size_right: Right-side sliding window size for attention masking.
+        :type window_size_right: Optional[Int32]
+
+        :return: Number of trips needed.
+        :rtype: Int32
+        """
+        result = 0
+        offset = 0
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK_INFERENCE
+                              or mask_type is MaskEnum.BIDIRECTIONAL):
+            offset = seqlen_k - seqlen_q
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK_BWD_INFERENCE):
+            offset = seqlen_q - seqlen_k
+        if cutlass.const_expr(mask_type == MaskEnum.RESIDUAL_MASK):
+            result = cute.ceil_div(seqlen_k, tile_shape[1])
+        if cutlass.const_expr(mask_type is MaskEnum.RESIDUAL_MASK_BWD):
+            result = cute.ceil_div(seqlen_q, tile_shape[0])
+        if cutlass.const_expr(mask_type == MaskEnum.WINDOW_MASK
+                              or mask_type == MaskEnum.WINDOW_MASK_INFERENCE
+                              or mask_type == MaskEnum.BIDIRECTIONAL):
+            if cutlass.const_expr(window_size_right is None):
+                result = cute.ceil_div(seqlen_k, tile_shape[1])
+            else:
+                max_idx_q = (blk_coord[0] + 1) * tile_shape[0]
+                idx_k = max_idx_q + offset + window_size_right
+                tmp_blocks_k = cute.ceil_div(idx_k, tile_shape[1])
+                max_blocks_k = cute.ceil_div(seqlen_k, tile_shape[1])
+                result = min(max_blocks_k, tmp_blocks_k)
+        if cutlass.const_expr(
+                mask_type == MaskEnum.WINDOW_MASK_BWD
+                or mask_type == MaskEnum.WINDOW_MASK_BWD_INFERENCE):
+            if cutlass.const_expr(window_size_left is None):
+                result = cute.ceil_div(seqlen_q, tile_shape[0])
+            else:
+                max_idx_k = (blk_coord[1] + 1) * tile_shape[1]
+                idx_k = max_idx_k + offset + window_size_left
+                tmp_blocks_q = cute.ceil_div(idx_k, tile_shape[0])
+                max_blocks_q = cute.ceil_div(seqlen_q, tile_shape[0])
+                result = min(max_blocks_q, tmp_blocks_q)
+        start_block = FusedMask.get_trip_start(
+            mask_type,
+            blk_coord,
+            tile_shape,
+            seqlen_q,
+            seqlen_k,
+            window_size_left,
+            window_size_right,
+        )
+        result = result - start_block
+        return result
+
+    @cute.jit
+    def get_trip_start(
+        mask_type: MaskEnum,
+        blk_coord: cute.Coord,
+        tile_shape: cute.Shape,
+        seqlen_q: Int32,
+        seqlen_k: Int32,
+        window_size_left: Optional[Int32] = None,
+        window_size_right: Optional[Int32] = None,
+    ) -> Int32:
+        """
+        Get the start of the trip for the current block.
+
+        :param mask_type: Type of mask to use
+        :type mask_type: utils.MaskEnum
+        :param blk_coord: Block coordinates.
+        :type blk_coord: cute.Coord
+        :param tile_shape: Shape of the tile.
+        :type tile_shape: cute.Shape
+        :param seqlen_q: Query sequence length for attention computation.
+        :type seqlen_q: Int32
+        :param seqlen_k: Key sequence length for attention computation.
+        :type seqlen_k: Int32
+        :param window_size_left: Left-side sliding window size for attention masking.
+        :type window_size_left: Optional[Int32]
+        :param window_size_right: Right-side sliding window size for attention masking.
+        :type window_size_right: Optional[Int32]
+        """
+        result = 0
+        offset = 0
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK_INFERENCE
+                              or mask_type is MaskEnum.BIDIRECTIONAL):
+            offset = seqlen_k - seqlen_q
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK_BWD_INFERENCE):
+            offset = seqlen_q - seqlen_k
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK
+                              or mask_type is MaskEnum.WINDOW_MASK_INFERENCE
+                              or mask_type is MaskEnum.BIDIRECTIONAL):
+            if cutlass.const_expr(window_size_left is not None):
+                if cutlass.const_expr(mask_type is MaskEnum.BIDIRECTIONAL):
+                    if window_size_left < seqlen_k:
+                        min_idx_q = blk_coord[0] * tile_shape[0]
+                        idx_k = min_idx_q + offset - window_size_left
+                        tmp_blocks_k = idx_k // tile_shape[1]
+                        result = max(tmp_blocks_k, result)
+                else:
+                    min_idx_q = blk_coord[0] * tile_shape[0]
+                    idx_k = min_idx_q + offset - window_size_left
+                    tmp_blocks_k = idx_k // tile_shape[1]
+                    result = max(tmp_blocks_k, result)
+        if cutlass.const_expr(
+                mask_type is MaskEnum.WINDOW_MASK_BWD
+                or mask_type is MaskEnum.WINDOW_MASK_BWD_INFERENCE):
+            if cutlass.const_expr(window_size_right is not None):
+                min_idx_k = blk_coord[1] * tile_shape[1]
+                idx_q = min_idx_k + offset - window_size_right
+                tmp_blocks_q = idx_q // tile_shape[0]
+                result = max(tmp_blocks_q, result)
+        return result
+
+    @cute.jit
+    def get_trip_span(
+        mask_type: MaskEnum,
+        blk_coord: cute.Coord,
+        tile_shape: cute.Shape,
+        seqlen_q: Int32,
+        seqlen_k: Int32,
+        window_size_left: Optional[Int32] = None,
+        window_size_right: Optional[Int32] = None,
+        bidirectional_begin: Optional[Int32] = None,
+        bidirectional_end: Optional[Int32] = None,
+    ) -> Tuple[Int32, Int32]:
+        """Return the KV tile start and count for one query tile.
+
+        BIDIRECTIONAL starts from the bottom-right-aligned causal/sliding span,
+        then unions it with the optional block interval. The begin and end
+        values may come from different query rows: the first row in a query
+        tile is sufficient to extend traversal left, and the last valid row is
+        sufficient to extend it right.
+        """
+        start = FusedMask.get_trip_start(
+            mask_type,
+            blk_coord,
+            tile_shape,
+            seqlen_q,
+            seqlen_k,
+            window_size_left,
+            window_size_right,
+        )
+        count = FusedMask.get_trip_count(
+            mask_type,
+            blk_coord,
+            tile_shape,
+            seqlen_q,
+            seqlen_k,
+            window_size_left,
+            window_size_right,
+        )
+        if cutlass.const_expr(mask_type is MaskEnum.BIDIRECTIONAL):
+            if cutlass.const_expr(bidirectional_begin is None
+                                  or bidirectional_end is None):
+                raise ValueError(
+                    "BIDIRECTIONAL requires bidirectional_begin and bidirectional_end"
+                )
+            end = start + count
+            if bidirectional_begin >= 0:
+                start = min(start, bidirectional_begin // tile_shape[1])
+            if bidirectional_end >= 0:
+                end = max(
+                    end,
+                    cute.ceil_div(bidirectional_end + 1, tile_shape[1]),
+                )
+            max_k_tiles = cute.ceil_div(seqlen_k, tile_shape[1])
+            start = max(start, Int32(0))
+            end = min(end, max_k_tiles)
+            count = max(end - start, Int32(0))
+        return start, count
+
+    @cute.jit
+    def get_leading_mask_id(
+        mask_type: MaskEnum,
+        blk_coord: cute.Coord,
+        tile_shape: cute.Shape,
+        seqlen_q: Int32,
+        seqlen_k: Int32,
+        window_size_left: Optional[Int32] = None,
+        window_size_right: Optional[Int32] = None,
+    ) -> Tuple[Int32, Int32]:
+        """
+        Get the begin and end tile idx for the leading mask.
+
+        :param mask_type: Type of mask to use
+        :type mask_type: utils.MaskEnum
+        :param blk_coord: Block coordinates.
+        :type blk_coord: cute.Coord
+        :param tile_shape: Shape of the tile.
+        :type tile_shape: cute.Shape
+        :param seqlen_q: Query sequence length for attention computation.
+        :type seqlen_q: Int32
+        :param seqlen_k: Key sequence length for attention computation.
+        :type seqlen_k: Int32
+        :param window_size_left: Left-side sliding window size for attention masking.
+        :type window_size_left: Optional[Int32]
+        :param window_size_right: Right-side sliding window size for attention masking.
+        :type window_size_right: Optional[Int32]
+
+        :return: Tuple of (begin, end) tile idx for the leading mask.
+        :rtype: Tuple[Int32, Int32]
+        """
+        if cutlass.const_expr(mask_type is MaskEnum.BIDIRECTIONAL):
+            raise ValueError(
+                "BIDIRECTIONAL requires get_trip_span and per-score apply_mask"
+            )
+        offset = 0
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK_INFERENCE):
+            offset = seqlen_k - seqlen_q
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK_BWD_INFERENCE):
+            offset = seqlen_q - seqlen_k
+        leading_mask_begin = FusedMask.get_trip_start(
+            mask_type,
+            blk_coord,
+            tile_shape,
+            seqlen_q,
+            seqlen_k,
+            window_size_left,
+            window_size_right,
+        )
+        trip_count = FusedMask.get_trip_count(
+            mask_type,
+            blk_coord,
+            tile_shape,
+            seqlen_q,
+            seqlen_k,
+            window_size_left,
+            window_size_right,
+        )
+
+        leading_mask_end = leading_mask_begin
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK
+                              or mask_type is MaskEnum.WINDOW_MASK_INFERENCE):
+            if cutlass.const_expr(window_size_left is not None):
+                min_idx_q = ((blk_coord[0] + 1) * tile_shape[0] + offset -
+                             window_size_left)
+                leading_mask_end = min(
+                    cute.ceil_div(min_idx_q, tile_shape[1]) - 1,
+                    trip_count + leading_mask_begin - 1,
+                )
+            else:
+                leading_mask_end = leading_mask_begin - 1
+        elif cutlass.const_expr(
+                mask_type is MaskEnum.WINDOW_MASK_BWD
+                or mask_type is MaskEnum.WINDOW_MASK_BWD_INFERENCE):
+            if cutlass.const_expr(window_size_right is not None):
+                min_idx_k = ((blk_coord[1] + 1) * tile_shape[1] + offset -
+                             window_size_right)
+                leading_mask_end = cute.ceil_div(min_idx_k, tile_shape[0]) - 1
+            else:
+                leading_mask_end = leading_mask_begin - 1
+        return leading_mask_begin, leading_mask_end
+
+    @cute.jit
+    def get_trailing_mask_id(
+        mask_type: MaskEnum,
+        blk_coord: cute.Coord,
+        tile_shape: cute.Shape,
+        seqlen_q: Int32,
+        seqlen_k: Int32,
+        window_size_left: Optional[Int32] = None,
+        window_size_right: Optional[Int32] = None,
+    ) -> Tuple[Optional[Int32], Optional[Int32]]:
+        """
+        Get the begin and end tile idx for the trailing mask.
+
+        :param mask_type: Type of mask to use
+        :type mask_type: utils.MaskEnum
+        :param blk_coord: Block coordinates.
+        :type blk_coord: cute.Coord
+        :param tile_shape: Shape of the tile.
+        :type tile_shape: cute.Shape
+        :param seqlen_q: Query sequence length for attention computation.
+        :type seqlen_q: Int32
+        :param seqlen_k: Key sequence length for attention computation.
+        :type seqlen_k: Int32
+        :param window_size_left: Left-side sliding window size for attention masking.
+        :type window_size_left: Optional[Int32]
+        :param window_size_right: Right-side sliding window size for attention masking.
+        :type window_size_right: Optional[Int32]
+
+        :return: Tuple of (begin, end) tile idx for the trailing mask.
+        :rtype: Tuple[Int32, Int32]
+        """
+        if cutlass.const_expr(mask_type is MaskEnum.BIDIRECTIONAL):
+            raise ValueError(
+                "BIDIRECTIONAL requires get_trip_span and per-score apply_mask"
+            )
+        offset = 0
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK_INFERENCE):
+            offset = seqlen_k - seqlen_q
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK_BWD_INFERENCE):
+            offset = seqlen_q - seqlen_k
+        trip_start = FusedMask.get_trip_start(
+            mask_type,
+            blk_coord,
+            tile_shape,
+            seqlen_q,
+            seqlen_k,
+            window_size_left,
+            window_size_right,
+        )
+        trip_count = FusedMask.get_trip_count(
+            mask_type,
+            blk_coord,
+            tile_shape,
+            seqlen_q,
+            seqlen_k,
+            window_size_left,
+            window_size_right,
+        )
+
+        trailing_mask_begin, trailing_mask_end = None, None
+        if cutlass.const_expr(mask_type is MaskEnum.WINDOW_MASK
+                              or mask_type is MaskEnum.WINDOW_MASK_INFERENCE):
+            if cutlass.const_expr(window_size_right is not None):
+                min_idx_q = blk_coord[0] * tile_shape[
+                    0] + offset + window_size_right
+                trailing_mask_begin = min(min_idx_q // tile_shape[1],
+                                          trip_count + trip_start - 1)
+                trailing_mask_end = trip_count + trip_start - 1
+            else:
+                # last tile, we always apply mask on it regardless whether it's a residual tile
+                trailing_mask_begin = trip_count + trip_start - 1
+                trailing_mask_end = trip_count + trip_start - 1
+        else:
+            if cutlass.const_expr(window_size_left is not None):
+                min_idx_k = blk_coord[1] * tile_shape[
+                    1] + offset + window_size_left + 1
+                max_idx_k = ((blk_coord[1] + 1) * tile_shape[1] + offset +
+                             window_size_left)
+                trailing_mask_begin = min(
+                    cute.ceil_div(min_idx_k, tile_shape[0]) - 1,
+                    trip_count + trip_start - 1,
+                )
+                trailing_mask_end = min(
+                    cute.ceil_div(max_idx_k, tile_shape[0]) - 1,
+                    trip_count + trip_start - 1,
+                )
+            else:
+                # last tile, we always apply mask on it regardless whether it's a residual tile
+                trailing_mask_begin = trip_count + trip_start - 1
+                trailing_mask_end = trip_count + trip_start - 1
+
+        return trailing_mask_begin, trailing_mask_end
+
+    @cute.jit
+    def get_masked_leading_count(
+        mask_type: MaskEnum,
+        blk_coord: cute.Coord,
+        tile_shape: cute.Shape,
+        seqlen_q: Int32,
+        seqlen_k: Int32,
+        window_size_left: Optional[Int32] = None,
+        window_size_right: Optional[Int32] = None,
+    ) -> Int32:
+        """
+        Calculate the number of masked trips for the leading mask.
+
+        This is used for blocks that need special handling due to masking.
+
+        :param mask_type: Type of mask to use
+        :type mask_type: utils.MaskEnum
+        :param blk_coord: Block coordinates.
+        :type blk_coord: cute.Coord
+        :param tile_shape: Shape of the tile.
+        :type tile_shape: cute.Shape
+        :param seqlen_q: Query sequence length for attention computation.
+        :type seqlen_q: Int32
+        :param seqlen_k: Key sequence length for attention computation.
+        :type seqlen_k: Int32
+        :param window_size_left: Left-side sliding window size for attention masking.
+        :type window_size_left: Optional[Int32]
+        :param window_size_right: Right-side sliding window size for attention masking.
+        :type window_size_right: Optional[Int32]
+
+        :return: Number of masked trips.
+        :rtype: Int32
+        """
+        result = 0
+        if cutlass.const_expr(mask_type is not MaskEnum.RESIDUAL_MASK
+                              and mask_type is not MaskEnum.RESIDUAL_MASK_BWD):
+            if cutlass.const_expr(window_size_left is not None
+                                  or window_size_right is not None):
+                leading_mask_begin, leading_mask_end = FusedMask.get_leading_mask_id(
+                    mask_type,
+                    blk_coord,
+                    tile_shape,
+                    seqlen_q,
+                    seqlen_k,
+                    window_size_left,
+                    window_size_right,
+                )
+                result = max(leading_mask_end - leading_mask_begin + 1, 0)
+
+        return result
+
+    @cute.jit
+    def get_masked_trailing_count(
+        mask_type: MaskEnum,
+        blk_coord: cute.Coord,
+        tile_shape: cute.Shape,
+        seqlen_q: Int32,
+        seqlen_k: Int32,
+        window_size_left: Optional[Int32] = None,
+        window_size_right: Optional[Int32] = None,
+        rem_count: Optional[Int32] = 0,
+    ) -> Int32:
+        """
+        Calculate the number of masked trips for the trailing mask.
+
+        This is used for blocks that need special handling due to masking.
+
+        :param mask_type: Type of mask to use
+        :type mask_type: utils.MaskEnum
+        :param blk_coord: Block coordinates.
+        :type blk_coord: cute.Coord
+        :param tile_shape: Shape of the tile.
+        :type tile_shape: cute.Shape
+        :param seqlen_q: Query sequence length for attention computation.
+        :type seqlen_q: Int32
+        :param seqlen_k: Key sequence length for attention computation.
+        :type seqlen_k: Int32
+        :param window_size_left: Left-side sliding window size for attention masking.
+        :type window_size_left: Optional[Int32]
+        :param window_size_right: Right-side sliding window size for attention masking.
+        :type window_size_right: Optional[Int32]
+        :param rem_count: Remaining count from previous calculations.
+        :type rem_count: Int32
+
+        :return: Number of masked trips.
+        :rtype: Int32
+        """
+        result = 0
+
+        if cutlass.const_expr(mask_type is not MaskEnum.RESIDUAL_MASK
+                              and mask_type is not MaskEnum.RESIDUAL_MASK_BWD):
+            if cutlass.const_expr(window_size_left is not None
+                                  or window_size_right is not None):
+                trailing_mask_begin, trailing_mask_end = FusedMask.get_trailing_mask_id(
+                    mask_type,
+                    blk_coord,
+                    tile_shape,
+                    seqlen_q,
+                    seqlen_k,
+                    window_size_left,
+                    window_size_right,
+                )
+                leading_mask_begin, leading_mask_end = FusedMask.get_leading_mask_id(
+                    mask_type,
+                    blk_coord,
+                    tile_shape,
+                    seqlen_q,
+                    seqlen_k,
+                    window_size_left,
+                    window_size_right,
+                )
+                if cutlass.const_expr(trailing_mask_begin is not None
+                                      and trailing_mask_end is not None):
+                    if trailing_mask_begin <= leading_mask_end:
+                        result = max(trailing_mask_end - leading_mask_end, 0)
+                    else:
+                        result = max(
+                            trailing_mask_end - trailing_mask_begin + 1, 0)
+        else:
+            if seqlen_k % tile_shape[1] != 0:
+                result = 1
+            else:
+                result = 0
+
+        return result + rem_count
+
+    @cute.jit
+    def get_unmasked_trip_count(
+        mask_type: MaskEnum,
+        blk_coord: cute.Coord,
+        tile_shape: cute.Shape,
+        seqlen_q: Int32,
+        seqlen_k: Int32,
+        window_size_left: Optional[Int32] = None,
+        window_size_right: Optional[Int32] = None,
+    ) -> Int32:
+        """
+        Calculate the number of unmasked trips for the current block.
+
+        This represents the number of trips that don't require special
+        masking treatment.
+
+        :param mask_type: Type of mask to use
+        :type mask_type: utils.MaskEnum
+        :param blk_coord: Block coordinates.
+        :type blk_coord: cute.Coord
+        :param tile_shape: Shape of the tile.
+        :type tile_shape: cute.Shape
+        :param seqlen_q: Query sequence length for attention computation.
+        :type seqlen_q: Int32
+        :param seqlen_k: Key sequence length for attention computation.
+        :type seqlen_k: Int32
+        :param window_size_left: Left-side sliding window size for attention masking.
+        :type window_size_left: Optional[Int32]
+        :param window_size_right: Right-side sliding window size for attention masking.
+        :type window_size_right: Optional[Int32]
+
+        :return: Number of unmasked trips.
+        :rtype: Int32
+        """
+        result = (FusedMask.get_trip_count(
+            mask_type,
+            blk_coord,
+            tile_shape,
+            seqlen_q,
+            seqlen_k,
+            window_size_left,
+            window_size_right,
+        ) - FusedMask.get_masked_leading_count(
+            mask_type,
+            blk_coord,
+            tile_shape,
+            seqlen_q,
+            seqlen_k,
+            window_size_left,
+            window_size_right,
+        ) - FusedMask.get_masked_trailing_count(
+            mask_type,
+            blk_coord,
+            tile_shape,
+            seqlen_q,
+            seqlen_k,
+            window_size_left,
+            window_size_right,
+            0,
+        ))
+        return result
+
+    @cute.jit
+    def apply_mask(
+        mask_type: MaskEnum,
+        acc_qk: cute.Tensor,
+        index_qk: cute.Tensor,
+        seqlen_q: Int32,
+        seqlen_k: Int32,
+        window_size_left: Optional[int] = None,
+        window_size_right: Optional[int] = None,
+        index_transform: cutlass.Constexpr = lambda index_q, index_k: (
+            index_q,
+            index_k,
+        ),
+        assume_fragment_single_row: cutlass.Constexpr = False,
+        bidirectional_begin: Optional[Int32] = None,
+        bidirectional_end: Optional[Int32] = None,
+    ):
+        """
+        Apply the appropriate mask to the attention scores.
+
+        This method modifies the attention scores (acc_qk) based on the mask type
+        and the positions in the index tensor.
+
+        :param mask_type: Type of mask to use
+        :type mask_type: utils.MaskEnum
+        :param acc_qk: Accumulated QK attention scores tensor.
+        :type acc_qk: cute.Tensor
+        :param index_qk: Index tensor containing position information.
+        :type index_qk: cute.Tensor
+        :param seqlen_k: Key sequence length for attention computation.
+        :type seqlen_k: Int32
+        :param seqlen_q: Query sequence length for attention computation.
+        :type seqlen_q: Optional[int]
+        :param window_size_left: Left-side sliding window size for attention masking.
+        :type window_size_left: Optional[int]
+        :param window_size_right: Right-side sliding window size for attention masking.
+        :type window_size_right: Optional[int]
+        :param assume_fragment_single_row: UNCHECKED caller promise that this
+            thread's whole fragment lies in a single S-matrix row, i.e. index_q
+            is identical for every element.
+        :type assume_fragment_single_row: cutlass.Constexpr
+        :param bidirectional_begin: Inclusive per-row block begin for
+            BIDIRECTIONAL.
+        :type bidirectional_begin: Optional[Int32]
+        :param bidirectional_end: Inclusive per-row block end for
+            BIDIRECTIONAL.
+        :type bidirectional_end: Optional[Int32]
+        """
+
+        tidx, tidy, tidx = cute.arch.thread_idx()
+        offset = 0
+        offset = (seqlen_k - seqlen_q if cutlass.const_expr(
+            mask_type is MaskEnum.WINDOW_MASK_INFERENCE
+            or mask_type is MaskEnum.WINDOW_MASK_BWD_INFERENCE
+            or mask_type is MaskEnum.BIDIRECTIONAL) else 0)
+        if cutlass.const_expr(mask_type is MaskEnum.BIDIRECTIONAL):
+            if cutlass.const_expr(bidirectional_begin is None
+                                  or bidirectional_end is None):
+                raise ValueError(
+                    "BIDIRECTIONAL requires bidirectional_begin and bidirectional_end"
+                )
+            # The runtime-window artifact also serves global layers. Hoist the
+            # uniform full-left-window decision outside the per-score loop so
+            # global layers retain the causal-only fast path.
+            if cutlass.const_expr(window_size_left is not None
+                                  and window_size_right is not None):
+                if window_size_left >= seqlen_k:
+                    if cutlass.const_expr(assume_fragment_single_row):
+                        index_q0, _k0 = index_transform(*index_qk[0])
+                        if index_q0 >= seqlen_q:
+                            for i in cutlass.range_constexpr(
+                                    cute.size(acc_qk)):
+                                acc_qk[i] = -Float32.inf
+                        else:
+                            k_bound = min(
+                                index_q0 + offset + window_size_right,
+                                seqlen_k - 1,
+                            )
+                            bounded_bidirectional_end = min(
+                                bidirectional_end, seqlen_k - 1)
+                            for i in cutlass.range_constexpr(
+                                    cute.size(acc_qk)):
+                                _q, index_k = index_transform(*index_qk[i])
+                                if index_k > k_bound:
+                                    if (bidirectional_begin < 0
+                                            or index_k < bidirectional_begin
+                                            or index_k
+                                            > bounded_bidirectional_end):
+                                        acc_qk[i] = -Float32.inf
+                    else:
+                        for i in cutlass.range_constexpr(cute.size(acc_qk)):
+                            index_q, index_k = index_transform(*index_qk[i])
+                            if index_k >= seqlen_k or index_q >= seqlen_q:
+                                acc_qk[i] = -Float32.inf
+                            elif (index_k
+                                  > index_q + offset + window_size_right):
+                                if (bidirectional_begin < 0
+                                        or index_k < bidirectional_begin
+                                        or index_k > bidirectional_end):
+                                    acc_qk[i] = -Float32.inf
+                else:
+                    for i in cutlass.range_constexpr(cute.size(acc_qk)):
+                        index_q, index_k = index_transform(*index_qk[i])
+                        if index_k >= seqlen_k or index_q >= seqlen_q:
+                            acc_qk[i] = -Float32.inf
+                        else:
+                            max_k_index = min(
+                                index_q + offset + window_size_right, seqlen_k)
+                            min_k_index = max(
+                                0, index_q + offset - window_size_left)
+                            if (index_k > max_k_index
+                                    or index_k < min_k_index):
+                                if (bidirectional_begin < 0
+                                        or index_k < bidirectional_begin
+                                        or index_k > bidirectional_end):
+                                    acc_qk[i] = -Float32.inf
+            else:
+                for i in cutlass.range_constexpr(cute.size(acc_qk)):
+                    index_q, index_k = index_transform(*index_qk[i])
+                    if index_k >= seqlen_k or index_q >= seqlen_q:
+                        acc_qk[i] = -Float32.inf
+                    else:
+                        outside_window = False
+                        if cutlass.const_expr(
+                                window_size_left is None
+                                and window_size_right is not None):
+                            outside_window = (index_q + offset +
+                                              window_size_right < index_k)
+                        elif cutlass.const_expr(window_size_left is not None
+                                                and window_size_right is None):
+                            outside_window = (index_q + offset -
+                                              window_size_left > index_k)
+                        if outside_window:
+                            if (bidirectional_begin < 0
+                                    or index_k < bidirectional_begin
+                                    or index_k > bidirectional_end):
+                                acc_qk[i] = -Float32.inf
+        elif cutlass.const_expr(assume_fragment_single_row
+                                and window_size_left is None
+                                and window_size_right is not None):
+            # Hoisted scalar causal fast path. index_q is constant across the
+            # fragment (caller-promised, see the parameter doc), which lets
+            # the generic path's per-element work collapse three times:
+            # (1) hoist q: the row coordinate is read once (index_qk[0]) and
+            #     the causal right boundary k_bound is computed once per row;
+            # (2) absorb the residual checks into k_bound: clamping to
+            #     seqlen_k - 1 makes an OOB column (index_k >= seqlen_k)
+            #     automatically fail index_k <= k_bound, and an OOB row
+            #     (index_q >= seqlen_q) sets k_bound = -1 so every element
+            #     masks -- both residual compares vanish from the loop;
+            # (3) the loop body reduces to one compare per element, replacing
+            #     the generic path's two-coordinate read + add + 3 compares.
+            # Alignment follows mask_type: WINDOW_MASK_INFERENCE =
+            # bottom-right (offset = seqlen_k - seqlen_q); WINDOW_MASK =
+            # top-left (offset 0). Bit-identical to the generic path.
+            index_q0, _k0 = index_transform(*index_qk[0])  # hoist q
+            k_bound = index_q0 + offset + window_size_right
+            # Clamp absorbs the OOB-column residual check. Fires whenever the
+            # causal boundary reaches past the key sequence -- routine for
+            # rows near the end once window_size_right > 0; with wsr == 0 it
+            # only fires for OOB rows (top-left: s_q > s_k).
+            if k_bound > seqlen_k - 1:
+                k_bound = seqlen_k - 1
+            # OOB-row sentinel: valid index_k is always >= 0, so k_bound = -1
+            # guarantees index_k > k_bound and every element masks.
+            if index_q0 >= seqlen_q:
+                k_bound = Int32(-1)
+            for i in cutlass.range_constexpr(cute.size(acc_qk)):
+                _q, index_k = index_transform(*index_qk[i])
+                if index_k > k_bound:  # one compare per element
+                    acc_qk[i] = -Float32.inf
+        else:
+            for i in cutlass.range_constexpr(cute.size(acc_qk)):
+                index_q, index_k = index_transform(*index_qk[i])
+                if cutlass.const_expr(window_size_left is not None
+                                      or window_size_right is not None):
+                    if cutlass.const_expr(window_size_left is None):
+                        if index_q + offset + window_size_right < index_k:
+                            acc_qk[i] = -Float32.inf
+                        if index_k >= seqlen_k or index_q >= seqlen_q:  # residual mask
+                            acc_qk[i] = -Float32.inf
+                    elif cutlass.const_expr(window_size_right is None):
+                        if index_q + offset - window_size_left > index_k:
+                            acc_qk[i] = -Float32.inf
+                        if index_k >= seqlen_k or index_q >= seqlen_q:  # residual mask
+                            acc_qk[i] = -Float32.inf
+                    else:
+                        max_K_index = min(index_q + offset + window_size_right,
+                                          seqlen_k)
+                        min_K_index = max(0,
+                                          index_q + offset - window_size_left)
+                        if index_k > max_K_index or index_k < min_K_index:
+                            acc_qk[i] = -Float32.inf
+                        if index_k >= seqlen_k or index_q >= seqlen_q:  # residual mask
+                            acc_qk[i] = -Float32.inf
+
+                if cutlass.const_expr(
+                        mask_type == MaskEnum.RESIDUAL_MASK
+                        or mask_type == MaskEnum.RESIDUAL_MASK_BWD):
+                    if index_k >= seqlen_k or index_q >= seqlen_q:
+                        acc_qk[i] = -Float32.inf
+
+
+@cute.jit
+def cvt_f32x4_to_f8x4(fp32x4, fp8x4, *, loc=None, ip=None):
+    src = fp32x4.load()
+    vec = src.ir_value(loc=loc, ip=ip) if hasattr(src, "ir_value") else src
+    src0 = Float32(vector.extract(vec, [], [0])).ir_value(loc=loc, ip=ip)
+    src1 = Float32(vector.extract(vec, [], [1])).ir_value(loc=loc, ip=ip)
+    src2 = Float32(vector.extract(vec, [], [2])).ir_value(loc=loc, ip=ip)
+    src3 = Float32(vector.extract(vec, [], [3])).ir_value(loc=loc, ip=ip)
+    packed = llvm.inline_asm(
+        T.i32(),
+        [src0, src1, src2, src3],
+        "{\n"
+        "  .reg .b16 lo;\n"
+        "  .reg .b16 hi;\n"
+        "  cvt.rn.satfinite.e4m3x2.f32 lo, $2, $1;\n"
+        "  cvt.rn.satfinite.e4m3x2.f32 hi, $4, $3;\n"
+        "  mov.b32 $0, {lo, hi};\n"
+        "}",
+        "=r,f,f,f,f",
+        has_side_effects=False,
+        is_align_stack=False,
+        asm_dialect=llvm.AsmDialect.AD_ATT,
+    )
+    cute.recast_tensor(fp8x4, cutlass.Int32)[0] = cutlass.Int32(packed)
+
+
+##############################################################################
+# Skip-softmax (BLASST)
+##############################################################################
+# Shared by the d64/d128 kernel (BlackwellFusedMultiHeadAttentionForward) and
+# the d256-per-CTA kernel (…HeadDimPerCta256). Both sides are pure functions of
+# their arguments — the per-kernel wiring (SMEM exchange buffer, pipeline
+# ordering, PV-skip branch) stays in each kernel class.
+
+
+@cute.jit
+def skip_softmax_threshold_log2_from_table(skip_softmax_scale_table, seqlen_k):
+    """Per-sequence skip-softmax threshold log2(lambda), lambda = S / seqlen_k,
+    with S the floor-bin lookup of seqlen_k in the flattened
+    [bin_0, S_0, bin_1, S_1, ...] table (bins ascending; a flat S is the
+    one-row table [0, S]). Below the first bin, or when S >= seqlen_k
+    (lambda >= 1 would pass every tile), returns -inf so no tile can win the
+    vote: the sequence runs dense (to fp16 rounding) inside the skip cubin.
+    Runs once per work tile, off the KV loop."""
+    num_rows = cute.size(skip_softmax_scale_table) // 2
+    scale = Int32(0)
+    for row in cutlass.range(num_rows, unroll=1):
+        if skip_softmax_scale_table[2 * row] <= seqlen_k:
+            scale = skip_softmax_scale_table[2 * row + 1]
+    threshold_log2 = -Float32.inf
+    if scale > 0 and scale < seqlen_k:
+        threshold_log2 = cute.math.log2(
+            Float32(scale), fastmath=True) - cute.math.log2(Float32(seqlen_k),
+                                                            fastmath=True)
+    return threshold_log2
+
+
+@cute.jit
+def get_skip_softmax_flag(warp_wants_skip_softmax_exchange):
+    """MMA-warp side of skip-softmax: read the 4 per-warp vote bytes the softmax
+    warpgroup published to the SMEM exchange buffer as one Int32 (the
+    softmax->MMA pipeline release/acquire orders the stores) and skip this
+    tile's P*V only when all 4 warps agreed — P is then exactly zeros."""
+    votes_i32 = cute.make_tensor(
+        cute.recast_ptr(warp_wants_skip_softmax_exchange.iterator,
+                        dtype=cutlass.Int32),
+        cute.make_layout((1, )),
+    )
+    votes = cute.arch.make_warp_uniform(votes_i32[0])
+    return cute.arch.popc(votes) == 4
+
+
+@cute.jit
+def calculate_skip_softmax_flag(
+    row_max,
+    tile_row_max,
+    scale_softmax_log2,
+    skip_softmax_threshold_log2,
+    thread_idx,
+    row_is_oob,
+    warp_wants_skip_softmax_exchange,
+    skip_softmax_count,
+    total_softmax_count,
+):
+    """Softmax-warpgroup side of skip-softmax (BLASST). Skip the current KV
+    block when its local row-max is below the running global row-max by more
+    than ln(lambda):  (tile_row_max - row_max) * scale_log2 < threshold_log2.
+    Per-thread predicate reduced to a PER-WARP vote (32 rows); each warp
+    publishes its vote byte to the SMEM exchange buffer. A skipped warp leaves
+    row_max unchanged so O/l need no rescale.
+    :return: (warp_wants_skip, row_max)
+    """
+    thread_wants_skip = ((tile_row_max - row_max) *
+                         scale_softmax_log2) < skip_softmax_threshold_log2
+    # Rows past the end of the query sequence never contribute; treat them as
+    # wanting to skip so they don't veto a warp-level skip. row_is_oob is
+    # KV-tile-invariant (depends only on the query row + seqlen_q) so it is
+    # computed ONCE per work-tile in softmax() and threaded in, removing an
+    # add+compare+OR from every enabled KV tile on the bound softmax warp.
+    thread_wants_skip = thread_wants_skip or row_is_oob
+    warp_wants_skip = cute.arch.vote_all_sync(thread_wants_skip)
+
+    with cute.arch.elect_one():
+        warp_wants_skip_softmax_exchange[cute.arch.warp_idx() %
+                                         4] = warp_wants_skip
+
+    if not warp_wants_skip:
+        row_max = cute.arch.fmax(row_max, tile_row_max)
+
+    if cutlass.const_expr(skip_softmax_count is not None):
+        # Exclude fully-OOB row-blocks (phantom stage visits past seqlen_q):
+        # they always vote skip by construction and would inflate the ratio
+        # (e.g. S=128 reads 0.50 instead of the true 0.00).
+        warp_all_oob = cute.arch.vote_all_sync(row_is_oob)
+        if not warp_all_oob:
+            if thread_idx % 32 == 0:
+                if warp_wants_skip:
+                    cute.arch.atomic_add(skip_softmax_count.iterator.llvm_ptr,
+                                         Int32(1))
+                cute.arch.atomic_add(total_softmax_count.iterator.llvm_ptr,
+                                     Int32(1))
+    return warp_wants_skip, row_max
+
+
+@dsl_user_op
+def ex2_emulation_packed_f32x2(x: Float32,
+                               y: Float32,
+                               *,
+                               loc=None,
+                               ip=None) -> Tuple[Float32, Float32]:
+    """Compute (2^x, 2^y) on the FMA pipe instead of the SFU (MUFU.EX2).
+
+    Split each input into integer and fractional parts, approximate 2^frac
+    with a cubic polynomial (FFMAs), then apply the 2^int scaling by adding
+    the integer directly onto the FP32 exponent field:
+
+        2^x ~= ((0.077·f + 0.228)·f + 0.695)·f + 1,  f = x - floor(x) ∈ [0, 1)
+
+    Inputs are clamped to >= -127 so the exponent add below cannot wrap; at
+    -127 the exponent field reaches 0, so an -inf masked score yields +0.0. The
+    upper side is already bounded because callers pass x = (s - row_max)·scale
+    (+ a small prescale/skip-correction headroom).
+    """
+    xy_clamped = (cute.arch.fmax(x, -127.0), cute.arch.fmax(y, -127.0))
+
+    # Adding 2^23 + 2^22 shifts the ones digit to the mantissa LSB, so the
+    # round-toward-minus-infinity add computes floor(x) in the low mantissa
+    # bits. Subtracting it back (round-to-nearest) recovers floor(x) as a
+    # float, and x - floor(x) gives the fractional part in [0, 1).
+    fp32_round_int = float(2**23 + 2**22)
+    xy_rounded = cute.arch.add_packed_f32x2(xy_clamped,
+                                            (fp32_round_int, fp32_round_int),
+                                            rnd="rm")
+    xy_rounded_back = cute.arch.sub_packed_f32x2(
+        xy_rounded, (fp32_round_int, fp32_round_int))
+    xy_frac = cute.arch.sub_packed_f32x2(xy_clamped, xy_rounded_back)
+
+    @dsl_user_op
+    @cute.jit
+    def polynomial_deg3_packed_f32x2(x: Float32,
+                                     y: Float32,
+                                     *,
+                                     loc=None,
+                                     ip=None) -> Tuple[Float32, Float32]:
+        # 2^x ~= ((0.077 * x + 0.228) * x + 0.695) * x + 1, for x in [0, 1)
+        coeff = (
+            1.0,  # coeff of deg0
+            0.695146143436431884765625,  # coeff of deg1
+            0.227564394474029541015625,  # coeff of deg2
+            0.077119089663028717041015625,  # coeff of deg3
+        )
+        deg = len(coeff) - 1  # started with highest degree
+        out = (coeff[deg], coeff[deg])
+        for i in cutlass.range_constexpr(deg - 1, -1, -1):
+            out = cute.arch.fma_packed_f32x2(out, (x, y), (coeff[i], coeff[i]),
+                                             loc=loc,
+                                             ip=ip)
+        return out
+
+    xy_frac_ex2 = polynomial_deg3_packed_f32x2(*xy_frac, loc=loc, ip=ip)
+
+    @dsl_user_op
+    def combine_int_frac_ex2(x_rounded: Float32,
+                             frac_ex2: Float32,
+                             *,
+                             loc=None,
+                             ip=None) -> Float32:
+        # x_rounded still carries floor(x) in its low mantissa bits (from the
+        # 2^23 + 2^22 add). Shifting it left by 23 places that integer in the
+        # exponent field; integer-adding it to frac_ex2 (a normalized value in
+        # [1, 2), exponent bits 01111111) multiplies frac_ex2 by 2^floor(x).
+        return cutlass.Float32(
+            llvm.inline_asm(
+                T.f32(),
+                [
+                    Float32(x_rounded).ir_value(loc=loc, ip=ip),
+                    Float32(frac_ex2).ir_value(loc=loc, ip=ip),
+                ],
+                "{\n\t"
+                ".reg .s32 x_rounded_i, frac_ex_i, x_rounded_e, out_i;\n\t"
+                "mov.b32 x_rounded_i, $1;\n\t"
+                "mov.b32 frac_ex_i, $2;\n\t"
+                "shl.b32 x_rounded_e, x_rounded_i, 23;\n\t"
+                "add.s32 out_i, x_rounded_e, frac_ex_i;\n\t"
+                "mov.b32 $0, out_i;\n\t"
+                "}\n",
+                "=f,f,f",
+                has_side_effects=False,
+                is_align_stack=False,
+                asm_dialect=llvm.AsmDialect.AD_ATT,
+            ))
+
+    x_out = combine_int_frac_ex2(xy_rounded[0], xy_frac_ex2[0], loc=loc, ip=ip)
+    y_out = combine_int_frac_ex2(xy_rounded[1], xy_frac_ex2[1], loc=loc, ip=ip)
+
+    return x_out, y_out

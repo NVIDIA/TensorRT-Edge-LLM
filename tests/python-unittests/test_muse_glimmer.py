@@ -64,7 +64,8 @@ def _write_config(path, config):
     return str(path)
 
 
-def test_muse_glimmer_nvfp4_embedding_materializes_fp16():
+def test_muse_glimmer_nvfp4_embedding_materializes_fp16(tmp_path):
+    """Packed provider embeddings export through their FP16 materializer."""
     config = SimpleNamespace(
         vocab_size=4,
         hidden_size=16,
@@ -86,6 +87,22 @@ def test_muse_glimmer_nvfp4_embedding_materializes_fp16():
     assert weight.shape == (4, 16)
     assert weight.dtype == torch.float16
     assert torch.count_nonzero(weight) == 0
+    from safetensors.torch import load_file
+
+    from tensorrt_edgellm.checkpoint.checkpoint_utils import \
+        write_runtime_artifacts
+
+    model_dir = _write_config(tmp_path / "model", _tiny_base_config())
+    (tmp_path / "model" /
+     "chat_template.jinja").write_text("{{ messages[0].content }}")
+    model_config = ModelConfig.from_pretrained(model_dir, lambda h: h**-0.5)
+    model = MuseGlimmerForCausalLM(model_config).half().eval()
+    embedding.weight = embedding.weight.view(torch.uint8)
+    model.model.embed_tokens = embedding
+    output = tmp_path / "output"
+    write_runtime_artifacts(model, model_dir, str(output))
+    torch.testing.assert_close(
+        load_file(str(output / "embedding.safetensors"))["embedding"], weight)
 
 
 def test_muse_glimmer_onnx_base_uses_ragged_tree_contract(tmp_path):
@@ -93,7 +110,6 @@ def test_muse_glimmer_onnx_base_uses_ragged_tree_contract(tmp_path):
     config = ModelConfig.from_pretrained(model_dir, lambda h: h**-0.5)
     config = replace(config,
                      dflash_base=True,
-                     dflash_tree_base=True,
                      dflash_target_layer_ids=[0, 1],
                      dflash2_target_layer_ids=[0, 1])
     model = MuseGlimmerForCausalLM(config).to(dtype=torch.float16)

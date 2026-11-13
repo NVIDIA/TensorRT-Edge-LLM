@@ -18,6 +18,7 @@
 #pragma once
 
 #include "common/cudaUtils.h"
+#include "common/identityHash.h"
 #include "common/tensor.h"
 #include <array>
 #include <cstdint>
@@ -206,6 +207,48 @@ ImageData wrapImageBuffer(std::shared_ptr<rt::Tensor> buffer, ImageLayout layout
  */
 ImageData wrapImageTexture(cudaTextureObject_t luma, cudaTextureObject_t chroma, ColorStandard colorStandard,
     ColorRange colorRange, int64_t width, int64_t height);
+
+//! What a caller needs to place the next image after this one in `rowDigests` (rowCount) and what
+//! `finishImageContentDigest` needs to fold this one's folded components (the rest).
+struct ImageDigestLaunch
+{
+    int64_t rowOffset;
+    int64_t rowCount;
+    int64_t groupCount;
+    int64_t streamBytes;
+    Hash128 metadata;
+};
+
+/*!
+ * @brief Validate `image` and launch the kernels that hash its rows into `rowDigests` starting at row
+ *        `rowOffset`, then fold that range down to at most `kernel::kImageDigestGroups` components in
+ *        place, without draining `stream`. Several images may share one `rowDigests` buffer at disjoint
+ *        offsets and launch back-to-back before a caller drains `stream` once and folds each with
+ *        `finishImageContentDigest`, which only reads the folded components back, not every row.
+ *
+ * `rowDigests` is caller-owned page-locked host UINT8 scratch; rows `[rowOffset, rowOffset +
+ * frames * rowsPerFrame)` shall lie within its capacity, where `rowsPerFrame` is `height` for kRGB8 and
+ * `height + (height + 1) / 2` for the NV12 formats.
+ *
+ * @throws std::runtime_error if `image` carries no pixels in the form its format calls for, a kNV12BL
+ *         image claims more than one frame, a YUV source names no colour standard or range, a plane
+ *         pitch is below its valid row width, the layout reaches past the buffer, `rowDigests` is not
+ *         page-locked host UINT8, or the image's rows do not fit at `rowOffset`.
+ */
+ImageDigestLaunch launchImageContentDigest(
+    ImageData const& image, rt::Tensor& rowDigests, int64_t rowOffset, cudaStream_t stream);
+
+/*!
+ * @brief Identity of the picture that produced `launch`: a digest of its valid pixel bytes in (frame,
+ *        plane, row) order, closed over the sampling structure, colour standard and range, extents and
+ *        channel count, frame count, the video and resize flags and video timing. Plane offsets,
+ *        pitches, frame strides and the pitch-linear / block-linear distinction stay out, so one
+ *        picture keeps one identity however it is packed.
+ *
+ * `stream` shall already be drained, so the rows `launchImageContentDigest` wrote are visible on the
+ * host.
+ */
+Hash128 finishImageContentDigest(ImageDigestLaunch const& launch, rt::Tensor& rowDigests);
 
 /*!
  * @brief Resize `image` frames `firstFrame ..< firstFrame + numFrames`, convert them to RGB and

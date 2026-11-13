@@ -6,7 +6,7 @@ start a chat directly, run a local HTTP server, or use the C++ runtime.
 ## Option 1: Start a chat directly
 
 Complete the [published wheel installation](installation.md#published-python-wheel)
-with `[server]` and keep that Python environment activated. For a source
+with `[runtime]` and keep that Python environment activated. For a source
 installation, follow the [source installation instructions](installation.md#source-workflow-c-runtime),
 including the optional Python frontend setup.
 
@@ -99,7 +99,7 @@ EOF
 ```
 
 The response follows the OpenAI chat-completions schema. See
-[Experimental High-Level Python API and Server](../examples/experimental-server.md)
+[Experimental High-Level Python API and Server](../examples/server.md)
 for streaming, batching, audio, video, and tool-calling options.
 
 (option-1-onnx-and-c-runtime)=
@@ -153,14 +153,14 @@ Run both builders on the target from the repository root. Engine profile values
 are deployment limits; increase them only when the workload requires it.
 
 ```bash
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir "$WORKSPACE_DIR/onnx/llm" \
   --engine-dir "$WORKSPACE_DIR/engines/llm" \
   --max-batch-size 2 \
   --max-input-len 4096 \
   --max-kv-cache-capacity 4096
 
-./build/examples/multimodal/visual_build \
+./build/bin/visual_build \
   --onnx-dir "$WORKSPACE_DIR/onnx/visual" \
   --engine-dir "$WORKSPACE_DIR/engines" \
   --min-image-tokens 128 \
@@ -202,7 +202,7 @@ The repository includes the image used below. Create `$WORKSPACE_DIR/input.json`
 Run from the repository root so the relative image path resolves:
 
 ```bash
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
   --engine-dir "$WORKSPACE_DIR/engines/llm" \
   --multimodal-engine-dir "$WORKSPACE_DIR/engines" \
   --input-file "$WORKSPACE_DIR/input.json" \

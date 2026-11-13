@@ -1,0 +1,150 @@
+{
+  "repository": "https://github.com/NVlabs/Sana.git",
+  "branch": "sol-engine",
+  "revision": "8e0db4fa562d727ea28b8d63015c196db7d97cae",
+  "sm121_source_revision": "ca26dbd2b7034cc90a64c093d715d99b0bfa5b7f",
+  "source_introduced_revision": "2936c47637380842aaa4a4488fac5006cc542b70",
+  "released_integration_revision": "cee25847afdd34bc656abcca126262200b088dc8",
+  "target": {
+    "gpu_architectures": [
+      "sm_100a",
+      "sm_101a",
+      "sm_103a",
+      "sm_110a",
+      "sm_120a",
+      "sm_121a"
+    ],
+    "cutlass_dsl_version": "4.8.0",
+    "precision": "bfloat16"
+  },
+  "files": [
+    {
+      "path": "techniques/sparse_backends/sol_attn/sm120/__init__.py",
+      "revision": "ca26dbd2b7034cc90a64c093d715d99b0bfa5b7f",
+      "upstream_sha256": "193997e4e5925c7a8cabe0247068698bdab1bb7fab283d0857fc01bf9a2763c1",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/sm120/__init__.py",
+      "vendored_sha256": "1ccf6047832a2bf98efbc93a808511490929071a071977e74d424e097032244f",
+      "relationship": "modified_copy",
+      "changes": "Normalizes the package description to architecture and sparse-attention terminology and adds repository licensing metadata."
+    },
+    {
+      "path": "techniques/sparse_backends/sol_attn/sm120/kernel.py",
+      "revision": "ca26dbd2b7034cc90a64c093d715d99b0bfa5b7f",
+      "upstream_sha256": "cba5a94506cb15025faf7065340d36eba8747cff5a0852816486213fbd7fb715",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/sm120/kernel.py",
+      "vendored_sha256": "faaaef73f54e17c7c42affe5dbfed3da7945b503fc18429ed66d3f3cf6b80faf",
+      "relationship": "modified_copy",
+      "changes": "Normalizes copied identifiers, removes the unused debug-route option, and adds repository licensing metadata."
+    },
+    {
+      "path": "techniques/sparse_backends/sol_attn/sm120/mainloop.py",
+      "revision": "ca26dbd2b7034cc90a64c093d715d99b0bfa5b7f",
+      "upstream_sha256": "8b6b87be7fe21cb0ebfbab34cd0ae819faa96b829c57c7b27c1c14c29e771570",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/sm120/mainloop.py",
+      "vendored_sha256": "0a098cd3b145af048e2586b1092550d6ba06a3165c147d4edb49a2f3263d481c",
+      "relationship": "modified_copy",
+      "changes": "Renames copied identifiers, imports the neutral sparse_attn package, removes debug tracing and the unused log-sum-exp output, and uses runtime sequence dimensions for the SM121 path. Uses the runtime conditioning-prefix block boundary for exact query routing across media geometries."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/sm100/mainloop.py",
+      "upstream_sha256": "d684efc04ba01791c0c89df5902136f48081efc5bf84da1b087090f32e5cee4b",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/sm100/mainloop.py",
+      "vendored_sha256": "07a00bc7940e7eed83cfa3f944645095a01a764d0fb84f12cf33b19674307d04",
+      "relationship": "modified_copy",
+      "changes": "Imports the renamed sparse_attn package and extracted AOT-only alignment helper; normalizes identifiers; removes the unused log-sum-exp output; uses runtime sequence dimensions and exact conditioning-query routing; and adds repository licensing metadata. Uses the runtime conditioning-prefix block boundary for exact query routing across media geometries."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/sm100/softmax.py",
+      "upstream_sha256": "94a2cfd9e28cc1bbdc018fa26b7945f39be902344af56a5fe8d408dcb8310b31",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/sm100/softmax.py",
+      "vendored_sha256": "2139d31401d2517f4667ef9a51e5c87979219c80bad8f266b9369009e67d5068",
+      "relationship": "modified_copy",
+      "changes": "Imports the renamed sparse_attn package and adds repository licensing metadata."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/sm100/tmem.py",
+      "upstream_sha256": "e761576ab085c7f9c135421ed8e6f202fca5b3f96252a14ae99051e8685c00c8",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/sm100/tmem.py",
+      "vendored_sha256": "ff27a2eece32e08a7bcd7a468cf530e14638781f226eea93be9101866ea1b026",
+      "relationship": "modified_copy",
+      "changes": "Adds repository licensing metadata."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/sm100/math.py",
+      "upstream_sha256": "00974a22a4c5b5e47628f67a560dc966a50ef7225eb3f773a296d71b5ac5be7f",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/sm100/math.py",
+      "vendored_sha256": "bdb578c578a9299baae9a291d25a2c49574e623aa9d31931c952a6710510829a",
+      "relationship": "modified_copy",
+      "changes": "Adds repository licensing metadata."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/common/layout_utils.py",
+      "upstream_sha256": "d8ed2213f8162bf820eb9934ea3ec0b4b3038c7a73fe64d65bcf025639e63c0e",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/common/layout_utils.py",
+      "vendored_sha256": "231e8446bf88974f1e038bbd1099f000b4008befcf8caefa13d1ac7049da974d",
+      "relationship": "modified_copy",
+      "changes": "Adds repository licensing metadata."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/common/selector.py",
+      "upstream_sha256": "b75eab435ec873af383a61ca2f32eb3eb75fd3fec94c30302fbfe8149f9bb0a1",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/common/selector.py",
+      "vendored_sha256": "5e92336f38ebd46807ef6adbee68e0107726a35e5872ac0aeb12b27a74f484c9",
+      "relationship": "modified_copy",
+      "changes": "Keeps only the two helpers used by the CuTe export, normalizes their identifiers to sparse-attention terminology, and adds repository licensing metadata."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/_vendor/flash_attn/cute/pipeline.py",
+      "upstream_sha256": "849bce91c72be0a5c7458979e10c8290f45e05253a83600e30fb9540c61ed56a",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/_vendor/flash_attn/cute/pipeline.py",
+      "vendored_sha256": "4ef54be04a81936d5c63181df1e1dda5fcc2fbbc5166d3455b41c7017ab93fe4",
+      "relationship": "modified_copy",
+      "changes": "Preserves the upstream notice and adds repository licensing metadata."
+    },
+    {
+      "path": "techniques/sparse_backends/sol_attn/_vendor/flash_attn/cute/utils.py",
+      "upstream_sha256": "f268b5af4c4d6fad6dd44bd6c6da0c475a6ec36ed90aeb1334b45aa4e1d86d57",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/_vendor/flash_attn/cute/utils.py",
+      "vendored_sha256": "fa9a36e3022389accaa80bcd48cbe1abba2611653237be6ce9b488c7529a224f",
+      "relationship": "modified_copy",
+      "note": "Uses the CUTLASS DSL 4.7-compatible NVVM fmax signature detection from the same revision; its package import is renamed to sparse_attn; and repository licensing metadata is added."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/sm90/_compat/activation.py",
+      "upstream_sha256": "77b1c16a9970b2fe79de4a945db9930850dcf4f4869ed4639805337c6a40a07d",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/sm90/_compat/activation.py",
+      "vendored_sha256": "2a7a0e66ff33a6986422b5a53b632bb22bf6f108b57e8b04d96c881842c8b962",
+      "relationship": "modified_copy",
+      "changes": "Adds repository licensing metadata."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/_vendor/flash_attn/cute/cute_dsl_utils.py",
+      "upstream_sha256": "162ba9671cb16d20fccf3547e43d606aa83e775329d5287bc9320569afe60137",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/common/alignment.py",
+      "vendored_sha256": "1b3ef9548fcde32f9d773b908e8063e956ea5cb9281be67308f7c497fa238e2e",
+      "relationship": "extracted_derivative",
+      "changes": "assume_tensor_aligned and its stride-alignment helper are extracted into common/alignment.py."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/preprocess.py",
+      "upstream_sha256": "d38c924280e00c34072652cfedf6fd65c85db6a4fe93e7858dd919e28d89d958",
+      "vendored_path": "cpp/kernels/sparseAttention/videoSparseAttentionPreprocess.cu",
+      "vendored_sha256": "b607d0a3a8548ffd75dda344f9758b374e9e55f3cf43b3c3846cf9c048095042",
+      "relationship": "cuda_port_derivative",
+      "changes": "The diagonal-routing formulas are ported to CUDA preprocessing kernels with runtime sequence lengths."
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/h3_runtime/third_party/sol_attn/sm100/LICENSE.flash-attention",
+      "upstream_sha256": "8c9ccb96c065e706135b6cbad279b721da6156e51f3a5f27c6b3329af9416d73",
+      "vendored_path": "kernelSrcs/video_sparse_attention_cutedsl/sparse_attn/sm100/LICENSE.flash-attention",
+      "vendored_sha256": "8c9ccb96c065e706135b6cbad279b721da6156e51f3a5f27c6b3329af9416d73",
+      "relationship": "verbatim_copy"
+    },
+    {
+      "path": "models/minimax_h3/Sol-H3/SOURCE_SNAPSHOT.json",
+      "upstream_sha256": "4a5462b0aeef7b4402b10e7f70a97a89c21da419fe07bb340174471d17605ec7",
+      "relationship": "provenance_reference",
+      "note": "Upstream provenance input; not copied into this source tree."
+    }
+  ]
+}

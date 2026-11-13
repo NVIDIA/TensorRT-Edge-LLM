@@ -19,6 +19,7 @@
 
 #include "common/cudaUtils.h"
 #include "common/logger.h"
+#include "common/trtInterop.h"
 #include "plugins/utils/pluginUtils.h"
 
 #if defined(CUTE_DSL_LAYERNORM_ENABLED)
@@ -40,6 +41,8 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
+
 namespace
 {
 
@@ -517,10 +520,10 @@ int32_t LayerNormPlugin::configurePlugin(DynamicPluginTensorDesc const* inputs, 
         static_cast<void>(flattenRows(inputs[kIN_X].max, false, maxRows));
         int32_t const hiddenSize = inputs[kIN_X].max.d[inputs[kIN_X].max.nbDims - 1];
         int32_t const smVersion = getSMVersion();
-        if (!CuteDslLayerNormRunner::canImplement(maxRows, hiddenSize, smVersion, inputs[kIN_X].desc.type))
+        if (!CuteDslLayerNormRunner::canImplement(maxRows, hiddenSize, smVersion, fromTrt(inputs[kIN_X].desc.type)))
         {
             LOG_ERROR("LayerNormPlugin: no LayerNorm CuTe DSL variant supports rows=%d H=%d dtype=%d on SM%d", maxRows,
-                hiddenSize, static_cast<int32_t>(inputs[kIN_X].desc.type), smVersion);
+                hiddenSize, static_cast<int32_t>(fromTrt(inputs[kIN_X].desc.type)), smVersion);
             return -1;
         }
 #else
@@ -598,7 +601,7 @@ int32_t LayerNormPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensor
         parameters.rows = rows;
         parameters.hiddenSize = inputDesc[kIN_X].dims.d[inputDesc[kIN_X].dims.nbDims - 1];
         parameters.epsilon = mEpsilon;
-        parameters.dataType = inputDesc[kIN_X].type;
+        parameters.dataType = fromTrt(inputDesc[kIN_X].type);
         return CuteDslLayerNormRunner::run(parameters, stream);
 #else
         (void) stream;
@@ -650,7 +653,7 @@ int32_t LayerNormPlugin::onShapeChange(
 #if defined(CUTE_DSL_LAYERNORM_ENABLED)
         int32_t const hiddenSize = inputs[kIN_X].dims.d[inputs[kIN_X].dims.nbDims - 1];
         int32_t const smVersion = getSMVersion();
-        if (!CuteDslLayerNormRunner::canImplement(rows, hiddenSize, smVersion, inputs[kIN_X].type))
+        if (!CuteDslLayerNormRunner::canImplement(rows, hiddenSize, smVersion, fromTrt(inputs[kIN_X].type)))
         {
             LOG_ERROR("LayerNormPlugin: no LayerNorm CuTe DSL variant supports runtime rows=%d H=%d dtype=%d on SM%d",
                 rows, hiddenSize, static_cast<int32_t>(inputs[kIN_X].type), smVersion);
@@ -740,7 +743,7 @@ IPluginV3* LayerNormPluginCreator::createPlugin(
         }
 #if defined(CUTE_DSL_LAYERNORM_ENABLED)
         int32_t const smVersion = getSMVersion();
-        if (!CuteDslLayerNormRunner::canImplement(1, 4096, smVersion, DataType::kHALF))
+        if (!CuteDslLayerNormRunner::canImplement(1, 4096, smVersion, trt_edgellm::DataType::kHALF))
         {
             throw std::invalid_argument("LayerNormPlugin: linked CuTe DSL artifact does not support the active GPU SM");
         }

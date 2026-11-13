@@ -22,12 +22,21 @@
 // what belongs to the runtime itself rather than to any one decoding strategy: assembly, the vanilla decode loop,
 // request validation, and log-probability reporting.
 
+#include "fakeEngineExecutor.h"
 #include "substituteEngine.h"
 
+#include "chatTemplate/chatTemplate.h"
+
+#include "runtime/decoding/decodingStrategy.h"
+#include "runtime/decoding/requestStableRng.h"
 #include "runtime/llmInferenceRuntime.h"
 #include "runtime/llmRankRuntime.h"
-#include "runtime/runtimeStepper.h"
+#include "runtime/runtimeSession.h"
+#include "sampler/sampling.h"
 #include "scheduler/requestEngine.h"
+#include <cmath>
+#include <optional>
+#include <set>
 
 using namespace trt_edgellm;
 using namespace substitute_engine;
@@ -58,6 +67,223 @@ TEST_F(RuntimeAssemblyTest, AssemblesWithoutAnyEngineFileOnDisk)
     EXPECT_STREQ(runtime.getSpeculativeDecodingStrategyName(), "vanilla");
 }
 
+// Given an ordinary executor refusal with a healthy CUDA stream
+// When the request fails and a valid request follows
+// Then the runtime remains available and executes the later request.
+TEST_F(RuntimeAssemblyTest, RecoverableFailureLeavesRuntimeReusable)
+{
+    auto engine = makeEngine();
+    EXPECT_CALL(*engine, execute(::testing::_)).WillOnce(::testing::Return(false)).WillOnce(emit({3}));
+    auto runtime = makeRuntime(makeVanillaArtifacts(mModelDir, std::move(engine), mStream));
+    auto request = makeGreedyRequest("a", 1);
+    rt::LLMGenerationResponse response;
+    EXPECT_FALSE(runtime.handleRequest(request, response, mStream));
+    EXPECT_TRUE(runtime.unavailableReason().empty());
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+    EXPECT_THAT(response.outputIds, ::testing::ElementsAre(::testing::ElementsAre(3)));
+}
+
+class RuntimeFailureDeathTest : public RuntimeAssemblyTest, public ::testing::WithParamInterface<bool>
+{
+};
+
+// Given a request or graph capture whose executor launches an illegal GPU access in an isolated process
+// When failed-request cleanup drains that stream
+// Then the original CUDA fault is retained and another request is rejected without entering CUDA execution.
+TEST_P(RuntimeFailureDeathTest, FatalCudaFailurePermanentlyRejectsRequests)
+{
+    ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+    EXPECT_EXIT(
+        {
+            CUmodule module{};
+            CUfunction kernel{};
+            char const* ptx
+                = ".version 7.0\n.target sm_80\n.address_size 64\n"
+                  ".visible .entry fault() { .reg .b64 addr; mov.u64 addr, 0; "
+                  "st.global.u32 [addr], 1; ret; }";
+            CUDA_DRIVER_CHECK(cuModuleLoadData(&module, ptx));
+            CUDA_DRIVER_CHECK(cuModuleGetFunction(&kernel, module, "fault"));
+            auto engine = makeEngine();
+            auto fault = [&](cudaStream_t stream) {
+                CUDA_DRIVER_CHECK(cuLaunchKernel(kernel, 1, 1, 1, 1, 1, 1, 0, stream, nullptr, nullptr));
+                return false;
+            };
+            if (GetParam())
+            {
+                EXPECT_CALL(*engine, captureGraph(::testing::_)).WillOnce(fault);
+            }
+            else
+            {
+                EXPECT_CALL(*engine, execute(::testing::_)).WillOnce(fault);
+            }
+            auto runtime = makeRuntime(makeVanillaArtifacts(mModelDir, std::move(engine), mStream));
+            auto request = makeGreedyRequest("a", 1);
+            rt::LLMGenerationResponse response;
+            EXPECT_FALSE(GetParam() ? runtime.captureDecodingCUDAGraph(mStream)
+                                    : runtime.handleRequest(request, response, mStream));
+            auto const reason = runtime.unavailableReason();
+            EXPECT_THAT(reason, ::testing::HasSubstr("cudaErrorIllegalAddress (700)"));
+            EXPECT_FALSE(runtime.handleRequest(request, response, mStream));
+            EXPECT_FALSE(runtime.captureDecodingCUDAGraph(mStream));
+            EXPECT_EQ(runtime.unavailableReason(), reason);
+            std::_Exit(::testing::Test::HasFailure() ? 1 : 0);
+        },
+        ::testing::ExitedWithCode(0), "");
+}
+
+INSTANTIATE_TEST_SUITE_P(RequestAndCapture, RuntimeFailureDeathTest, ::testing::Bool());
+
+// Given an executor that refuses graph capture without a CUDA fault
+// When capture fails and a request follows
+// Then synchronous inference still succeeds and the runtime remains available.
+TEST_F(RuntimeAssemblyTest, RecoverableCaptureFailureLeavesRuntimeReusable)
+{
+    auto engine = makeEngine();
+    EXPECT_CALL(*engine, captureGraph(::testing::_)).WillRepeatedly(::testing::Return(false));
+    auto runtime = makeRuntime(makeVanillaArtifacts(mModelDir, std::move(engine), mStream));
+    EXPECT_FALSE(runtime.captureDecodingCUDAGraph(mStream));
+    EXPECT_TRUE(runtime.unavailableReason().empty());
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(makeGreedyRequest("a", 1), response, mStream));
+    EXPECT_EQ(response.outputIds[0].size(), 1U);
+}
+
+TEST_F(RuntimeAssemblyTest, InjectedArtifactsValidateDeploymentPlePolicy)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    rt::DeploymentOptions options{};
+    options.engineDir = mModelDir.string();
+    options.pleConfig = {rt::PleResidency::kCACHED, 16};
+
+    std::string reason;
+    try
+    {
+        rt::LLMInferenceRuntime runtime{std::move(artifacts), std::move(options), mStream};
+    }
+    catch (std::exception const& error)
+    {
+        reason = error.what();
+    }
+    EXPECT_THAT(reason, ::testing::HasSubstr("Cached PLE currently requires a PLE-enabled engine"));
+}
+
+TEST_F(RuntimeAssemblyTest, RejectsConflictingInjectedSourcesBeforeConsumingArtifacts)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    artifacts.checkpointDir = mModelDir / "loaded-base";
+    artifacts.draftCheckpointDir = mModelDir / "loaded-draft";
+    artifacts.deployment.runtimeCachePath = mModelDir / "loaded-cache";
+    auto const* executor = artifacts.baseExecutor.get();
+    for (char const* field : {"checkpointDir", "draftCheckpointDir", "runtimeCachePath"})
+    {
+        rt::DeploymentOptions options{};
+        options.engineDir = mModelDir.string();
+        if (std::string(field) == "checkpointDir")
+        {
+            options.checkpointDir = (mModelDir / "different-base").string();
+        }
+        else if (std::string(field) == "draftCheckpointDir")
+        {
+            options.draftCheckpointDir = (mModelDir / "different-draft").string();
+        }
+        else
+        {
+            options.runtimeCachePath = mModelDir / "different-cache";
+        }
+        std::string reason;
+        try
+        {
+            rt::LLMInferenceRuntime runtime{std::move(artifacts), std::move(options), mStream};
+        }
+        catch (std::exception const& error)
+        {
+            reason = error.what();
+        }
+        EXPECT_THAT(reason, ::testing::HasSubstr(std::string("Injected ") + field + " conflicts"));
+        EXPECT_EQ(artifacts.baseExecutor.get(), executor);
+        EXPECT_NE(artifacts.tokenizer, nullptr);
+    }
+}
+
+TEST_F(RuntimeAssemblyTest, AcceptsMatchingInjectedSourcesAndChangedRuntimePolicy)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    artifacts.checkpointDir = mModelDir;
+    rt::DeploymentOptions options{};
+    options.engineDir = mModelDir.string();
+    options.checkpointDir = (mModelDir / ".").string();
+    options.contextCacheConfig = {/*enabled=*/true, /*maxRecords=*/4};
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), std::move(options), mStream};
+    EXPECT_TRUE(runtime.getContextCacheMetrics().has_value());
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(makeGreedyRequest("a", 2), response, mStream));
+    EXPECT_EQ(response.outputIds[0].size(), 2U);
+}
+
+TEST_F(RuntimeAssemblyTest, RejectsDraftingOptionsForInjectedVanillaArtifacts)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    auto const* executor = artifacts.baseExecutor.get();
+    rt::DeploymentOptions options{};
+    options.engineDir = mModelDir.string();
+    options.draftingConfig.emplace();
+    options.draftingConfig->draftTopK = 1;
+    options.draftingConfig->draftingStep = 1;
+    options.draftingConfig->verifyTokens = 2;
+    EXPECT_THROW((rt::LLMInferenceRuntime{std::move(artifacts), std::move(options), mStream}), std::runtime_error);
+    EXPECT_EQ(artifacts.baseExecutor.get(), executor);
+}
+
+TEST(ModelArtifactsOptionsTest, PreservesDocumentedBlockDraftingDefaults)
+{
+    rt::ModelArtifacts artifacts;
+    artifacts.deployment.base.specDecodeType = rt::SpecDecodeMode::kDFlash;
+    artifacts.deployment.draft.emplace();
+    artifacts.deployment.draft->specDraftBlockSize = 8;
+    artifacts.deployment.specConfig.emplace();
+    auto& spec = *artifacts.deployment.specConfig;
+    spec.draftTopK = 1;
+    spec.proposalTokenCount = 7;
+    spec.verifyTokenCount = 8;
+    rt::DeploymentOptions options{};
+    options.draftingConfig.emplace();
+    options.draftingConfig->draftTopK = 1;
+    EXPECT_NO_THROW(artifacts.validateDeploymentOptions(options));
+    options.draftingConfig->proposalTokens = 3;
+    EXPECT_THROW(artifacts.validateDeploymentOptions(options), std::runtime_error);
+}
+
+TEST(ModelArtifactsOptionsTest, PreservesDsparkDefaultProposalLength)
+{
+    rt::ModelArtifacts artifacts;
+    artifacts.deployment.base.specDecodeType = rt::SpecDecodeMode::kDSpark;
+    artifacts.deployment.base.maxSpecVerifyTokens = 8;
+    artifacts.deployment.draft.emplace();
+    artifacts.deployment.specConfig.emplace();
+    auto& spec = *artifacts.deployment.specConfig;
+    spec.draftTopK = 1;
+    spec.proposalTokenCount = 7;
+    spec.verifyTokenCount = 8;
+    artifacts.deployment.draft->specDraftBlockSize = 7;
+    spec.dsparkSchedulerMode = rt::DSparkSchedulerMode::kThreshold;
+    spec.dsparkMaxProposalLen = 7;
+    spec.dsparkW2Backend = rt::DSparkW2Backend::kFp16;
+    rt::DeploymentOptions options{};
+    options.draftingConfig.emplace();
+    options.draftingConfig->draftTopK = 1;
+    options.draftingConfig->proposalTokens = 7;
+    options.draftingConfig->verifyTokens = 8;
+    options.draftingConfig->dsparkSchedulerMode = rt::DSparkSchedulerMode::kThreshold;
+    options.draftingConfig->dsparkW2Backend = rt::DSparkW2Backend::kFp16;
+    options.contextCacheConfig.enabled = true;
+    EXPECT_NO_THROW(artifacts.validateDeploymentOptions(options));
+    options.draftingConfig->dsparkMaxProposalLen = 6;
+    EXPECT_THROW(artifacts.validateDeploymentOptions(options), std::runtime_error);
+    options.draftingConfig->dsparkMaxProposalLen = 7;
+    options.draftingConfig->dsparkW2Backend = rt::DSparkW2Backend::kFp8;
+    EXPECT_THROW(artifacts.validateDeploymentOptions(options), std::runtime_error);
+}
+
 TEST_F(RuntimeAssemblyTest, CountsThePromptThroughInferencePreparationWithoutMutatingTheRequest)
 {
     auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
@@ -85,8 +311,6 @@ TEST_F(RuntimeAssemblyTest, SizesSharedContextMemoryFromTheExecutorItWasGiven)
 TEST_F(RuntimeAssemblyTest, DrivesPrefillAndOneDecodeRoundPerGeneratedToken)
 {
     using ::testing::_;
-    using ::testing::AllOf;
-    using ::testing::Each;
     using ::testing::SizeIs;
 
     constexpr int64_t kMaxGenerateLength{4};
@@ -112,9 +336,36 @@ TEST_F(RuntimeAssemblyTest, DrivesPrefillAndOneDecodeRoundPerGeneratedToken)
     // The prompt is one character, and this tokenizer spends one token per character. Asserting the count the
     // runtime reports back makes that a checked fact rather than a comment the other tests lean on.
     EXPECT_EQ(response.inputTokenCounts[0], 1);
-    // Every forward left the logits zeroed, so the whole completion is the tie-break token.
-    EXPECT_THAT(response.outputIds[0], AllOf(SizeIs(kMaxGenerateLength), Each(kZeroLogitsToken)));
+    // How many tokens came back, not which: this test is about the shape of the forward schedule, and naming the
+    // token would tie it to whatever a row nobody configured happens to decode to.
+    EXPECT_THAT(response.outputIds[0], SizeIs(kMaxGenerateLength));
     EXPECT_EQ(response.finishReasons[0], rt::FinishReason::kLength);
+}
+
+TEST_F(RuntimeAssemblyTest, FlushesTerminalTokensBelowTheStreamInterval)
+{
+    // Given a final token below the stream interval, when prefill or decode reaches the length limit,
+    // then the stream includes every generated token before it closes.
+    constexpr int32_t kTOKEN_ID = 3;
+    for (int64_t const maxGenerateLength : {1, 3})
+    {
+        SCOPED_TRACE(maxGenerateLength);
+        auto engine = makeEngine();
+        EXPECT_CALL(*engine, execute(::testing::_)).WillRepeatedly(emit({kTOKEN_ID}));
+        auto runtime = makeRuntime(makeVanillaArtifacts(mModelDir, std::move(engine), mStream));
+        auto request = makeGreedyRequest("a", maxGenerateLength);
+        auto channel = rt::StreamChannel::create();
+        channel->setStreamInterval(2);
+        request.streamChannels.push_back(channel);
+
+        rt::LLMGenerationResponse response;
+        ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+        std::vector<int32_t> streamedIds;
+        channel->consume([&](rt::StreamChunk&& chunk) {
+            streamedIds.insert(streamedIds.end(), chunk.tokenIds.begin(), chunk.tokenIds.end());
+        });
+        EXPECT_EQ(streamedIds, std::vector<int32_t>(maxGenerateLength, kTOKEN_ID));
+    }
 }
 
 TEST_F(RuntimeAssemblyTest, UsesPreTokenizedInputWithoutMessages)
@@ -141,8 +392,10 @@ TEST_F(RuntimeAssemblyTest, UsesPreTokenizedInputWithoutMessages)
     ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
 
     expectResponseCoversEverySlot(response, 1);
+    // The claim is that the pre-tokenized ids were the prompt, which the reported count carries. One token came
+    // back; which one is whatever an unconfigured row decodes to and is no part of it.
     EXPECT_EQ(response.inputTokenCounts[0], 1);
-    EXPECT_THAT(response.outputIds[0], ::testing::ElementsAre(kZeroLogitsToken));
+    EXPECT_THAT(response.outputIds[0], ::testing::SizeIs(1));
 }
 
 TEST_F(RuntimeAssemblyTest, PreservesPreTokenizedInputWhileFormattingMessages)
@@ -204,6 +457,152 @@ TEST_F(RuntimeAssemblyTest, StopsAtTheEosTokenTheEngineProduces)
     // The distinction the test is named for: stopping on the sampled token rather than on the length cap, which is
     // still 8 rounds away.
     EXPECT_EQ(response.finishReasons[0], rt::FinishReason::kEndId);
+}
+
+TEST_F(RuntimeAssemblyTest, IgnoresEosUntilTheRequestLengthLimit)
+{
+    using ::testing::_;
+
+    constexpr int64_t kMaxGenerateLength{3};
+    auto engine = makeEngine();
+    auto& mock = *engine;
+
+    auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
+    auto const eosId = static_cast<int32_t>(artifacts.tokenizer->getEosId());
+    EXPECT_CALL(mock, execute(_)).Times(kMaxGenerateLength).WillRepeatedly(emit({eosId}));
+
+    rt::LLMInferenceRuntime runtime{
+        std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {}, std::nullopt, mStream};
+
+    auto request = makeGreedyRequest("a", kMaxGenerateLength);
+    request.ignoreEos = true;
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+
+    expectResponseCoversEverySlot(response, 1);
+    EXPECT_THAT(response.outputIds[0], ::testing::AllOf(::testing::SizeIs(kMaxGenerateLength), ::testing::Each(eosId)));
+    EXPECT_EQ(response.finishReasons[0], rt::FinishReason::kLength);
+}
+
+// Batching is a scheduling decision, so nothing about it may reach the answer. The failure this guards against --
+// a sequence reading the page table row, KV pages or state row belonging to its neighbour -- is invisible in a
+// batch whose slots are interchangeable, which is why the two prompts here have different lengths.
+//
+// Both slots are checked, not just one. Two sequences that end up on the same row do not corrupt each other
+// symmetrically -- a batch collapsed onto a single row leaves one of the two slots decoding exactly what it would
+// have decoded alone -- so asserting on whichever slot came to mind proves nothing about the other half.
+//
+// Given two prompts of different lengths, decoded alone and then together as one batch
+// When neither run forces its output tokens
+// Then each slot decodes exactly what it decoded alone
+TEST_F(RuntimeAssemblyTest, EachSlotDecodesTheSameTokensAloneAsItDoesBesideAnotherRequest)
+{
+    constexpr int64_t kGenerateLength{4};
+    auto const shortPrompt = makePrompt(3, /*variant=*/0);
+    auto const longPrompt = makePrompt(9, /*variant=*/1);
+
+    auto const alone = [this](std::string const& prompt) {
+        auto runtime = makeRuntime(makeVanillaArtifacts(mModelDir, makeFakeEngine(), mStream));
+        rt::LLMGenerationResponse response;
+        EXPECT_TRUE(runtime.handleRequest(makeGreedyRequest(prompt, kGenerateLength), response, mStream));
+        return response.outputIds.empty() ? std::vector<int32_t>{} : response.outputIds[0];
+    };
+    auto const shortAlone = alone(shortPrompt);
+    auto const longAlone = alone(longPrompt);
+    ASSERT_EQ(shortAlone.size(), static_cast<size_t>(kGenerateLength));
+    ASSERT_NE(shortAlone, longAlone)
+        << "the two prompts decode alike, so this fixture cannot tell one slot's state from the other's";
+
+    rt::LLMGenerationResponse batched;
+    {
+        auto runtime = makeRuntime(makeVanillaArtifacts(mModelDir, makeFakeEngine(), mStream));
+        ASSERT_TRUE(
+            runtime.handleRequest(makeGreedyBatch({shortPrompt, longPrompt}, kGenerateLength), batched, mStream));
+        ASSERT_EQ(batched.outputIds.size(), 2U);
+    }
+
+    EXPECT_EQ(batched.outputIds[0], shortAlone) << "slot 0's answer moved when a second request joined the batch";
+    EXPECT_EQ(batched.outputIds[1], longAlone) << "slot 1's answer moved when it was batched beside another request";
+}
+
+// Given a vanilla runtime whose logits are the same at every step
+// When a seeded sampling request generates, and an unseeded one generates twice
+// Then the seeded request replays the sampler's draws for its request-stable uniforms exactly, while the
+//      unseeded runs draw the shared counter stream keyed on the step and row: both runs are identical, follow
+//      that stream, and differ from the seeded run
+TEST_F(RuntimeAssemblyTest, SeededReplaysUnseededSharesCounterStream)
+{
+    constexpr int64_t kGenerateLength{40}; // peak probability ~0.42: 40 equal draws is below 1e-15
+    constexpr int32_t kPeak{5};
+    constexpr uint64_t kSeed{1234U};
+    std::vector<int32_t> const prompt{11, 12, 13};
+    auto engine = makeFakeEngine();
+    engine->forceOutputTokens({kPeak});
+    auto runtime = makeRuntime(makeVanillaArtifacts(mModelDir, std::move(engine), mStream));
+
+    auto request = makeGreedyRequest("a", kGenerateLength);
+    request.preTokenizedInputIds = {prompt};
+    request.temperature = 1.0F;
+    request.topK = 0;
+    request.topP = 0.95F;
+    request.ignoreEos = true;
+    auto const generate = [&](std::optional<uint64_t> seed) {
+        request.samplingSeed = seed;
+        rt::LLMGenerationResponse response;
+        EXPECT_TRUE(runtime.handleRequest(request, response, mStream));
+        EXPECT_EQ(response.outputIds.size(), 1U);
+        return response.outputIds.empty() ? std::vector<int32_t>{} : response.outputIds.front();
+    };
+
+    // The engine's row, sampled with the uniform the runtime derives for the seed at each position.
+    std::vector<float> row(static_cast<size_t>(kVocabSize));
+    for (int64_t token = 0; token < kVocabSize; ++token)
+    {
+        row[static_cast<size_t>(token)] = fakeOutputValue(token, kPeak, kVocabSize, FakeOutputScale::kLogits);
+    }
+    rt::Tensor logits({1, kVocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor selected({1, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor uniform({1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    CUDA_CHECK(cudaMemcpy(logits.rawPointer(), row.data(), row.size() * sizeof(float), cudaMemcpyHostToDevice));
+    SamplingParams const params(
+        1, static_cast<int32_t>(kVocabSize), request.temperature, static_cast<int32_t>(request.topK), request.topP);
+    rt::Tensor workspace(
+        {static_cast<int64_t>(getTopKtopPSamplingWorkspaceSize(1, static_cast<int32_t>(kVocabSize), params))},
+        rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+    auto const sampleWith = [&](auto const& uniformAt) {
+        std::vector<int32_t> tokens;
+        for (int64_t step = 0; step < kGenerateLength; ++step)
+        {
+            float const draw = uniformAt(static_cast<uint64_t>(step));
+            CUDA_CHECK(cudaMemcpyAsync(uniform.rawPointer(), &draw, sizeof(float), cudaMemcpyHostToDevice, mStream));
+            topKtopPSamplingFromLogits(
+                logits, selected, params, workspace, mStream, /*randomSeed=*/0U, /*randomOffset=*/0U, &uniform);
+            int32_t token{};
+            CUDA_CHECK(
+                cudaMemcpyAsync(&token, selected.rawPointer(), sizeof(int32_t), cudaMemcpyDeviceToHost, mStream));
+            CUDA_CHECK(cudaStreamSynchronize(mStream));
+            tokens.push_back(token);
+        }
+        return tokens;
+    };
+    std::vector<int32_t> const expectedSeeded = sampleWith([&](uint64_t step) {
+        return rt::requestStableUniform(kSeed, rt::requestStableNextAbsolutePosition(prompt.size(), step),
+            rt::SpecRandomPurpose::kTarget, /*lane=*/0U);
+    });
+    // The unseeded stream: the default seed, the tokens generated so far and row 0
+    // (decoder_utils::samplingUniformForSlot).
+    std::vector<int32_t> const expectedUnseeded = sampleWith(
+        [&](uint64_t step) { return counter_rng::counterUniform(rt::kDefaultSamplingSeed, step, /*lane=*/0U); });
+    ASSERT_GT(std::set<int32_t>(expectedSeeded.begin(), expectedSeeded.end()).size(), 1U)
+        << "every position draws the same token, so this fixture cannot tell one random number from another";
+    ASSERT_NE(expectedSeeded, expectedUnseeded) << "the two streams agree on every draw, so they cannot be told apart";
+
+    EXPECT_EQ(generate(kSeed), expectedSeeded) << "a seeded request must replay its request-stable draws exactly";
+
+    std::vector<int32_t> const first = generate(std::nullopt);
+    std::vector<int32_t> const second = generate(std::nullopt);
+    EXPECT_EQ(first, expectedUnseeded) << "an unseeded request must draw the shared counter stream";
+    EXPECT_EQ(first, second) << "two unseeded runs must repeat exactly";
 }
 
 // Given a batch of two whose first slot samples EOS while the second keeps going
@@ -312,7 +711,7 @@ TEST_F(RuntimeAssemblyTest, AcceptsInt32ContextSequenceCountCarrier)
     auto engine = makeEngine();
     ON_CALL(*engine, hasIOTensor(StrEq(binding_names::kContextSequenceCountCarrier))).WillByDefault(Return(true));
     ON_CALL(*engine, getBindingDataType(StrEq(binding_names::kContextSequenceCountCarrier)))
-        .WillByDefault(Return(nvinfer1::DataType::kINT32));
+        .WillByDefault(Return(trt_edgellm::DataType::kINT32));
 
     EXPECT_NO_THROW(validateAgainstEngine(config, *engine, "base"));
 }
@@ -327,6 +726,33 @@ TEST_F(RuntimeAssemblyTest, RejectsObsoleteGenericTokenOwnerBinding)
     ON_CALL(*engine, hasIOTensor(StrEq("token_to_sequence"))).WillByDefault(Return(true));
 
     EXPECT_THROW(validateAgainstEngine(config, *engine, "base"), std::runtime_error);
+}
+
+// Given an EAGLE draft config whose candidate head emits 8 candidates per row, and a draft engine whose support outputs
+// spec_proposal_support_ids (INT32) and spec_proposal_support_log_probs (FP32) are [rows, 8]
+// When the engine is validated as is, with a logits output as well, or with a log-prob output of width 4
+// Then only the first passes: a candidate-head draft engine has no logits output and exactly Kc columns per row
+TEST_F(RuntimeAssemblyTest, ValidatesCandidateDraftSupportOutputs)
+{
+    using ::testing::Return;
+    using ::testing::StrEq;
+
+    rt::LLMEngineConfig config;
+    config.specDecodeType = rt::SpecDecodeMode::kEAGLE;
+    config.draftCandidateCount = 8;
+    auto engine = makeCandidateDraftEngine(config.draftCandidateCount);
+    EXPECT_NO_THROW(validateAgainstEngine(config, *engine, "draft"));
+
+    ON_CALL(*engine, hasIOTensor(StrEq(binding_names::kLogits))).WillByDefault(Return(true));
+    EXPECT_THROW(validateAgainstEngine(config, *engine, "draft"), std::runtime_error);
+
+    ON_CALL(*engine, hasIOTensor(StrEq(binding_names::kLogits))).WillByDefault(Return(false));
+    nvinfer1::Dims narrow{};
+    narrow.nbDims = 2;
+    narrow.d[0] = -1;
+    narrow.d[1] = 4;
+    ON_CALL(*engine, getTensorShape(StrEq(binding_names::kSpecProposalSupportLogProbs))).WillByDefault(Return(narrow));
+    EXPECT_THROW(validateAgainstEngine(config, *engine, "draft"), std::runtime_error);
 }
 
 // --------------------------------------------------------------------------
@@ -379,6 +805,65 @@ protected:
 TEST_F(RequestValidationTest, RejectsARequestCarryingNoSlots)
 {
     expectRejectedWithoutRunning(rt::LLMGenerationRequest{});
+}
+
+// Sampling parameters outside the sampler's domain are rejected before anything runs, instead of
+// the sampler throwing from inside a step.
+TEST_F(RequestValidationTest, RejectsOutOfDomainSampling)
+{
+    auto const withSampling = [this](float temperature, int64_t topK, float topP) {
+        auto request = validRequest();
+        request.temperature = temperature;
+        request.topK = topK;
+        request.topP = topP;
+        return request;
+    };
+    expectRejectedWithoutRunning(withSampling(std::nanf(""), 0, 1.0F));
+    expectRejectedWithoutRunning(withSampling(-0.5F, 0, 1.0F));
+    expectRejectedWithoutRunning(withSampling(1.0F, 0, 0.0F));
+    expectRejectedWithoutRunning(withSampling(1.0F, 0, 1.5F));
+    expectRejectedWithoutRunning(withSampling(1.0F, 0, std::nanf("")));
+}
+
+// A top-k above the sampler's cap is served at the cap (with a warning), as before this runtime
+// sized its workspace for the whole batch: the API accepts any top-k and the request still runs.
+TEST_F(RequestValidationTest, ClampsTopKAboveTheSamplerCap)
+{
+    auto engine = makeEngine();
+    EXPECT_CALL(*engine, execute(::testing::_)).WillRepeatedly(emit({}));
+    auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
+    auto runtime = makeRuntime(std::move(artifacts));
+
+    auto request = validRequest();
+    request.temperature = 0.7F;
+    request.topK = int64_t{kMaxSamplingTopK} + 1;
+    request.topP = 1.0F;
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+    ASSERT_EQ(response.outputIds.size(), 1U);
+    EXPECT_EQ(response.outputIds.front().size(), 2U);
+}
+
+// A temperature alone (top-k disabled by 0 or by the API's -1, top-p 1.0) generates: the row samples from its
+// whole distribution.
+TEST_F(RequestValidationTest, AcceptsTemperatureOnlySampling)
+{
+    auto engine = makeEngine();
+    EXPECT_CALL(*engine, execute(::testing::_)).WillRepeatedly(emit({}));
+    auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
+    auto runtime = makeRuntime(std::move(artifacts));
+
+    for (int64_t const topK : {int64_t{0}, int64_t{-1}})
+    {
+        auto request = validRequest();
+        request.temperature = 0.7F;
+        request.topK = topK;
+        request.topP = 1.0F;
+        rt::LLMGenerationResponse response;
+        ASSERT_TRUE(runtime.handleRequest(request, response, mStream)) << "topK " << topK;
+        ASSERT_EQ(response.outputIds.size(), 1U);
+        EXPECT_EQ(response.outputIds.front().size(), 2U);
+    }
 }
 
 // The engine's optimization profiles are built for a maximum batch, and the KV
@@ -564,8 +1049,7 @@ TEST_F(RequestValidationTest, CountingPromptTokensAgreesWithWhatGenerationReport
     auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
     auto runtime = makeRuntime(std::move(artifacts));
 
-    auto request = makeGreedyRequest("aaa", 2);
-    request.requests.push_back(makeGreedyRequest("a", 2).requests.front());
+    auto const request = makeGreedyBatch({"aaa", "a"}, 2);
 
     auto const counted = runtime.countPromptTokens(request);
 
@@ -617,39 +1101,45 @@ TEST_F(RequestValidationTest, CountingPromptTokensRefusesMediaRequests)
 class LogprobsTest : public RuntimeAssemblyTest
 {
 protected:
-    //! writeLogits() marks one entry per row and leaves the rest zeroed, so a row
-    //! is `kPeakLogit` in one place and 0 in kVocabSize-1 others. log(softmax) of
-    //! that row is the peak (or 0) minus the log-sum-exp over the whole row.
-    static constexpr float kPeakLogit{10.0F};
-
-    static double logSumExpOfOneMarkedRow()
+    //! log(softmax) of the row a substitute engine writes for `winner`: that entry's logit minus the log-sum-exp
+    //! over the whole row, both taken from fakeLogit() rather than from anything the runtime returned.
+    //!
+    //! Sharing fakeLogit() with the engine is not the "expectation moves with the mutation" trap: what is under
+    //! test is the runtime's log-softmax, and mutating that moves only one side of the comparison. The engine's
+    //! distribution is the fixture, and a test of log(softmax(x)) has to know x.
+    static double logSumExpOfRow(int32_t winner)
     {
-        return std::log(std::exp(static_cast<double>(kPeakLogit)) + static_cast<double>(kVocabSize - 1));
+        double sum{0.0};
+        for (int64_t token = 0; token < kVocabSize; ++token)
+        {
+            sum += std::exp(static_cast<double>(fakeLogit(token, winner)));
+        }
+        return std::log(sum);
     }
 
-    static double expectedPeakLogprob()
+    static double expectedLogprob(int32_t winner, int32_t token)
     {
-        return static_cast<double>(kPeakLogit) - logSumExpOfOneMarkedRow();
-    }
-
-    static double expectedOtherLogprob()
-    {
-        return -logSumExpOfOneMarkedRow();
+        return static_cast<double>(fakeLogit(token, winner)) - logSumExpOfRow(winner);
     }
 
     //! A runtime over an engine whose forward passes emit `peaks` in order: the
     //! first is the token prefill produces, the rest are one decode round each.
+    //!
+    //! Stated as engine state rather than as expected calls, because what these
+    //! tests read back is the distribution the logits describe. How many times
+    //! the runtime calls the engine to produce it is not their claim.
     template <typename Body>
     void withEngineEmitting(std::vector<int32_t> const& peaks, Body&& body)
     {
-        auto engine = makeEngine();
+        std::vector<std::vector<int32_t>> schedule;
+        schedule.reserve(peaks.size());
+        for (int32_t const peak : peaks)
         {
-            ::testing::InSequence const ordered;
-            for (int32_t const peak : peaks)
-            {
-                EXPECT_CALL(*engine, execute(::testing::_)).WillOnce(emit({peak}));
-            }
+            schedule.push_back({peak});
         }
+
+        auto engine = makeFakeEngine();
+        engine->forceOutputTokensPerRound(std::move(schedule));
 
         auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
         auto runtime = makeRuntime(std::move(artifacts));
@@ -715,7 +1205,8 @@ TEST_F(LogprobsTest, ValuesAreTheLogSoftmaxOfTheLogitsTheEngineProduced)
 {
     constexpr int32_t kTopK{3};
 
-    withEngineEmitting({5, 7}, [&](rt::LLMInferenceRuntime& runtime) {
+    std::vector<int32_t> const peaks{5, 7};
+    withEngineEmitting(peaks, [&](rt::LLMInferenceRuntime& runtime) {
         auto request = makeGreedyRequest("a", 2);
         request.numLogprobs = kTopK;
 
@@ -723,14 +1214,15 @@ TEST_F(LogprobsTest, ValuesAreTheLogSoftmaxOfTheLogitsTheEngineProduced)
         ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
 
         ASSERT_EQ(response.logprobs[0].size(), 2U);
-        for (auto const& step : response.logprobs[0])
+        for (size_t stepIndex = 0; stepIndex < response.logprobs[0].size(); ++stepIndex)
         {
-            ASSERT_EQ(step.size(), static_cast<size_t>(kTopK));
+            auto const& step = response.logprobs[0][stepIndex];
             // Guard: an empty step list would make the loop below vacuous.
-            EXPECT_NEAR(step[0].logprob, expectedPeakLogprob(), 1e-3);
-            for (size_t k = 1; k < step.size(); ++k)
+            ASSERT_EQ(step.size(), static_cast<size_t>(kTopK));
+            for (size_t k = 0; k < step.size(); ++k)
             {
-                EXPECT_NEAR(step[k].logprob, expectedOtherLogprob(), 1e-3);
+                EXPECT_NEAR(step[k].logprob, expectedLogprob(peaks[stepIndex], step[k].tokenId), 1e-3)
+                    << "step " << stepIndex << " entry " << k << " (token " << step[k].tokenId << ")";
             }
         }
     });
@@ -855,14 +1347,13 @@ TEST_F(LogprobsTest, ReportEverySlotOfABatchFromItsOwnRow)
     constexpr int32_t kFirstSlotPeak{5};
     constexpr int32_t kSecondSlotPeak{9};
 
-    auto engine = makeEngine();
-    EXPECT_CALL(*engine, execute(::testing::_)).WillRepeatedly(emit({kFirstSlotPeak, kSecondSlotPeak}));
+    auto engine = makeFakeEngine();
+    engine->forceOutputTokens({kFirstSlotPeak, kSecondSlotPeak});
 
     auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
     auto runtime = makeRuntime(std::move(artifacts));
 
-    auto request = makeGreedyRequest("a", 2);
-    request.requests.push_back(request.requests.front());
+    auto request = makeGreedyBatch({"a", "a"}, 2);
     request.numLogprobs = kTopK;
 
     rt::LLMGenerationResponse response;
@@ -881,93 +1372,1033 @@ TEST_F(LogprobsTest, ReportEverySlotOfABatchFromItsOwnRow)
         }
     }
 }
-} // namespace
 
-// ---------------------------------------------------------------------------
-// In-flight admission: a second sequence joins through the boundary hook while
-// the first decodes, and each sequence's tokens are exactly what a serial run
-// with the same engine outputs would have produced. The mock names every row's
-// argmax per forward pass, so a token landing in the wrong slot -- through the
-// seated prefill's swaps or the eviction that follows -- changes an assertion,
-// not a probability.
-// ---------------------------------------------------------------------------
-TEST_F(RuntimeAssemblyTest, AdmitsASecondSequenceMidFlightAndKeepsBothTokenStreamsIntact)
+// --------------------------------------------------------------------------
+// MTP per-request fallback: request.disableSpecDecode routes a single request through the vanilla path on an
+// otherwise-speculative runtime, without touching the draft engine at all. This is the dynamic per-request
+// dispatch an in-flight-batching rewrite (heterogeneous requests sharing one runtime) is most likely to break
+// silently, so it gets its own call-recording harness rather than piggybacking on MtpAssemblyTest's mock.
+// --------------------------------------------------------------------------
+
+Json makeMtpDraftConfig()
 {
-    using ::testing::_;
+    Json config = makeSpecDraftConfig("mtp", kVerifySize);
+    // MTP's draft consumes the base hidden state unchanged, so this equals the base hidden size.
+    config["base_model_hidden_size"] = config["hidden_size"];
+    return config;
+}
 
-    constexpr int64_t kMaxGenerateLength{4};
-    constexpr int32_t kA1 = 3, kA2 = 4, kA3 = 5, kA4 = 6;
-    constexpr int32_t kB1 = 7, kB2 = 8, kB3 = 9, kB4 = 10;
-    constexpr int32_t kAdmittedIndexBase = 1; // A's request holds index 0
+std::filesystem::path writeMtpModelDir(std::string const& suite)
+{
+    return writeSpecModelDir(suite, makeSpecBaseConfig("mtp", kVerifySize), makeMtpDraftConfig());
+}
 
-    auto engine = makeEngine();
-    auto& mock = *engine;
+rt::ModelArtifacts makeMtpArtifacts(std::filesystem::path const& modelDir,
+    std::unique_ptr<rt::EngineExecutor> baseEngine, std::unique_ptr<rt::EngineExecutor> draftEngine,
+    cudaStream_t stream)
+{
+    return makeSpecArtifacts(modelDir, makeMtpDrafting(), std::move(baseEngine), std::move(draftEngine), stream);
+}
 
-    // Two prefill passes: A's founding one, and B's seated batch-1 pass mid-flight.
-    EXPECT_CALL(mock, prepare(kPrefillProfile, _, _, _)).Times(2);
-    EXPECT_CALL(mock, prepare(kDecodeProfile, _, _, _)).Times(4);
+class MtpFallbackTest : public ::testing::Test
+{
+protected:
+    void SetUp() override
     {
-        ::testing::InSequence forwardOrder;
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA1}));      // A prefill
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA2}));      // decode, A alone
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB1}));      // B's seated prefill (batch 1)
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA3, kB2})); // decode, both resident
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA4, kB3})); // A finishes and is evicted
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB4}));      // B, compacted to row 0, finishes
+        CUDA_CHECK(cudaStreamCreate(&mStream));
+        mModelDir = writeMtpModelDir("mtpFallbackTests");
     }
 
-    auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
-    rt::LLMInferenceRuntime runtime{
-        std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {}, std::nullopt, mStream};
+    void TearDown() override
+    {
+        CUDA_CHECK(cudaStreamDestroy(mStream));
+        std::filesystem::remove_all(mModelDir);
+    }
 
-    int32_t boundaryCalls = 0;
-    bool admitted = false;
-    std::unordered_map<int32_t, rt::BatchResult> harvested;
-    auto hook = [&](rt::GenerationBoundary& batch) {
-        ++boundaryCalls;
-        // The second boundary sits after A's first decode step -- mid-generation by construction.
-        if (boundaryCalls == 2)
+    //! Each engine counts its own forwards, which is all this suite asks of them: whether the draft ran at all,
+    //! and how many times the base did.
+    std::unique_ptr<FakeEngineExecutor> makeObservingEngine(FakeEngineExecutor*& recordHere)
+    {
+        auto engine = makeFakeEngine(makeSpecBaseConfig("mtp", kVerifySize));
+        engine->forceOutputTokens(agreedLogitsRows(kAgreedToken));
+        recordHere = engine.get();
+        return engine;
+    }
+
+    std::unique_ptr<FakeEngineExecutor> makeBaseEngine()
+    {
+        return makeObservingEngine(mBase);
+    }
+
+    //! A draft engine's output binding carries log-probabilities, not logits: every draft model ends in
+    //! `F.log_softmax`. Drafting accumulates those values down the chain, so an engine on the wrong scale
+    //! collapses the verify tree.
+    std::unique_ptr<FakeEngineExecutor> makeDraftEngine()
+    {
+        auto engine = makeObservingEngine(mDraft);
+        engine->actAsDraftEngine();
+        return engine;
+    }
+
+    //! Engines left to derive their own output, for the test that compares speculative decoding against the
+    //! vanilla path rather than counting forwards. Forcing tokens is not an option there: a forced row is written
+    //! the same way on every round, which is not a draft distribution a tree can be built from.
+    std::unique_ptr<FakeEngineExecutor> makeComputingEngine(FakeEngineExecutor*& recordHere, bool isDraft)
+    {
+        auto engine = makeFakeEngine(makeSpecBaseConfig("mtp", kVerifySize));
+        if (isDraft)
         {
-            rt::SlotSeed seed;
-            seed.promptTokenIds = {42};
-            seed.originalIndex = kAdmittedIndexBase;
-            ASSERT_FALSE(admitted);
-            EXPECT_EQ(batch.admitSequence(std::move(seed)), rt::AdmitDecision::kAdmitted);
-            EXPECT_EQ(batch.residentCount(), 2);
-            admitted = true;
+            engine->actAsDraftEngine();
         }
-        for (auto& [index, result] : batch.takeCompletedAtOrAbove(kAdmittedIndexBase))
+        recordHere = engine.get();
+        return engine;
+    }
+
+    cudaStream_t mStream{};
+    std::filesystem::path mModelDir;
+    //! Non-owning: the runtime takes ownership of both engines and outlives every read of them here.
+    FakeEngineExecutor* mBase{nullptr};
+    FakeEngineExecutor* mDraft{nullptr};
+};
+
+//! Given an MTP runtime, when one request sets disableSpecDecode and a second (same runtime) does not,
+//! then the first never calls the draft engine at all (vanilla-shaped: one base prefill, one base decode
+//! per generated token) and the second still runs the ordinary draft-chain-then-verify round -- proving
+//! the fallback is decided per request, not latched onto the runtime for its lifetime.
+TEST_F(MtpFallbackTest, DisableSpecDecodeRoutesThatRequestThroughVanillaWithoutTouchingTheDraftEngine)
+{
+    auto artifacts = makeMtpArtifacts(mModelDir, makeBaseEngine(), makeDraftEngine(), mStream);
+    rt::LLMInferenceRuntime runtime{
+        std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {}, makeMtpDrafting(), mStream};
+
+    constexpr int64_t kFallbackGenerateLength{3};
+    auto fallbackRequest = makeGreedyRequest("a", kFallbackGenerateLength);
+    fallbackRequest.disableSpecDecode = true;
+    rt::LLMGenerationResponse fallbackResponse;
+    ASSERT_TRUE(runtime.handleRequest(fallbackRequest, fallbackResponse, mStream));
+
+    ASSERT_EQ(fallbackResponse.outputIds.size(), 1U);
+    EXPECT_THAT(fallbackResponse.outputIds[0], ::testing::SizeIs(kFallbackGenerateLength));
+    EXPECT_EQ(mDraft->forwardsRun(), 0U) << "draft engine executed while disableSpecDecode was set";
+    // Forward count only (not the exact prepare/decode profile sequence, a scheduling-order assumption separate
+    // from the fallback behavior this test protects): nothing beyond one forward per generated token ran on the
+    // base engine.
+    EXPECT_EQ(mBase->forwardsRun(), static_cast<size_t>(kFallbackGenerateLength));
+
+    size_t const draftForwardsBeforeSpecDecode = mDraft->forwardsRun();
+    auto const specDecodeRequest = makeGreedyRequest("a", kVerifySize);
+    rt::LLMGenerationResponse specDecodeResponse;
+    ASSERT_TRUE(runtime.handleRequest(specDecodeRequest, specDecodeResponse, mStream));
+
+    ASSERT_EQ(specDecodeResponse.outputIds.size(), 1U);
+    EXPECT_THAT(specDecodeResponse.outputIds[0], ::testing::SizeIs(kVerifySize));
+    // The same runtime that just ran vanilla-only now uses the draft engine: the fallback did not stick.
+    EXPECT_GT(mDraft->forwardsRun(), draftForwardsBeforeSpecDecode)
+        << "second request should still use the draft engine";
+}
+
+// Speculative decoding is defined by the fact that it changes nothing: a draft is a guess the base engine either
+// confirms or throws away, so greedy decoding returns the same tokens whether or not drafting ran. That is also
+// the property nothing here could check. A draft proposing from a collapsed verify tree, or a verification
+// committing one token too many, still produces output of the right length -- and the other tests in this file
+// count forwards and read the shape of a round, which a wrong-but-well-formed draft satisfies exactly. This is
+// the test that went red on the ordering defect the drafting fix addresses.
+//
+// Given one MTP runtime and one prompt
+// When the request runs once with disableSpecDecode and once with drafting on, neither forcing its output tokens
+// Then both return the same tokens, and drafting really did run on the speculative pass
+TEST_F(MtpFallbackTest, SpeculativeDecodingReturnsWhatTheVanillaPathReturns)
+{
+    auto artifacts = makeMtpArtifacts(mModelDir, makeComputingEngine(mBase, /*isDraft=*/false),
+        makeComputingEngine(mDraft, /*isDraft=*/true), mStream);
+    rt::LLMInferenceRuntime runtime{
+        std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {}, makeMtpDrafting(), mStream};
+
+    constexpr int64_t kGenerateLength{6};
+    auto const prompt = makePrompt(5);
+
+    auto fallbackRequest = makeGreedyRequest(prompt, kGenerateLength);
+    fallbackRequest.disableSpecDecode = true;
+    rt::LLMGenerationResponse fallback;
+    ASSERT_TRUE(runtime.handleRequest(fallbackRequest, fallback, mStream));
+    ASSERT_EQ(fallback.outputIds.size(), 1U);
+    ASSERT_THAT(fallback.outputIds[0], ::testing::SizeIs(kGenerateLength));
+    ASSERT_EQ(mDraft->forwardsRun(), 0U) << "the fallback pass drafted, so it is not a vanilla reference";
+
+    rt::LLMGenerationResponse speculative;
+    ASSERT_TRUE(runtime.handleRequest(makeGreedyRequest(prompt, kGenerateLength), speculative, mStream));
+    ASSERT_EQ(speculative.outputIds.size(), 1U);
+    ASSERT_GT(mDraft->forwardsRun(), 0U) << "the speculative pass never drafted, so this proves nothing";
+
+    EXPECT_EQ(speculative.outputIds[0], fallback.outputIds[0])
+        << "drafting changed the answer, which is the one thing it is not allowed to do";
+}
+
+TEST(ShouldUseHybridSpecEndpointReuseTest, RequiresSpecModeAndAHybridBaseAndEitherCacheDirection)
+{
+    using rt::DecodingStrategyKind;
+    using rt::shouldUseHybridSpecEndpointReuse;
+
+    EXPECT_TRUE(shouldUseHybridSpecEndpointReuse(DecodingStrategyKind::kMTP, /*hybridBase=*/true,
+        /*lookup=*/true, /*publish=*/false));
+    EXPECT_TRUE(shouldUseHybridSpecEndpointReuse(DecodingStrategyKind::kMTP, /*hybridBase=*/true,
+        /*lookup=*/false, /*publish=*/true));
+    EXPECT_FALSE(shouldUseHybridSpecEndpointReuse(DecodingStrategyKind::kMTP, /*hybridBase=*/true,
+        /*lookup=*/false, /*publish=*/false))
+        << "neither looking up nor publishing state means there is nothing for this path to do";
+    EXPECT_FALSE(shouldUseHybridSpecEndpointReuse(DecodingStrategyKind::kMTP, /*hybridBase=*/false,
+        /*lookup=*/true, /*publish=*/true))
+        << "a non-hybrid base has no recurrent state for the endpoint checkpoint to carry";
+    EXPECT_TRUE(shouldUseHybridSpecEndpointReuse(DecodingStrategyKind::kEAGLE, /*hybridBase=*/true,
+        /*lookup=*/true, /*publish=*/true))
+        << "EAGLE on a hybrid base qualifies for hybrid spec endpoint reuse";
+    EXPECT_TRUE(shouldUseHybridSpecEndpointReuse(DecodingStrategyKind::kDFlash, /*hybridBase=*/true,
+        /*lookup=*/true, /*publish=*/true))
+        << "DFlash on a hybrid base qualifies for hybrid spec endpoint reuse";
+    EXPECT_FALSE(shouldUseHybridSpecEndpointReuse(DecodingStrategyKind::kVanilla, /*hybridBase=*/true,
+        /*lookup=*/true, /*publish=*/true))
+        << "Vanilla decoding does not use the hybrid spec endpoint path";
+}
+
+// --------------------------------------------------------------------------
+// Hybrid+MTP context-cache endpoint reuse: same MTP assembly as above, but over a hybrid (attention+mamba) base
+// with ContextCacheConfig enabled. No prior unit test constructed a runtime with context caching enabled at all --
+// runHybridMtpPrefill (llmRankRuntime.cpp) had zero coverage. Regression fence ahead of the in-flight-batching
+// rewrite to handleRequest().
+// --------------------------------------------------------------------------
+
+//! Same base as MTP, plus the hybrid (attention+mamba) layer split validateContextCacheDeployment requires for
+//! MTP context reuse: attention layers first then mamba (llmEngineConfig.cpp's fallback layer-type ordering).
+Json makeHybridMtpBaseConfig()
+{
+    Json config = makeSpecBaseConfig("mtp", kVerifySize);
+    config["num_attention_layers"] = 1;
+    config["num_linear_attn_layers"] = 1;
+    config["recurrent_state_num_heads"] = 2;
+    config["recurrent_state_head_dim"] = 128;
+    config["recurrent_state_size"] = 128;
+    // GDN chunk replay uses 128-wide K/V heads and one K head for two V heads.
+    config["conv_dim"] = 512;
+    config["conv_kernel"] = 4;
+    config["recurrent_state_dtype"] = "fp32";
+    config["conv_state_dtype"] = "fp16";
+    // Endpoint reuse publishes a paged spec-decode record, which needs >=1 full page (128 tokens) of resident
+    // content -- sizeSpeculativeKvPool() doesn't widen max_input_len, so this fixture must do it separately.
+    config["builder_config"]["max_input_len"] = 256;
+    return config;
+}
+
+std::filesystem::path writeHybridMtpModelDir()
+{
+    Json const baseConfig = makeHybridMtpBaseConfig();
+    // Draft stays non-hybrid: validateContextCacheDeployment requires an independent (non-shared) draft KV cache,
+    // which is exactly makeMtpDraftConfig()'s contract (hasOwnKVCache defaults true, sharesTargetKV defaults false).
+    Json draftConfig = makeMtpDraftConfig();
+    draftConfig["builder_config"]["max_input_len"] = 256;
+    return writeSpecModelDir("hybridMtpCtxReuseTests", baseConfig, draftConfig);
+}
+
+class HybridMtpContextReuseTest : public ::testing::Test
+{
+protected:
+    void SetUp() override
+    {
+        CUDA_CHECK(cudaStreamCreate(&mStream));
+        mModelDir = writeHybridMtpModelDir();
+    }
+
+    void TearDown() override
+    {
+        CUDA_CHECK(cudaStreamDestroy(mStream));
+        std::filesystem::remove_all(mModelDir);
+    }
+
+    //! Ties every logits row to token 0 ("a") -- the only non-special character this tokenizer can round-trip,
+    //! which lets a continuation prompt be built by literal string concatenation instead of decoding ids back
+    //! through the tokenizer.
+    //!
+    //! The two engines record separately, so a test picks the one it means rather than filtering a shared list by
+    //! a flag: "the draft's first prefill" is a question about the draft engine.
+    std::unique_ptr<FakeEngineExecutor> makeEngine(FakeEngineExecutor*& recordHere)
+    {
+        auto engine = makeFakeEngine(makeHybridMtpBaseConfig());
+        // Every verify row, not only the first: while drafting could not accept past the tree root
+        // the rest never reached the output, so forcing one row looked sufficient.
+        engine->forceOutputTokens(agreedLogitsRows(0, kVerifySize));
+        engine->recordBinding(binding_names::kKVPageTable);
+        recordHere = engine.get();
+        return engine;
+    }
+
+    std::unique_ptr<FakeEngineExecutor> makeBaseEngine()
+    {
+        auto engine = makeEngine(mBase);
+        engine->exposeInt32Binding(binding_names::kTreeParentIds);
+        engine->exposeInt32Binding(binding_names::kTreeDepths);
+        engine->exposeInt32Binding(binding_names::kSpecVerifyLayout);
+        return engine;
+    }
+
+    //! A draft engine's output binding carries log-probabilities, not logits: every draft model ends in
+    //! `F.log_softmax`. Drafting accumulates those values down the chain, so an engine on the wrong scale
+    //! collapses the verify tree.
+    std::unique_ptr<FakeEngineExecutor> makeDraftEngine()
+    {
+        auto engine = makeEngine(mDraft);
+        engine->actAsDraftEngine();
+        return engine;
+    }
+
+    static bool isPrefill(FakeEngineExecutor::PreparedRound const& round)
+    {
+        return round.profileIndex == kPrefillProfile;
+    }
+
+    //! The first page `engine`'s page table named on its `round`-th forward, or kUNUSED_PAGE_ENTRY if that forward
+    //! bound no page table.
+    static int32_t firstPageOn(FakeEngineExecutor const& engine, size_t round)
+    {
+        auto const& table = engine.preparedBinding(binding_names::kKVPageTable)[round];
+        return table.empty() ? rt::kUNUSED_PAGE_ENTRY : table.front();
+    }
+
+    //! Index of `engine`'s first prefill forward at or after `from`.
+    static size_t findPrefill(FakeEngineExecutor const& engine, size_t from)
+    {
+        auto const& rounds = engine.preparedRounds();
+        for (size_t i = from; i < rounds.size(); ++i)
         {
-            harvested.emplace(index, std::move(result));
+            if (isPrefill(rounds[i]))
+            {
+                return i;
+            }
         }
+        return rounds.size();
+    }
+
+    cudaStream_t mStream{};
+    std::filesystem::path mModelDir;
+    //! Non-owning: the runtime takes ownership of both engines and outlives every read of them here.
+    FakeEngineExecutor* mBase{nullptr};
+    FakeEngineExecutor* mDraft{nullptr};
+};
+
+//! Hybrid+MTP endpoint reuse publishes a paged spec-decode record (validateSpecState in cacheRecord.cpp), which
+//! -- like plain context-cache reuse (kPagedPromptLength below) -- requires at least one full page
+//! (kTOKENS_PER_PAGE == 128) of resident content.
+constexpr int64_t kHybridMtpPagedPromptLength{130};
+
+TEST_F(HybridMtpContextReuseTest, SecondTurnPrefillShrinksToTheBoundaryOnACacheHit)
+{
+    auto artifacts = makeMtpArtifacts(mModelDir, makeBaseEngine(), makeDraftEngine(), mStream);
+
+    rt::ContextCacheConfig cacheConfig;
+    cacheConfig.enabled = true;
+    cacheConfig.maxRecords = 16;
+    cacheConfig.maxSnapshots = 64;
+    cacheConfig.encoderEmbeddingCacheBudgetBytes = 0;
+
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {},
+        makeMtpDrafting(), mStream, cacheConfig};
+
+    // maxGenerateLength must reach a full MTP round (kVerifySize): a request satisfied entirely out of prefill's
+    // own sampled token never runs decodeStep(), so baseHiddenStates is never reshaped back to the 3D
+    // [batch, seq, hiddenDim] triple boundary-hidden capture requires.
+    auto firstRequest = makeGreedyRequest(makePrompt(kHybridMtpPagedPromptLength), /*maxGenerateLength=*/kVerifySize);
+    firstRequest.contextCacheCommitPolicy = rt::ContextCacheCommitPolicy::kPrefillStateOnly;
+    rt::LLMGenerationResponse firstResponse;
+    ASSERT_TRUE(runtime.handleRequest(firstRequest, firstResponse, mStream));
+    ASSERT_EQ(firstResponse.outputIds[0].size(), static_cast<size_t>(kVerifySize));
+    EXPECT_THAT(firstResponse.outputIds[0], ::testing::Each(0)) << "engine ties every row to token 0 (\"a\")";
+
+    size_t const baseRoundsBeforeSecond = mBase->preparedRounds().size();
+    // Literal continuation of turn 1's exact token sequence (prompt + generated), which this single-character/
+    // no-merge tokenizer round-trips without re-tokenization drift.
+    constexpr int64_t kSecondPromptLength{kHybridMtpPagedPromptLength + kVerifySize};
+    auto secondRequest = makeGreedyRequest(
+        makePrompt(kHybridMtpPagedPromptLength) + std::string(kVerifySize, 'a'), /*maxGenerateLength=*/1);
+    secondRequest.contextCacheCommitPolicy = rt::ContextCacheCommitPolicy::kPrefillStateOnly;
+    rt::LLMGenerationResponse secondResponse;
+    ASSERT_TRUE(runtime.handleRequest(secondRequest, secondResponse, mStream));
+
+    size_t const secondBasePrefill = findPrefill(*mBase, baseRoundsBeforeSecond);
+    ASSERT_LT(secondBasePrefill, mBase->preparedRounds().size())
+        << "second request never reached a base prefill forward";
+    EXPECT_LT(mBase->preparedRounds()[secondBasePrefill].dims.seqLen, kSecondPromptLength)
+        << "endpoint reuse should fold the matched prefix into a shorter prefill; a full-length prefill means the "
+           "checkpoint was not hit";
+}
+
+// Given a Hybrid+MTP endpoint whose recurrent/partial-KV state was restored on a cache hit
+// When the second turn's draft prefill runs
+// Then the draft engine's own kv_page_table binding names the lease's real physical page, not the table's
+//   never-written sentinel -- and it is the same page slot 0's first turn was uploaded to, since this is a reuse
+//   of that turn's own record, not a fresh allocation
+//
+// Regression lock for !1247 (note_63812832, fixed in ddebce082): the paired-restore path writes page *contents*
+// but that alone does not make the draft engine reach them -- MTPDecoder::initializeForGeneration resolves the
+// draft's KV purely through kvPageTables[1], which the coordinator must separately publish via
+// preparePrefill()'s runsPairedDraftWorkingSet()-gated setRows()/upload(). That predicate used to be EAGLE-only,
+// so Hybrid+MTP prefills silently kept whatever page ids were last uploaded (or the construction-time
+// kUNUSED_PAGE_ENTRY sentinel, since a table that has never been uploaded never leaves that value), and the
+// draft engine read KV through those stale bindings instead of the lease's own pages -- corrupting nothing that
+// changes the sampled token, since the base always re-verifies, but silently costing acceptance rate.
+TEST_F(HybridMtpContextReuseTest, SecondTurnDraftPrefillPublishesTheLeasedPageToTheDraftTable)
+{
+    auto artifacts = makeMtpArtifacts(mModelDir, makeBaseEngine(), makeDraftEngine(), mStream);
+
+    rt::ContextCacheConfig cacheConfig;
+    cacheConfig.enabled = true;
+    cacheConfig.maxRecords = 16;
+    cacheConfig.maxSnapshots = 64;
+    cacheConfig.encoderEmbeddingCacheBudgetBytes = 0;
+
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {},
+        makeMtpDrafting(), mStream, cacheConfig};
+
+    auto firstRequest = makeGreedyRequest(makePrompt(kHybridMtpPagedPromptLength), /*maxGenerateLength=*/kVerifySize);
+    firstRequest.contextCacheCommitPolicy = rt::ContextCacheCommitPolicy::kPrefillStateOnly;
+    rt::LLMGenerationResponse firstResponse;
+    ASSERT_TRUE(runtime.handleRequest(firstRequest, firstResponse, mStream));
+
+    size_t const firstDraftPrefill = findPrefill(*mDraft, 0);
+    ASSERT_LT(firstDraftPrefill, mDraft->preparedRounds().size())
+        << "first request never reached a draft prefill forward";
+    ASSERT_NE(firstPageOn(*mDraft, firstDraftPrefill), rt::kUNUSED_PAGE_ENTRY)
+        << "the draft page table was never uploaded even on the producing turn";
+    int32_t const producerDraftPage = firstPageOn(*mDraft, firstDraftPrefill);
+
+    size_t const draftRoundsBeforeSecond = mDraft->preparedRounds().size();
+    auto secondRequest = makeGreedyRequest(
+        makePrompt(kHybridMtpPagedPromptLength) + std::string(kVerifySize, 'a'), /*maxGenerateLength=*/1);
+    secondRequest.contextCacheCommitPolicy = rt::ContextCacheCommitPolicy::kPrefillStateOnly;
+    rt::LLMGenerationResponse secondResponse;
+    ASSERT_TRUE(runtime.handleRequest(secondRequest, secondResponse, mStream));
+
+    size_t const secondDraftPrefill = findPrefill(*mDraft, draftRoundsBeforeSecond);
+    ASSERT_LT(secondDraftPrefill, mDraft->preparedRounds().size())
+        << "second (cache-hit) request never reached a draft prefill forward";
+    EXPECT_NE(firstPageOn(*mDraft, secondDraftPrefill), rt::kUNUSED_PAGE_ENTRY)
+        << "cache hit left the draft page table at its never-written sentinel -- the restore path skipped "
+           "publishing the mapping, same as !1247";
+    EXPECT_EQ(firstPageOn(*mDraft, secondDraftPrefill), producerDraftPage)
+        << "the cache-hit draft prefill should resolve to the same physical page the producing turn recorded";
+}
+
+TEST_F(HybridMtpContextReuseTest, RecurrentCaptureIntervalViolationIsRejectedCleanly)
+{
+    auto artifacts = makeMtpArtifacts(mModelDir, makeBaseEngine(), makeDraftEngine(), mStream);
+
+    rt::ContextCacheConfig cacheConfig;
+    cacheConfig.enabled = true;
+    cacheConfig.maxRecords = 16;
+    cacheConfig.maxSnapshots = 64;
+    cacheConfig.encoderEmbeddingCacheBudgetBytes = 0;
+
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {},
+        makeMtpDrafting(), mStream, cacheConfig};
+
+    // Hybrid+MTP endpoint reuse requires recurrentCaptureInterval==0 (periodic capture would land the recurrent
+    // snapshot away from the stable predecessor boundary). A request that asks for both must be rejected outright,
+    // not silently downgraded to periodic capture or to no reuse at all.
+    auto request = makeGreedyRequest(makePrompt(kHybridMtpPagedPromptLength), /*maxGenerateLength=*/1);
+    request.contextCacheCommitPolicy = rt::ContextCacheCommitPolicy::kPrefillStateOnly;
+    request.recurrentCaptureInterval = 1;
+    rt::LLMGenerationResponse response;
+    EXPECT_FALSE(runtime.handleRequest(request, response, mStream));
+    EXPECT_TRUE(response.outputIds.empty());
+}
+
+// --------------------------------------------------------------------------
+// Plain (non-MTP) context-cache reuse: ContextCacheCoordinator's ordinary prefix lookup/publish path, not the
+// MTP-specific boundary-hidden fold above. Unlike Hybrid+MTP reuse, validateContextCacheDeployment only requires
+// numAttentionLayers>0 || numLinearAttnLayers>0 for a vanilla (SpecDecodeMode::kNONE) deployment --
+// makeTinyVanillaConfig()'s plain attention-only base already qualifies, no hybrid (mamba) layers needed.
+// --------------------------------------------------------------------------
+
+//! Context-cache reuse operates at page granularity (kTOKENS_PER_PAGE == 128, common/pagedKvTypes.h): a sequence
+//! shorter than one full page never has anything to publish, no matter how exact its prefix match is. Widen
+//! makeTinyVanillaConfig()'s KV geometry so a >=1-page sequence fits.
+Json makeContextReusePagedConfig()
+{
+    Json config = makeTinyVanillaConfig();
+    config["builder_config"]["max_input_len"] = 256;
+    config["builder_config"]["max_kv_cache_capacity"] = 256;
+    config["builder_config"]["max_kv_pool_pages"] = rt::computeMinimumKvPoolPages(kMaxBatchSize, 256);
+    return config;
+}
+
+//! One full page plus a few extra tokens, so the published record covers exactly one page and the tail past it
+//! stays as new work on a cache hit -- long enough to source both requests' prompts (single-char tokenizer, 1
+//! token per "a").
+constexpr int64_t kPagedPromptLength{130};
+
+class PlainContextReuseTest : public ::testing::Test
+{
+protected:
+    void SetUp() override
+    {
+        CUDA_CHECK(cudaStreamCreate(&mStream));
+        mModelDir = writeModelDir("plainContextReuseTests", makeContextReusePagedConfig());
+    }
+
+    void TearDown() override
+    {
+        CUDA_CHECK(cudaStreamDestroy(mStream));
+        std::filesystem::remove_all(mModelDir);
+    }
+
+    //! Ties every logits row to token 0 ("a"), the only non-special character this tokenizer round-trips, so a
+    //! continuation prompt can be built by literal string concatenation without risking re-tokenization drift.
+    //!
+    //! Whether a prefix was reused is invisible in the output -- the reused and recomputed paths decode the same
+    //! text -- so what these tests read is the sequence length the runtime asked each forward for, which the
+    //! engine records as it is prepared.
+    std::unique_ptr<FakeEngineExecutor> makeEngine()
+    {
+        auto engine = makeFakeEngine(makeContextReusePagedConfig());
+        engine->forceOutputTokens({0});
+        mEngine = engine.get();
+        return engine;
+    }
+
+    //! An engine left to derive its own output, for the tests that compare two runs rather than read a forward's
+    //! shape. Cannot serve the continuation-prompt tests above: those need the generated text to be literal "a"s.
+    std::unique_ptr<FakeEngineExecutor> makeComputingEngine()
+    {
+        auto engine = makeFakeEngine(makeContextReusePagedConfig());
+        mEngine = engine.get();
+        return engine;
+    }
+
+    //! The forwards recorded so far, owned by the engine the runtime took over.
+    std::vector<FakeEngineExecutor::PreparedRound> const& calls() const
+    {
+        return mEngine->preparedRounds();
+    }
+
+    static bool isPrefill(FakeEngineExecutor::PreparedRound const& round)
+    {
+        return round.profileIndex == kPrefillProfile;
+    }
+
+    static rt::ContextCacheConfig makeCacheConfig()
+    {
+        rt::ContextCacheConfig cacheConfig;
+        cacheConfig.enabled = true;
+        cacheConfig.maxRecords = 16;
+        cacheConfig.maxSnapshots = 64;
+        cacheConfig.encoderEmbeddingCacheBudgetBytes = 0;
+        return cacheConfig;
+    }
+
+    //! A request engine over a reuse-enabled runtime that seats up to two requests at once.
+    std::unique_ptr<rt::scheduler::RequestEngine> makeRequestEngine(std::unique_ptr<FakeEngineExecutor> engine)
+    {
+        auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
+        auto runtime = std::make_unique<rt::LLMInferenceRuntime>(std::move(artifacts), mModelDir.string(),
+            /*multimodalEngineDir=*/"", std::unordered_map<std::string, std::string>{}, std::nullopt, mStream,
+            makeCacheConfig());
+        rt::scheduler::EngineConfig config;
+        config.maxBatchSize = 2;
+        return std::make_unique<rt::scheduler::RequestEngine>(std::move(runtime), mStream, config);
+    }
+
+    cudaStream_t mStream{};
+    std::filesystem::path mModelDir;
+    //! Non-owning: the runtime takes ownership of the engine, and outlives every read of it here.
+    FakeEngineExecutor* mEngine{nullptr};
+};
+
+TEST_F(PlainContextReuseTest, SecondRequestReusesTheFirstRequestsPrefix)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {},
+        std::nullopt, mStream, makeCacheConfig()};
+
+    constexpr int64_t kFirstGenerateLength{4};
+    constexpr int64_t kTotalLength{kPagedPromptLength + kFirstGenerateLength};
+    auto const firstPrompt = makePrompt(kPagedPromptLength);
+    auto firstRequest = makeGreedyRequest(firstPrompt, kFirstGenerateLength);
+    rt::LLMGenerationResponse firstResponse;
+    ASSERT_TRUE(runtime.handleRequest(firstRequest, firstResponse, mStream));
+    ASSERT_EQ(firstResponse.outputIds[0].size(), static_cast<size_t>(kFirstGenerateLength));
+
+    auto const coldMetrics = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(coldMetrics.has_value());
+    EXPECT_EQ(coldMetrics->hitSequences, 0U) << "the first request has nothing to reuse yet";
+
+    size_t const callsBeforeSecond = calls().size();
+    // Literal continuation of request 1's exact tokens (prompt + the kFirstGenerateLength generated "a"s) -- the
+    // toy tokenizer round-trips this without drift.
+    auto secondRequest = makeGreedyRequest(firstPrompt + std::string(kFirstGenerateLength, 'a'),
+        /*maxGenerateLength=*/1);
+    rt::LLMGenerationResponse secondResponse;
+    ASSERT_TRUE(runtime.handleRequest(secondRequest, secondResponse, mStream));
+
+    auto const warmMetrics = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(warmMetrics.has_value());
+    EXPECT_EQ(warmMetrics->hitSequences, 1U)
+        << "the second request's prefix should hit the first request's published state";
+    EXPECT_GT(warmMetrics->reusedTokens, 0U);
+
+    auto const secondPrefill
+        = std::find_if(calls().begin() + static_cast<std::ptrdiff_t>(callsBeforeSecond), calls().end(), isPrefill);
+    ASSERT_NE(secondPrefill, calls().end()) << "second request never reached a base prefill forward";
+    EXPECT_LT(secondPrefill->dims.seqLen, kTotalLength)
+        << "a cache hit should fold the matched prefix out of the prefill forward's sequence length";
+}
+
+// Every other reuse test here reads the sequence length a prefill asked for. That shows work was skipped, not that
+// the right work was skipped: a reuse that restored a page belonging to something else, or that claimed a prefix
+// one token longer than it actually put back, shortens the prefill just as convincingly. The property that defines
+// a correct cache hit is that it is invisible -- a prompt served partly from cache has to decode exactly what the
+// same prompt decodes cold.
+//
+// Given one prompt extending another, and neither run forcing its output tokens, so what comes back is derived
+// from the KV entries behind it
+// When the long prompt is served once on a cold runtime and once behind a published prefix of the short one
+// Then both decode the same tokens, and the second one really did reuse
+TEST_F(PlainContextReuseTest, APartlyReusedPromptDecodesWhatAColdPrefillWouldHave)
+{
+    constexpr int64_t kGenerateLength{4};
+    constexpr int64_t kContinuationLength{kPagedPromptLength + 20};
+    auto const prefix = std::string(kPagedPromptLength, 'a');
+    auto const continuation = std::string(kContinuationLength, 'a');
+
+    auto runtimeOn = [this](std::filesystem::path const& dir) {
+        auto artifacts = makeVanillaArtifacts(dir, makeComputingEngine(), mStream);
+        return rt::LLMInferenceRuntime{std::move(artifacts), dir.string(), /*multimodalEngineDir=*/"", {}, std::nullopt,
+            mStream, makeCacheConfig()};
     };
 
-    auto const request = makeGreedyRequest("a", kMaxGenerateLength);
-    rt::LLMGenerationResponse response;
-    ASSERT_TRUE(runtime.handleRequest(request, response, mStream, /*outputThinkerEmbeddings=*/false, hook));
-    ASSERT_TRUE(admitted);
+    rt::LLMGenerationResponse cold;
+    {
+        auto runtime = runtimeOn(mModelDir);
+        ASSERT_TRUE(runtime.handleRequest(makeGreedyRequest(continuation, kGenerateLength), cold, mStream));
+        ASSERT_EQ(cold.outputIds[0].size(), static_cast<size_t>(kGenerateLength));
+    }
 
-    // A's response is exactly its serial token stream, and covers only A: B's result must have
-    // left through the harvest, not through the founding caller's response.
-    expectResponseCoversEverySlot(response, 1);
-    ASSERT_EQ(response.outputIds.size(), 1U);
-    EXPECT_EQ(response.outputIds[0], (std::vector<int32_t>{kA1, kA2, kA3, kA4}));
-    EXPECT_EQ(response.finishReasons[0], rt::FinishReason::kLength);
+    auto runtime = runtimeOn(mModelDir);
+    rt::LLMGenerationResponse published;
+    ASSERT_TRUE(runtime.handleRequest(makeGreedyRequest(prefix, kGenerateLength), published, mStream));
 
-    // B's stream, token for token, through admission, two shared steps, A's eviction and its own.
-    ASSERT_EQ(harvested.size(), 1U);
-    auto const& resultB = harvested.at(kAdmittedIndexBase);
-    EXPECT_EQ(resultB.generateLength, static_cast<int32_t>(kMaxGenerateLength));
-    ASSERT_GE(resultB.tokenIds.size(), 4U);
-    EXPECT_EQ(std::vector<int32_t>(resultB.tokenIds.end() - 4, resultB.tokenIds.end()),
-        (std::vector<int32_t>{kB1, kB2, kB3, kB4}));
-    EXPECT_EQ(resultB.terminalReason, rt::FinishReason::kLength);
+    rt::LLMGenerationResponse warm;
+    ASSERT_TRUE(runtime.handleRequest(makeGreedyRequest(continuation, kGenerateLength), warm, mStream));
+
+    auto const metrics = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(metrics.has_value());
+    ASSERT_EQ(metrics->hitSequences, 1U) << "the continuation never reused anything, so this proves nothing";
+    ASSERT_GT(metrics->reusedTokens, 0U);
+
+    EXPECT_EQ(warm.outputIds[0], cold.outputIds[0])
+        << "the reused prefix put different entries behind the continuation than a cold prefill computes";
 }
+
+// Given a request engine over a runtime with context reuse on
+// When it opens, and then serves a prompt followed by a continuation of it
+// Then its context-cache counters show an empty cache before the first submit, the prompt's publication by the
+// time the prompt's response is released, and the continuation's hit by the time the continuation's response is
+// released, reusing exactly the prompt tokens the continuation's prefill forward skipped
+TEST_F(PlainContextReuseTest, RequestEngineReportsTheContextCacheItsRuntimeHolds)
+{
+    auto requestEngine = makeRequestEngine(makeEngine());
+
+    auto const opened = requestEngine->contextCacheMetrics();
+    ASSERT_TRUE(opened.has_value()) << "the engine hid the counters of a runtime that has a context cache";
+    EXPECT_EQ(opened->admittedSequences, 0U);
+    EXPECT_EQ(opened->currentRecords, 0U);
+    EXPECT_GT(opened->baseKvPages.capacity, 0);
+    EXPECT_EQ(opened->baseKvPages.free, opened->baseKvPages.capacity);
+
+    constexpr int64_t kFirstGenerateLength{4};
+    auto const firstPrompt = makePrompt(kPagedPromptLength);
+    requestEngine->submit(makeGreedyRequest(firstPrompt, kFirstGenerateLength)).get();
+    auto const published = requestEngine->contextCacheMetrics();
+    ASSERT_TRUE(published.has_value());
+    EXPECT_GT(published->committedPublications, 0U)
+        << "the prompt's response was released before the counters saw the step that published its prefix";
+    auto const continuation = firstPrompt + std::string(kFirstGenerateLength, 'a');
+    rt::LLMGenerationResponse const second
+        = requestEngine->submit(makeGreedyRequest(continuation, /*maxGenerateLength=*/1)).get();
+    auto const served = requestEngine->contextCacheMetrics();
+
+    requestEngine->shutdown(rt::scheduler::ShutdownMode::kDrain);
+    auto const lastPrefill = std::find_if(calls().rbegin(), calls().rend(), isPrefill);
+    ASSERT_NE(lastPrefill, calls().rend()) << "the continuation never reached a base prefill forward";
+    int64_t const skipped = second.inputTokenCounts.at(0) - lastPrefill->dims.seqLen;
+    ASSERT_GT(skipped, 0) << "the continuation never reused anything, so this proves nothing";
+
+    ASSERT_TRUE(served.has_value());
+    EXPECT_EQ(served->admittedSequences, 2U);
+    EXPECT_EQ(served->hitSequences, 1U);
+    EXPECT_EQ(served->reusedTokens, static_cast<uint64_t>(skipped));
+}
+
+// Given a continuation of a prompt whose state the context cache already holds
+// When the continuation is served through the request engine with a stream attached
+// Then its response and its stream both report as reused exactly the prompt tokens its prefill forward skipped
+TEST_F(PlainContextReuseTest, ReusedPromptCountIsThePrefillTheEngineSkipped)
+{
+    auto requestEngine = makeRequestEngine(makeEngine());
+
+    constexpr int64_t kFirstGenerateLength{4};
+    auto const firstPrompt = makePrompt(kPagedPromptLength);
+    requestEngine->submit(makeGreedyRequest(firstPrompt, kFirstGenerateLength)).get();
+    auto request = makeGreedyRequest(firstPrompt + std::string(kFirstGenerateLength, 'a'), /*maxGenerateLength=*/1);
+    auto const channel = rt::StreamChannel::create();
+    request.streamChannels = {channel};
+    rt::LLMGenerationResponse const response = requestEngine->submit(std::move(request)).get();
+
+    requestEngine->shutdown(rt::scheduler::ShutdownMode::kDrain);
+    auto const lastPrefill = std::find_if(calls().rbegin(), calls().rend(), isPrefill);
+    ASSERT_NE(lastPrefill, calls().rend()) << "the continuation never reached a base prefill forward";
+    int64_t const skipped = response.inputTokenCounts.at(0) - lastPrefill->dims.seqLen;
+    ASSERT_GT(skipped, 0) << "the continuation never reused anything, so this proves nothing";
+
+    ASSERT_EQ(response.reusedInputTokenCounts.size(), 1U);
+    EXPECT_EQ(response.reusedInputTokenCounts[0], skipped);
+    int32_t streamed{-1};
+    while (auto chunk = channel->tryPop())
+    {
+        if (chunk->reusedPromptTokenCount >= 0)
+        {
+            streamed = chunk->reusedPromptTokenCount;
+        }
+    }
+    EXPECT_EQ(streamed, skipped);
+}
+
+// Given a prompt served cold, then a continuation of it whose state the context cache now holds
+// When both are served by the runtime's blocking path
+// Then the cold prompt reports no reused tokens, and the continuation reports as reused exactly the prompt tokens its
+// prefill forward skipped
+TEST_F(PlainContextReuseTest, BlockingResponseReportsTheReusedPromptTokens)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {},
+        std::nullopt, mStream, makeCacheConfig()};
+
+    constexpr int64_t kFirstGenerateLength{4};
+    auto const firstPrompt = makePrompt(kPagedPromptLength);
+    rt::LLMGenerationResponse cold;
+    ASSERT_TRUE(runtime.handleRequest(makeGreedyRequest(firstPrompt, kFirstGenerateLength), cold, mStream));
+    rt::LLMGenerationResponse warm;
+    ASSERT_TRUE(runtime.handleRequest(
+        makeGreedyRequest(firstPrompt + std::string(kFirstGenerateLength, 'a'), /*maxGenerateLength=*/1), warm,
+        mStream));
+
+    auto const lastPrefill = std::find_if(calls().rbegin(), calls().rend(), isPrefill);
+    ASSERT_NE(lastPrefill, calls().rend()) << "the continuation never reached a base prefill forward";
+    int64_t const skipped = warm.inputTokenCounts.at(0) - lastPrefill->dims.seqLen;
+    ASSERT_GT(skipped, 0) << "the continuation never reused anything, so this proves nothing";
+
+    EXPECT_EQ(cold.reusedInputTokenCounts, std::vector<int32_t>{0});
+    ASSERT_EQ(warm.reusedInputTokenCounts.size(), 1U);
+    EXPECT_EQ(warm.reusedInputTokenCounts[0], skipped);
+}
+
+// Given a stream that collects metrics
+// When a request is served through the request engine
+// Then the stream's metrics place the start of its prefill on the caller's steady clock, after the submit and
+// before the response is released
+TEST_F(PlainContextReuseTest, StreamMetricsPlaceThePrefillStartOnTheCallersSteadyClock)
+{
+    auto requestEngine = makeRequestEngine(makeEngine());
+    auto const steadyNanoseconds = [] {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
+
+    auto request = makeGreedyRequest(makePrompt(kPagedPromptLength), /*maxGenerateLength=*/2);
+    auto const channel = rt::StreamChannel::create(/*collectMetrics=*/true);
+    request.streamChannels = {channel};
+    int64_t const submittedAt = steadyNanoseconds();
+    requestEngine->submit(std::move(request)).get();
+    int64_t const releasedAt = steadyNanoseconds();
+
+    int64_t prefillStart{-1};
+    while (auto chunk = channel->tryPop())
+    {
+        prefillStart = std::max(prefillStart, chunk->metrics.prefillStartNs);
+    }
+    EXPECT_GE(prefillStart, submittedAt);
+    EXPECT_LE(prefillStart, releasedAt);
+}
+
+TEST_F(PlainContextReuseTest, DisablingReuseKeepsEveryPrefillAtFullLength)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {},
+        std::nullopt, mStream, rt::ContextCacheConfig{}}; // disabled (default)
+
+    constexpr int64_t kFirstGenerateLength{4};
+    constexpr int64_t kTotalLength{kPagedPromptLength + kFirstGenerateLength};
+    auto const firstPrompt = makePrompt(kPagedPromptLength);
+    auto firstRequest = makeGreedyRequest(firstPrompt, kFirstGenerateLength);
+    rt::LLMGenerationResponse firstResponse;
+    ASSERT_TRUE(runtime.handleRequest(firstRequest, firstResponse, mStream));
+
+    EXPECT_FALSE(runtime.getContextCacheMetrics().has_value()) << "metrics should not exist for a disabled cache";
+
+    auto secondRequest = makeGreedyRequest(firstPrompt + std::string(kFirstGenerateLength, 'a'),
+        /*maxGenerateLength=*/1);
+    rt::LLMGenerationResponse secondResponse;
+    ASSERT_TRUE(runtime.handleRequest(secondRequest, secondResponse, mStream));
+
+    // Both requests' prefills should be full-length with no cache to shrink against -- find the *last* prefill
+    // (request 2's), since request 1's own prefill also matches the predicate.
+    auto const lastPrefill = std::find_if(calls().rbegin(), calls().rend(), isPrefill);
+    ASSERT_NE(lastPrefill, calls().rend());
+    EXPECT_EQ(lastPrefill->dims.seqLen, kTotalLength);
+}
+
+// --------------------------------------------------------------------------
+// ContextCacheCommitPolicy: kIncludingGeneratedTokens (the default -- SecondRequestReusesTheFirstRequestsPrefix
+// above never overrides it) vs kPrefillStateOnly. The two tests above already exercise the default policy, but
+// their prompt alone already spans a full page, so a hit there is explainable purely by the *prefill* publish --
+// it doesn't distinguish "generated tokens got published too" from "only the prefill did". These two tests use a
+// sub-page prompt plus a generation long enough to cross the page boundary, so only a decode-end publish (gated by
+// ContextCacheCommitPolicy) can explain a hit; kPrefillStateOnly has nothing else to fall back on.
+// --------------------------------------------------------------------------
+
+//! Deliberately under one page (kTOKENS_PER_PAGE == 128) on its own -- only generation can push a sequence across
+//! the first page boundary, so a hit downstream isolates decode-end publication specifically.
+constexpr int64_t kSubPagePromptLength{100};
+
+TEST_F(PlainContextReuseTest, DecodeEndPublicationLetsGeneratedTokensBeReusedAcrossThreeTurns)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {},
+        std::nullopt, mStream, makeCacheConfig()};
+
+    // Turn 1: prompt (100) + generated (40) = 140, crossing the 128-token page boundary. contextCacheCommitPolicy
+    // defaults to kIncludingGeneratedTokens (llmRuntimeUtils.h) -- not set explicitly, so this is what a real
+    // client gets without opting into the narrower policy.
+    constexpr int64_t kGen1{40};
+    auto const turn1Prompt = makePrompt(kSubPagePromptLength);
+    auto turn1 = makeGreedyRequest(turn1Prompt, kGen1);
+    rt::LLMGenerationResponse resp1;
+    ASSERT_TRUE(runtime.handleRequest(turn1, resp1, mStream));
+    auto const afterTurn1 = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(afterTurn1.has_value());
+    EXPECT_EQ(afterTurn1->hitSequences, 0U) << "nothing existed yet for turn 1 to reuse";
+
+    // Turn 2: literal continuation of turn 1's exact tokens, + 20 more generated.
+    constexpr int64_t kLen2{kSubPagePromptLength + kGen1};
+    constexpr int64_t kGen2{20};
+    auto turn2 = makeGreedyRequest(turn1Prompt + std::string(kGen1, 'a'), kGen2);
+    rt::LLMGenerationResponse resp2;
+    size_t const callsBeforeTurn2 = calls().size();
+    ASSERT_TRUE(runtime.handleRequest(turn2, resp2, mStream));
+    auto const afterTurn2 = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(afterTurn2.has_value());
+    EXPECT_GT(afterTurn2->hitSequences, afterTurn1->hitSequences)
+        << "turn 2's prefix, which only exists because turn 1's *generated* tail was published at decode-end, "
+           "should hit";
+    EXPECT_GT(afterTurn2->reusedTokens, 0U);
+    auto const turn2Prefill
+        = std::find_if(calls().begin() + static_cast<std::ptrdiff_t>(callsBeforeTurn2), calls().end(), isPrefill);
+    ASSERT_NE(turn2Prefill, calls().end());
+    EXPECT_LT(turn2Prefill->dims.seqLen, kLen2);
+
+    // Turn 3: literal continuation of turn 2's exact tokens, + 20 more. `reusedTokens` is a lifetime-cumulative
+    // counter (contextCacheMetrics.h), not a per-request figure, so this only shows turn 3 *also* achieved reuse
+    // (the counter keeps climbing) -- it does not by itself prove turn 3 reused a larger span than turn 2 did. The
+    // shrunk prefill length below is the unambiguous per-request signal for that.
+    constexpr int64_t kLen3{kLen2 + kGen2};
+    auto turn3 = makeGreedyRequest(turn1Prompt + std::string(kGen1 + kGen2, 'a'), /*maxGenerateLength=*/1);
+    rt::LLMGenerationResponse resp3;
+    size_t const callsBeforeTurn3 = calls().size();
+    ASSERT_TRUE(runtime.handleRequest(turn3, resp3, mStream));
+    auto const afterTurn3 = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(afterTurn3.has_value());
+    EXPECT_GT(afterTurn3->reusedTokens, afterTurn2->reusedTokens) << "turn 3 should also have reused something";
+    auto const turn3Prefill
+        = std::find_if(calls().begin() + static_cast<std::ptrdiff_t>(callsBeforeTurn3), calls().end(), isPrefill);
+    ASSERT_NE(turn3Prefill, calls().end());
+    EXPECT_LT(turn3Prefill->dims.seqLen, kLen3)
+        << "turn 3's continuation of turn 2 should also fold out of the prefill";
+}
+
+TEST_F(PlainContextReuseTest, PrefillStateOnlyPublishesNothingWhenThePromptAloneIsUnderOnePage)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {},
+        std::nullopt, mStream, makeCacheConfig()};
+
+    // Same shape as the decode-end test above (100-token prompt, 40 generated, crossing the page boundary), but
+    // with decode-end publication suppressed. The prefill alone is sub-page, so kPrefillEnd has nothing to publish
+    // either -- with this policy, nothing is ever published for this request.
+    constexpr int64_t kGen1{40};
+    auto const turn1Prompt = makePrompt(kSubPagePromptLength);
+    auto turn1 = makeGreedyRequest(turn1Prompt, kGen1);
+    turn1.contextCacheCommitPolicy = rt::ContextCacheCommitPolicy::kPrefillStateOnly;
+    rt::LLMGenerationResponse resp1;
+    ASSERT_TRUE(runtime.handleRequest(turn1, resp1, mStream));
+    auto const afterTurn1 = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(afterTurn1.has_value());
+    EXPECT_EQ(afterTurn1->publishedEndpoints, 0U)
+        << "kPrefillStateOnly suppresses the decode-end publish that would otherwise cover the generated tail, and "
+           "the prefill alone is under one page -- nothing should have been published";
+
+    constexpr int64_t kLen2{kSubPagePromptLength + kGen1};
+    auto turn2 = makeGreedyRequest(turn1Prompt + std::string(kGen1, 'a'), /*maxGenerateLength=*/1);
+    rt::LLMGenerationResponse resp2;
+    size_t const callsBeforeTurn2 = calls().size();
+    ASSERT_TRUE(runtime.handleRequest(turn2, resp2, mStream));
+    auto const afterTurn2 = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(afterTurn2.has_value());
+    EXPECT_EQ(afterTurn2->hitSequences, 0U) << "there was nothing published for turn 2 to reuse";
+    auto const turn2Prefill
+        = std::find_if(calls().begin() + static_cast<std::ptrdiff_t>(callsBeforeTurn2), calls().end(), isPrefill);
+    ASSERT_NE(turn2Prefill, calls().end());
+    EXPECT_EQ(turn2Prefill->dims.seqLen, kLen2) << "no reuse means the full prompt is re-prefilled";
+}
+
+//! One `handleRequest()` call, two slots with different reuse status: slot 0 is fresh and sub-page (never has
+//! anything to reuse, by construction -- see kSubPagePromptLength's comment above), slot 1 is a literal
+//! continuation of an earlier, separately-published request. `ContextCacheBatchAdmission` admits the whole batch
+//! together (see contextCacheCoordinator.h), so this is the one place that actually exercises per-sequence
+//! admission instead of the single-slot path every other test in this file uses.
+TEST_F(PlainContextReuseTest, MixedBatchReusesOnlyTheSlotWithAPublishedPrefix)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {},
+        std::nullopt, mStream, makeCacheConfig()};
+
+    constexpr int64_t kFirstGenerateLength{4};
+    constexpr int64_t kTotalLength{kPagedPromptLength + kFirstGenerateLength};
+    auto const firstPrompt = makePrompt(kPagedPromptLength);
+    auto firstRequest = makeGreedyRequest(firstPrompt, kFirstGenerateLength);
+    rt::LLMGenerationResponse firstResponse;
+    ASSERT_TRUE(runtime.handleRequest(firstRequest, firstResponse, mStream));
+    auto const afterFirst = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(afterFirst.has_value());
+
+    // Slot 0: a fresh, sub-page prompt -- structurally unable to reuse a whole 128-token page no matter what its
+    // content is. Slot 1: the exact continuation of firstRequest's tokens, published above.
+    constexpr int64_t kColdSlotLength{50};
+    size_t const callsBeforeMixed = calls().size();
+
+    rt::LLMGenerationRequest mixedRequest{};
+    rt::LLMGenerationRequest::Request coldSlot;
+    coldSlot.messages.push_back(
+        rt::Message{"user", {rt::Message::MessageContent{"text", makePrompt(kColdSlotLength, /*variant=*/1)}}});
+    rt::LLMGenerationRequest::Request warmSlot;
+    warmSlot.messages.push_back(rt::Message{
+        "user", {rt::Message::MessageContent{"text", firstPrompt + std::string(kFirstGenerateLength, 'a')}}});
+    mixedRequest.requests.push_back(std::move(coldSlot));
+    mixedRequest.requests.push_back(std::move(warmSlot));
+    mixedRequest.temperature = 0.0F;
+    mixedRequest.topK = 1;
+    mixedRequest.topP = 1.0F;
+    mixedRequest.maxGenerateLength = 1;
+
+    rt::LLMGenerationResponse mixedResponse;
+    ASSERT_TRUE(runtime.handleRequest(mixedRequest, mixedResponse, mStream));
+    ASSERT_EQ(mixedResponse.outputIds.size(), 2U);
+    EXPECT_EQ(mixedResponse.outputIds[0].size(), 1U);
+    EXPECT_EQ(mixedResponse.outputIds[1].size(), 1U);
+
+    auto const afterMixed = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(afterMixed.has_value());
+    EXPECT_EQ(afterMixed->admittedSequences - afterFirst->admittedSequences, 2U)
+        << "both slots of the batch must be admitted, not just one";
+    EXPECT_EQ(afterMixed->hitSequences - afterFirst->hitSequences, 1U)
+        << "exactly one of the two slots should reuse -- a batch-wide hit/miss would mask per-sequence admission";
+    EXPECT_GT(afterMixed->reusedTokens - afterFirst->reusedTokens, 0U);
+    EXPECT_GE(afterMixed->noReusablePrefixPlans - afterFirst->noReusablePrefixPlans, 1U)
+        << "the cold slot should be evaluated and found to have no reusable prefix, not silently skipped";
+
+    // The metrics above are computed from the reuse plan, while the work is driven by what reaches the prefill
+    // path -- two separate routes. Accounting a hit while still prefilling the matched tokens would satisfy every
+    // assertion above, so the forward itself has to be checked. Under this deployment's entry padding the width is
+    // `batch * longest entry`, which is what both bounds are expressed against.
+    auto const mixedPrefill
+        = std::find_if(calls().begin() + static_cast<std::ptrdiff_t>(callsBeforeMixed), calls().end(), isPrefill);
+    ASSERT_NE(mixedPrefill, calls().end()) << "the mixed batch never reached a prefill forward";
+    EXPECT_LT(mixedPrefill->dims.seqLen, 2 * kTotalLength)
+        << "the warm slot still drove the width, so its published page was not folded out of the shared forward";
+    EXPECT_GE(mixedPrefill->dims.seqLen, 2 * kColdSlotLength)
+        << "the cold slot published nothing, so all of its tokens must still be in the shared forward";
+}
+
+//! An input limit of one page plus a little under a KV capacity of four pages, over a pool of eight pages: a prompt
+//! can fit the KV cache yet be too long to prefill without a reused prefix.
+Json makeShortInputContextReuseConfig()
+{
+    Json config = makeContextReusePagedConfig();
+    config["builder_config"]["max_input_len"] = rt::kTOKENS_PER_PAGE + 8;
+    config["builder_config"]["max_kv_cache_capacity"] = 4 * rt::kTOKENS_PER_PAGE;
+    config["builder_config"]["max_kv_pool_pages"]
+        = rt::computeMinimumKvPoolPages(kMaxBatchSize, 4 * rt::kTOKENS_PER_PAGE);
+    return config;
+}
+
+class ShortInputContextReuseTest : public PlainContextReuseTest
+{
+protected:
+    void SetUp() override
+    {
+        CUDA_CHECK(cudaStreamCreate(&mStream));
+        mModelDir = writeModelDir("shortInputContextReuseTests", makeShortInputContextReuseConfig());
+    }
+};
+
+// Given a context cache with three of its eight pages free, the least recently used conversation's two published
+//      pages next in line for eviction
+// When a cold prompt that fits the KV capacity but whose uncached part exceeds the input limit is served on the
+//      blocking path
+// Then it is refused with the marker the server maps to 413 before anything is evicted, so that conversation's next
+//      turn still skips both pages
+TEST_F(ShortInputContextReuseTest, AnOverlongPromptIsRefusedBeforeEvictingAnotherConversation)
+{
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {},
+        std::nullopt, mStream, makeCacheConfig()};
+    auto const serve = [&](int64_t length, int32_t variant) {
+        rt::LLMGenerationResponse response;
+        return runtime.handleRequest(
+            makeGreedyRequest(makePrompt(length, variant), /*maxGenerateLength=*/1), response, mStream);
+    };
+
+    constexpr int64_t kPage{rt::kTOKENS_PER_PAGE};
+    // Every turn's uncached part fits the input limit: conversation 1 publishes two pages, then conversation 2 three.
+    ASSERT_TRUE(serve(kPage + 2, 1));
+    ASSERT_TRUE(serve(2 * kPage + 2, 1));
+    for (int64_t pages = 1; pages <= 3; ++pages)
+    {
+        ASSERT_TRUE(serve(pages * kPage + 2, 2));
+    }
+    auto const before = runtime.getContextCacheMetrics();
+    ASSERT_TRUE(before.has_value());
+
+    try
+    {
+        serve(3 * kPage + 16, 3);
+        ADD_FAILURE() << "a prompt whose uncached part exceeds the input limit was served";
+    }
+    catch (std::runtime_error const& error)
+    {
+        EXPECT_NE(std::string(error.what()).find("EDGELLM_INPUT_TOO_LONG"), std::string::npos) << error.what();
+    }
+    EXPECT_EQ(runtime.getContextCacheMetrics()->evictedRecords, before->evictedRecords);
+
+    size_t const callsBeforeReturn = calls().size();
+    ASSERT_TRUE(serve(2 * kPage + 7, 1));
+    auto const returnPrefill
+        = std::find_if(calls().begin() + static_cast<std::ptrdiff_t>(callsBeforeReturn), calls().end(), isPrefill);
+    ASSERT_NE(returnPrefill, calls().end());
+    EXPECT_EQ(returnPrefill->dims.seqLen, 7) << "conversation 1's published pages were evicted";
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Shutdown ordering under leases: the one path whose failure mode is
 // std::terminate. An engine owning a context-cache runtime shuts down with a
-// founder decoding, a mid-flight admission holding a lease, and a request
+// resident decoding, a second admission holding a lease, and a request
 // still queued. Every caller must get a terminal outcome, and the coordinator
 // must reach its destructor quiescent -- it terminates the process otherwise,
 // so this test passing IS the proof that every lease came back.
@@ -995,7 +2426,7 @@ TEST_F(RuntimeAssemblyTest, ShutdownWithResidentLeasesReturnsEveryOutcomeAndEver
     rt::scheduler::RequestEngine requestEngine(std::move(runtime), mStream, config);
 
     // Generation lengths are sized to the page pool: 4 pages of 16 tokens serve two sequences of
-    // (prompt + 12 + headroom) each, so the joiner's lease is grantable while the founder runs.
+    // (prompt + 12 + headroom) each, so the second lease is grantable while the first runs.
     // A larger ask never fails loudly -- the joiner waits on kNoCapacity forever, by design.
     // The assembly tokenizer is an empty shell, so every request carries pre-tokenized input --
     // the path admitRequest prefers anyway.
@@ -1006,10 +2437,10 @@ TEST_F(RuntimeAssemblyTest, ShutdownWithResidentLeasesReturnsEveryOutcomeAndEver
     };
 
     auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-    rt::scheduler::RequestHandle founder = requestEngine.submit(makeTokenizedRequest({41}, 12));
+    rt::scheduler::RequestHandle first = requestEngine.submit(makeTokenizedRequest({41}, 12));
     while (requestEngine.resident() == 0)
     {
-        ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "the founder never became resident";
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "the first request never became resident";
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     rt::scheduler::RequestHandle joiner = requestEngine.submit(makeTokenizedRequest({42}, 12));
@@ -1041,7 +2472,7 @@ TEST_F(RuntimeAssemblyTest, ShutdownWithResidentLeasesReturnsEveryOutcomeAndEver
     requestEngine.shutdown(rt::scheduler::ShutdownMode::kCancel);
 
     // Nobody is left parked: every handle has a terminal outcome the moment shutdown returns.
-    EXPECT_TRUE(founder.ready());
+    EXPECT_TRUE(first.ready());
     EXPECT_TRUE(joiner.ready());
     EXPECT_TRUE(queued.ready());
 
@@ -1049,302 +2480,13 @@ TEST_F(RuntimeAssemblyTest, ShutdownWithResidentLeasesReturnsEveryOutcomeAndEver
     // proves quiescence or terminates. Reaching the end of this test is the assertion.
 }
 
-TEST_F(RuntimeAssemblyTest, SteppedAdmissionMatchesTheFusedPathTokenForToken)
+TEST_F(RuntimeAssemblyTest, EngineDrivesSessionEndToEnd)
 {
     using ::testing::_;
 
-    // The same script as the fused mid-flight admission test; only the admission travels through
-    // the stepper's typed admit + prefill split. Both streams must come out identical.
-    constexpr int64_t kMaxGenerateLength{4};
-    constexpr int32_t kA1 = 3, kA2 = 4, kA3 = 5, kA4 = 6;
-    constexpr int32_t kB1 = 7, kB2 = 8, kB3 = 9, kB4 = 10;
-    constexpr int32_t kAdmittedIndexBase = 1;
-
-    auto engine = makeEngine();
-    auto& mock = *engine;
-    EXPECT_CALL(mock, prepare(kPrefillProfile, _, _, _)).Times(2);
-    EXPECT_CALL(mock, prepare(kDecodeProfile, _, _, _)).Times(4);
-    {
-        ::testing::InSequence forwardOrder;
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA1}));
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA2}));
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB1}));
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA3, kB2}));
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA4, kB3}));
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB4}));
-    }
-
-    auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
-    rt::LLMInferenceRuntime runtime{
-        std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {}, std::nullopt, mStream};
-
-    int32_t boundaryCalls = 0;
-    std::optional<rt::RuntimeStepper> stepper;
-    std::unordered_map<int32_t, rt::BatchResult> harvested;
-    auto hook = [&](rt::GenerationBoundary& batch) {
-        ++boundaryCalls;
-        auto& session = static_cast<rt::LLMRankRuntime::GenerationSession&>(batch);
-        if (!stepper.has_value())
-        {
-            stepper.emplace(session);
-        }
-        if (boundaryCalls == 2)
-        {
-            rt::AdmissionIntent intent;
-            intent.requestId = 102;
-            intent.seed.promptTokenIds = {42};
-            intent.seed.originalIndex = kAdmittedIndexBase;
-            rt::AdmissionResult const admitted = stepper->admit(std::move(intent));
-            ASSERT_EQ(admitted.status, rt::AdmissionResult::Status::kAdmitted);
-            EXPECT_EQ(admitted.ref.slot, 1);
-            EXPECT_EQ(admitted.ref.epoch, 1U);
-
-            rt::StepResult const seated = stepper->prefill({admitted.ref});
-            ASSERT_TRUE(seated.ok);
-            // B's delta is its lookahead token. A also reports here: the stepper was constructed
-            // mid-request, so A's tokens outstanding at construction ride the first operation --
-            // watermark semantics, exercised on purpose by this transitional construction point.
-            ASSERT_EQ(seated.deltas.size(), 2U);
-            std::unordered_map<int32_t, std::vector<int32_t>> deltasBySlot;
-            for (auto const& [ref, delta] : seated.deltas)
-            {
-                deltasBySlot.emplace(ref.slot, delta.tokenIds);
-            }
-            EXPECT_EQ(deltasBySlot.at(0), (std::vector<int32_t>{kA1, kA2}));
-            EXPECT_EQ(deltasBySlot.at(admitted.ref.slot), (std::vector<int32_t>{kB1}));
-            EXPECT_TRUE(seated.finished.empty());
-            EXPECT_FALSE(seated.publishedPrefix); // no context cache in this deployment
-            EXPECT_EQ(batch.residentCount(), 2);
-        }
-        for (auto& [index, result] : batch.takeCompletedAtOrAbove(kAdmittedIndexBase))
-        {
-            harvested.emplace(index, std::move(result));
-        }
-    };
-
-    auto const request = makeGreedyRequest("a", kMaxGenerateLength);
-    rt::LLMGenerationResponse response;
-    ASSERT_TRUE(runtime.handleRequest(request, response, mStream, /*outputThinkerEmbeddings=*/false, hook));
-
-    expectResponseCoversEverySlot(response, 1);
-    ASSERT_EQ(response.outputIds.size(), 1U);
-    EXPECT_EQ(response.outputIds[0], (std::vector<int32_t>{kA1, kA2, kA3, kA4}));
-
-    ASSERT_EQ(harvested.size(), 1U);
-    auto const& resultB = harvested.at(kAdmittedIndexBase);
-    ASSERT_GE(resultB.tokenIds.size(), 4U);
-    EXPECT_EQ(std::vector<int32_t>(resultB.tokenIds.end() - 4, resultB.tokenIds.end()),
-        (std::vector<int32_t>{kB1, kB2, kB3, kB4}));
-    EXPECT_EQ(resultB.terminalReason, rt::FinishReason::kLength);
-}
-
-TEST_F(RuntimeAssemblyTest, StepperKeepsRefsStableAcrossEviction)
-{
-    using ::testing::_;
-
-    // A stepper-driven decode carries the batch across A's eviction: the StepResult must file A
-    // under finished and credit B's token to its ref -- which stays identical across the eviction,
-    // because refs are stable resident identities and execution-row compaction is runtime-private.
-    constexpr int64_t kMaxGenerateLength{3};
-    constexpr int32_t kA1 = 3, kA2 = 4, kA3 = 5;
-    constexpr int32_t kB1 = 7, kB2 = 8, kB3 = 9;
-    constexpr int32_t kAdmittedIndexBase = 1;
-
-    auto engine = makeEngine();
-    auto& mock = *engine;
-    EXPECT_CALL(mock, prepare(kPrefillProfile, _, _, _)).Times(2);
-    EXPECT_CALL(mock, prepare(kDecodeProfile, _, _, _)).Times(3);
-    {
-        ::testing::InSequence forwardOrder;
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA1}));      // A prefill
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA2}));      // decode, A alone
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB1}));      // B's seated prefill
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA3, kB2})); // stepper decode: A finishes
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB3}));      // loop decode: B finishes
-    }
-
-    auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
-    rt::LLMInferenceRuntime runtime{
-        std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {}, std::nullopt, mStream};
-
-    int32_t boundaryCalls = 0;
-    std::optional<rt::RuntimeStepper> stepper;
-    bool stepped = false;
-    std::unordered_map<int32_t, rt::BatchResult> harvested;
-    auto hook = [&](rt::GenerationBoundary& batch) {
-        ++boundaryCalls;
-        auto& session = static_cast<rt::LLMRankRuntime::GenerationSession&>(batch);
-        if (!stepper.has_value())
-        {
-            stepper.emplace(session);
-        }
-        if (boundaryCalls == 2)
-        {
-            rt::AdmissionIntent intent;
-            intent.requestId = 102;
-            intent.seed.promptTokenIds = {42};
-            intent.seed.originalIndex = kAdmittedIndexBase;
-            rt::AdmissionResult const admitted = stepper->admit(std::move(intent));
-            ASSERT_EQ(admitted.status, rt::AdmissionResult::Status::kAdmitted);
-            rt::ResidentRef const refB = admitted.ref;
-            ASSERT_TRUE(stepper->prefill({refB}).ok);
-
-            // One typed decode across A's finish: this is the extra forward pass the mock script
-            // accounts for at position four.
-            rt::StepResult const step = stepper->decode({stepper->residents()});
-            ASSERT_TRUE(step.ok);
-
-            // Deltas: A's final token is inside its finished snapshot, not a delta; B's token is
-            // credited to the ref the caller held when it built the view.
-            ASSERT_EQ(step.deltas.size(), 1U);
-            EXPECT_EQ(step.deltas.front().first, refB);
-            EXPECT_EQ(step.deltas.front().second.tokenIds, (std::vector<int32_t>{kB2}));
-
-            ASSERT_EQ(step.finished.size(), 1U);
-            EXPECT_EQ(step.finished.front().first, (rt::ResidentRef{0, 1}));
-            auto const& resultA = step.finished.front().second;
-            ASSERT_GE(resultA.tokenIds.size(), 3U);
-            EXPECT_EQ(std::vector<int32_t>(resultA.tokenIds.end() - 3, resultA.tokenIds.end()),
-                (std::vector<int32_t>{kA1, kA2, kA3}));
-            EXPECT_EQ(resultA.terminalReason, rt::FinishReason::kLength);
-
-            // Middle/head retirement: the survivor's execution row changed underneath, but its
-            // resident identity -- the only identity the scheduler ever saw -- did not.
-            ASSERT_EQ(stepper->residents().size(), 1U);
-            EXPECT_EQ(stepper->residents().front(), refB);
-            stepped = true;
-        }
-        for (auto& [index, result] : batch.takeCompletedAtOrAbove(kAdmittedIndexBase))
-        {
-            harvested.emplace(index, std::move(result));
-        }
-    };
-
-    auto const request = makeGreedyRequest("a", kMaxGenerateLength);
-    rt::LLMGenerationResponse response;
-    ASSERT_TRUE(runtime.handleRequest(request, response, mStream, /*outputThinkerEmbeddings=*/false, hook));
-    ASSERT_TRUE(stepped);
-
-    // A's result left through the stepper's StepResult, so the founding response is empty of it;
-    // B still finishes through the loop's own advance and leaves through the harvest.
-    ASSERT_EQ(harvested.size(), 1U);
-    EXPECT_EQ(harvested.at(kAdmittedIndexBase).terminalReason, rt::FinishReason::kLength);
-}
-
-TEST_F(RuntimeAssemblyTest, ASteppedRequestRunsEndToEndWithoutTheHook)
-{
-    using ::testing::_;
-
-    // The canonical A/B interleave, driven entirely through the stepped control plane: no
-    // handleRequest, no GenerationBoundaryHook. Every tick is an explicit typed operation and
-    // every outcome leaves through a StepResult.
-    constexpr int64_t kMaxGenerateLength{4};
-    constexpr int32_t kA1 = 3, kA2 = 4, kA3 = 5, kA4 = 6;
-    constexpr int32_t kB1 = 7, kB2 = 8, kB3 = 9, kB4 = 10;
-    constexpr int32_t kC1 = 11, kC2 = 12, kC3 = 13, kC4 = 14;
-    constexpr int32_t kIndexB = 1;
-    constexpr int32_t kIndexC = 2;
-
-    auto engine = makeEngine();
-    auto& mock = *engine;
-    EXPECT_CALL(mock, prepare(kPrefillProfile, _, _, _)).Times(3);
-    EXPECT_CALL(mock, prepare(kDecodeProfile, _, _, _)).Times(6);
-    {
-        ::testing::InSequence forwardOrder;
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA1}));      // founding prefill (inside begin)
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA2}));      // decode, A alone
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB1}));      // B's seated prefill tick
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA3, kB2})); // decode, both resident
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA4, kB3})); // A finishes and is evicted
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kC1}));      // C's seated prefill tick
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB4, kC2})); // B finishes and is evicted
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kC3}));
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kC4})); // C finishes
-    }
-
-    auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
-    rt::LLMInferenceRuntime runtime{
-        std::move(artifacts), mModelDir.string(), /*multimodalEngineDir=*/"", {}, std::nullopt, mStream};
-    ASSERT_TRUE(runtime.supportsSteppedExecution());
-
-    EXPECT_THROW(
-        runtime.beginStepped(makeGreedyRequest("a", kMaxGenerateLength), /*requestId=*/0, mStream), std::runtime_error);
-    auto stepped = runtime.beginStepped(makeGreedyRequest("a", kMaxGenerateLength), /*requestId=*/101, mStream);
-    ASSERT_NE(stepped, nullptr);
-    rt::SteppedExecution& stepper = *stepped;
-
-    std::unordered_map<int32_t, rt::LLMGenerationResponse> outcomes; // keyed by founding order
-    auto commit = [&](rt::StepResult const& result, std::vector<std::string> const& stops) {
-        ASSERT_TRUE(result.ok);
-        for (auto const& [ref, snapshot] : result.finished)
-        {
-            outcomes.emplace(static_cast<int32_t>(outcomes.size()), stepped->materialize(snapshot, stops));
-            (void) ref;
-        }
-    };
-
-    // Tick 1: the founding prefill's post-pass primes A's first token.
-    rt::StepResult const founding = stepper.prefill({stepper.residents().front()});
-    ASSERT_TRUE(founding.ok);
-    ASSERT_EQ(founding.deltas.size(), 1U);
-    EXPECT_EQ(founding.deltas.front().second.tokenIds, (std::vector<int32_t>{kA1}));
-
-    // Tick 2: decode, A alone.
-    commit(stepper.decode({stepper.residents()}), {});
-
-    // Tick 3: admit B (logical only), then its seated prefill tick.
-    rt::LLMGenerationRequest requestB = makeGreedyRequest("b", kMaxGenerateLength);
-    requestB.preTokenizedInputIds = {{43}};
-    EXPECT_THROW(stepper.admit(requestB, kIndexB, /*requestId=*/0), std::runtime_error);
-    rt::AdmissionResult const admitted = stepper.admit(requestB, kIndexB, /*requestId=*/102);
-    ASSERT_EQ(admitted.status, rt::AdmissionResult::Status::kAdmitted);
-    rt::StepResult const seated = stepper.prefill({admitted.ref});
-    ASSERT_TRUE(seated.ok);
-    ASSERT_EQ(seated.deltas.size(), 1U);
-    EXPECT_EQ(seated.deltas.front().second.tokenIds, (std::vector<int32_t>{kB1}));
-
-    // Decode until A retires; its finished ref releases resident slot 0.
-    while (outcomes.empty())
-    {
-        commit(stepper.decode({stepper.residents()}), {});
-    }
-
-    // Tail-retirement reuse, the aliasing case from review: C is admitted after A released its
-    // resident slot, so C reuses slot 0 with a bumped epoch and A's stale ref cannot name C.
-    rt::LLMGenerationRequest requestC = makeGreedyRequest("c", kMaxGenerateLength);
-    requestC.preTokenizedInputIds = {{44}};
-    rt::AdmissionResult const admittedC = stepper.admit(requestC, kIndexC, /*requestId=*/103);
-    ASSERT_EQ(admittedC.status, rt::AdmissionResult::Status::kAdmitted);
-    EXPECT_EQ(admittedC.ref, (rt::ResidentRef{0, 2}));
-    EXPECT_FALSE(admittedC.ref == (rt::ResidentRef{0, 1}));
-    rt::StepResult const seatedC = stepper.prefill({admittedC.ref});
-    ASSERT_TRUE(seatedC.ok);
-    ASSERT_EQ(seatedC.deltas.size(), 1U);
-    EXPECT_EQ(seatedC.deltas.front().second.tokenIds, (std::vector<int32_t>{kC1}));
-
-    // Drain the rest; every terminal leaves through a StepResult.
-    while (!stepper.residents().empty())
-    {
-        commit(stepper.decode({stepper.residents()}), {});
-    }
-    ASSERT_EQ(outcomes.size(), 3U);
-    EXPECT_EQ(outcomes.at(0).outputIds.front(), (std::vector<int32_t>{kA1, kA2, kA3, kA4}));
-    EXPECT_EQ(outcomes.at(0).finishReasons.front(), rt::FinishReason::kLength);
-    EXPECT_EQ(outcomes.at(1).outputIds.front(), (std::vector<int32_t>{kB1, kB2, kB3, kB4}));
-    EXPECT_EQ(outcomes.at(1).finishReasons.front(), rt::FinishReason::kLength);
-    EXPECT_EQ(outcomes.at(2).outputIds.front(), (std::vector<int32_t>{kC1, kC2, kC3, kC4}));
-    EXPECT_EQ(outcomes.at(2).finishReasons.front(), rt::FinishReason::kLength);
-
-    rt::LLMGenerationResponse response;
-    EXPECT_TRUE(stepped->finish(response));
-}
-
-TEST_F(RuntimeAssemblyTest, TheEngineDrivesTheSteppedPlaneEndToEnd)
-{
-    using ::testing::_;
-
-    // The full stack, no hook anywhere: RequestEngine's actor owns the loop, the runtime executes
-    // typed steps, and both callers get their serial token streams back through handles.
+    // The full stack, no hook anywhere: RequestEngine's actor owns the loop, the runtime session
+    // executes the steps it schedules, and both callers get their serial token streams back
+    // through handles.
     constexpr int64_t kMaxGenerateLength{4};
     constexpr int32_t kA1 = 3, kA2 = 4, kA3 = 5, kA4 = 6;
     constexpr int32_t kB1 = 7, kB2 = 8, kB3 = 9, kB4 = 10;
@@ -1357,7 +2499,7 @@ TEST_F(RuntimeAssemblyTest, TheEngineDrivesTheSteppedPlaneEndToEnd)
     EXPECT_CALL(mock, prepare(kDecodeProfile, _, _, _)).Times(4);
     {
         ::testing::InSequence forwardOrder;
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA1})); // founding prefill
+        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA1})); // A's context step
         // Two-way handshake for a deterministic interleave: B is submitted only once A's first
         // decode is already executing (so no earlier tick can admit it), and that decode holds
         // until B is queued (so the very next tick does).
@@ -1370,7 +2512,7 @@ TEST_F(RuntimeAssemblyTest, TheEngineDrivesTheSteppedPlaneEndToEnd)
                 }
                 return action(stream);
             });
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB1})); // B's seated prefill tick
+        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB1})); // B's context step
         EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA3, kB2}));
         EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA4, kB3})); // A finishes, evicted
         EXPECT_CALL(mock, execute(_)).WillOnce(emit({kB4}));      // B finishes
@@ -1407,56 +2549,223 @@ TEST_F(RuntimeAssemblyTest, TheEngineDrivesTheSteppedPlaneEndToEnd)
     requestEngine.shutdown(rt::scheduler::ShutdownMode::kDrain);
     auto const metrics = requestEngine.metrics();
     EXPECT_EQ(metrics.completed, 2U);
-    EXPECT_EQ(metrics.admittedMidFlight, 1U) << "B must have joined mid-flight through the stepped plane";
+    EXPECT_EQ(metrics.admittedMidFlight, 1U) << "B must have joined A in the running session";
     EXPECT_EQ(metrics.failed, 0U);
 }
 
-TEST_F(RuntimeAssemblyTest, ASteppedDecodeThrowFailsTheBatchAndTheActorSurvives)
+// Given a two-sequence request with ample token budget and one-round benchmark control
+// When the same runtime handles that request twice
+// Then each response contains the prefill token plus one decode token, and both requests finish normally.
+TEST_F(RuntimeAssemblyTest, BenchmarkRoundBudgetFinishesAndReleasesEverySequence)
 {
-    using ::testing::_;
-
-    // A CUDA failure inside a stepped decode leaves the runtime as an exception. The engine must
-    // turn it into a terminal outcome for every resident and stay alive for the next request; an
-    // unwind out of the actor thread would be std::terminate.
-    constexpr int64_t kMaxGenerateLength{3};
-    constexpr int32_t kA1 = 3, kC1 = 11, kC2 = 12, kC3 = 13;
-
-    auto engine = makeEngine();
-    auto& mock = *engine;
-    EXPECT_CALL(mock, prepare(_, _, _, _)).Times(::testing::AnyNumber());
+    rt::DeploymentOptions options{};
+    options.engineDir = mModelDir.string();
+    options.benchmark.maxDecodeRounds = 1;
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), options, mStream};
+    auto request = makeGreedyRequest("aa", 8);
+    request.requests.push_back(request.requests.front());
+    request.ignoreEos = true;
+    for (int32_t iteration = 0; iteration < 2; ++iteration)
     {
-        ::testing::InSequence forwardOrder;
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kA1})); // A's founding prefill
-        EXPECT_CALL(mock, execute(_)).WillOnce([action = emit({kA1})](cudaStream_t stream) {
-            throw std::runtime_error("device lost mid-decode");
-            return action(stream);
-        });
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kC1})); // C founds the next batch
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kC2}));
-        EXPECT_CALL(mock, execute(_)).WillOnce(emit({kC3}));
+        rt::LLMGenerationResponse response;
+        ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+        ASSERT_EQ(response.outputIds.size(), 2U);
+        EXPECT_EQ(response.outputIds[0].size(), 2U);
+        EXPECT_EQ(response.outputIds[1].size(), 2U);
+        EXPECT_EQ(response.decodeRoundCounts, (std::vector<int32_t>{1, 1}));
+        EXPECT_EQ(response.finishReasons,
+            (std::vector<rt::FinishReason>{rt::FinishReason::kLength, rt::FinishReason::kLength}));
     }
+}
 
+// Given default experiment controls and a request ignoring EOS
+// When a normal runtime handles the request
+// Then the full token budget is generated, rather than stopping after one round.
+TEST_F(RuntimeAssemblyTest, DefaultBenchmarkOptionsPreserveGenerationBudget)
+{
+    auto runtime = makeRuntime(makeVanillaArtifacts(mModelDir, makeEngine(), mStream));
+    auto request = makeGreedyRequest("aa", 5);
+    request.ignoreEos = true;
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+    EXPECT_EQ(response.outputIds[0].size(), 5U);
+    EXPECT_EQ(response.decodeRoundCounts, std::vector<int32_t>{4});
+}
+
+namespace
+{
+struct ScopedAssemblyProfiling
+{
+    bool previous{getProfilingEnabled()};
+    ScopedAssemblyProfiling()
+    {
+        setProfilingEnabled(true);
+    }
+    ~ScopedAssemblyProfiling()
+    {
+        setProfilingEnabled(previous);
+    }
+};
+
+int64_t selectedStageCount(std::string const& stage)
+{
+    auto const data = gTimer.getTimingData(stage);
+    return data ? data->getTotalRuns() : 0;
+}
+} // namespace
+
+TEST_F(RuntimeAssemblyTest, ProfilingStorageFollowsKvClampedGenerationLength)
+{
+    // Given a requested output far beyond KV capacity, when a profiled request runs, then timing storage is sized
+    // from the KV-clamped generation length rather than the requested one.
+    auto runtime = makeRuntime(makeVanillaArtifacts(mModelDir, makeEngine(), mStream));
+    ScopedAssemblyProfiling profiling;
+    auto request = makeGreedyRequest("a", 4096);
+    request.ignoreEos = true;
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+    int64_t constexpr kMaxKvCacheCapacity = 64;
+    int64_t constexpr kVanillaSamplesPerRound = 8;
+    EXPECT_LE(gTimer.capacity(), 256 + kMaxKvCacheCapacity * kVanillaSamplesPerRound);
+}
+
+TEST_F(RuntimeAssemblyTest, DisabledGpuTimingProfilesWithoutTimingEvents)
+{
+    // Given a runtime configured without GPU timing, when a profiled request runs, then it records no stage timings
+    // and creates no timing events.
+    rt::DeploymentOptions options{};
+    options.engineDir = mModelDir.string();
+    options.benchmark.gpuTiming = false;
+    rt::LLMInferenceRuntime runtime{makeVanillaArtifacts(mModelDir, makeEngine(), mStream), options, mStream};
+    ScopedAssemblyProfiling profiling;
+    auto request = makeGreedyRequest("a", 4);
+    request.ignoreEos = true;
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+    EXPECT_EQ(response.outputIds[0].size(), 4U);
+    EXPECT_TRUE(gTimer.getSamples().empty());
+    EXPECT_EQ(gTimer.capacity(), 0U);
+}
+
+TEST_F(RuntimeAssemblyTest, ProfilesRemainOwnedByAlternatingRuntimesAndCapture)
+{
+    // Given two runtimes on one thread, when requests and capture calls alternate, then each profile retains only its
+    // own work.
+    auto runtimeA = makeRuntime(makeVanillaArtifacts(mModelDir, makeEngine(), mStream));
+    auto runtimeB = makeRuntime(makeVanillaArtifacts(mModelDir, makeEngine(), mStream));
+    ScopedAssemblyProfiling profiling;
+    auto requestA = makeGreedyRequest("a", 2);
+    auto requestB = makeGreedyRequest("aa", 4);
+    requestA.ignoreEos = true;
+    requestB.ignoreEos = true;
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtimeA.handleRequest(requestA, response, mStream));
+    EXPECT_EQ(selectedStageCount("llm_prefill"), 1);
+    EXPECT_EQ(selectedStageCount("decode_round"), 1);
+    ASSERT_TRUE(runtimeB.handleRequest(requestB, response, mStream));
+    EXPECT_EQ(selectedStageCount("decode_round"), 3);
+    static_cast<void>(runtimeA.captureDecodingCUDAGraph(mStream));
+    EXPECT_EQ(selectedStageCount("decode_round"), 1);
+    requestA.maxGenerateLength = 4;
+    ASSERT_TRUE(runtimeA.handleRequest(requestA, response, mStream));
+    EXPECT_EQ(selectedStageCount("decode_round"), 4);
+    static_cast<void>(runtimeB.captureDecodingCUDAGraph(mStream));
+    EXPECT_EQ(selectedStageCount("decode_round"), 3);
+}
+
+// Given a one-round experiment whose requested prompt leaves no room for a full round
+// When runtime capacity would clamp the output budget
+// Then the experiment fails rather than reporting a shortened round, and a later valid request succeeds.
+TEST_F(RuntimeAssemblyTest, BenchmarkRoundRejectsCapacityTruncation)
+{
+    auto config = makeTinyVanillaConfig();
+    config["builder_config"]["max_input_len"] = 64;
+    std::ofstream(mModelDir / "config.json") << config.dump();
+    rt::DeploymentOptions options{};
+    options.engineDir = mModelDir.string();
+    options.benchmark.maxDecodeRounds = 1;
+    auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), options, mStream};
+    auto request = makeGreedyRequest("a", 8);
+    request.preTokenizedInputIds = {std::vector<int32_t>(62, 0)};
+    request.ignoreEos = true;
+    rt::LLMGenerationResponse response;
+    EXPECT_FALSE(runtime.handleRequest(request, response, mStream));
+    request = makeGreedyRequest("a", 8);
+    request.ignoreEos = true;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+    EXPECT_EQ(response.decodeRoundCounts, std::vector<int32_t>{1});
+    EXPECT_EQ(response.outputIds[0].size(), 2U);
+}
+
+TEST_F(RuntimeAssemblyTest, RuntimeForwardTimingIncludesPreparationAndExcludesSampling)
+{
+    // Given an executor without internal timing, when runtime generates one decode token,
+    // then prepare/execute belong to each shaped forward while sampled-token handling stays outside it.
+    using ::testing::_;
+    auto engine = makeEngine();
+    ON_CALL(*engine, prepare(_, _, _, _))
+        .WillByDefault([this](int32_t, rt::InferenceDims const&, rt::TensorMap const& map, cudaStream_t stream) {
+            auto observation = gTimer.startStage("observed_prepare", stream);
+            mLogits = map.get(binding_names::kLogits);
+            return true;
+        });
+    ON_CALL(*engine, execute(_)).WillByDefault([this](cudaStream_t stream) {
+        auto observation = gTimer.startStage("observed_execute", stream);
+        writeLogits(*mLogits, kVocabSize, {}, stream);
+        return true;
+    });
     auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
-    auto runtime = std::make_unique<rt::LLMInferenceRuntime>(std::move(artifacts), mModelDir.string(),
-        /*multimodalEngineDir=*/"", std::unordered_map<std::string, std::string>{}, std::nullopt, mStream);
-    ASSERT_TRUE(runtime->supportsSteppedExecution());
-
-    rt::scheduler::EngineConfig config;
-    config.maxBatchSize = 2;
-    rt::scheduler::RequestEngine requestEngine(std::move(runtime), mStream, config);
-
-    rt::scheduler::RequestHandle handleA = requestEngine.submit(makeGreedyRequest("a", kMaxGenerateLength));
-    EXPECT_THROW(handleA.get(), std::runtime_error);
-
-    rt::LLMGenerationRequest requestC = makeGreedyRequest("b", kMaxGenerateLength);
-    requestC.preTokenizedInputIds = {{43}};
-    rt::scheduler::RequestHandle handleC = requestEngine.submit(std::move(requestC));
-    rt::LLMGenerationResponse const responseC = handleC.get();
-    ASSERT_EQ(responseC.outputIds.size(), 1U);
-    EXPECT_EQ(responseC.outputIds.front(), (std::vector<int32_t>{kC1, kC2, kC3}));
-
-    requestEngine.shutdown(rt::scheduler::ShutdownMode::kDrain);
-    auto const metrics = requestEngine.metrics();
-    EXPECT_EQ(metrics.failed, 1U);
-    EXPECT_EQ(metrics.completed, 1U);
+    auto tokenizer = std::move(artifacts.tokenizer);
+    chat_template::ChatTemplate chatTemplate;
+    rt::DeploymentOptions options{};
+    options.engineDir = mModelDir.string();
+    rt::LLMRankRuntime runtime{std::move(artifacts), options, mStream, rt::ParallelMapping{}, *tokenizer, chatTemplate};
+    auto request = makeGreedyRequest("a", 2);
+    request.applyChatTemplate = false;
+    request.preTokenizedInputIds = {{42, 43, 44}};
+    request.requests.front().messages.clear();
+    request.formattedRequests.resize(request.requests.size());
+    request.ignoreEos = true;
+    ScopedAssemblyProfiling profiling;
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(
+        request, response, mStream, false,
+        [](void*, int32_t, cudaStream_t stream) {
+            auto observation = gTimer.startStage("observed_after_sampling", stream);
+            return true;
+        },
+        0));
+    using Forward = std::tuple<std::string, std::string, int32_t, int32_t, int64_t, int64_t, int64_t>;
+    std::vector<Forward> forwards;
+    std::vector<std::string> preparedParents;
+    std::vector<std::string> executedParents;
+    std::vector<std::string> sampledParents;
+    for (auto const& sample : gTimer.getSamples())
+    {
+        if (sample.forward)
+        {
+            forwards.emplace_back(sample.stageId, sample.parentStage, sample.round, sample.forwardIndex,
+                sample.batchSize, sample.queryTokens, sample.selectedTokens);
+        }
+        if (sample.stageId == "observed_prepare")
+        {
+            preparedParents.push_back(sample.parentStage);
+        }
+        if (sample.stageId == "observed_execute")
+        {
+            executedParents.push_back(sample.parentStage);
+        }
+        if (sample.stageId == "observed_after_sampling" && sample.round == 0)
+        {
+            sampledParents.push_back(sample.parentStage);
+        }
+    }
+    EXPECT_EQ(forwards,
+        (std::vector<Forward>{
+            {"forward/base", "llm_prefill", -1, 0, 1, 3, 1}, {"forward/base", "llm_generation", 0, 0, 1, 1, 1}}));
+    EXPECT_EQ(preparedParents, (std::vector<std::string>{"forward/base", "forward/base"}));
+    EXPECT_EQ(executedParents, (std::vector<std::string>{"forward/base", "forward/base"}));
+    EXPECT_EQ(sampledParents, (std::vector<std::string>{"llm_generation"}));
 }

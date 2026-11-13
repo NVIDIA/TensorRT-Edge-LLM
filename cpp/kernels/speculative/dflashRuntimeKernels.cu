@@ -424,35 +424,35 @@ void launchPrepareSpecRaggedMetadata(int32_t const* attentionPositions, int32_t 
 // -----------------------------------------------------------------------
 //
 // Grid: (batchSize)
-// Block: (verifySize)
+// Block: (verifyTokenCount)
 
-__global__ void dflashPrepareBaseVerifyInputsKernel(int32_t const* __restrict__ baseKVCacheLengths, int32_t verifySize,
-    int32_t* __restrict__ packedAttentionMask, int32_t* __restrict__ attentionPosId,
+__global__ void dflashPrepareBaseVerifyInputsKernel(int32_t const* __restrict__ baseKVCacheLengths,
+    int32_t verifyTokenCount, int32_t* __restrict__ packedAttentionMask, int32_t* __restrict__ attentionPosId,
     int64_t* __restrict__ selectTokenIndices, int32_t* __restrict__ contextLengths)
 {
     int32_t const b = blockIdx.x;
-    int32_t const i = threadIdx.x; // position within the verified block [0, verifySize)
+    int32_t const i = threadIdx.x; // position within the verified block [0, verifyTokenCount)
 
-    if (i >= verifySize)
+    if (i >= verifyTokenCount)
     {
         return;
     }
 
     int32_t const baseLen = baseKVCacheLengths[b];
-    int32_t const packedMaskLen = (verifySize + 31) / 32;
+    int32_t const packedMaskLen = (verifyTokenCount + 31) / 32;
 
-    attentionPosId[b * verifySize + i] = baseLen + i;
-    selectTokenIndices[b * verifySize + i] = static_cast<int64_t>(b) * verifySize + i;
+    attentionPosId[b * verifyTokenCount + i] = baseLen + i;
+    selectTokenIndices[b * verifyTokenCount + i] = static_cast<int64_t>(b) * verifyTokenCount + i;
     if (i == 0)
     {
-        contextLengths[b] = baseLen + verifySize;
+        contextLengths[b] = baseLen + verifyTokenCount;
     }
 
     // Causal packed mask for linear verification: row i has bits [0, i] set.
     for (int32_t w = 0; w < packedMaskLen; ++w)
     {
         int32_t const bitStart = w * 32;
-        int32_t const bitEnd = min(bitStart + 32, verifySize);
+        int32_t const bitEnd = min(bitStart + 32, verifyTokenCount);
         int32_t const validBits = bitEnd - bitStart;
 
         uint32_t mask = 0;
@@ -464,109 +464,97 @@ __global__ void dflashPrepareBaseVerifyInputsKernel(int32_t const* __restrict__ 
         {
             mask = (1u << (i - bitStart + 1)) - 1u;
         }
-        packedAttentionMask[b * verifySize * packedMaskLen + i * packedMaskLen + w] = static_cast<int32_t>(mask);
+        packedAttentionMask[b * verifyTokenCount * packedMaskLen + i * packedMaskLen + w] = static_cast<int32_t>(mask);
     }
 }
 
-void launchDFlashPrepareBaseVerifyInputs(int32_t const* baseKVCacheLengths, int32_t verifySize,
+void launchDFlashPrepareBaseVerifyInputs(int32_t const* baseKVCacheLengths, int32_t verifyTokenCount,
     int32_t* packedAttentionMask, int32_t* attentionPosId, int64_t* selectTokenIndices, int32_t* contextLengths,
     int32_t batchSize, cudaStream_t stream)
 {
-    if (batchSize == 0 || verifySize == 0)
+    if (batchSize == 0 || verifyTokenCount == 0)
     {
         return;
     }
 
-    assert(verifySize <= 1024 && "DFlash verify block size exceeds CUDA max threads per block");
+    assert(verifyTokenCount <= 1024 && "DFlash verify block size exceeds CUDA max threads per block");
     dim3 const grid(batchSize);
-    dim3 const block(verifySize);
+    dim3 const block(verifyTokenCount);
 
     dflashPrepareBaseVerifyInputsKernel<<<grid, block, 0, stream>>>(
-        baseKVCacheLengths, verifySize, packedAttentionMask, attentionPosId, selectTokenIndices, contextLengths);
+        baseKVCacheLengths, verifyTokenCount, packedAttentionMask, attentionPosId, selectTokenIndices, contextLengths);
     CUDA_CHECK(cudaGetLastError());
 }
 
 __global__ void dflashBuildLinearTreeMetadataKernel(
-    int32_t* __restrict__ treeParentIds, int32_t* __restrict__ treeDepths, int32_t verifySize, int32_t elements)
+    int32_t* __restrict__ treeParentIds, int32_t* __restrict__ treeDepths, int32_t verifyTokenCount, int32_t elements)
 {
     int32_t const idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= elements)
     {
         return;
     }
-    int32_t const node = idx % verifySize;
+    int32_t const node = idx % verifyTokenCount;
     treeParentIds[idx] = node == 0 ? -1 : node - 1;
     treeDepths[idx] = node;
 }
 
 void launchDFlashBuildLinearTreeMetadata(
-    int32_t* treeParentIds, int32_t* treeDepths, int32_t batchSize, int32_t verifySize, cudaStream_t stream)
+    int32_t* treeParentIds, int32_t* treeDepths, int32_t batchSize, int32_t verifyTokenCount, cudaStream_t stream)
 {
-    if (batchSize == 0 || verifySize == 0)
+    if (batchSize == 0 || verifyTokenCount == 0)
     {
         return;
     }
-    int32_t const elements = batchSize * verifySize;
+    int32_t const elements = batchSize * verifyTokenCount;
     constexpr int32_t kThreadsPerBlock{256};
     int32_t const blocks = (elements + kThreadsPerBlock - 1) / kThreadsPerBlock;
     dflashBuildLinearTreeMetadataKernel<<<blocks, kThreadsPerBlock, 0, stream>>>(
-        treeParentIds, treeDepths, verifySize, elements);
+        treeParentIds, treeDepths, verifyTokenCount, elements);
     CUDA_CHECK(cudaGetLastError());
 }
 
 // -----------------------------------------------------------------------
-// DFlash linear verification tree input builder
+// DFlash linear verification token assembly
 // -----------------------------------------------------------------------
 //
-// Grid: ceil(max(batchSize * blockSize, batchSize * blockSize * blockSize) / 256)
+// Grid: ceil(batchSize * verifyTokenCount / 256)
 // Block: 256
 
 __global__ void dflashBuildLinearVerifyInputsKernel(int32_t const* __restrict__ lastAcceptedTokens,
-    int32_t const* __restrict__ draftTokenIds, int32_t* __restrict__ verifyTokenIds,
-    int8_t* __restrict__ verifyTreeMask, int32_t proposalLen, int32_t draftTokenStride, int32_t verifySize,
-    int32_t tokenElements, int32_t maskElements)
+    int32_t const* __restrict__ draftTokenIds, int32_t* __restrict__ verifyTokenIds, int32_t draftTokenStride,
+    int32_t verifyTokenCount, int32_t tokenElements)
 {
     int32_t const idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < tokenElements)
     {
-        int32_t const batchIdx = idx / verifySize;
-        int32_t const posIdx = idx % verifySize;
+        int32_t const batchIdx = idx / verifyTokenCount;
+        int32_t const posIdx = idx % verifyTokenCount;
         // DFlash draft output at position 0 predicts the current token (t_last),
         // not the next token. Real draft proposals start at position 1.
         // DDTree explicitly skips depthIdx==0 for the same reason (see ddtreeKernels.cu).
         verifyTokenIds[idx]
             = posIdx == 0 ? lastAcceptedTokens[batchIdx] : draftTokenIds[batchIdx * draftTokenStride + posIdx];
     }
-
-    // Token ids and mask entries are independent output buffers, so one flat
-    // launch can populate both ranges without cross-thread ordering.
-    if (idx < maskElements)
-    {
-        int32_t const localIdx = idx % (verifySize * verifySize);
-        int32_t const rowIdx = localIdx / verifySize;
-        int32_t const colIdx = localIdx % verifySize;
-        verifyTreeMask[idx] = colIdx <= rowIdx ? int8_t{1} : int8_t{0};
-    }
 }
 
 void launchDFlashBuildLinearVerifyInputs(int32_t const* lastAcceptedTokens, int32_t const* draftTokenIds,
-    int32_t* verifyTokenIds, int8_t* verifyTreeMask, int32_t batchSize, int32_t proposalLen, int32_t draftTokenStride,
-    int32_t verifySize, cudaStream_t stream)
+    int32_t* verifyTokenIds, int32_t batchSize, int32_t proposalLen, int32_t draftTokenStride, int32_t verifyTokenCount,
+    cudaStream_t stream)
 {
-    if (batchSize == 0 || proposalLen == 0 || verifySize == 0)
+    if (batchSize == 0 || proposalLen == 0 || verifyTokenCount == 0)
     {
         return;
     }
 
-    assert(verifySize == proposalLen + 1 && "DFlash linear verify expects [anchor] + proposal tokens");
-    assert(draftTokenStride >= proposalLen && "DFlash draft token stride must cover proposalLen tokens");
-    int32_t const tokenElements = batchSize * verifySize;
-    int32_t const maskElements = batchSize * verifySize * verifySize;
+    assert(verifyTokenCount == proposalLen + 1 && "DFlash linear verify expects [anchor] + proposal tokens");
+    assert(draftTokenStride >= verifyTokenCount && "DFlash draft token stride must cover root and proposals");
+    int32_t const tokenElements = batchSize * verifyTokenCount;
     constexpr int32_t kThreadsPerBlock{256};
-    int32_t const blocks = (std::max(tokenElements, maskElements) + kThreadsPerBlock - 1) / kThreadsPerBlock;
+    int32_t const blocks = (tokenElements + kThreadsPerBlock - 1) / kThreadsPerBlock;
 
-    dflashBuildLinearVerifyInputsKernel<<<blocks, kThreadsPerBlock, 0, stream>>>(lastAcceptedTokens, draftTokenIds,
-        verifyTokenIds, verifyTreeMask, proposalLen, draftTokenStride, verifySize, tokenElements, maskElements);
+    dflashBuildLinearVerifyInputsKernel<<<blocks, kThreadsPerBlock, 0, stream>>>(
+        lastAcceptedTokens, draftTokenIds, verifyTokenIds, draftTokenStride, verifyTokenCount, tokenElements);
     CUDA_CHECK(cudaGetLastError());
 }
 

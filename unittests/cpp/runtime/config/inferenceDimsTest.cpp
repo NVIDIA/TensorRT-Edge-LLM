@@ -42,7 +42,9 @@ InferenceDims makeValid()
         /*.contextMaskSelectorLen=*/0,
         /*.startIndexLen=*/2,
         /*.executionPhaseLen=*/static_cast<int64_t>(ExecutionPhase::kContextPrefill),
-        /*.skipSoftmaxScaleLen=*/0,
+        /*.specVerifyLayoutLen=*/0,
+        /*.skipSoftmaxPrefillScaleLen=*/0,
+        /*.skipSoftmaxDecodeScaleLen=*/0,
         /*.swaKVCacheModeLen=*/0,
         /*.queryOffsetLen=*/3,
         /*.contextSequenceCount=*/2,
@@ -62,7 +64,9 @@ std::vector<int64_t InferenceDims::*> allReferenced()
         &InferenceDims::contextMaskSelectorLen,
         &InferenceDims::startIndexLen,
         &InferenceDims::executionPhaseLen,
-        &InferenceDims::skipSoftmaxScaleLen,
+        &InferenceDims::specVerifyLayoutLen,
+        &InferenceDims::skipSoftmaxPrefillScaleLen,
+        &InferenceDims::skipSoftmaxDecodeScaleLen,
         &InferenceDims::swaKVCacheModeLen,
         &InferenceDims::queryOffsetLen,
         &InferenceDims::contextSequenceCount,
@@ -87,7 +91,9 @@ TEST(InferenceDimsTest, DimNameKnownMembers)
     EXPECT_EQ(dimName(&InferenceDims::contextMaskSelectorLen), "context_mask_selector_len");
     EXPECT_EQ(dimName(&InferenceDims::startIndexLen), "start_index_len");
     EXPECT_EQ(dimName(&InferenceDims::executionPhaseLen), "execution_phase_len");
-    EXPECT_EQ(dimName(&InferenceDims::skipSoftmaxScaleLen), "skip_softmax_scale_len");
+    EXPECT_EQ(dimName(&InferenceDims::specVerifyLayoutLen), "spec_verify_layout_len");
+    EXPECT_EQ(dimName(&InferenceDims::skipSoftmaxPrefillScaleLen), "skip_softmax_prefill_scale_len");
+    EXPECT_EQ(dimName(&InferenceDims::skipSoftmaxDecodeScaleLen), "skip_softmax_decode_scale_len");
     EXPECT_EQ(dimName(&InferenceDims::swaKVCacheModeLen), "swa_kv_cache_mode_len");
     EXPECT_EQ(dimName(&InferenceDims::queryOffsetLen), "query_offset_len");
     EXPECT_EQ(dimName(&InferenceDims::contextSequenceCount), "context_sequence_count");
@@ -117,7 +123,8 @@ TEST(InferenceDimsTest, ToStringContainsAllFields)
     EXPECT_NE(s.find("context_mask_selector_len=0"), std::string::npos) << s;
     EXPECT_NE(s.find("start_index_len=2"), std::string::npos) << s;
     EXPECT_NE(s.find("execution_phase_len=1"), std::string::npos) << s;
-    EXPECT_NE(s.find("skip_softmax_scale_len=0"), std::string::npos) << s;
+    EXPECT_NE(s.find("skip_softmax_prefill_scale_len=0"), std::string::npos) << s;
+    EXPECT_NE(s.find("skip_softmax_decode_scale_len=0"), std::string::npos) << s;
     EXPECT_NE(s.find("swa_kv_cache_mode_len=0"), std::string::npos) << s;
     EXPECT_NE(s.find("query_offset_len=3"), std::string::npos) << s;
     EXPECT_NE(s.find("context_sequence_count=2"), std::string::npos) << s;
@@ -293,8 +300,11 @@ TEST(RaggedPluginMetadataTest, DecodesHomogeneousContextAndDecodeCarriers)
     EXPECT_EQ(decode.decodeExecutionRows, 3);
 }
 
-TEST(RaggedPluginMetadataTest, RejectsCarrierMismatchInvalidExtentAndReservedMixedPhase)
+TEST(RaggedPluginMetadataTest, RejectsCarrierMismatchAndInvalidExtent)
 {
+    // Given homogeneous-phase carriers whose context count, phase extent, or ranks disagree with the contract,
+    // When a plugin decodes them,
+    // Then decoding fails instead of returning a geometry.
     auto descriptor = [](int32_t extent) {
         nvinfer1::PluginTensorDesc desc{};
         desc.dims.nbDims = 1;
@@ -311,9 +321,6 @@ TEST(RaggedPluginMetadataTest, RejectsCarrierMismatchInvalidExtentAndReservedMix
                      "test", activation, queryLengths, offsets, descriptor(9), descriptor(0)),
         std::runtime_error);
     EXPECT_THROW(trt_edgellm::plugins::decodeRaggedPluginMetadata("test", activation, queryLengths, offsets,
-                     descriptor(static_cast<int32_t>(ExecutionPhase::kMixedPrefillDecode)), descriptor(1)),
-        std::runtime_error);
-    EXPECT_THROW(trt_edgellm::plugins::decodeRaggedPluginMetadata("test", activation, queryLengths, offsets,
                      descriptor(static_cast<int32_t>(ExecutionPhase::kAutoregressiveDecode)), descriptor(0)),
         std::runtime_error);
 
@@ -325,6 +332,159 @@ TEST(RaggedPluginMetadataTest, RejectsCarrierMismatchInvalidExtentAndReservedMix
     invalidRank.dims.nbDims = 0;
     EXPECT_THROW(trt_edgellm::plugins::decodeRaggedPluginMetadata("test", activation, invalidRank, offsets,
                      descriptor(static_cast<int32_t>(ExecutionPhase::kContextPrefill)), descriptor(3)),
+        std::runtime_error);
+}
+
+TEST(RaggedPluginMetadataTest, DecodesSpecVerifyLayoutFromDescriptorExtent)
+{
+    // Given a rank-one INT32 layout marker, when phase and extent are decoded,
+    // then only inactive non-verify and chain/tree target-verify pairs are valid.
+    auto descriptor = [](int32_t extent, nvinfer1::DataType type = nvinfer1::DataType::kINT32) {
+        nvinfer1::PluginTensorDesc desc{};
+        desc.dims.nbDims = 1;
+        desc.dims.d[0] = extent;
+        desc.type = type;
+        desc.format = nvinfer1::TensorFormat::kLINEAR;
+        return desc;
+    };
+
+    EXPECT_FALSE(trt_edgellm::plugins::decodeSpecVerifyLayout("test", descriptor(0), ExecutionPhase::kContextPrefill)
+            .has_value());
+    EXPECT_EQ(trt_edgellm::plugins::decodeSpecVerifyLayout("test", descriptor(1), ExecutionPhase::kSpecTargetVerify),
+        SpecVerifyLayout::kChain);
+    EXPECT_EQ(trt_edgellm::plugins::decodeSpecVerifyLayout("test", descriptor(2), ExecutionPhase::kSpecTargetVerify),
+        SpecVerifyLayout::kTree);
+    EXPECT_THROW(trt_edgellm::plugins::decodeSpecVerifyLayout("test", descriptor(0), ExecutionPhase::kSpecTargetVerify),
+        std::runtime_error);
+    EXPECT_THROW(trt_edgellm::plugins::decodeSpecVerifyLayout("test", descriptor(1), ExecutionPhase::kContextPrefill),
+        std::runtime_error);
+    EXPECT_THROW(trt_edgellm::plugins::decodeSpecVerifyLayout("test", descriptor(3), ExecutionPhase::kSpecTargetVerify),
+        std::runtime_error);
+    EXPECT_THROW(trt_edgellm::plugins::decodeSpecVerifyLayout(
+                     "test", descriptor(1, nvinfer1::DataType::kFLOAT), ExecutionPhase::kSpecTargetVerify),
+        std::runtime_error);
+    auto invalidRank = descriptor(1);
+    invalidRank.dims.nbDims = 0;
+    EXPECT_THROW(trt_edgellm::plugins::decodeSpecVerifyLayout("test", invalidRank, ExecutionPhase::kSpecTargetVerify),
+        std::runtime_error);
+}
+
+TEST(RaggedPluginMetadataTest, RejectsLayoutExtentsThatNarrowToValidValues)
+{
+    // Given 64-bit descriptor extents with valid low bits, when the marker is decoded,
+    // then validation rejects the full extent instead of accepting a truncated layout.
+    constexpr int64_t kHIGH_BITS = int64_t{1} << 32;
+    for (int64_t const lowBits : {0, 1, 2})
+    {
+        nvinfer1::PluginTensorDesc descriptor{};
+        descriptor.dims.nbDims = 1;
+        descriptor.dims.d[0] = kHIGH_BITS + lowBits;
+        descriptor.type = nvinfer1::DataType::kINT32;
+        descriptor.format = nvinfer1::TensorFormat::kLINEAR;
+        auto const phase = lowBits == 0 ? ExecutionPhase::kContextPrefill : ExecutionPhase::kSpecTargetVerify;
+        SCOPED_TRACE(descriptor.dims.d[0]);
+        EXPECT_THROW(trt_edgellm::plugins::decodeSpecVerifyLayout("test", descriptor, phase), std::runtime_error);
+    }
+}
+
+TEST(RaggedPluginMetadataTest, DefaultLayoutSupportRejectsMixedPhase)
+{
+    // Given a well-formed phase 8 step (1 of 3 sequences in prefill),
+    // When a plugin that keeps the default padded-only layout support decodes it,
+    // Then decoding fails, so plugins without compact support keep rejecting phase 8.
+    auto descriptor = [](int32_t extent) {
+        nvinfer1::PluginTensorDesc desc{};
+        desc.dims.nbDims = 1;
+        desc.dims.d[0] = extent;
+        return desc;
+    };
+    auto const phase8 = descriptor(static_cast<int32_t>(ExecutionPhase::kMixedPrefillDecode));
+    EXPECT_THROW(trt_edgellm::plugins::decodeRaggedPluginMetadata(
+                     "test", descriptor(12), descriptor(3), descriptor(4), phase8, descriptor(1)),
+        std::runtime_error);
+    EXPECT_THROW(trt_edgellm::plugins::decodeRaggedPluginMetadata("test", descriptor(12), descriptor(3), descriptor(4),
+                     phase8, descriptor(1), trt_edgellm::plugins::RaggedLayoutSupport::kPaddedOnly),
+        std::runtime_error);
+}
+
+TEST(RaggedPluginMetadataTest, CompactLayoutSupportDecodesMixedPhaseGeometry)
+{
+    // Given compact phase 8 steps whose token count is not a multiple of N, with and without decode sequences,
+    // When a plugin that declares compact layout support decodes them,
+    // Then the prefill rows are T minus one row per decode sequence and the decode rows equal Nd.
+    auto descriptor = [](int32_t extent) {
+        nvinfer1::PluginTensorDesc desc{};
+        desc.dims.nbDims = 1;
+        desc.dims.d[0] = extent;
+        return desc;
+    };
+    auto const phase8 = descriptor(static_cast<int32_t>(ExecutionPhase::kMixedPrefillDecode));
+    auto const compact = trt_edgellm::plugins::RaggedLayoutSupport::kPaddedAndCompact;
+
+    auto const mixed = trt_edgellm::plugins::decodeRaggedPluginMetadata(
+        "test", descriptor(10), descriptor(3), descriptor(4), phase8, descriptor(1), compact);
+    EXPECT_EQ(mixed.phase, ExecutionPhase::kMixedPrefillDecode);
+    EXPECT_EQ(mixed.numSequences, 3);
+    EXPECT_EQ(mixed.numContextSequences, 1);
+    EXPECT_EQ(mixed.numDecodeSequences, 2);
+    EXPECT_EQ(mixed.physicalTokens, 10);
+    EXPECT_EQ(mixed.contextExecutionRows, 8);
+    EXPECT_EQ(mixed.decodeExecutionRows, 2);
+
+    auto const prefillOnly = trt_edgellm::plugins::decodeRaggedPluginMetadata(
+        "test", descriptor(4), descriptor(2), descriptor(3), phase8, descriptor(2), compact);
+    EXPECT_EQ(prefillOnly.numContextSequences, 2);
+    EXPECT_EQ(prefillOnly.numDecodeSequences, 0);
+    EXPECT_EQ(prefillOnly.contextExecutionRows, 4);
+    EXPECT_EQ(prefillOnly.decodeExecutionRows, 0);
+}
+
+TEST(RaggedPluginMetadataTest, CompactLayoutSupportDecodesPureDecodeStepOnlyWithOneRowPerSequence)
+{
+    // Given phase 8 steps whose context-count carrier reports no prefill sequence, with T_exec = N and T_exec > N,
+    // When a plugin that declares compact layout support decodes them,
+    // Then T_exec = N decodes as N decode rows and no prefill rows, and T_exec > N fails because rows without a
+    // prefill sequence cannot be placed.
+    auto descriptor = [](int32_t extent) {
+        nvinfer1::PluginTensorDesc desc{};
+        desc.dims.nbDims = 1;
+        desc.dims.d[0] = extent;
+        return desc;
+    };
+    auto const phase8 = descriptor(static_cast<int32_t>(ExecutionPhase::kMixedPrefillDecode));
+    auto const compact = trt_edgellm::plugins::RaggedLayoutSupport::kPaddedAndCompact;
+    auto const decodeOnly = trt_edgellm::plugins::decodeRaggedPluginMetadata(
+        "test", descriptor(3), descriptor(3), descriptor(4), phase8, descriptor(0), compact);
+    EXPECT_EQ(decodeOnly.numContextSequences, 0);
+    EXPECT_EQ(decodeOnly.numDecodeSequences, 3);
+    EXPECT_EQ(decodeOnly.contextExecutionRows, 0);
+    EXPECT_EQ(decodeOnly.decodeExecutionRows, 3);
+    EXPECT_THROW(trt_edgellm::plugins::decodeRaggedPluginMetadata(
+                     "test", descriptor(4), descriptor(3), descriptor(4), phase8, descriptor(0), compact),
+        std::runtime_error);
+}
+
+TEST(RaggedPluginMetadataTest, CompactLayoutSupportKeepsHomogeneousPhaseRules)
+{
+    // Given padded homogeneous carriers that the default decoder accepts or rejects,
+    // When a plugin that declares compact layout support decodes them,
+    // Then it returns the same geometry and rejects the same non-divisible prefill, so compact support only
+    // changes phase 8.
+    auto descriptor = [](int32_t extent) {
+        nvinfer1::PluginTensorDesc desc{};
+        desc.dims.nbDims = 1;
+        desc.dims.d[0] = extent;
+        return desc;
+    };
+    auto const compact = trt_edgellm::plugins::RaggedLayoutSupport::kPaddedAndCompact;
+    auto const prefill = descriptor(static_cast<int32_t>(ExecutionPhase::kContextPrefill));
+    auto const context = trt_edgellm::plugins::decodeRaggedPluginMetadata(
+        "test", descriptor(12), descriptor(3), descriptor(4), prefill, descriptor(3), compact);
+    EXPECT_EQ(context.numContextSequences, 3);
+    EXPECT_EQ(context.contextExecutionRows, 12);
+    EXPECT_EQ(context.decodeExecutionRows, 0);
+    EXPECT_THROW(trt_edgellm::plugins::decodeRaggedPluginMetadata(
+                     "test", descriptor(10), descriptor(3), descriptor(4), prefill, descriptor(3), compact),
         std::runtime_error);
 }
 

@@ -68,6 +68,8 @@ class DeviceConfig:
                     return 'auto-thor'
                 else:
                     return 'jetson-thor'
+            elif compute_cap == 103:
+                return 'gb300'
             elif compute_cap == 120:
                 return 'igx-thor'
             elif compute_cap == 121:

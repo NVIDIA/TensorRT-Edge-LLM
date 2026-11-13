@@ -40,10 +40,7 @@ std::unique_ptr<MultiDevicePluginResources> createTensorParallelPluginResources(
     MultiDevicePluginResourceConfig const& config)
 {
     TensorParallelPluginResourcesConfig const resourcesConfig{
-        config.groupConfig.size,
-        config.localRanks,
-        config.localDevices,
-        config.backendHandles,
+        config.groupConfig.size, config.localRanks, config.localDevices, config.backendHandles,
         config.ownsBackendHandles,
     };
     return std::make_unique<TensorParallelPluginResources>(resourcesConfig);

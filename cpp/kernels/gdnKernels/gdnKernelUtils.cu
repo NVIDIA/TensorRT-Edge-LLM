@@ -376,6 +376,33 @@ void launchGdnStateGather(void const* src, void* dst, void const* stateIndices, 
     CUDA_CHECK(cudaGetLastError());
 }
 
+__global__ void gdnStateScatterKernel(
+    float const* src, float* dst, int32_t const* stateIndices, int32_t statePoolRows, int64_t rowElements)
+{
+    int32_t const batch = blockIdx.y;
+    int64_t const element = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (element < rowElements)
+    {
+        int32_t const residentRow = stateIndices[batch];
+        if (residentRow >= 0 && residentRow < statePoolRows)
+        {
+            dst[static_cast<int64_t>(residentRow) * rowElements + element]
+                = src[static_cast<int64_t>(batch) * rowElements + element];
+        }
+    }
+}
+
+void launchGdnStateScatter(void const* src, void* dst, void const* stateIndices, int32_t batchSize,
+    int32_t statePoolRows, int32_t numHeads, int32_t kDim, int32_t vDim, cudaStream_t stream)
+{
+    constexpr int32_t blockSize = 256;
+    int64_t const rowElements = static_cast<int64_t>(numHeads) * kDim * vDim;
+    dim3 const grid(static_cast<uint32_t>((rowElements + blockSize - 1) / blockSize), batchSize);
+    gdnStateScatterKernel<<<grid, blockSize, 0, stream>>>(static_cast<float const*>(src), static_cast<float*>(dst),
+        static_cast<int32_t const*>(stateIndices), statePoolRows, rowElements);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 __global__ void gdnStateIndexedTransposeInPlaceKernel(float* state, int32_t const* __restrict__ stateIndices,
     int32_t statePoolRows, int32_t numHeads, int32_t dim, int32_t tilesPerRow)
 {
@@ -454,6 +481,61 @@ void launchGdnStateIndexedTransposeInPlace(void* state, void const* stateIndices
     dim3 const block(32, 8);
     gdnStateIndexedTransposeInPlaceKernel<<<grid, block, 0, stream>>>(static_cast<float*>(state),
         static_cast<int32_t const*>(stateIndices), statePoolRows, numHeads, dim, tilesPerRow);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void gdnStateScatterTransposeKernel(float const* __restrict__ src, float* __restrict__ dst,
+    int32_t const* __restrict__ stateIndices, int32_t statePoolRows, int32_t numHeads, int32_t dim)
+{
+    __shared__ float tile[32][33];
+
+    int32_t const matrix = blockIdx.y;
+    int32_t const batch = matrix / numHeads;
+    int32_t const head = matrix % numHeads;
+    int32_t const residentRow = __ldg(stateIndices + batch);
+    if (residentRow < 0 || residentRow >= statePoolRows)
+    {
+        return;
+    }
+    int32_t const dstMatrix = residentRow * numHeads + head;
+    int32_t const tilesPerRow = (dim + 31) / 32;
+    int32_t const tileRow = blockIdx.x / tilesPerRow;
+    int32_t const tileCol = blockIdx.x % tilesPerRow;
+    int32_t const baseRow = tileRow * 32;
+    int32_t const baseCol = tileCol * 32;
+    int64_t const srcOffset = static_cast<int64_t>(matrix) * dim * dim;
+    int64_t const dstOffset = static_cast<int64_t>(dstMatrix) * dim * dim;
+
+    for (int32_t j = 0; j < 32; j += 8)
+    {
+        int32_t const row = baseRow + threadIdx.y + j;
+        int32_t const col = baseCol + threadIdx.x;
+        if (row < dim && col < dim)
+        {
+            tile[threadIdx.y + j][threadIdx.x] = src[srcOffset + static_cast<int64_t>(row) * dim + col];
+        }
+    }
+    __syncthreads();
+
+    for (int32_t j = 0; j < 32; j += 8)
+    {
+        int32_t const row = baseCol + threadIdx.y + j;
+        int32_t const col = baseRow + threadIdx.x;
+        if (row < dim && col < dim)
+        {
+            dst[dstOffset + static_cast<int64_t>(row) * dim + col] = tile[threadIdx.x][threadIdx.y + j];
+        }
+    }
+}
+
+void launchGdnStateScatterTranspose(void const* src, void* dst, void const* stateIndices, int32_t batchSize,
+    int32_t statePoolRows, int32_t numHeads, int32_t dim, cudaStream_t stream)
+{
+    int32_t const tilesPerRow = (dim + 31) / 32;
+    dim3 const grid(tilesPerRow * tilesPerRow, batchSize * numHeads);
+    dim3 const block(32, 8);
+    gdnStateScatterTransposeKernel<<<grid, block, 0, stream>>>(static_cast<float const*>(src), static_cast<float*>(dst),
+        static_cast<int32_t const*>(stateIndices), statePoolRows, numHeads, dim);
     CUDA_CHECK(cudaGetLastError());
 }
 

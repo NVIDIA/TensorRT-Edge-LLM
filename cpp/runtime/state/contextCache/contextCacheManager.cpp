@@ -18,12 +18,14 @@
 #include "runtime/state/contextCache/contextCacheManager.h"
 
 #include "common/checkMacros.h"
+#include "common/logger.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <iterator>
+#include <limits>
 #include <utility>
 
 namespace trt_edgellm
@@ -39,6 +41,258 @@ int32_t validateManagerConfiguration(int32_t pageSize, ResourceDemand const& cap
     ELLM_CHECK(capacities.isNonNegative(), "Context cache resource capacities must be non-negative");
     ELLM_CHECK(maxRecords >= 0, "Context cache maximum record count must be non-negative");
     return pageSize;
+}
+
+std::optional<SwaCacheConfig> validateSwaConfiguration(
+    int32_t pageSize, ResourceDemand const& capacities, std::optional<SwaCacheConfig> const& swaConfig)
+{
+    if (!swaConfig.has_value())
+    {
+        ELLM_CHECK(capacities.swaKvPages == 0, "SWA page capacity requires an SWA cache configuration");
+        return std::nullopt;
+    }
+    ELLM_CHECK(swaConfig->windowSizeTokens > 0, "Context cache SWA window size must be positive");
+    ELLM_CHECK(swaConfig->replacementPageCount > 0, "Context cache SWA replacement-page reservation must be positive");
+    int64_t const privatePages
+        = computeSwaPrivatePagesPerSlot(swaConfig->windowSizeTokens, pageSize, swaConfig->replacementPageCount);
+    ELLM_CHECK(privatePages <= std::numeric_limits<int32_t>::max(),
+        "Context cache SWA private-page reservation exceeds int32 range");
+    ELLM_CHECK(
+        capacities.swaKvPages >= privatePages, "Context cache SWA pool cannot admit one complete bounded reservation");
+    return swaConfig;
+}
+
+struct SwaRetainedRange
+{
+    int32_t begin{};
+    int32_t end{};
+};
+
+SwaRetainedRange activeSwaRange(int32_t endpoint, int32_t pageSize, int32_t windowSize) noexcept
+{
+    int64_t const retainedEnd = (static_cast<int64_t>(endpoint) + pageSize - 1) / pageSize;
+    int64_t const windowStart = std::max<int64_t>(0, static_cast<int64_t>(endpoint) - windowSize);
+    return SwaRetainedRange{static_cast<int32_t>(windowStart / pageSize), static_cast<int32_t>(retainedEnd)};
+}
+
+SwaRetainedRange retainedSwaRange(
+    int32_t endpoint, int32_t pageSize, int32_t windowSize, SwaRetentionMode mode) noexcept
+{
+    SwaRetainedRange const active = activeSwaRange(endpoint, pageSize, windowSize);
+    if (mode == SwaRetentionMode::kFullInputRewind)
+    {
+        return active;
+    }
+    int32_t const publishableEndpoint = endpoint - endpoint % pageSize;
+    SwaRetainedRange const publishable = activeSwaRange(publishableEndpoint, pageSize, windowSize);
+    return SwaRetainedRange{std::max(0, publishable.begin - kSWA_REPLAY_HALO_PAGES), active.end};
+}
+
+SwaWindowState makeEmptySwaWindowState(int32_t pageSize, SwaCacheConfig const& config)
+{
+    SwaWindowState state;
+    state.pageSizeTokens = pageSize;
+    state.windowSizeTokens = config.windowSizeTokens;
+    return state;
+}
+
+bool hasBasicSwaWindowShape(SwaWindowState const& state, int32_t pageSize, SwaCacheConfig const& config) noexcept
+{
+    if (state.pageSizeTokens != pageSize || state.windowSizeTokens != config.windowSizeTokens
+        || state.exactResidentTokenCount < 0 || state.retainedLogicalPageBegin < 0
+        || state.retainedLogicalPageEnd < state.retainedLogicalPageBegin
+        || (state.retentionMode != SwaRetentionMode::kLive && state.retentionMode != SwaRetentionMode::kFullInputRewind)
+        || (state.retentionMode == SwaRetentionMode::kFullInputRewind && state.exactResidentTokenCount % pageSize != 0))
+    {
+        return false;
+    }
+    SwaRetainedRange const expected
+        = retainedSwaRange(state.exactResidentTokenCount, pageSize, config.windowSizeTokens, state.retentionMode);
+    if (state.retainedLogicalPageBegin != expected.begin || state.retainedLogicalPageEnd != expected.end
+        || state.pageBindings.size() != static_cast<size_t>(expected.end - expected.begin))
+    {
+        return false;
+    }
+    for (size_t index = 0; index < state.pageBindings.size(); ++index)
+    {
+        SwaPageBinding const& binding = state.pageBindings[index];
+        if (binding.logicalPage != state.retainedLogicalPageBegin + static_cast<int32_t>(index) || binding.page < 0)
+        {
+            return false;
+        }
+        for (size_t previous = 0; previous < index; ++previous)
+        {
+            if (state.pageBindings[previous].page == binding.page)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+std::optional<SwaPageBinding> findSwaBinding(SwaWindowState const& state, int32_t logicalPage) noexcept
+{
+    if (logicalPage < state.retainedLogicalPageBegin || logicalPage >= state.retainedLogicalPageEnd)
+    {
+        return std::nullopt;
+    }
+    size_t const index = static_cast<size_t>(logicalPage - state.retainedLogicalPageBegin);
+    if (index >= state.pageBindings.size() || state.pageBindings[index].logicalPage != logicalPage)
+    {
+        return std::nullopt;
+    }
+    return state.pageBindings[index];
+}
+
+std::optional<SwaWindowState> projectSwaWindowState(SwaWindowState const& source, int32_t endpoint, int32_t pageSize,
+    SwaCacheConfig const& config, SwaRetentionMode mode) noexcept
+{
+    if (endpoint < 0 || endpoint > source.exactResidentTokenCount || !hasBasicSwaWindowShape(source, pageSize, config))
+    {
+        return std::nullopt;
+    }
+
+    SwaRetainedRange const retained = retainedSwaRange(endpoint, pageSize, config.windowSizeTokens, mode);
+    SwaWindowState projected = makeEmptySwaWindowState(pageSize, config);
+    projected.exactResidentTokenCount = endpoint;
+    projected.retainedLogicalPageBegin = retained.begin;
+    projected.retainedLogicalPageEnd = retained.end;
+    projected.retentionMode = mode;
+    for (int32_t logicalPage = retained.begin; logicalPage < retained.end; ++logicalPage)
+    {
+        std::optional<SwaPageBinding> const binding = findSwaBinding(source, logicalPage);
+        if (!binding.has_value())
+        {
+            return std::nullopt;
+        }
+        projected.pageBindings.push_back(*binding);
+    }
+    return projected;
+}
+
+ReusePlan makeSwaVanillaPlan(std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount,
+    int32_t pageSize, SwaCacheConfig const& config, int32_t privatePageLimit, CacheRecordStore const& records,
+    ContextCacheLookupPolicy lookupPolicy)
+{
+    ELLM_CHECK(lookupPolicy == ContextCacheLookupPolicy::kUseCache || lookupPolicy == ContextCacheLookupPolicy::kBypass,
+        "Context cache SWA plan has an invalid lookup policy");
+    ELLM_CHECK(inputTokenCount >= 0, "Context cache input token count must be non-negative");
+    int64_t const fullInputBlockCount = static_cast<int64_t>(inputTokenCount) / pageSize;
+    ELLM_CHECK(inputFullBlockHashes.size() <= static_cast<size_t>(fullInputBlockCount),
+        "Context cache input has more full-block hashes than full token blocks");
+    int64_t const totalInputPages = (static_cast<int64_t>(inputTokenCount) + pageSize - 1) / pageSize;
+    auto makeCold = [&]() {
+        ReusePlan plan;
+        plan.kind = inputTokenCount == 0 ? ReusePlanKind::kStandard : ReusePlanKind::kNoReusablePrefix;
+        plan.demand.baseKvPages = static_cast<int32_t>(totalInputPages);
+        plan.demand.swaKvPages = privatePageLimit;
+        plan.swaWindowState = makeEmptySwaWindowState(pageSize, config);
+        return plan;
+    };
+    if (inputTokenCount == 0 || lookupPolicy == ContextCacheLookupPolicy::kBypass)
+    {
+        return makeCold();
+    }
+
+    auto makePlan = [&](RecordId recordId, int32_t matchedBlockCount) -> std::optional<ReusePlan> {
+        CacheRecord const& record = records.get(recordId);
+        bool const coherentLogicalPath = record.logicalBlockHashes.size() >= static_cast<size_t>(matchedBlockCount)
+            && record.basePagePath.size() == record.logicalBlockHashes.size()
+            && std::equal(record.logicalBlockHashes.begin(), record.logicalBlockHashes.begin() + matchedBlockCount,
+                inputFullBlockHashes.begin());
+        if (!coherentLogicalPath || !record.swaWindowState.has_value()
+            || !hasBasicSwaWindowShape(*record.swaWindowState, pageSize, config))
+        {
+            return std::nullopt;
+        }
+
+        int32_t const matchedTokenLength = matchedBlockCount * pageSize;
+        if (record.swaWindowState->exactResidentTokenCount
+            != static_cast<int64_t>(record.logicalBlockHashes.size()) * pageSize)
+        {
+            return std::nullopt;
+        }
+        bool const fullInputMatch
+            = inputTokenCount % pageSize == 0 && static_cast<int64_t>(matchedBlockCount) == totalInputPages;
+        int32_t const reuseBlockCount = matchedBlockCount - static_cast<int32_t>(fullInputMatch);
+        int32_t const reuseTokenLength = reuseBlockCount * pageSize;
+        SwaRetentionMode const retentionMode
+            = fullInputMatch ? SwaRetentionMode::kFullInputRewind : SwaRetentionMode::kLive;
+        std::optional<SwaWindowState> projected
+            = projectSwaWindowState(*record.swaWindowState, reuseTokenLength, pageSize, config, retentionMode);
+        if (!projected.has_value())
+        {
+            return std::nullopt;
+        }
+
+        ReusePlan plan;
+        plan.matchedTokenLength = matchedTokenLength;
+        plan.reuseTokenLength = reuseTokenLength;
+        plan.matchedBlockHashes.assign(
+            inputFullBlockHashes.begin(), inputFullBlockHashes.begin() + static_cast<std::ptrdiff_t>(reuseBlockCount));
+        plan.basePageBindings.assign(
+            record.basePagePath.begin(), record.basePagePath.begin() + static_cast<std::ptrdiff_t>(reuseBlockCount));
+        plan.swaWindowState = std::move(projected);
+        if (!plan.swaWindowState->pageBindings.empty())
+        {
+            plan.swaRecord = recordId;
+        }
+        ELLM_CHECK(plan.swaWindowState->pageBindings.size() <= static_cast<size_t>(privatePageLimit),
+            "Context cache SWA record exceeds the private admission bound");
+        plan.demand.baseKvPages = static_cast<int32_t>(totalInputPages - reuseBlockCount);
+        plan.demand.swaKvPages = privatePageLimit - static_cast<int32_t>(plan.swaWindowState->pageBindings.size())
+            - swaReservationPageCredit(retentionMode);
+        plan.kind = fullInputMatch ? ReusePlanKind::kFullInputRewind : ReusePlanKind::kStandard;
+        return plan;
+    };
+
+    ReusePlan best = makeCold();
+    int32_t const maxMatchedBlocks = static_cast<int32_t>(inputFullBlockHashes.size());
+    for (int32_t matchedBlockCount = maxMatchedBlocks; matchedBlockCount > 0; --matchedBlockCount)
+    {
+        CacheRecordKey const key{inputFullBlockHashes[static_cast<size_t>(matchedBlockCount - 1)], matchedBlockCount};
+        std::optional<RecordId> const recordId = records.find(key);
+        if (recordId.has_value())
+        {
+            auto plan = makePlan(*recordId, matchedBlockCount);
+            if (plan.has_value())
+            {
+                best = std::move(*plan);
+                break;
+            }
+        }
+    }
+    if (best.matchedTokenLength == maxMatchedBlocks * pageSize)
+    {
+        return best;
+    }
+
+    // A longer record can cover an earlier branch point while its entire window and replay halo remain resident.
+    // Pin the owning record's projected pages, never combine SWA state from independent records.
+    std::vector<RecordId> const candidates = records.lruToMru();
+    for (auto candidate = candidates.rbegin(); candidate != candidates.rend(); ++candidate)
+    {
+        CacheRecord const& record = records.get(*candidate);
+        size_t const limit = std::min(record.logicalBlockHashes.size(), inputFullBlockHashes.size());
+        auto const mismatch = std::mismatch(
+            record.logicalBlockHashes.begin(), record.logicalBlockHashes.begin() + limit, inputFullBlockHashes.begin());
+        int32_t const matchedBlockCount = static_cast<int32_t>(mismatch.first - record.logicalBlockHashes.begin());
+        if (matchedBlockCount * pageSize <= best.matchedTokenLength)
+        {
+            continue;
+        }
+        auto plan = makePlan(*candidate, matchedBlockCount);
+        if (plan.has_value())
+        {
+            best = std::move(*plan);
+            if (matchedBlockCount == maxMatchedBlocks)
+            {
+                break;
+            }
+        }
+    }
+    return best;
 }
 
 void releaseActiveRefsNoThrow(ResourcePools& pools, std::vector<ResourceId> const& resources) noexcept
@@ -57,6 +311,7 @@ size_t resourceDemandCount(ResourceDemand const& demand) noexcept
     count += static_cast<size_t>(demand.draftKvPages);
     count += static_cast<size_t>(demand.recurrentSnapshotSlots);
     count += static_cast<size_t>(demand.partialKvSnapshotSlots);
+    count += static_cast<size_t>(demand.swaKvPages);
     return count;
 }
 
@@ -64,7 +319,9 @@ size_t totalResourceCount(ReusePlan const& plan) noexcept
 {
     return plan.basePageBindings.size() + plan.specPageBindings.size()
         + static_cast<size_t>(plan.recurrentSnapshotBinding.has_value())
-        + static_cast<size_t>(plan.partialKvSnapshotBinding.has_value()) + resourceDemandCount(plan.demand);
+        + static_cast<size_t>(plan.partialKvSnapshotBinding.has_value())
+        + (plan.swaWindowState.has_value() ? plan.swaWindowState->pageBindings.size() : 0U)
+        + resourceDemandCount(plan.demand);
 }
 
 struct MissingBaseMapping
@@ -316,6 +573,7 @@ CacheRequestLease& CacheRequestLease::operator=(CacheRequestLease&& other) noexc
         release();
         mManager = other.mManager;
         mMode = other.mMode;
+        mPublishable = other.mPublishable;
         mMatchedBlockHashes = std::move(other.mMatchedBlockHashes);
         mActiveResources = std::move(other.mActiveResources);
         mBasePages = std::move(other.mBasePages);
@@ -324,9 +582,11 @@ CacheRequestLease& CacheRequestLease::operator=(CacheRequestLease&& other) noexc
         mHybridHasAttention = other.mHybridHasAttention;
         mRecurrentSnapshotBinding = other.mRecurrentSnapshotBinding;
         mPartialKvSnapshotBinding = other.mPartialKvSnapshotBinding;
+        mSwaState = std::move(other.mSwaState);
 
         other.mManager = nullptr;
         other.mMode = ReusePlanMode::kVanilla;
+        other.mPublishable = true;
         other.mMatchedBlockHashes.clear();
         other.mActiveResources.clear();
         other.mBasePages.clear();
@@ -335,6 +595,7 @@ CacheRequestLease& CacheRequestLease::operator=(CacheRequestLease&& other) noexc
         other.mHybridHasAttention = false;
         other.mRecurrentSnapshotBinding.reset();
         other.mPartialKvSnapshotBinding.reset();
+        other.mSwaState.reset();
     }
     return *this;
 }
@@ -372,6 +633,7 @@ void CacheRequestLease::release() noexcept
         return;
     }
     mMode = ReusePlanMode::kVanilla;
+    mPublishable = true;
     mMatchedBlockHashes.clear();
     mActiveResources.clear();
     mBasePages.clear();
@@ -380,21 +642,40 @@ void CacheRequestLease::release() noexcept
     mHybridHasAttention = false;
     mRecurrentSnapshotBinding.reset();
     mPartialKvSnapshotBinding.reset();
+    mSwaState.reset();
 }
 
-ContextCacheManager::ContextCacheManager(
-    int32_t pageSize, ResourceDemand capacities, int32_t maxRecords, std::optional<SpecReuseContract> specReuseContract)
+ContextCacheManager::ContextCacheManager(int32_t pageSize, ResourceDemand capacities, int32_t maxRecords,
+    std::optional<SpecReuseContract> specReuseContract, std::optional<SwaCacheConfig> swaConfig)
     : mPageSize(validateManagerConfiguration(pageSize, capacities, maxRecords))
+    , mSwaConfig(validateSwaConfiguration(pageSize, capacities, swaConfig))
+    , mSwaPrivatePageLimit(mSwaConfig.has_value()
+              ? static_cast<int32_t>(computeSwaPrivatePagesPerSlot(
+                    mSwaConfig->windowSizeTokens, mPageSize, mSwaConfig->replacementPageCount))
+              : 0)
     , mPools(capacities)
     , mSpecReuseContract(specReuseContract)
     , mRecords(maxRecords)
 {
+    ELLM_CHECK(!mSwaConfig.has_value() || !mSpecReuseContract.has_value(),
+        "Bounded SWA context reuse does not support speculative decoding");
+}
+
+ReusePlan ContextCacheManager::planVanilla(std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount,
+    ContextCacheLookupPolicy lookupPolicy) const
+{
+    if (mSwaConfig.has_value())
+    {
+        return makeSwaVanillaPlan(inputFullBlockHashes, inputTokenCount, mPageSize, *mSwaConfig, mSwaPrivatePageLimit,
+            mRecords, lookupPolicy);
+    }
+    return makeVanillaReusePlan(inputFullBlockHashes, inputTokenCount, mPageSize, mBaseIndex, lookupPolicy);
 }
 
 AcquireResult ContextCacheManager::acquireVanilla(
     std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount, ContextCacheLookupPolicy lookupPolicy)
 {
-    return acquire(makeVanillaReusePlan(inputFullBlockHashes, inputTokenCount, mPageSize, mBaseIndex, lookupPolicy));
+    return acquire(planVanilla(inputFullBlockHashes, inputTokenCount, lookupPolicy));
 }
 
 AcquireResult ContextCacheManager::acquireHybrid(std::vector<HybridCheckpointCandidate> const& candidates,
@@ -428,6 +709,27 @@ AcquireResult ContextCacheManager::acquireSpec(
 
 AcquireResult ContextCacheManager::acquire(ReusePlan plan)
 {
+    if (mSwaConfig.has_value())
+    {
+        size_t const sharedSwaPageCount
+            = plan.swaWindowState.has_value() ? plan.swaWindowState->pageBindings.size() : 0U;
+        ELLM_CHECK(plan.mode == ReusePlanMode::kVanilla && plan.swaWindowState.has_value()
+                && plan.swaWindowState->exactResidentTokenCount == plan.reuseTokenLength
+                && hasBasicSwaWindowShape(*plan.swaWindowState, mPageSize, *mSwaConfig)
+                && plan.swaRecord.has_value() == !plan.swaWindowState->pageBindings.empty()
+                && sharedSwaPageCount <= static_cast<size_t>(
+                       mSwaPrivatePageLimit - swaReservationPageCredit(plan.swaWindowState->retentionMode))
+                && plan.demand.swaKvPages
+                    == mSwaPrivatePageLimit - static_cast<int32_t>(sharedSwaPageCount)
+                        - swaReservationPageCredit(plan.swaWindowState->retentionMode),
+            "SWA context cache plan is missing its bounded admission state");
+    }
+    else
+    {
+        ELLM_CHECK(!plan.swaWindowState.has_value() && !plan.swaRecord.has_value() && plan.demand.swaKvPages == 0,
+            "SWA state cannot be acquired by a manager with SWA disabled");
+    }
+
     CacheRequestLease lease;
     lease.mManager = this;
     lease.mMode = plan.mode;
@@ -436,6 +738,13 @@ AcquireResult ContextCacheManager::acquire(ReusePlan plan)
     lease.mHybridHasAttention = plan.hybridHasAttention;
     lease.mRecurrentSnapshotBinding = plan.recurrentSnapshotBinding;
     lease.mPartialKvSnapshotBinding = plan.partialKvSnapshotBinding;
+    if (plan.swaWindowState.has_value())
+    {
+        SwaKVCacheState state;
+        static_cast<SwaWindowState&>(state) = *plan.swaWindowState;
+        state.reservedPages.reserve(static_cast<size_t>(plan.demand.swaKvPages));
+        lease.mSwaState = std::move(state);
+    }
     lease.mActiveResources.reserve(totalResourceCount(plan));
     size_t const reusedBasePageCount = plan.basePageBindings.size();
     size_t const reusedSpecPageCount = plan.specPageBindings.size();
@@ -477,8 +786,21 @@ AcquireResult ContextCacheManager::acquire(ReusePlan plan)
         mPools.addActiveRef(resource);
         lease.mActiveResources.push_back(resource);
     }
+    if (plan.swaWindowState.has_value())
+    {
+        for (SwaPageBinding const& binding : plan.swaWindowState->pageBindings)
+        {
+            ResourceId const resource{ResourceType::kSwaKvPage, binding.page};
+            mPools.addActiveRef(resource);
+            lease.mActiveResources.push_back(resource);
+        }
+    }
 
-    std::optional<RecordId> const protectedRecord = plan.specRecord.has_value() ? plan.specRecord : plan.hybridRecord;
+    std::optional<RecordId> protectedRecord = plan.specRecord.has_value() ? plan.specRecord : plan.hybridRecord;
+    if (!protectedRecord.has_value())
+    {
+        protectedRecord = plan.swaRecord;
+    }
     EvictionPlan const eviction = EvictionPlanner::plan(plan.demand, mPools, mRecords, protectedRecord);
     if (!eviction.feasible)
     {
@@ -502,6 +824,11 @@ AcquireResult ContextCacheManager::acquire(ReusePlan plan)
         {
             lease.mSpecPages.push_back(resource.index);
         }
+        else if (resource.type == ResourceType::kSwaKvPage)
+        {
+            ELLM_CHECK(lease.mSwaState.has_value(), "SWA allocation has no request state");
+            lease.mSwaState->reservedPages.push_back(resource.index);
+        }
     }
     if (plan.specRecord.has_value() && mRecords.contains(*plan.specRecord))
     {
@@ -511,12 +838,17 @@ AcquireResult ContextCacheManager::acquire(ReusePlan plan)
     {
         mRecords.touch(*plan.hybridRecord);
     }
+    if (plan.swaRecord.has_value() && mRecords.contains(*plan.swaRecord))
+    {
+        mRecords.touch(*plan.swaRecord);
+    }
 
     return AcquireResult{std::optional<CacheRequestLease>{std::move(lease)}, AcquireStatus::kAcquired, std::move(plan)};
 }
 
 bool ContextCacheManager::growBasePages(CacheRequestLease& lease, int32_t count)
 {
+    ELLM_CHECK(lease.mPublishable, "Read-only prefix pins cannot allocate pages");
     ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
     ELLM_CHECK(lease.mMode == ReusePlanMode::kVanilla || lease.mMode == ReusePlanMode::kHybrid,
         "Base-only context cache growth cannot be used by a speculative lease");
@@ -526,6 +858,7 @@ bool ContextCacheManager::growBasePages(CacheRequestLease& lease, int32_t count)
 
 bool ContextCacheManager::growSpecPages(CacheRequestLease& lease, int32_t baseCount, int32_t draftCount)
 {
+    ELLM_CHECK(lease.mPublishable, "Read-only prefix pins cannot allocate pages");
     ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
     ELLM_CHECK(lease.mMode == ReusePlanMode::kSpec || lease.mMode == ReusePlanMode::kHybridMtp,
         "Paired base/spec context cache growth requires a spec or hybrid+MTP lease");
@@ -568,6 +901,60 @@ std::optional<HybridSnapshotReservation> ContextCacheManager::reserveHybridSnaps
             && reservation.partialKvSnapshotSlot.has_value() == needsPartialKvSnapshot,
         "Hybrid snapshot reservation returned an incomplete resource set");
     return reservation;
+}
+
+CacheRequestLease ContextCacheManager::retainBasePages(std::vector<PageId> const& pages)
+{
+    CacheRequestLease lease;
+    lease.mManager = this;
+    lease.mPublishable = false;
+    lease.mActiveResources.reserve(pages.size());
+    for (PageId const page : pages)
+    {
+        ResourceId const resource{ResourceType::kBaseKvPage, page};
+        mPools.addActiveRef(resource);
+        lease.mActiveResources.push_back(resource);
+    }
+    return lease;
+}
+
+std::optional<SwaKVCacheState> ContextCacheManager::takeSwaState(CacheRequestLease& lease)
+{
+    ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
+    if (!mSwaConfig.has_value())
+    {
+        ELLM_CHECK(!lease.mSwaState.has_value(), "Non-SWA context cache lease contains SWA state");
+        return std::nullopt;
+    }
+    ELLM_CHECK(lease.mSwaState.has_value(), "Context cache SWA admission state was already transferred");
+    return std::exchange(lease.mSwaState, std::nullopt);
+}
+
+bool ContextCacheManager::isExternallyOwnedSwaPage(CacheRequestLease const& lease, PageId page) const
+{
+    ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
+    ResourceId const resource{ResourceType::kSwaKvPage, page};
+    ELLM_CHECK(std::find(lease.mActiveResources.begin(), lease.mActiveResources.end(), resource)
+            != lease.mActiveResources.end(),
+        "Context cache lease does not own the queried SWA page");
+    return mPools.cacheRefCount(resource) > 0 || mPools.activeRefCount(resource) > 1;
+}
+
+PageId ContextCacheManager::replaceSwaPage(CacheRequestLease& lease, PageId page)
+{
+    ELLM_CHECK(mSwaConfig.has_value(), "SWA page replacement requires an SWA-enabled context cache");
+    ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
+    releaseLeaseResource(lease, ResourceId{ResourceType::kSwaKvPage, page});
+    size_t const previousResourceCount = lease.mActiveResources.size();
+    ELLM_CHECK(growPages(lease, ResourceDemand{0, 0, 0, 0, 1}),
+        "Context cache could not restore the SWA replacement reservation");
+    ELLM_CHECK(lease.mActiveResources.size() == previousResourceCount + 1
+            && lease.mActiveResources.back().type == ResourceType::kSwaKvPage,
+        "Context cache SWA replacement returned an invalid resource");
+    PageId const replacement = lease.mActiveResources.back().index;
+    ELLM_CHECK(replacement >= 0 && replacement < mPools.capacity(ResourceType::kSwaKvPage),
+        "Context cache SWA replacement page is outside the physical pool");
+    return replacement;
 }
 
 void ContextCacheManager::releaseRestoredHybridSnapshots(CacheRequestLease& lease)
@@ -686,6 +1073,7 @@ PublishResult ContextCacheManager::commitPreparedPublication(PreparedPublication
 
 PublishResult ContextCacheManager::publish(CacheRequestLease& lease, PublishRequest const& request)
 {
+    ELLM_CHECK(lease.mPublishable, "Read-only prefix pins cannot publish context");
     ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
     ELLM_CHECK(lease.mMode == ReusePlanMode::kVanilla || lease.mMode == ReusePlanMode::kSpec,
         "Standard context cache publication requires a vanilla or speculative lease");
@@ -720,6 +1108,29 @@ PublishResult ContextCacheManager::publish(CacheRequestLease& lease, PublishRequ
     }
 
     size_t const publishCount = requestedPublishCount;
+    std::optional<SwaWindowState> publishedSwaState;
+    if (mSwaConfig.has_value())
+    {
+        ELLM_CHECK(!specPublication && request.swaWindowState.has_value()
+                && request.swaWindowState->exactResidentTokenCount == request.residentStateLength,
+            "Context cache SWA publication requires a settled vanilla endpoint");
+        int32_t const publishedEndpoint = static_cast<int32_t>(publishCount) * mPageSize;
+        publishedSwaState = projectSwaWindowState(
+            *request.swaWindowState, publishedEndpoint, mPageSize, *mSwaConfig, SwaRetentionMode::kLive);
+        ELLM_CHECK(publishedSwaState.has_value(),
+            "Context cache SWA publication is missing its coherent window or replay page");
+        for (SwaPageBinding const& binding : publishedSwaState->pageBindings)
+        {
+            ResourceId const resource{ResourceType::kSwaKvPage, binding.page};
+            ELLM_CHECK(std::find(lease.mActiveResources.begin(), lease.mActiveResources.end(), resource)
+                    != lease.mActiveResources.end(),
+                "Context cache SWA publication references a page outside its lease");
+        }
+    }
+    else
+    {
+        ELLM_CHECK(!request.swaWindowState.has_value(), "SWA state cannot be published by a manager with SWA disabled");
+    }
 
     std::vector<BlockHash> logicalHashes(
         request.fullBlockHashes.begin(), request.fullBlockHashes.begin() + static_cast<std::ptrdiff_t>(publishCount));
@@ -740,6 +1151,14 @@ PublishResult ContextCacheManager::publish(CacheRequestLease& lease, PublishRequ
         CacheRecord const& existingRecord = mRecords.get(*existing);
         ELLM_CHECK(existingRecord.basePagePath.size() >= publishCount,
             "Existing context cache record is shorter than its exact key");
+        if (mSwaConfig.has_value())
+        {
+            ELLM_CHECK(existingRecord.swaWindowState.has_value()
+                    && hasBasicSwaWindowShape(*existingRecord.swaWindowState, mPageSize, *mSwaConfig)
+                    && existingRecord.swaWindowState->exactResidentTokenCount
+                        == static_cast<int32_t>(publishCount) * mPageSize,
+                "Existing context cache record has no coherent SWA endpoint");
+        }
         std::vector<PageId> canonicalPages(existingRecord.basePagePath.begin(),
             existingRecord.basePagePath.begin() + static_cast<std::ptrdiff_t>(publishCount));
         if (!specState.has_value())
@@ -784,6 +1203,7 @@ PublishResult ContextCacheManager::publish(CacheRequestLease& lease, PublishRequ
     {
         record.specState = std::move(specState);
     }
+    record.swaWindowState = std::move(publishedSwaState);
 
     PreparedPublication publication;
     publication.canonicalBasePages = projection.canonicalPages;
@@ -870,22 +1290,18 @@ PublishResult ContextCacheManager::publishHybridMtp(CacheRequestLease& lease, Hy
 {
     ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
     ELLM_CHECK(
-        lease.mMode == ReusePlanMode::kHybridMtp, "Hybrid+MTP context cache publication requires a combined lease");
+        lease.mMode == ReusePlanMode::kHybridMtp, "Hybrid+spec context cache publication requires a combined lease");
 
     ELLM_CHECK(
-        request.checkpoint.exactLength > 0, "Hybrid+MTP context cache publication identity does not match its lease");
-    // This is the local form of SpecReuseContract::futureDependencyTokens == 1. Keep the boundary private so a
-    // consumer can rewrite its draft KV without mutating shared state.
-    size_t const fullBlockCount = static_cast<size_t>((request.checkpoint.exactLength - 1) / mPageSize);
-    ELLM_CHECK(request.fullBlockHashes.size() == fullBlockCount,
-        "Hybrid+MTP context cache publication requires every complete logical block before its exact boundary");
-    // MTP always publishes a partial page, so both snapshots must always be present.
-    bool const needsPartialSnapshot = true;
-    ELLM_CHECK(request.snapshots.recurrentSnapshotSlot >= 0
-            && request.snapshots.partialKvSnapshotSlot.has_value() == needsPartialSnapshot,
-        "Hybrid+MTP context cache publication has an incomplete snapshot set");
+        request.checkpoint.exactLength > 0, "Hybrid+spec context cache publication identity does not match its lease");
+    // The coordinator computes the publishable full-block count using the mode's futureDependencyTokens; trust
+    // the hash vector size as the authoritative block count rather than recomputing locally.
+    size_t const fullBlockCount = request.fullBlockHashes.size();
+    bool const hasPartialSnapshot = request.snapshots.partialKvSnapshotSlot.has_value();
+    ELLM_CHECK(request.snapshots.recurrentSnapshotSlot >= 0,
+        "Hybrid+spec context cache publication has no recurrent snapshot");
     ELLM_CHECK(fullBlockCount <= lease.mBasePages.size() && fullBlockCount <= lease.mSpecPages.size(),
-        "Hybrid+MTP context cache publication exceeds its paired base/draft page paths");
+        "Hybrid+spec context cache publication exceeds its paired base/draft page paths");
 
     auto ownsActiveResource = [&](ResourceId const& resource) {
         return std::find(lease.mActiveResources.begin(), lease.mActiveResources.end(), resource)
@@ -893,16 +1309,19 @@ PublishResult ContextCacheManager::publishHybridMtp(CacheRequestLease& lease, Hy
     };
     ELLM_CHECK(
         ownsActiveResource(ResourceId{ResourceType::kRecurrentSnapshot, request.snapshots.recurrentSnapshotSlot}),
-        "Hybrid+MTP context cache lease does not own the recurrent snapshot reservation");
-    ELLM_CHECK(
-        ownsActiveResource(ResourceId{ResourceType::kPartialKvSnapshot, *request.snapshots.partialKvSnapshotSlot}),
-        "Hybrid+MTP context cache lease does not own the bundled partial KV snapshot reservation");
+        "Hybrid+spec context cache lease does not own the recurrent snapshot reservation");
+    if (hasPartialSnapshot)
+    {
+        ELLM_CHECK(
+            ownsActiveResource(ResourceId{ResourceType::kPartialKvSnapshot, *request.snapshots.partialKvSnapshotSlot}),
+            "Hybrid+spec context cache lease does not own the bundled partial KV snapshot reservation");
+    }
 
     size_t const matchedBlockCount = std::min(fullBlockCount, lease.mMatchedBlockHashes.size());
     ELLM_CHECK(std::equal(request.fullBlockHashes.begin(),
                    request.fullBlockHashes.begin() + static_cast<std::ptrdiff_t>(matchedBlockCount),
                    lease.mMatchedBlockHashes.begin()),
-        "Hybrid+MTP context cache publication does not match the acquired logical prefix");
+        "Hybrid+spec context cache publication does not match the acquired logical prefix");
 
     std::optional<RecordId> const existing = mRecords.findHybrid(request.checkpoint);
     if (existing.has_value())
@@ -974,13 +1393,14 @@ void ContextCacheManager::releaseLease(CacheRequestLease& lease) noexcept
     lease.mHybridHasAttention = false;
     lease.mRecurrentSnapshotBinding.reset();
     lease.mPartialKvSnapshotBinding.reset();
+    lease.mSwaState.reset();
 }
 
 void ContextCacheManager::evictRecord(RecordId id)
 {
     ResourceDemand const freeBefore{mPools.freeCount(ResourceType::kBaseKvPage),
         mPools.freeCount(ResourceType::kDraftKvPage), mPools.freeCount(ResourceType::kRecurrentSnapshot),
-        mPools.freeCount(ResourceType::kPartialKvSnapshot)};
+        mPools.freeCount(ResourceType::kPartialKvSnapshot), mPools.freeCount(ResourceType::kSwaKvPage)};
     CacheRecord const record = mRecords.erase(id);
     if (record.specState.has_value())
     {
@@ -1010,10 +1430,17 @@ void ContextCacheManager::evictRecord(RecordId id)
     {
         mPools.releaseCacheRef(ResourceId{ResourceType::kPartialKvSnapshot, *record.partialKvSnapshotSlot});
     }
+    if (record.swaWindowState.has_value())
+    {
+        for (SwaPageBinding const& binding : record.swaWindowState->pageBindings)
+        {
+            mPools.releaseCacheRef(ResourceId{ResourceType::kSwaKvPage, binding.page});
+        }
+    }
 
     ResourceDemand const freeAfter{mPools.freeCount(ResourceType::kBaseKvPage),
         mPools.freeCount(ResourceType::kDraftKvPage), mPools.freeCount(ResourceType::kRecurrentSnapshot),
-        mPools.freeCount(ResourceType::kPartialKvSnapshot)};
+        mPools.freeCount(ResourceType::kPartialKvSnapshot), mPools.freeCount(ResourceType::kSwaKvPage)};
     ++mMetrics.evictedRecords;
     mMetrics.reclaimedBaseKvPages += static_cast<uint64_t>(freeAfter.baseKvPages - freeBefore.baseKvPages);
     mMetrics.reclaimedDraftKvPages += static_cast<uint64_t>(freeAfter.draftKvPages - freeBefore.draftKvPages);
@@ -1021,6 +1448,13 @@ void ContextCacheManager::evictRecord(RecordId id)
         += static_cast<uint64_t>(freeAfter.recurrentSnapshotSlots - freeBefore.recurrentSnapshotSlots);
     mMetrics.reclaimedPartialKvSnapshots
         += static_cast<uint64_t>(freeAfter.partialKvSnapshotSlots - freeBefore.partialKvSnapshotSlots);
+    mMetrics.reclaimedSwaKvPages += static_cast<uint64_t>(freeAfter.swaKvPages - freeBefore.swaKvPages);
+    // Checkpoint records only: one attention-only acquisition can evict many records.
+    if (record.exactCheckpointLength.has_value())
+    {
+        LOG_INFO("Context cache eviction #%llu: least recently used checkpoint at %d tokens",
+            static_cast<unsigned long long>(mMetrics.evictedRecords), *record.exactCheckpointLength);
+    }
 }
 
 void ContextCacheManager::applyEviction(EvictionPlan const& plan)

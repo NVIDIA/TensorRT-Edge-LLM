@@ -204,8 +204,8 @@ def run_v2(args, tokenizer, role) -> int:
                    "requests": requests}, open(in_p, "w"))
         env = dict(os.environ)
         if not env.get("EDGELLM_PLUGIN_PATH"):
-            _plug = Path(args.llm_inference).resolve().parents[2] \
-                / "libNvInfer_edgellm_plugin.so"
+            _plug = Path(args.llm_inference).resolve().parents[1] \
+                / "lib" / "libNvInfer_edgellm_plugin.so"
             if _plug.exists():
                 env["EDGELLM_PLUGIN_PATH"] = str(_plug)
         proc = subprocess.run(
@@ -316,8 +316,8 @@ def main() -> int:
                 # Pin the plugin to the binary's own build tree — the relative
                 # default resolves to MAIN's plugin (no d256 skip → silent
                 # dense → vacuous verdicts; 2026-08-03 incident).
-                _plug = Path(args.llm_inference).resolve().parents[2] \
-                    / "libNvInfer_edgellm_plugin.so"
+                _plug = Path(args.llm_inference).resolve().parents[1] \
+                    / "lib" / "libNvInfer_edgellm_plugin.so"
                 if _plug.exists():
                     env["EDGELLM_PLUGIN_PATH"] = str(_plug)
             proc = subprocess.run(

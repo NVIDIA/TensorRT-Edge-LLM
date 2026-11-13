@@ -1,6 +1,10 @@
 build/
 /build*/
+/codex-logs/
 engines/
+/logs/
+/models/
+/onnx/
 *.onnx
 *.onnx.data
 
@@ -19,7 +23,7 @@ data/
 data.tar
 *.csv
 *.tar.gz
-internal/
+/internal/
 *.log
 .DS_Store/
 docs/cpp_docs/

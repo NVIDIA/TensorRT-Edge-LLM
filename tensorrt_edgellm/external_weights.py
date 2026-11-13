@@ -24,14 +24,30 @@ logger = logging.getLogger(__name__)
 EXTERNAL_WEIGHT_INT4_FFN = "int4_ffn"
 EXTERNAL_WEIGHT_INT4_MOE = "int4_moe"
 EXTERNAL_WEIGHT_NVFP4_MOE = "nvfp4_moe"
+EXTERNAL_WEIGHT_Q8_0 = "q8_0"
+EXTERNAL_WEIGHT_IQ2_XXS = "iq2_xxs"
 EXTERNAL_WEIGHT_LM_HEAD = "lm_head"
 EXTERNAL_WEIGHT_ALL = "all"
 EXTERNAL_WEIGHT_KINDS = (
     EXTERNAL_WEIGHT_INT4_FFN,
     EXTERNAL_WEIGHT_INT4_MOE,
     EXTERNAL_WEIGHT_NVFP4_MOE,
+    EXTERNAL_WEIGHT_Q8_0,
+    EXTERNAL_WEIGHT_IQ2_XXS,
     EXTERNAL_WEIGHT_LM_HEAD,
 )
+
+# Packed GGUF weight inputs per plugin; lookup tables and unit scales stay in
+# the engine.
+_GGUF_WEIGHT_INPUTS = {
+    EXTERNAL_WEIGHT_Q8_0: {
+        "Q8_0LinearPlugin": (1, 2, 3)
+    },
+    EXTERNAL_WEIGHT_IQ2_XXS: {
+        "W2A16GemmPlugin": (1, 2),
+        "W2A16MoePlugin": (1, 2, 3, 4),
+    },
+}
 EXTERNAL_WEIGHT_CHOICES = (*EXTERNAL_WEIGHT_KINDS, EXTERNAL_WEIGHT_ALL)
 
 
@@ -186,6 +202,21 @@ def _find_nvfp4_moe_weight_initializers(onnx_model) -> "list[str]":
             if tensor_name in initializers and tensor_name not in external_name_set:
                 external_names.append(tensor_name)
                 external_name_set.add(tensor_name)
+    return external_names
+
+
+def _find_gguf_weight_initializers(onnx_model, kind: str) -> "list[str]":
+    """Return packed Q8_0 or IQ2_XXS plugin weight initializers."""
+    initializers = {init.name for init in onnx_model.graph.initializer}
+    inputs_by_op = _GGUF_WEIGHT_INPUTS[kind]
+    external_names: list[str] = []
+    for node in onnx_model.graph.node:
+        if node.domain != "trt_edgellm" or node.op_type not in inputs_by_op:
+            continue
+        for index in inputs_by_op[node.op_type]:
+            name = node.input[index] if index < len(node.input) else ""
+            if name in initializers and name not in external_names:
+                external_names.append(name)
     return external_names
 
 
@@ -593,6 +624,18 @@ def externalize_model_weights(
             add_external_weight_file("NVFP4 MoE plugin",
                                      "external_nvfp4_moe_weights.safetensors",
                                      names, "nvfp4_moe_weights")
+            continue
+
+        if kind in _GGUF_WEIGHT_INPUTS:
+            names = _find_gguf_weight_initializers(onnx_model, kind)
+            if not names:
+                logger.warning(
+                    "External %s weights requested, but no %s plugin "
+                    "weight initializers were found", kind, kind.upper())
+                continue
+            add_external_weight_file(f"{kind.upper()} plugin",
+                                     f"external_{kind}_weights.safetensors",
+                                     names, f"{kind}_weights")
             continue
 
         if kind == EXTERNAL_WEIGHT_LM_HEAD:

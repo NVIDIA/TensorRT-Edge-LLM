@@ -55,7 +55,7 @@ from ..gemma4.modeling_gemma4_text import (Gemma4MLP, Gemma4RMSNorm,
                                            _rotary_dim_from_rope_config,
                                            _uses_attention_k_eq_v)
 # yapf: enable
-from ..linear import is_int4_linear, make_linear
+from ..linear import make_linear, requires_qkv_concat
 from ..ops import KV_PAGE_SIZE, attention_plugin, qkv_concat
 
 __all__ = ["Eagle3DraftModel"]
@@ -125,8 +125,7 @@ class Eagle3Attention(nn.Module):
         qkv_projections = [self.q_proj, self.k_proj]
         if not self.attention_k_eq_v:
             qkv_projections.append(self.v_proj)
-        self._uses_int4_qkv = any(
-            is_int4_linear(proj) for proj in qkv_projections)
+        self._uses_qkv_concat = requires_qkv_concat(*qkv_projections)
         self.o_proj = make_linear(config, self.num_heads * self.head_dim,
                                   hidden_size)
 
@@ -179,7 +178,7 @@ class Eagle3Attention(nn.Module):
                                          self.num_kv_heads * self.head_dim)
 
         qkv = (qkv_concat(query_states, key_states, value_states)
-               if self._uses_int4_qkv else torch.cat(
+               if self._uses_qkv_concat else torch.cat(
                    [query_states, key_states, value_states], dim=-1))
         attn_output, present_key_value = attention_plugin(
             qkv,
@@ -197,7 +196,7 @@ class Eagle3Attention(nn.Module):
             attention_scale=self.attention_scale,
             enable_context_mask_selector=False,
             enable_vision_block_attention=False,
-            skip_softmax_scale_factor=0.0,
+            skip_softmax_prefill_input=0,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
             qkv_scales=[1.0, 1.0, 1.0],
@@ -226,7 +225,7 @@ class Eagle3Attention(nn.Module):
                 value_states.reshape(tokens, self.num_kv_heads,
                                      self.head_dim)).reshape(tokens, -1)
         qkv = (qkv_concat(query_states, key_states, value_states)
-               if self._uses_int4_qkv else torch.cat(
+               if self._uses_qkv_concat else torch.cat(
                    (query_states, key_states, value_states), dim=-1))
         output, present = attention_plugin(
             qkv,
@@ -244,7 +243,7 @@ class Eagle3Attention(nn.Module):
             attention_scale=self.attention_scale,
             enable_context_mask_selector=False,
             enable_vision_block_attention=False,
-            skip_softmax_scale_factor=0.0,
+            skip_softmax_prefill_input=0,
             attention_mask=m["packed_attention_mask"],
             attention_pos_id=m["attention_position_ids"],
             qkv_scales=[1.0, 1.0, 1.0],
@@ -298,6 +297,7 @@ class Eagle3DecoderLayer(nn.Module):
         super().__init__()
         self.layer_idx = layer_idx
         self.is_gemma4 = _is_gemma4_model_type(config.model_type)
+        self.norm_before_residual = config.eagle3_norm_before_residual
         self.self_attn = Eagle3Attention(config, layer_idx=layer_idx)
         self.mlp = (Gemma4MLP(config, layer_idx=layer_idx)
                     if self.is_gemma4 else MLP(config))
@@ -331,6 +331,8 @@ class Eagle3DecoderLayer(nn.Module):
         # Norm + concat: [batch, seq, 2*hidden]
         normed_hidden = self.hidden_norm(hidden_states)
         normed_embeds = self.input_layernorm(inputs_embeds)
+        if self.norm_before_residual:
+            residual = normed_hidden
         concat_hidden = torch.cat((normed_embeds, normed_hidden), dim=-1)
 
         attn_output, present_key_value = self.self_attn(
@@ -575,6 +577,9 @@ class Eagle3DraftModel(nn.Module):
                               target_hidden * config.eagle3_num_target_layers,
                               hidden_size,
                               module_name="fc")
+        self.input_norm = (RMSNorm(
+            target_hidden * config.eagle3_num_target_layers,
+            config.rms_norm_eps) if config.eagle3_norm_before_fc else None)
 
         self.layers = nn.ModuleList([
             Eagle3DecoderLayer(config, layer_idx=i)
@@ -616,6 +621,8 @@ class Eagle3DraftModel(nn.Module):
             ``(logits, hidden_states, present_key_values)``
         """
         # Fusion: project base hidden states and add draft hidden states
+        if self.input_norm is not None:
+            hidden_states_from_base = self.input_norm(hidden_states_from_base)
         hidden_states = self.fc(hidden_states_from_base)
         hidden_states = hidden_states.to(torch.float16)
         hidden_states_from_draft = hidden_states_from_draft.to(torch.float16)

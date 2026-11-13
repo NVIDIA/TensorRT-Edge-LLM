@@ -33,7 +33,7 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
-using nvinfer1::DataType;
+using trt_edgellm::DataType;
 using nvinfer1::Dims;
 
 namespace trt_edgellm
@@ -382,7 +382,7 @@ void Pi05Runtime::allocateTensors()
 
     // Sized for the widest prefix the profile admits; assemblePrefix reshapes into it.
     mInputsEmbeds = rt::Tensor({maxBatch, mConfig.maxPrefixLen, mConfig.hiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "pi05::inputsEmbeds");
+        trt_edgellm::DataType::kHALF, "pi05::inputsEmbeds");
 
     mKVCache.resize(static_cast<size_t>(numLayers));
     // Plane-major: every request's K, then every request's V.

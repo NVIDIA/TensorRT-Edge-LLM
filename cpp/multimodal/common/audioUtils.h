@@ -117,6 +117,23 @@ bool preprocessAudioForEncoder(rt::Tensor const& melSpectrogram, int32_t nWindow
 //!   Output indices: [[0, 0], [0, 1], [1, 0]]
 bool convertMaskToIndices(rt::Tensor const& paddedMask, rt::Tensor& paddedMaskIndices, cudaStream_t stream);
 
+//! Window partition shared by the dense mask and the ragged-attention descriptor: the
+//! prefix sum of the returned lengths is cu_seqlens. Empty when the geometry is degenerate.
+//!
+//! @param afterCNNLens Per-chunk after-CNN lengths
+//! @param nWindow Audio encoder n_window parameter
+//! @param nWindowInfer Audio encoder n_window_infer parameter
+//! @return Per-window token counts, summing to the encoder token count
+std::vector<int64_t> computeChunkwiseWindowLens(
+    std::vector<int64_t> const& afterCNNLens, int32_t nWindow, int32_t nWindowInfer);
+
+//! Write a window partition as the ragged-attention descriptor.
+//!
+//! @param windowLens Per-window token counts from computeChunkwiseWindowLens
+//! @param cuSeqlens Receives windowLens.size() + 1 prefix sums starting at 0
+//! @return Longest window, which sets the max_seqlen_carrier length
+int64_t fillChunkwiseCuSeqlens(std::vector<int64_t> const& windowLens, int32_t* cuSeqlens);
+
 //! Create block-diagonal attention mask matching _prepare_attention_mask + cu_seqlens logic.
 //! Merges per-chunk after-CNN lengths into larger windows using n_window_infer,
 //! then builds a block-diagonal mask where each window allows bidirectional attention.

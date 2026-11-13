@@ -73,8 +73,8 @@ void compactTensorBatch(rt::Tensor const& src, rt::Tensor const& batchMapping, r
     check::check(oldActiveBatch > 0, "Old active batch must be positive");
     check::check(newActiveBatch >= 0 && newActiveBatch <= oldActiveBatch,
         "New active batch must be non-negative and no larger than the old active batch");
-    check::check(batchMapping.getDataType() == nvinfer1::DataType::kINT32 && batchMapping.getShape().getNumDims() == 1
-            && batchMapping.getShape()[0] == oldActiveBatch,
+    check::check(batchMapping.getDataType() == trt_edgellm::DataType::kINT32
+            && batchMapping.getShape().getNumDims() == 1 && batchMapping.getShape()[0] == oldActiveBatch,
         "Batch mapping must be an INT32 vector matching oldActiveBatch");
     check::check(src.getDataType() == dst.getDataType(), "Source and destination data types must match");
 
@@ -106,32 +106,32 @@ void compactTensorBatch(rt::Tensor const& src, rt::Tensor const& batchMapping, r
     int32_t const* batchMappingPtr = batchMapping.dataPointer<int32_t>();
 
     // Get data type and dispatch to appropriate kernel
-    nvinfer1::DataType const dataType = src.getDataType();
+    trt_edgellm::DataType const dataType = src.getDataType();
 
     switch (dataType)
     {
-    case nvinfer1::DataType::kHALF:
+    case trt_edgellm::DataType::kHALF:
         compactTensorBatchKernel<half><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<half>(), batchMappingPtr,
             dst.dataPointer<half>(), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
-    case nvinfer1::DataType::kFLOAT:
+    case trt_edgellm::DataType::kFLOAT:
         compactTensorBatchKernel<float><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<float>(), batchMappingPtr,
             dst.dataPointer<float>(), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
-    case nvinfer1::DataType::kINT32:
+    case trt_edgellm::DataType::kINT32:
         compactTensorBatchKernel<int32_t><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<int32_t>(), batchMappingPtr,
             dst.dataPointer<int32_t>(), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
-    case nvinfer1::DataType::kINT64:
+    case trt_edgellm::DataType::kINT64:
         compactTensorBatchKernel<int64_t><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<int64_t>(), batchMappingPtr,
             dst.dataPointer<int64_t>(), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
-    case nvinfer1::DataType::kINT8:
+    case trt_edgellm::DataType::kINT8:
         compactTensorBatchKernel<int8_t><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<int8_t>(), batchMappingPtr,
             dst.dataPointer<int8_t>(), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
     // FP8 is 1-byte POD storage; copy it byte-wise via uint8_t.
-    case nvinfer1::DataType::kFP8:
+    case trt_edgellm::DataType::kFP8:
         compactTensorBatchKernel<uint8_t>
             <<<gridDim, blockDim, 0, stream>>>(static_cast<uint8_t const*>(src.rawPointer()), batchMappingPtr,
                 static_cast<uint8_t*>(dst.rawPointer()), oldActiveBatch, newActiveBatch, batchStrideInt);
@@ -154,8 +154,10 @@ void compactExecutionTensorBatch(rt::Tensor& tensor, rt::Tensor const& batchMapp
         "New active batch must be positive and no larger than the old active batch");
     rt::Coords const originalShape = tensor.getShape();
     check::check(originalShape.getNumDims() > 0, "Execution tensor must have at least one dimension");
-    check::check(originalShape[0] % oldActiveBatch == 0,
-        "Execution tensor leading dimension must contain equally sized sequence blocks");
+    ELLM_CHECK(originalShape[0] % oldActiveBatch == 0,
+        format::fmtstr("Execution tensor %s leading dimension must contain equally sized sequence blocks: "
+                       "shape=%s, oldActiveBatch=%d",
+            tensor.getName().c_str(), originalShape.formatString().c_str(), oldActiveBatch));
 
     int64_t const rowsPerSequence = originalShape[0] / oldActiveBatch;
     std::vector<int64_t> batchedShape;
@@ -207,9 +209,9 @@ void compactExecutionRowIndices(rt::Tensor& indices, rt::Tensor const& batchMapp
     int32_t newActiveBatch, int32_t executionRowsPerSequence, cudaStream_t stream)
 {
     check::check(indices.getDeviceType() == rt::DeviceType::kGPU, "Execution-row indices must be on GPU");
-    check::check(indices.getDataType() == nvinfer1::DataType::kINT64, "Execution-row indices must be INT64");
+    check::check(indices.getDataType() == trt_edgellm::DataType::kINT64, "Execution-row indices must be INT64");
     check::check(batchMapping.getDeviceType() == rt::DeviceType::kGPU
-            && batchMapping.getDataType() == nvinfer1::DataType::kINT32 && batchMapping.getShape().getNumDims() == 1
+            && batchMapping.getDataType() == trt_edgellm::DataType::kINT32 && batchMapping.getShape().getNumDims() == 1
             && batchMapping.getShape()[0] == oldActiveBatch,
         "Batch mapping must be a GPU INT32 vector matching oldActiveBatch");
     check::check(oldActiveBatch > 0, "Old active batch must be positive");

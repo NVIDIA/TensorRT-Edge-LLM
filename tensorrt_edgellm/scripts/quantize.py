@@ -23,7 +23,7 @@ Usage::
         --quantization nvfp4 \\
         --lm-head-quantization nvfp4
 
-    # Speculative draft quantization (Eagle3 or DFlash, auto-detected)
+    # Speculative draft quantization (EAGLE or DFlash-family, auto-detected)
     tensorrt-edgellm-quantize draft \\
         --base-model-dir /path/to/base \\
         --draft-model-dir /path/to/draft \\
@@ -44,6 +44,7 @@ import os
 
 from tensorrt_edgellm.scripts import _dependency_errors
 
+from ..config import _eagle_draft_feature_keys
 from ..quantization.datasets import (DEFAULT_AUDIO_DATASET,
                                      DEFAULT_IMAGE_DATASET,
                                      DEFAULT_TEXT_DATASET, available_datasets)
@@ -51,11 +52,13 @@ from ..quantization.datasets import (DEFAULT_AUDIO_DATASET,
 
 def _add_common_args(parser):
     parser.add_argument("--output-dir", "--output_dir", required=True)
-    parser.add_argument(
-        "--quantization",
-        default=None,
-        choices=["fp8", "int4_awq", "nvfp4", "mxfp8", "int8_sq"],
-        help="Backbone quantization method.")
+    parser.add_argument("--quantization",
+                        default=None,
+                        choices=[
+                            "fp8", "int4_awq", "nvfp4", "nvfp4_a16_gptq",
+                            "mxfp8", "int8_sq"
+                        ],
+                        help="Backbone quantization method.")
     parser.add_argument("--lm-head-quantization",
                         "--lm_head_quantization",
                         default=None,
@@ -102,6 +105,13 @@ def _add_common_args(parser):
               "_cp_entries in quantization_configs.py).  When unset CP stays "
               "at fp16."),
     )
+    parser.add_argument(
+        "--keep-last-layer-fp16",
+        "--keep_last_layer_fp16",
+        action="store_true",
+        help=("Keep the last decoder layer's o_proj and MLP unquantized, for "
+              "a last layer whose outputs exceed the FP16 range. LLMs and "
+              "DFlash-family drafts only."))
     parser.add_argument("--kv-cache-quantization",
                         "--kv_cache_quantization",
                         default=None,
@@ -122,7 +132,7 @@ def _add_common_args(parser):
         "--image_dataset",
         default=DEFAULT_IMAGE_DATASET,
         help=("Registered image calibration dataset name (used with "
-              "--visual-quantization). "
+              "--visual_quantization). "
               f"Default: {DEFAULT_IMAGE_DATASET}. Available: "
               f"{', '.join(available_datasets('image'))}."))
     parser.add_argument(
@@ -139,7 +149,7 @@ def _add_common_args(parser):
                         default=512)
 
 
-@_dependency_errors.optional_dependencies("tools")
+@_dependency_errors.optional_dependencies("quantize")
 def main(argv=None, *, prog="tensorrt-edgellm-quantize"):
     parser = argparse.ArgumentParser(
         prog=prog, description="TensorRT Edge-LLM standalone quantization")
@@ -162,6 +172,23 @@ def main(argv=None, *, prog="tensorrt-edgellm-quantize"):
         help=("Gemma4 int4_awq/nvfp4 only: force-quantize down_proj to 4-bit. "
               "Off by default -- down_proj stays fp16 to preserve accuracy."))
     llm_parser.add_argument(
+        "--token-embedding-quantization",
+        "--token_embedding_quantization",
+        default=None,
+        choices=["fp8", "nvfp4"],
+        help=("Quantize only the canonical runtime token embedding table. "
+              "FP8 uses one FP32 tensor scale; NVFP4 "
+              "uses ModelOpt block-16 E2M1 weights and E4M3 scales."),
+    )
+    llm_parser.add_argument(
+        "--ple-embedding-quantization",
+        "--ple_embedding_quantization",
+        default=None,
+        choices=["fp8"],
+        help=("Quantize the per-layer embedding table (Gemma4 PLE or "
+              "Qwen4-Exp n-gram) to per-tensor FP8 for the runtime PLE pool."),
+    )
+    llm_parser.add_argument(
         "--mtp-draft-dir",
         "--mtp_draft_dir",
         default=None,
@@ -174,7 +201,10 @@ def main(argv=None, *, prog="tensorrt-edgellm-quantize"):
     _add_common_args(llm_parser)
 
     draft_parser = sub.add_parser(
-        "draft", help="Quantize an Eagle3, DFlash, or JetSpec draft model")
+        "draft",
+        help=("Quantize an EAGLE3, EAGLE-4 or DFlash-family draft model. "
+              "EAGLE-4 drafts keep fc, the KV cache and, with a candidate "
+              "head, lm_head in FP16."))
     draft_parser.add_argument("--base-model-dir",
                               "--base_model_dir",
                               required=True)
@@ -193,6 +223,8 @@ def main(argv=None, *, prog="tensorrt-edgellm-quantize"):
             output_dir=args.output_dir,
             quantization=args.quantization,
             lm_head_quantization=args.lm_head_quantization,
+            token_embedding_quantization=args.token_embedding_quantization,
+            ple_embedding_quantization=args.ple_embedding_quantization,
             visual_quantization=args.visual_quantization,
             visual_mha_quantization=args.visual_mha_quantization,
             audio_quantization=args.audio_quantization,
@@ -206,6 +238,7 @@ def main(argv=None, *, prog="tensorrt-edgellm-quantize"):
             num_samples=args.num_samples,
             fuse_gdn_qkvzba_scales=args.fuse_gdn_qkvzba_scales,
             quantize_gemma4_down_proj=args.quantize_gemma4_down_proj,
+            keep_last_layer_fp16=args.keep_last_layer_fp16,
         )
     elif args.command == "draft":
         if _is_dflash_family_draft(args.draft_model_dir):
@@ -217,6 +250,25 @@ def main(argv=None, *, prog="tensorrt-edgellm-quantize"):
                 draft_model_dir=args.draft_model_dir,
                 output_dir=args.output_dir,
                 quantization=args.quantization or "nvfp4",
+                lm_head_quantization=args.lm_head_quantization,
+                kv_cache_quantization=args.kv_cache_quantization,
+                dtype=args.dtype,
+                device=args.device,
+                text_dataset=args.text_dataset,
+                num_samples=args.num_samples,
+                keep_last_layer_fp16=args.keep_last_layer_fp16,
+            )
+        elif args.keep_last_layer_fp16:
+            parser.error("--keep-last-layer-fp16 is supported for LLMs and "
+                         "DFlash-family drafts, not EAGLE drafts.")
+        elif _is_eagle4_draft(args.draft_model_dir):
+            from ..quantization.models.eagle4_draft import \
+                quantize_and_export_eagle4_draft
+            quantize_and_export_eagle4_draft(
+                base_model_dir=args.base_model_dir,
+                draft_model_dir=args.draft_model_dir,
+                output_dir=args.output_dir,
+                quantization=args.quantization or "fp8",
                 lm_head_quantization=args.lm_head_quantization,
                 kv_cache_quantization=args.kv_cache_quantization,
                 dtype=args.dtype,
@@ -257,6 +309,15 @@ def _is_dflash_family_draft(draft_model_dir: str) -> bool:
             for arch in (cfg.get("architectures") or [])))
     return bool(
         cfg.get("dflash_config") or cfg.get("jetspec_config") or is_dspark)
+
+
+def _is_eagle4_draft(draft_model_dir: str) -> bool:
+    """Whether the draft sets fc_norm, norm_output or a low-rank candidate head."""
+    cfg_path = os.path.join(draft_model_dir, "config.json")
+    if not os.path.isfile(cfg_path):
+        return False
+    with open(cfg_path, encoding="utf-8") as f:
+        return bool(_eagle_draft_feature_keys(json.load(f)))
 
 
 def _validate_dflash_quant_args(parser, args) -> None:

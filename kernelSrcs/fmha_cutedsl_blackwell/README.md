@@ -1,4 +1,4 @@
-# CuTe DSL FMHA Kernels (Blackwell SM100/SM101/SM110)
+# CuTe DSL FMHA Kernels (Blackwell SM100/SM101/SM103/SM110)
 
 The `fmha` group always contains the FMHA-v2 Context/ViT kernels. On SM100,
 SM101, and SM110 it also contains these optimized multi-head attention kernels
@@ -17,6 +17,10 @@ Python, CUTLASS DSL, CuPy, or Blackwell GPU is needed at CMake build time.
 |---|---|---|
 | Blackwell datacenter (B200, GB200) | SM100 / SM103 | Primary target |
 | NVIDIA Thor | SM110 | Cross-compile target (aarch64) |
+
+AOT builds receive `--target_sm` from `build_cutedsl.py`, using the same
+CLI-based architecture selection as FMHA decode. Direct Python runs should
+also pass the flag to enable the hardware reductions.
 
 ## Kernel Variants
 
@@ -71,6 +75,77 @@ layers (the latter pass the no-limit sentinel).
 
 **ViT variants** use packed variable-length separate Q/K/V tensors
 `[total_S, H, D]` with `cu_seqlens` for ragged batching, bidirectional attention.
+
+**Hardware row-max loads:** On SM110 (legacy SM101), D64 FP8 ViT and full-causal LLM
+kernels use `LDTM.STAT` to load scores and compute partial row maxima on unmasked KV tiles.
+Masked tiles use software reduction after applying their masks; STAT-enabled kernels discard
+the hardware maxima on these tiles. FP16, sliding-window, and other head-dimension
+variants also retain software reduction. SM100 and SM103 remain supported with
+software row-max reduction; this optimization is enabled only for SM110/legacy SM101.
+
+**MMA row sums:** D64 FP8 kernels with hardware row-max loads and without BLASST
+compute normalization sums with a second MMA, multiplying the stored probabilities
+by a shared-memory matrix of ones. The result occupies unused TMEM columns after
+each output tile and uses the existing MMA-to-correction synchronization.
+These sums use probabilities rounded to the PV input dtype, so outputs can differ
+from the software sum of unrounded FP32 probabilities. Other variants retain
+software row sums. Register budgets are unchanged.
+
+Learned sinks use the unrounded FP32 sum for their attention-mass factor while
+output normalization retains the MMA sum. Sink-free paged launches use a
+separate GPU specialization to avoid the additional reduction work.
+
+The d64–d128 kernels with 16-bit inputs skip the identity O rescale: the
+correction warpgroup takes a warp vote and skips the O rescale (a 128-row TMEM
+read-modify-write per KV tile) when every lane's scale is exactly 1.0. With
+skip-correction on, the carried row max makes that the common case, and
+multiplying by 1.0 is the identity, so the output is bit-identical. There is no
+switch for it; the kernel decides at compile time from the input dtype — the FP8
+variants keep the unconditional rescale because their smaller skip-correction
+threshold moves the carried max often, so the identity case is rare and the vote
+would only add overhead.
+
+`vit_fmha_d72` is built with the 5-deep K/V ring (`--kv_stage 5`) and `vit_fmha_d80`
+with the 4-deep one (`--kv_stage 4`); d64, d96 and d128 keep the default depth of 3.
+The ring depth only shows on long sequences: at 3136 tokens every FP16 variant is
+within ±1 % across all depths that fit the 227 KB smem budget (d72/d80 up to 7 stages,
+d64 up to 10, d96 up to 5); at 7056 tokens d72 gains 7 % from 3 to 4 stages and is flat
+from 4 to 7 (5 is the measured optimum at both lengths), d80 gains 5 % from 3 to 4 and
+is flat beyond, d64 is flat at every depth, and d96 gets slower with every added stage
+(+8 % at 4 and at 5 — its 24.5 KB slots push the CTA to the smem limit), so it stays
+at 3. The depth is baked into the artifact; changing it is a rebuild plus revalidation.
+
+**d72 sector alignment** (automatic for a head size whose compact pitch is not a
+32 B multiple; a no-op for the others). The padded K=80 tile is fetched as five 32 B
+TMA boxes per row. With the compact 144 B head pitch the token stride (H × 144 B) is a
+32 B multiple, but every odd head starts 16 B into an L2 sector, so each of its boxes
+straddles two sectors and the MMA warp waits on K/V. The kernel resolves that parity
+per work unit from the head index and issues the Q/K/V boxes of the misaligned heads
+from D coordinate −8: those columns are out of bounds for the descriptor (extent 72),
+so TMA zero-fills them without a fetch and every box row lands on a sector boundary.
+The tile then holds `[0 × 8 | 72 valid]` instead of `[72 valid | 0 × 8]`; Q·Kᵀ is
+mathematically identical (Q and K of one head share the shift and the zero columns
+contribute nothing — the 72 valid columns fall into different K=16 MMA phases, so the
+fp32 partial sums are grouped differently and S of a shifted head may differ from the
+unshifted layout in the last ulp; only the identity-rescale skip above is bit-identical),
+the O rescale covers the whole tile, and the correction epilogue reads O from TMEM
+column 8 for those heads. That read covers 8 columns past the 80-column accumulator,
+into the unused gap before the next O slot (checked at compile time); they land in the
+smem columns 72..79 that the TMA store drops. Buffers `[total_S, H, 72]`, TMA
+descriptors, smem layouts, the O store and the AOT wrapper are unchanged, so nothing
+outside the kernel knows about it. The O rows of the shifted heads are therefore still
+written 16 B into a sector (each 32 B store box row touches two sectors); this is
+deliberate — O is a few percent of a work unit's K/V traffic and the bulk store is off
+the critical path. Shifting the O store coordinate instead of the TMEM read would align
+the writes too, at the cost of teaching the partial-tile store about the shift; that is
+the follow-up if the write side ever shows in a profile. Correctness never depends on
+the parity guess (a wrongly shifted head is only slower); the fast path assumes
+32 B-aligned Q/K/V base pointers and an even head count.
+
+Correction-path changes must be validated with `--vit_ramp_k
+--no-enable_skip_correction` (K grows along the sequence, so the row max moves
+on most KV tiles and the rescale is a real multiply); random data leaves the
+rescale at 1.0 and cannot exercise it.
 
 ## Artifact Development
 
@@ -139,6 +214,16 @@ python3 fmha.py \
 python3 fmha.py \
   --q_shape 1,8,8,72 --k_shape 1,8,8,72 \
   --is_persistent --vit_mode
+
+# ViT at the shipped shape and the adversarial correction-path check (the rescale
+# really multiplies; random data leaves it at the identity and skips it)
+python3 fmha.py --q_shape 1,3136,16,80 --k_shape 1,3136,16,80 --is_persistent --vit_mode
+python3 fmha.py --q_shape 1,3136,16,80 --k_shape 1,3136,16,80 --is_persistent --vit_mode \
+  --vit_ramp_k --no-enable_skip_correction
+
+# d72 at the shipped configuration (5-deep K/V ring; the sector alignment is automatic)
+python3 fmha.py --q_shape 1,3136,16,72 --k_shape 1,3136,16,72 --is_persistent --vit_mode \
+  --kv_stage 5
 ```
 
 For an AArch64 (Thor) host-target export, `export_fmha_aarch64.sh` wraps the
@@ -156,14 +241,14 @@ provides the C++ interface:
   wrapper call. Loaded modules are shared and remain resident for process
   lifetime; unused variants are never loaded.
 - **Dispatch**: `canImplement(headSize, smVersion)` — returns `true` for
-  SM100/101/110 and head dim 64, 128, 256, or 512.
+  SM100/101/103/110 and head dim 64, 128, 256, or 512.
 - **LLM run**: `run(qPtr, kvPtr, oPtr, cuKVSeqLens, stream, slidingWindowSize)`
   — dispatches to the appropriate d64/d128/d256 + SWA/non-SWA variant.
 - **Paged LLM run**:
   `runPaged(qPtr, pagedKVPoolPtr, pageTable, oPtr, paddedCuKVSeqLens, ...)`
   — dispatches D64/D128/D256 and FP16/FP8 D512 variants through the common
   paged ABI. The FP16 D512 vision variants add `[B, S_q]` `blockBegin` and
-  `blockEnd` tensors: text/padding rows contain `-1/-1`, while every row in a
+  `blockEnd` tensors: text/padding rows contain `-1/-2`, while every row in a
   disjoint contiguous vision run repeats that run's inclusive bounds.
 - **ViT run**: `run(qPtr, kPtr, vPtr, oPtr, cuSeqLens, totalSeqLen, maxSeqLen, batchSize, stream)`
   — dispatches to the appropriate d64/d72/d80/d128 variant.
@@ -209,40 +294,45 @@ independent knobs:
   `skip_softmax_threshold` compiles the skip path in (the `*_skipsoftmax`
   variants in `build_cutedsl.py` pass a sentinel `1.0` for exactly this);
   `None` compiles it out, bit-identical to the dense build.
-- **runtime scale factor** — deployment never bakes a lambda: the calibrated
-  **scale factor S** is an `AttentionPlugin` attribute
-  (`skip_softmax_scale_factor`, set at ONNX export), passed through to the
-  kernel, which derives `log2(lambda_i) = log2(S) - log2(seqlen_kv_i)` PER
-  SEQUENCE (same formula as TensorRT-LLM's `threshold_scale_factor`, no
-  clamp). `S = 0` (default) dispatches the dense
-  kernel.
-
-> **DEPLOYMENT RULE — long-context only.** A sequence shorter than S runs at
-> `lambda > 1`, outside the calibrated domain, and degrades sharply: measured
-> MMLU **-10.5pts** (edge-llm, Qwen3.5-0.8B, S=8298) and **-16.3pts**
-> (official TensorRT-LLM 1.2.1, Qwen3-1.7B, S=8192, lambda ~ 10) while
-> 13k-context retrieval at `lambda = 0.6` stays intact. TensorRT-LLM ships the
-> identical formula with no guard — this is an ecosystem-wide property of the
-> S/L semantics, not an implementation defect. **If deployment traffic
-> contains requests with `L < S`, serve them with a dense engine (S = 0), or
-> pick S no larger than the shortest expected request.** Accuracy gates are
-> long-context only (RULER + LongBench); MMLU is reported as an advisory
-> short-sequence column.
+- **runtime scale table** — deployment never bakes a lambda: the calibrated
+  **scale factor S** travels in the engine `config.json` as
+  `skip_softmax_prefill_scale_table`, rows of `[seqlen_bin, S]` (a flat S is the one-row
+  table `[[0, S]]`). The runtime uploads it once to the `skip_softmax_scale`
+  plugin input; per sequence the kernel floor-looks-up S by its **actual** KV
+  length (a second `cum_seqlen_k` argument — the causal path's primary one is
+  padded to the batch's longest query) and derives
+  `log2(lambda_i) = log2(S) - log2(seqlen_kv_i)`. A sequence below the
+  first bin, or with `S >= seqlen_kv` (`lambda >= 1` would pass every tile),
+  skips nothing — the dense result to fp16 rounding, inside the skip cubin. The
+  `skip_softmax_prefill_input` AttentionPlugin attribute (set at export) only
+  marks the layers that carry the table input.
+- **dense dispatch** — the runtime binds the table at length 0 when the whole
+  prefill batch sits below the table's first skippable length, so short prompts
+  run the independently compiled dense cubin with zero skip-kernel tax.
 
 Restricted to plain causal FP16 attention (no sliding window, no FP8 input,
 no ViT/bidirectional), prefill/context path only.
 
-`calibrate_skip_softmax.py` covers the full lifecycle with two subcommands and
+`calibrate_skip_softmax.py` covers the full lifecycle with three subcommands and
 staged, verbose output:
 
 ```
-calibrate (default) ── ModelOpt official calibration ──▶ a, b, scale factor S
+calibrate (default) ── ModelOpt official calibration ──▶ a, b, per-length S tables
+      │              (no calibrate --target-sparsity: tiers 50/60/75/80 %, 75 % deploys)
       │                                                        │
-      │                          re-export ONNX with --skip-softmax-scale-factor S,
-      │                          rebuild engine (llm_build) — kernels untouched
       ▼                                                        ▼
-evaluate ── RULER + MMLU accuracy of the deployed engine ──▶ PASS/FAIL + recommendation
+price ── export --prefill-target-sparsity R + llm_build per tier ──▶ TTFT speedup, RULER,
+      │  (runs automatically after a ladder calibration)      LongBench per length
+      ▼
+evaluate ── RULER + MMLU accuracy of one deployed engine ──▶ PASS/FAIL + recommendation
 ```
+
+The one-command form: `calibrate --model-dir <HF ckpt> --max-seqlen 40960
+--bin-step 2048` calibrates every tier's table, records them in the checkpoint
+`config.json` (`skip_softmax_prefill_scale_tables`, the deploying one also as
+`skip_softmax_prefill_scale_table`), then prices the ladder at 8k / 16k / 32k / 40k.
+`tensorrt-edgellm-export` and `tensorrt-edgellm-build` need no skip flag
+afterwards; `export --prefill-target-sparsity R` switches to another tier's table.
 
 ### `calibrate` — scale factor via ModelOpt (official)
 
@@ -275,7 +365,7 @@ python kernelSrcs/fmha_cutedsl_blackwell/calibrate_skip_softmax.py calibrate \
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ a = 115.037   b = 4.6992   R^2 = 0.733   (278 points)                ┃
 # ┃ deployable scale factor S (lambda = S / context_length at runtime):  ┃
-# ┃   target  30%  S = 471.07   (... export --skip-softmax-scale-factor) ┃
+# ┃   target  30%  S = 471.07   (export --prefill-target-sparsity 0.3)   ┃
 # ┃   target  50%  S = 1205.8                                            ┃
 # ┃ illustration — lambda at L=4096:  0.115008 / 0.294372                ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
@@ -286,22 +376,122 @@ kernel's per-layer skip ratio at the same lambda can differ substantially.
 Treat the calibrated S as the ecosystem-consistent starting point and let
 `evaluate` arbitrate which target actually deploys.
 
+#### Shape advisor — mass priced against sparsity
+
+ModelOpt's calibration counts the tiles each trial lambda skips (sparsity,
+which predicts speed). The tool hooks that call
+(`FlashSkipSoftmax.calc_correction_factor_and_p`, no ModelOpt change) and, in
+the same pass, adds the exact softmax **mass** those tiles carry (which predicts
+accuracy):
+
+```
+s(λ) = |{tiles with exp(m̃ − m_run) < λ}| / N_tiles           ModelOpt: tile COUNT
+m(λ) = Σ_skipped mass(tile) / Σ_all mass(tile)                added:    tile MASS
+```
+
+Both are read at the lambda the kernel deploys per request (`S / L` from the
+deployed table, dense requests excluded; when no tier is reachable, at each
+request's own most sparse trial) and pooled per request; the mass is read at
+its tail over requests (max), not the mean. One line, `--mass-ratio` (0.3):
+
+- `m / s >= 0.3` → **off**: the skipped tiles carry their count share — flat
+  score distribution (the few full-attention layers of a hybrid). Every tile
+  is paid at full price; forcing a tier costs points for ~1.0x.
+- `m / s < 0.3` → **on**: the skipped tiles are near-zero (A-shaped scores).
+
+The report lists sparsity, mass share (tail / mean), their ratio, the verdict,
+the same per length bin, and the layers whose own ratio is flat; it is recorded
+as `skip_softmax_prefill_shape_advice` in the checkpoint `config.json` (informational —
+export/build ignore it). `--no-shape-advisor` skips the measurement (one extra
+row-tile softmax per calibration call).
+
 ### Deploying a candidate scale factor
 
 The kernel artifacts are lambda-free and built once. Deploying S touches only
-the model artifacts:
+the model artifacts. The exporter has exactly four skip-softmax flags, two per
+phase: `--skip-softmax-{prefill,decode}-scale-table <json|none>` and
+`--{prefill,decode}-target-sparsity R`. A table flag outranks every checkpoint
+key of its phase; the literal `none` (or a file holding `[]`) makes that phase
+dense; without a flag the checkpoint's `skip_softmax_<phase>_*` keys decide.
 
 ```bash
-# S becomes an AttentionPlugin node attribute in the ONNX
-python -m tensorrt_edgellm.scripts.export <quantized_ckpt> <onnx_out> \
-    --skip-softmax-scale-factor <S>
+# a flat S is the one-row table [[0, S]]; written to the exported config.json as
+# skip_softmax_prefill_scale_table
+echo '[[0, <S>]]' > prefill_table.json
+python -m tensorrt_edgellm.onnx.cli <quantized_ckpt> <onnx_out> \
+    --skip-softmax-prefill-scale-table prefill_table.json
 # rebuild the engine from it
-build/examples/llm/llm_build --onnxDir <onnx_out>/llm --engineDir <engine_dir> ...
+build/bin/llm_build --onnxDir <onnx_out>/llm --engineDir <engine_dir> ...
 ```
 
-(Alternatively persist S as a `skip_softmax_scale_factor` key in the
-checkpoint's `config.json` llm dict — the exporter reads it; the CLI flag
-overrides.)
+(A calibrated per-length table goes in the same way, a JSON list of
+`[seqlen_bin, S]` rows; `--prefill-target-sparsity R` picks tier R's table from a
+calibrated checkpoint instead.) Re-targeting a deployed engine needs no re-export:
+edit `skip_softmax_prefill_scale_table` in the engine `config.json`.
+
+### `price` — speedup and accuracy drop of every tier, per prompt length
+
+Runs after a ladder calibration (suppress with `--no-price`) or standalone on a
+calibrated checkpoint. For the dense reference (`--skip-softmax-prefill-scale-table none
+--skip-softmax-decode-scale-table none`) and every tier (`export --prefill-target-sparsity R`, which picks that tier's table) it
+exports, builds one engine sized to the longest `--lengths` entry, and measures
+per length:
+
+- **TTFT** — by default (`--ttft-source real`) `llm_inference --dumpProfile` on
+  four cnn_dailymail prompts tokenized to the length (cached under
+  `--work-dir/prompts/`; distinct article starts defeat prefix caching); the skip
+  predicate barely fires on synthetic tokens, so `--ttft-source bench`
+  (`llm_bench --mode prefill`) is kept only as the cheap dense-speed check.
+  Median of `--bench-repeats` runs.
+- **attention-kernel speedup and share** — when `nsys` is on PATH
+  (`--no-kernel-profile` to skip) one profiled run per (engine, length) sums the
+  kernels matching `--attention-kernel-regex` (both FMHA families by default):
+  `kernel_speedup` = dense / tier attention time, `attn_share` = attention /
+  all-kernel time of the dense engine. The two numbers bound what end-to-end can
+  gain: `TTFT speedup <= 1 / (1 - share + share / kernel_speedup)`.
+- **RULER** via `evaluate` (only at the dataset's 4k / 8k / 16k configurations) and
+  **LongBench** via `longbench_eval.py`, on `--accuracy-lengths` (default: every
+  length; restrict it on slow devices — LongBench at 32k is the expensive part).
+
+Binaries default to `build/bin/{llm_build,llm_bench,llm_inference}`;
+when they are missing the step is skipped with a hint. Exports, engines,
+prompts, nsys reports and finished RULER/LongBench scores land in
+`--work-dir` (default `<model-dir>-skip-softmax-price`) and are reused on a
+re-run. Results go to the
+checkpoint `config.json` (`skip_softmax_price_list`), to `--work-dir/price.json`,
+and to an HTML report (`--report`, default `--work-dir/skip_softmax_report.html`).
+
+```bash
+python kernelSrcs/fmha_cutedsl_blackwell/calibrate_skip_softmax.py price \
+    --model-dir /path/to/Qwen3-8B --lengths 8192 16384 32768 40960
+# ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+# ┃ skip-softmax price list (vs dense; accuracy delta in points, RULER @4k/8k/16k) ┃
+# ┃   tier         8192            16384            32768            40960         ┃
+# ┃   50%   1.02x R-0.003 LB+0.001  1.05x R-0.005 LB-0.002  1.09x LB-0.004  1.11x …┃
+# ┃   75%   1.04x R-0.008 LB-0.004  1.10x R-0.012 LB-0.006  1.17x LB-0.009  1.21x …┃
+# ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+# recorded skip_softmax_price_list in /path/to/Qwen3-8B/config.json
+```
+
+(Values above illustrate the layout only; `k` is the attention-kernel speedup.)
+The same dictionary is stored under `skip_softmax_price_list` in the checkpoint
+`config.json` for later inspection.
+
+### `report` — one figure per model: kernel and TTFT speedup against length
+
+```bash
+python kernelSrcs/fmha_cutedsl_blackwell/calibrate_skip_softmax.py report \
+    --price-json work/qwen3-8b/price.json work/llama-3.1-8b/price.json \
+    --out skip_softmax_report.html
+```
+
+Renders the price runs into a self-contained HTML page: per model one row with
+the attention-kernel speedup (left) and the end-to-end TTFT speedup (right)
+over prompt length on a log-2 axis, one line per tier, the deploy tier's peak
+annotated, and below it the table of TTFT, kernel speedup and RULER/LongBench
+drop per length. `price` writes the same page for its single run; `report`
+merges runs from several models or platforms (`--price-json` files or priced
+checkpoints via `--model-dir`).
 
 ### `evaluate` — RULER + MMLU accuracy verdict for the deployed engine
 
@@ -320,13 +510,13 @@ so it can gate CI). Pair with `llm_bench --mode prefill` for TTFT.
 # 1) dense baseline: save its scores (RULER + MMLU)
 python kernelSrcs/fmha_cutedsl_blackwell/calibrate_skip_softmax.py evaluate \
     --model-dir /path/to/Qwen3-1.7B \
-    --engine-dir engines/qwen3-1.7b --llm-inference build/examples/llm/llm_inference \
+    --engine-dir engines/qwen3-1.7b --llm-inference build/bin/llm_inference \
     --max-context 4096 --mmlu-samples 200 --save-results dense.json
 
 # 2) each deployed S: compare, get the verdict
 python kernelSrcs/fmha_cutedsl_blackwell/calibrate_skip_softmax.py evaluate \
     --model-dir /path/to/Qwen3-1.7B \
-    --engine-dir engines/qwen3-1.7b --llm-inference build/examples/llm/llm_inference \
+    --engine-dir engines/qwen3-1.7b --llm-inference build/bin/llm_inference \
     --max-context 4096 --mmlu-samples 200 --baseline dense.json --label "S=471"
 # ...per-task score table with baseline/delta columns...
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓

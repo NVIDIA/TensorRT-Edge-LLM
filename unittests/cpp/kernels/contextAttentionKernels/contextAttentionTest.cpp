@@ -21,8 +21,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <optional>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,7 +38,11 @@
 #include "kernels/contextAttentionKernels/utilKernels.h"
 #include "testUtils.h"
 
-using namespace nvinfer1;
+#if defined(CUTE_DSL_FMHA_BLACKWELL_ENABLED)
+#include "kernels/contextAttentionKernels/cuteDslFMHARunner.h"
+#include <cuda_fp8.h>
+#endif
+
 using namespace trt_edgellm;
 
 void TestContextAttentionAccuracy(std::vector<int32_t> const& cuSeqlens, int32_t numQHeads, int32_t numKVHeads,
@@ -231,11 +237,17 @@ size_t pagedV2PoolIndex(int32_t page, int32_t token, int32_t head, int32_t dim, 
 std::vector<float> computePagedV2Reference(std::vector<half> const& q, std::vector<half> const& k,
     std::vector<half> const& v, int32_t batchSize, int32_t seqLenQ, int32_t seqLenKCapacity,
     std::vector<int32_t> const& seqLensQ, std::vector<int32_t> const& seqLensK, int32_t numQHeads, int32_t numKVHeads,
-    int32_t headDim, float attentionScale, int32_t windowSizeLeft)
+    int32_t headDim, float attentionScale, int32_t windowSizeLeft, std::vector<float> const& attentionSinks = {},
+    std::vector<float>* sinkMassFractions = nullptr)
 {
     std::vector<float> output(static_cast<size_t>(batchSize) * seqLenQ * numQHeads * headDim);
+    if (sinkMassFractions != nullptr)
+    {
+        sinkMassFractions->resize(static_cast<size_t>(batchSize) * seqLenQ * numQHeads);
+    }
     int32_t const groupSize = numQHeads / numKVHeads;
     std::vector<float> weights(static_cast<size_t>(seqLenKCapacity));
+    std::vector<float> scores(static_cast<size_t>(seqLenKCapacity));
 
     for (int32_t batch = 0; batch < batchSize; ++batch)
     {
@@ -249,7 +261,8 @@ std::vector<float> computePagedV2Reference(std::vector<half> const& q, std::vect
             for (int32_t qHead = 0; qHead < numQHeads; ++qHead)
             {
                 int32_t const kvHead = qHead / groupSize;
-                float rowMax = -std::numeric_limits<float>::infinity();
+                float rowMax = attentionSinks.empty() ? -std::numeric_limits<float>::infinity()
+                                                      : attentionSinks[static_cast<size_t>(qHead)];
                 for (int32_t kPos = keyBegin; kPos <= keyEnd; ++kPos)
                 {
                     float score = 0.0F;
@@ -260,35 +273,43 @@ std::vector<float> computePagedV2Reference(std::vector<half> const& q, std::vect
                             = pagedV2BshdIndex(batch, kPos, kvHead, dim, seqLenKCapacity, numKVHeads, headDim);
                         score += __half2float(q[qIdx]) * __half2float(k[kIdx]);
                     }
+                    scores[static_cast<size_t>(kPos)] = score;
                     rowMax = std::max(rowMax, score * attentionScale);
                 }
 
-                float rowSum = 0.0F;
+                float rowSum
+                    = attentionSinks.empty() ? 0.0F : std::exp(attentionSinks[static_cast<size_t>(qHead)] - rowMax);
+                float attentionRowSum = 0.0F;
                 for (int32_t kPos = keyBegin; kPos <= keyEnd; ++kPos)
                 {
-                    float score = 0.0F;
-                    for (int32_t dim = 0; dim < headDim; ++dim)
-                    {
-                        size_t const qIdx = pagedV2BshdIndex(batch, qPos, qHead, dim, seqLenQ, numQHeads, headDim);
-                        size_t const kIdx
-                            = pagedV2BshdIndex(batch, kPos, kvHead, dim, seqLenKCapacity, numKVHeads, headDim);
-                        score += __half2float(q[qIdx]) * __half2float(k[kIdx]);
-                    }
-                    float const weight = std::exp(score * attentionScale - rowMax);
+                    float const weight = std::exp(scores[static_cast<size_t>(kPos)] * attentionScale - rowMax);
                     weights[static_cast<size_t>(kPos)] = weight;
                     rowSum += weight;
+                    attentionRowSum += weight;
+                }
+                if (sinkMassFractions != nullptr)
+                {
+                    (*sinkMassFractions)[(static_cast<size_t>(batch) * seqLenQ + qPos) * numQHeads + qHead]
+                        = attentionRowSum / rowSum;
                 }
 
-                for (int32_t dim = 0; dim < headDim; ++dim)
+                // kPos is the outer loop so V rows are read contiguously; each output element accumulates over kPos
+                // in increasing order.
+                std::vector<float> values(static_cast<size_t>(headDim), 0.0F);
+                for (int32_t kPos = keyBegin; kPos <= keyEnd; ++kPos)
                 {
-                    float value = 0.0F;
-                    for (int32_t kPos = keyBegin; kPos <= keyEnd; ++kPos)
+                    for (int32_t dim = 0; dim < headDim; ++dim)
                     {
                         size_t const vIdx
                             = pagedV2BshdIndex(batch, kPos, kvHead, dim, seqLenKCapacity, numKVHeads, headDim);
-                        value += weights[static_cast<size_t>(kPos)] * __half2float(v[vIdx]) / rowSum;
+                        values[static_cast<size_t>(dim)]
+                            += weights[static_cast<size_t>(kPos)] * __half2float(v[vIdx]) / rowSum;
                     }
-                    output[pagedV2BshdIndex(batch, qPos, qHead, dim, seqLenQ, numQHeads, headDim)] = value;
+                }
+                for (int32_t dim = 0; dim < headDim; ++dim)
+                {
+                    output[pagedV2BshdIndex(batch, qPos, qHead, dim, seqLenQ, numQHeads, headDim)]
+                        = values[static_cast<size_t>(dim)];
                 }
             }
         }
@@ -296,10 +317,18 @@ std::vector<float> computePagedV2Reference(std::vector<half> const& q, std::vect
     return output;
 }
 
+//! @param skipSoftmaxLambda > 0 binds the one-row skip-softmax scale table {0, S = lambda * max seqLenK} (0 binds
+//! none: the runner hands the kernel the dense {0, 0} row). K on the causal diagonal is then set to 8x the Q of each KV
+//! group's first head so the diagonal tile fixes every row's running max and earlier tiles fall far below lambda: the
+//! skip path fires while the skipped mass stays negligible.
+//! @param skipSoftmaxExpectDense the bound table must reproduce the dense result on unstructured data (dense
+//! tolerance): the predicate never trips (tiny lambda) or the in-kernel guard forces dense (S >= seqlen_kv).
 void TestContextAttentionPagedAccuracy(int32_t headDim, int32_t numQHeads, int32_t numKVHeads, int32_t seqLenQ,
     int32_t seqLenKCapacity, int32_t windowSizeLeft = INT_MAX,
     std::optional<float> requestedAttentionScale = std::nullopt, std::vector<int32_t> seqLensQ = {},
-    std::vector<int32_t> seqLensK = {}, bool nanPoison = false, bool packedQ = false)
+    std::vector<int32_t> seqLensK = {}, bool nanPoison = false, bool packedQ = false, float skipSoftmaxLambda = 0.0F,
+    bool skipSoftmaxExpectDense = false, bool optimizedBlackwell = false, bool fp8Input = false,
+    std::vector<float> const& attentionSinks = {})
 {
     int32_t constexpr kTOKENS_PER_PAGE = 128;
     int32_t const batchSize = seqLensQ.empty() ? (seqLensK.empty() ? 1 : static_cast<int32_t>(seqLensK.size()))
@@ -347,6 +376,54 @@ void TestContextAttentionPagedAccuracy(int32_t headDim, int32_t numQHeads, int32
     uniformFloatInitialization(qHost, -1.0F, 1.0F);
     uniformFloatInitialization(kHost, -1.0F, 1.0F);
     uniformFloatInitialization(vHost, -1.0F, 1.0F);
+    [[maybe_unused]] float const qScale = fp8Input ? 0.25F : 1.0F;
+    [[maybe_unused]] float const kScale = fp8Input ? 0.5F : 1.0F;
+    [[maybe_unused]] float const vScale = fp8Input ? 2.0F : 1.0F;
+    if (!attentionSinks.empty())
+    {
+        uniformFloatInitialization(vHost, 0.5F, 1.5F);
+    }
+#if defined(CUTE_DSL_FMHA_BLACKWELL_ENABLED)
+    if (fp8Input)
+    {
+        auto roundInput = [](std::vector<half>& values, float scale) {
+            for (auto& value : values)
+            {
+                value = __float2half(static_cast<float>(__nv_fp8_e4m3(__half2float(value) / scale)) * scale);
+            }
+        };
+        roundInput(qHost, qScale);
+        roundInput(kHost, kScale);
+        roundInput(vHost, vScale);
+    }
+#endif
+    bool const enableSkipSoftmax = skipSoftmaxLambda > 0.0F;
+    bool const skipSoftmaxApproximate = enableSkipSoftmax && !skipSoftmaxExpectDense;
+    if (skipSoftmaxApproximate)
+    {
+        int32_t const groupSize = numQHeads / numKVHeads;
+        for (int32_t batch = 0; batch < batchSize; ++batch)
+        {
+            int32_t const offset = seqLensK[static_cast<size_t>(batch)] - seqLensQ[static_cast<size_t>(batch)];
+            for (int32_t seq = 0; seq < seqLensQ[static_cast<size_t>(batch)]; ++seq)
+            {
+                for (int32_t kvHead = 0; kvHead < numKVHeads; ++kvHead)
+                {
+                    for (int32_t dim = 0; dim < headDim; ++dim)
+                    {
+                        size_t const qIdx
+                            = pagedV2BshdIndex(batch, seq, kvHead * groupSize, dim, seqLenQ, numQHeads, headDim);
+                        size_t const kIdx
+                            = pagedV2BshdIndex(batch, seq + offset, kvHead, dim, seqLenKCapacity, numKVHeads, headDim);
+                        kHost[kIdx] = __float2half(8.0F * __half2float(qHost[qIdx]));
+                    }
+                }
+            }
+        }
+    }
+    std::vector<int32_t> const skipSoftmaxScaleTable{0,
+        static_cast<int32_t>(
+            skipSoftmaxLambda * static_cast<float>(*std::max_element(seqLensK.begin(), seqLensK.end())))};
 
     // Padding embeddings can overflow FP16 and turn NaN from the first layer on, so the padded
     // rows/keys must not reach a valid row even as NaN/Inf.
@@ -438,14 +515,17 @@ void TestContextAttentionPagedAccuracy(int32_t headDim, int32_t numQHeads, int32
     }
     rt::Tensor qTensor(
         packedQ ? rt::Coords{totalQSeqLen, numQHeads, headDim} : rt::Coords{batchSize, seqLenQ, numQHeads, headDim},
-        rt::DeviceType::kGPU, DataType::kHALF);
-    rt::Tensor poolTensor({numFlatPages, kTOKENS_PER_PAGE, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+        rt::DeviceType::kGPU, fp8Input ? DataType::kFP8 : DataType::kHALF);
+    rt::Tensor poolTensor({numFlatPages, kTOKENS_PER_PAGE, numKVHeads, headDim}, rt::DeviceType::kGPU,
+        fp8Input ? DataType::kFP8 : DataType::kHALF);
     rt::Tensor pageListTensor({batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, DataType::kINT32);
     rt::Tensor outputPaged(
         packedQ ? rt::Coords{totalQSeqLen, numQHeads, headDim} : rt::Coords{batchSize, seqLenQ, numQHeads, headDim},
         rt::DeviceType::kGPU, DataType::kHALF);
     rt::Tensor cuQSeqLensTensor({batchSize + 1}, rt::DeviceType::kGPU, DataType::kINT32);
     rt::Tensor cuKVSeqLensTensor({batchSize + 1}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor skipSoftmaxScaleTableTensor({2}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor attentionSinksTensor({numQHeads}, rt::DeviceType::kGPU, DataType::kFLOAT);
     std::vector<int32_t> cuQSeqLens(static_cast<size_t>(batchSize + 1), 0);
     std::vector<int32_t> cuKVSeqLens(static_cast<size_t>(batchSize + 1), 0);
     for (int32_t batch = 0; batch < batchSize; ++batch)
@@ -455,38 +535,128 @@ void TestContextAttentionPagedAccuracy(int32_t headDim, int32_t numQHeads, int32
         cuKVSeqLens[static_cast<size_t>(batch + 1)]
             = cuKVSeqLens[static_cast<size_t>(batch)] + seqLensK[static_cast<size_t>(batch)];
     }
-    copyHostToDevice(qTensor, packedQ ? packedQHost : qHost);
-    copyHostToDevice(poolTensor, poolHost);
+#if defined(CUTE_DSL_FMHA_BLACKWELL_ENABLED)
+    if (fp8Input)
+    {
+        auto toFp8 = [](std::vector<half> const& values, float scale) {
+            std::vector<__nv_fp8_e4m3> quantized(values.size());
+            std::transform(values.begin(), values.end(), quantized.begin(),
+                [scale](half value) { return __nv_fp8_e4m3(__half2float(value) / scale); });
+            return quantized;
+        };
+        copyHostToDevice(qTensor, toFp8(packedQHost, qScale));
+        std::vector<__nv_fp8_e4m3> quantizedPool(poolHost.size());
+        size_t const planeSize = poolHost.size() / 2;
+        for (size_t i = 0; i < poolHost.size(); ++i)
+        {
+            quantizedPool[i] = __nv_fp8_e4m3(__half2float(poolHost[i]) / (i < planeSize ? kScale : vScale));
+        }
+        copyHostToDevice(poolTensor, quantizedPool);
+    }
+    else
+#endif
+    {
+        copyHostToDevice(qTensor, packedQ ? packedQHost : qHost);
+        copyHostToDevice(poolTensor, poolHost);
+    }
+    rt::Tensor sinkTensor;
+    if (optimizedBlackwell)
+    {
+        sinkTensor = rt::Tensor({numQHeads}, rt::DeviceType::kGPU, DataType::kFLOAT);
+        if (!attentionSinks.empty())
+        {
+            copyHostToDevice(sinkTensor, attentionSinks);
+        }
+    }
     copyHostToDevice(pageListTensor, pageList);
     copyHostToDevice(cuQSeqLensTensor, cuQSeqLens);
     copyHostToDevice(cuKVSeqLensTensor, cuKVSeqLens);
+    copyHostToDevice(skipSoftmaxScaleTableTensor, skipSoftmaxScaleTable);
+    if (!attentionSinks.empty())
+    {
+        copyHostToDevice(attentionSinksTensor, attentionSinks);
+    }
 
     CuteDslFMHAV2Runner runner(numQHeads, numKVHeads, headDim, batchSize, seqLenQ, capacity);
-    if (packedQ)
+    if (enableSkipSoftmax)
     {
 #if CUDA_VERSION < 12000
-        GTEST_SKIP() << "FMHA-v2 paged-ragged kernels require CUDA 12+ CuTe DSL artifacts.";
+        GTEST_SKIP() << "The CUDA 11 FMHA-v2 artifact has no skip-softmax path.";
 #endif
     }
     cudaStream_t stream = nullptr;
-    auto const runPaged = [&]() {
-        return packedQ
-            ? runner.runPagedRagged(qTensor.rawPointer(), poolTensor.rawPointer(),
-                  pageListTensor.dataPointer<int32_t>(), outputPaged.rawPointer(),
-                  cuQSeqLensTensor.dataPointer<int32_t>(), cuKVSeqLensTensor.dataPointer<int32_t>(), totalQSeqLen,
-                  maxQSeqLen, numFlatPages, maxPagesPerSeq, kTOKENS_PER_PAGE, stream, attentionScale, windowSizeLeft)
-            : runner.runPaged(qTensor.rawPointer(), poolTensor.rawPointer(), pageListTensor.dataPointer<int32_t>(),
-                  outputPaged.rawPointer(), cuQSeqLensTensor.dataPointer<int32_t>(),
-                  cuKVSeqLensTensor.dataPointer<int32_t>(), numFlatPages, maxPagesPerSeq, kTOKENS_PER_PAGE, stream,
-                  attentionScale, windowSizeLeft);
+    if (optimizedBlackwell)
+    {
+        CUDA_CHECK(cudaStreamCreate(&stream));
+    }
+    Defer const streamGuard([stream]() {
+        if (stream != nullptr)
+        {
+            CUDA_CHECK(cudaStreamDestroy(stream));
+        }
+    });
+    auto const runPaged = [&](float const* sinkPtr) {
+#if defined(CUTE_DSL_FMHA_BLACKWELL_ENABLED)
+        if (optimizedBlackwell)
+        {
+            CuteDslFMHARunner blackwell(numQHeads, numKVHeads, headDim, batchSize, seqLenQ, capacity);
+            if (!blackwell.preflightPagedRagged(stream, windowSizeLeft, fp8Input ? DataType::kFP8 : DataType::kHALF))
+            {
+                return false;
+            }
+            return blackwell.runPagedRagged(qTensor.rawPointer(), poolTensor.rawPointer(),
+                pageListTensor.dataPointer<int32_t>(), outputPaged.rawPointer(),
+                cuQSeqLensTensor.dataPointer<int32_t>(), cuKVSeqLensTensor.dataPointer<int32_t>(), totalQSeqLen,
+                maxQSeqLen, numFlatPages, maxPagesPerSeq, kTOKENS_PER_PAGE, stream, attentionScale, windowSizeLeft,
+                fp8Input ? DataType::kFP8 : DataType::kHALF, qScale, kScale, vScale, sinkPtr);
+        }
+#endif
+        if (packedQ)
+        {
+            CuteDslFMHAV2Runner::PagedRaggedParams params{};
+            params.qPtr = qTensor.rawPointer();
+            params.pagedKVPoolPtr = poolTensor.rawPointer();
+            params.kvCachePageList = pageListTensor.dataPointer<int32_t>();
+            params.oPtr = outputPaged.rawPointer();
+            params.cuQSeqLens = cuQSeqLensTensor.dataPointer<int32_t>();
+            params.cuKVSeqLens = cuKVSeqLensTensor.dataPointer<int32_t>();
+            params.totalQSeqLen = totalQSeqLen;
+            params.maxQSeqLen = maxQSeqLen;
+            params.numFlatPages = numFlatPages;
+            params.maxPagesPerSeq = maxPagesPerSeq;
+            params.tokensPerPage = kTOKENS_PER_PAGE;
+            params.stream = stream;
+            params.attentionScale = attentionScale;
+            params.slidingWindowSize = windowSizeLeft;
+            params.attentionSinks = attentionSinks.empty() ? nullptr : attentionSinksTensor.dataPointer<float>();
+            return runner.runPagedRagged(params);
+        }
+        return runner.runPaged(qTensor.rawPointer(), poolTensor.rawPointer(), pageListTensor.dataPointer<int32_t>(),
+            outputPaged.rawPointer(), cuQSeqLensTensor.dataPointer<int32_t>(), cuKVSeqLensTensor.dataPointer<int32_t>(),
+            numFlatPages, maxPagesPerSeq, kTOKENS_PER_PAGE, stream, attentionScale, windowSizeLeft,
+            enableSkipSoftmax ? skipSoftmaxScaleTableTensor.dataPointer<int32_t>() : nullptr,
+            enableSkipSoftmax ? 2 : 0);
     };
-    ASSERT_TRUE(runPaged());
+    std::vector<half> fp8Baseline;
+    if (optimizedBlackwell && fp8Input)
+    {
+        if (attentionSinks.empty())
+        {
+            copyHostToDevice(sinkTensor, std::vector<float>(numQHeads, -std::numeric_limits<float>::infinity()));
+        }
+        ASSERT_TRUE(runPaged(attentionSinks.empty() ? sinkTensor.dataPointer<float>() : nullptr));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        fp8Baseline = copyDeviceToHost<half>(outputPaged);
+    }
+    ASSERT_TRUE(runPaged(optimizedBlackwell && !attentionSinks.empty() ? sinkTensor.dataPointer<float>() : nullptr));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     CUDA_CHECK(cudaGetLastError());
 
     auto const actual = copyDeviceToHost<half>(outputPaged);
+    std::vector<float> sinkMassFractions;
     auto const expected = computePagedV2Reference(qHost, kHost, vHost, batchSize, seqLenQ, seqLenKCapacity, seqLensQ,
-        seqLensK, numQHeads, numKVHeads, headDim, attentionScale, windowSizeLeft);
+        seqLensK, numQHeads, numKVHeads, headDim, attentionScale, windowSizeLeft, attentionSinks,
+        optimizedBlackwell && fp8Input && !attentionSinks.empty() ? &sinkMassFractions : nullptr);
     int64_t closeWithin1e3 = 0;
     int64_t validElements = 0;
     for (int32_t batch = 0; batch < batchSize; ++batch)
@@ -504,12 +674,35 @@ void TestContextAttentionPagedAccuracy(int32_t headDim, int32_t numQHeads, int32
                             + dim
                         : idx;
                     float const actualValue = __half2float(actual[actualIdx]);
-                    ASSERT_TRUE(isclose(actualValue, expected[idx], 1e-2F, 1e-2F))
-                        << "Paged FMHA-v2 mismatch at index=" << idx << " batch=" << batch << " seq=" << seq
-                        << " D=" << headDim << " SqCapacity=" << seqLenQ
-                        << " actualSq=" << seqLensQ[static_cast<size_t>(batch)] << " SkCapacity=" << seqLenKCapacity
-                        << " actualSk=" << seqLensK[static_cast<size_t>(batch)] << " windowLeft=" << windowSizeLeft
-                        << " expected=" << expected[idx] << " actual=" << actualValue;
+                    // Skip-softmax is approximate by design; its gate is the 0.1 max-abs the calibrated
+                    // lambda is certified against, not the dense 1e-2 tolerance.
+                    float expectedValue = expected[idx];
+                    bool close;
+                    if (optimizedBlackwell && fp8Input)
+                    {
+                        if (attentionSinks.empty())
+                        {
+                            expectedValue = __half2float(fp8Baseline[actualIdx]);
+                            close = std::memcmp(&actual[actualIdx], &fp8Baseline[actualIdx], sizeof(half)) == 0;
+                        }
+                        else
+                        {
+                            expectedValue = __half2float(fp8Baseline[actualIdx]) * sinkMassFractions[idx / headDim];
+                            close = isclose(actualValue, expectedValue, 1e-3F, 1e-3F);
+                        }
+                    }
+                    else
+                    {
+                        close = skipSoftmaxApproximate ? std::fabs(actualValue - expectedValue) < 0.1F
+                                                       : isclose(actualValue, expectedValue, 1e-2F, 1e-2F);
+                    }
+                    ASSERT_TRUE(close) << "Paged FMHA mismatch at index=" << idx << " batch=" << batch << " seq=" << seq
+                                       << " D=" << headDim << " SqCapacity=" << seqLenQ
+                                       << " actualSq=" << seqLensQ[static_cast<size_t>(batch)]
+                                       << " SkCapacity=" << seqLenKCapacity
+                                       << " actualSk=" << seqLensK[static_cast<size_t>(batch)]
+                                       << " windowLeft=" << windowSizeLeft << " skipLambda=" << skipSoftmaxLambda
+                                       << " expected=" << expectedValue << " actual=" << actualValue;
                     closeWithin1e3 += isclose(actualValue, expected[idx], 1e-3F, 1e-3F);
                     ASSERT_FALSE(std::isnan(actualValue));
                     ASSERT_FALSE(std::isinf(actualValue));
@@ -518,7 +711,10 @@ void TestContextAttentionPagedAccuracy(int32_t headDim, int32_t numQHeads, int32
             }
         }
     }
-    EXPECT_GT(static_cast<float>(closeWithin1e3) / static_cast<float>(validElements), 0.9F);
+    if (!skipSoftmaxApproximate && !fp8Input)
+    {
+        EXPECT_GT(static_cast<float>(closeWithin1e3) / static_cast<float>(validElements), 0.9F);
+    }
 }
 
 void assertPagedCapability(int32_t headDim, CuteDslFMHAV2MaskType maskType)
@@ -542,7 +738,7 @@ TEST(ContextAttentionTest, fmhaV2CapabilityContract)
     return;
 #endif
 
-    std::vector<int32_t> const supportedSMs{80, 86, 87, 89, 90, 100, 101, 110, 120, 121};
+    std::vector<int32_t> const supportedSMs{80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121};
     std::vector<int32_t> const supportedHeadDims{64, 128, 256, 512};
 
     for (int32_t const smVersion : supportedSMs)
@@ -553,15 +749,10 @@ TEST(ContextAttentionTest, fmhaV2CapabilityContract)
                 8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
             EXPECT_TRUE(CuteDslFMHAV2Runner::canImplementPaged(
                 8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kSLIDING_CAUSAL));
-#if defined(CUTE_DSL_FMHA_ENABLED) && CUDA_VERSION >= 12000
             EXPECT_TRUE(CuteDslFMHAV2Runner::canImplementPagedRagged(
                 8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
             EXPECT_TRUE(CuteDslFMHAV2Runner::canImplementPagedRagged(
                 8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kSLIDING_CAUSAL));
-#else
-            EXPECT_FALSE(CuteDslFMHAV2Runner::canImplementPagedRagged(
-                8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
-#endif
             EXPECT_TRUE(CuteDslFMHAV2Runner::canImplement(
                 8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
             EXPECT_TRUE(CuteDslFMHAV2Runner::canImplement(
@@ -570,8 +761,6 @@ TEST(ContextAttentionTest, fmhaV2CapabilityContract)
 
         EXPECT_TRUE(
             CuteDslFMHAV2Runner::canImplement(8, 2, 256, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kPADDING));
-        // The vision-block overlay is a dense contract at both shipped head dims; the paged
-        // kernels never carry it.
         for (int32_t const visionHeadDim : {256, 512})
         {
             EXPECT_TRUE(CuteDslFMHAV2Runner::canImplement(
@@ -586,7 +775,7 @@ TEST(ContextAttentionTest, fmhaV2CapabilityContract)
     }
 
     EXPECT_FALSE(
-        CuteDslFMHAV2Runner::canImplementPaged(8, 2, 64, 103, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
+        CuteDslFMHAV2Runner::canImplementPaged(8, 2, 64, 102, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
     EXPECT_FALSE(
         CuteDslFMHAV2Runner::canImplementPaged(8, 2, 72, 121, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
     EXPECT_FALSE(
@@ -657,6 +846,525 @@ TEST(ContextAttentionTest, pagedD128RaggedSlidingScrambledPoisonedPageTables)
         128, 8, 2, 33, 129, 63, std::nullopt, std::vector<int32_t>{17, 33}, std::vector<int32_t>{65, 129});
 }
 
+#if defined(CUTE_DSL_FMHA_BLACKWELL_ENABLED)
+class ContextAttentionBlackwellTest : public ::testing::TestWithParam<bool>
+{
+};
+
+TEST_P(ContextAttentionBlackwellTest, learnedSinks)
+{
+    // Given ragged paged GQA and per-head FP32 sinks, when causal or sliding prefill runs for every head dimension,
+    // then FP16 matches the mathematical reference; FP8 matches its no-sink output times the independent attention
+    // mass fraction, and absent sinks match the zero-mass sink path bitwise.
+    if (!CuteDslFMHARunner::canImplement(64, getSMVersion()))
+    {
+        GTEST_SKIP() << "Requires optimized Blackwell SM100/101/103/110.";
+    }
+    bool const fp8 = GetParam();
+    for (int32_t const headDim : {64, 128, 256, 512})
+    {
+        for (int32_t const window : {INT_MAX, 173})
+        {
+            for (bool const hasSinks : {false, true})
+            {
+                SCOPED_TRACE(::testing::Message()
+                    << "D=" << headDim << " fp8=" << fp8 << " window=" << window << " sinks=" << hasSinks);
+                std::vector<float> const sinks = hasSinks
+                    ? std::vector<float>{80.0F, -80.0F, 0.0F, 4.0F, 6.0F, -4.0F, 8.0F, 2.0F}
+                    : std::vector<float>{};
+                TestContextAttentionPagedAccuracy(headDim, 8, 2, 129, 515, window, 0.37F, {1, 63, 129}, {1, 319, 515},
+                    false, true, 0.0F, false, true, fp8, sinks);
+            }
+        }
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(Precision, ContextAttentionBlackwellTest, ::testing::Bool(),
+    [](testing::TestParamInfo<bool> const& info) { return info.param ? "FP8" : "FP16"; });
+#endif
+
+#if defined(CUTE_DSL_FMHA_BLACKWELL_ENABLED)
+TEST(ContextAttentionTest, blackwellPackedVisionBlockCapability)
+{
+    // Given the optimized backend's SM, dtype and head-dimension combinations,
+    // When vision-block support is queried,
+    // Then only FP16 D512 on SM100/101/103/110 is accepted, and unsupported variants fail preflight.
+    for (int32_t const sm : {100, 101, 103, 110, 120, 121})
+    {
+        for (int32_t const headDim : {64, 128, 256, 512})
+        {
+            for (DataType const dtype : {DataType::kHALF, DataType::kFP8})
+            {
+                SCOPED_TRACE(::testing::Message() << "SM=" << sm << " D=" << headDim << " dtype=" << int(dtype));
+                bool const supported = sm != 120 && sm != 121 && headDim == 512 && dtype == DataType::kHALF;
+                EXPECT_EQ(CuteDslFMHARunner::canImplementPagedRagged(
+                              4, 2, headDim, sm, dtype, CuteDslFMHAMaskType::kVISION_BLOCK),
+                    supported);
+            }
+        }
+    }
+    for (int32_t const headDim : {64, 128, 256, 512})
+    {
+        for (DataType const dtype : {DataType::kHALF, DataType::kFP8})
+        {
+            if (headDim != 512 || dtype != DataType::kHALF)
+            {
+                CuteDslFMHARunner runner(4, 2, headDim, 1, 1, 128);
+                EXPECT_FALSE(runner.preflightPagedRagged(nullptr, INT_MAX, dtype, true));
+            }
+        }
+    }
+}
+
+TEST(ContextAttentionTest, blackwellPackedVisionBlocks)
+{
+    // Given unequal packed sequences, cached history, multiple image blocks and tile/page tails,
+    // When FP16 D512 causal or sliding vision-block attention runs, including all-text batches,
+    // Then output matches padded attention and the exact visible-key mean, without cross-image/sequence leakage.
+    if (!CuteDslFMHARunner::canImplement(512, getSMVersion()))
+    {
+        GTEST_SKIP() << "Requires optimized Blackwell SM100/101/103/110.";
+    }
+    constexpr int32_t kHEAD_DIM = 512;
+    constexpr int32_t kQ_HEADS = 4;
+    constexpr int32_t kKV_HEADS = 2;
+    constexpr int32_t kTOKENS_PER_PAGE = 128;
+    constexpr int32_t kPAGES_PER_SEQ = 3;
+    std::vector<int32_t> const qLengths{65, 259, 137, 17};
+    std::vector<int32_t> const kvLengths{97, 291, 137, 49};
+    int32_t const batchSize = static_cast<int32_t>(qLengths.size());
+    int32_t const numPages = batchSize * 2 * kPAGES_PER_SEQ;
+    std::vector<int32_t> cuQ{0}, cuKV{0};
+    for (int32_t batch = 0; batch < batchSize; ++batch)
+    {
+        cuQ.push_back(cuQ.back() + qLengths[batch]);
+        cuKV.push_back(cuKV.back() + kvLengths[batch]);
+    }
+    int32_t const totalQ = cuQ.back();
+    int32_t const maxQ = *std::max_element(qLengths.begin(), qLengths.end());
+    std::vector<half> const qHost(static_cast<size_t>(totalQ) * kQ_HEADS * kHEAD_DIM, __float2half(0.0F));
+    std::vector<half> poolHost(
+        static_cast<size_t>(numPages) * kTOKENS_PER_PAGE * kKV_HEADS * kHEAD_DIM, __float2half(112.0F));
+    std::vector<int32_t> pageList(static_cast<size_t>(batchSize) * 2 * kPAGES_PER_SEQ);
+    for (int32_t batch = 0; batch < batchSize; ++batch)
+    {
+        for (int32_t plane = 0; plane < 2; ++plane)
+        {
+            for (int32_t page = 0; page < kPAGES_PER_SEQ; ++page)
+            {
+                pageList[(batch * 2 + plane) * kPAGES_PER_SEQ + page]
+                    = (batch * 2 + plane) * kPAGES_PER_SEQ + kPAGES_PER_SEQ - page - 1;
+            }
+        }
+        for (int32_t key = 0; key < kvLengths[batch]; ++key)
+        {
+            for (int32_t head = 0; head < kKV_HEADS; ++head)
+            {
+                for (int32_t dim = 0; dim < kHEAD_DIM; ++dim)
+                {
+                    int32_t const kPage = pageList[batch * 2 * kPAGES_PER_SEQ + key / kTOKENS_PER_PAGE];
+                    int32_t const vPage = pageList[(batch * 2 + 1) * kPAGES_PER_SEQ + key / kTOKENS_PER_PAGE];
+                    poolHost[pagedV2PoolIndex(kPage, key % kTOKENS_PER_PAGE, head, dim, kKV_HEADS, kHEAD_DIM)]
+                        = __float2half(0.0F);
+                    poolHost[pagedV2PoolIndex(vPage, key % kTOKENS_PER_PAGE, head, dim, kKV_HEADS, kHEAD_DIM)]
+                        = __float2half((batch + 1) * 2.0F + key / 512.0F);
+                }
+            }
+        }
+    }
+    rt::Tensor q({totalQ, kQ_HEADS, kHEAD_DIM}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor pool({numPages, kTOKENS_PER_PAGE, kKV_HEADS, kHEAD_DIM}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor pages({batchSize, 2, kPAGES_PER_SEQ}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor output({totalQ, kQ_HEADS, kHEAD_DIM}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor paddedOutput({totalQ, kQ_HEADS, kHEAD_DIM}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor qPrefix({batchSize + 1}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor kvPrefix({batchSize + 1}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor blockBegin({totalQ}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor blockEnd({totalQ}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice(q, qHost);
+    copyHostToDevice(pool, poolHost);
+    copyHostToDevice(pages, pageList);
+    copyHostToDevice(qPrefix, cuQ);
+    copyHostToDevice(kvPrefix, cuKV);
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    Defer const streamGuard([stream]() { CUDA_CHECK(cudaStreamDestroy(stream)); });
+    float const scale = 1.0F / std::sqrt(static_cast<float>(kHEAD_DIM));
+    CuteDslFMHARunner runner(kQ_HEADS, kKV_HEADS, kHEAD_DIM, batchSize, maxQ, kPAGES_PER_SEQ * kTOKENS_PER_PAGE);
+    for (bool const withImages : {true, false})
+    {
+        std::vector<int32_t> begins(totalQ, -1), ends(totalQ, -1);
+        if (withImages)
+        {
+            for (int32_t batch = 1; batch < batchSize; ++batch)
+            {
+                int32_t const history = kvLengths[batch] - qLengths[batch];
+                for (auto const& range :
+                    {std::pair<int32_t, int32_t>{history + 3, std::min(history + 21, kvLengths[batch] - 1)},
+                        std::pair<int32_t, int32_t>{std::max(history + 35, 120), kvLengths[batch] - 1}})
+                {
+                    for (int32_t position = range.first; position <= range.second; ++position)
+                    {
+                        begins[cuQ[batch] + position - history] = range.first;
+                        ends[cuQ[batch] + position - history] = range.second;
+                    }
+                }
+            }
+        }
+        copyHostToDevice(blockBegin, begins);
+        copyHostToDevice(blockEnd, ends);
+        for (int32_t const window : {INT_MAX, 31})
+        {
+            SCOPED_TRACE(::testing::Message() << "images=" << withImages << " window=" << window);
+            ASSERT_TRUE(runner.preflightPagedRagged(stream, window, DataType::kHALF, true)
+                && runner.runPagedRagged(q.rawPointer(), pool.rawPointer(), pages.dataPointer<int32_t>(),
+                    output.rawPointer(), qPrefix.dataPointer<int32_t>(), kvPrefix.dataPointer<int32_t>(), totalQ, maxQ,
+                    numPages, kPAGES_PER_SEQ, kTOKENS_PER_PAGE, stream, scale, window, DataType::kHALF, 1.0F, 1.0F,
+                    1.0F, nullptr, blockBegin.dataPointer<int32_t>(), blockEnd.dataPointer<int32_t>()));
+            for (int32_t batch = 0; batch < batchSize; ++batch)
+            {
+                rt::Tensor lengths({2}, rt::DeviceType::kGPU, DataType::kINT32);
+                copyHostToDevice(lengths, std::vector<int32_t>{0, kvLengths[batch]});
+                CuteDslFMHARunner padded(
+                    kQ_HEADS, kKV_HEADS, kHEAD_DIM, 1, qLengths[batch], kPAGES_PER_SEQ * kTOKENS_PER_PAGE);
+                size_t const offset = static_cast<size_t>(cuQ[batch]) * kQ_HEADS * kHEAD_DIM;
+                ASSERT_TRUE(padded.runPaged(q.dataPointer<half>() + offset, pool.rawPointer(),
+                    pages.dataPointer<int32_t>() + batch * 2 * kPAGES_PER_SEQ,
+                    paddedOutput.dataPointer<half>() + offset, lengths.dataPointer<int32_t>(), numPages, kPAGES_PER_SEQ,
+                    kTOKENS_PER_PAGE, DataType::kHALF, stream, scale, window, false, 1.0F, 1.0F, 1.0F, true, nullptr, 0,
+                    nullptr, blockBegin.dataPointer<int32_t>() + cuQ[batch],
+                    blockEnd.dataPointer<int32_t>() + cuQ[batch]));
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+            }
+            auto const actual = copyDeviceToHost<half>(output);
+            auto const reference = copyDeviceToHost<half>(paddedOutput);
+            float maxPaddedError = 0.0F;
+            float maxMeanError = 0.0F;
+            for (int32_t batch = 0; batch < batchSize; ++batch)
+            {
+                for (int32_t row = 0; row < qLengths[batch]; ++row)
+                {
+                    int32_t const index = cuQ[batch] + row;
+                    int32_t const position = kvLengths[batch] - qLengths[batch] + row;
+                    float sum = 0.0F;
+                    int32_t count = 0;
+                    // Zero Q/K makes each visible key equiprobable, independently of either GPU mask path.
+                    for (int32_t key = 0; key < kvLengths[batch]; ++key)
+                    {
+                        bool const causal = key <= position && (window == INT_MAX || key >= position - window);
+                        bool const sameImage = begins[index] >= 0 && key >= begins[index] && key <= ends[index];
+                        if (causal || sameImage)
+                        {
+                            sum += (batch + 1) * 2.0F + key / 512.0F;
+                            ++count;
+                        }
+                    }
+                    for (int32_t col = 0; col < kQ_HEADS * kHEAD_DIM; ++col)
+                    {
+                        size_t const element = static_cast<size_t>(index) * kQ_HEADS * kHEAD_DIM + col;
+                        float const value = __half2float(actual[element]);
+                        float const paddedError = std::fabs(value - __half2float(reference[element]));
+                        float const meanError = std::fabs(value - sum / count);
+                        maxPaddedError = std::isfinite(paddedError) ? std::max(maxPaddedError, paddedError)
+                                                                    : std::numeric_limits<float>::infinity();
+                        maxMeanError = std::isfinite(meanError) ? std::max(maxMeanError, meanError)
+                                                                : std::numeric_limits<float>::infinity();
+                    }
+                }
+            }
+            EXPECT_LE(maxPaddedError, 0.01F);
+            EXPECT_LE(maxMeanError, 0.01F);
+        }
+    }
+}
+#endif
+
+namespace
+{
+
+void testRaggedVisionBlocks(int32_t headDim, int32_t window, bool nonzeroQK = false)
+{
+    int32_t constexpr kSEED = 42;
+    int32_t constexpr kHEADS = 4;
+    int32_t constexpr kKV_HEADS = 2;
+    int32_t constexpr kKV_PLANES = 2;
+    int32_t constexpr kPAGE = 128;
+    int32_t constexpr kPAGES_PER_SEQ = 3;
+    int32_t constexpr kBATCH = 4;
+    int32_t constexpr kFLAT_PAGES = kKV_PLANES * kBATCH * kPAGES_PER_SEQ;
+#if !defined(CUTE_DSL_FMHA_ENABLED)
+    GTEST_SKIP() << "CuTe DSL FMHA is disabled.";
+#else
+    int32_t smVersion = getSMVersion();
+    applyThorSMRenumberWAR(smVersion);
+    if (!CuteDslFMHAV2Runner::canImplementPagedRagged(
+            kHEADS, kKV_HEADS, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kVISION_BLOCK))
+    {
+        GTEST_SKIP() << "Ragged vision-block FMHA-v2 is unavailable for D=" << headDim << ", SM=" << smVersion;
+    }
+#endif
+    std::vector<int32_t> const qLengths{145, 67, 41, 97};
+    std::vector<int32_t> const kvLengths{273, 195, 41, 163};
+    std::vector<int32_t> cuQ{0}, cuKV{0}, packedBegin, packedEnd;
+    std::vector<half> packedQ, expectedPadded;
+    std::vector<float> expectedReference;
+    std::vector<int32_t> pages(kBATCH * kKV_PLANES * kPAGES_PER_SEQ);
+    std::vector<half> pool(static_cast<size_t>(kFLAT_PAGES) * kPAGE * kKV_HEADS * headDim,
+        __float2half(std::numeric_limits<float>::quiet_NaN()));
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    Defer const streamGuard([stream]() { CUDA_CHECK(cudaStreamDestroy(stream)); });
+    for (int32_t batch = 0; batch < kBATCH; ++batch)
+    {
+        int32_t const length = kvLengths.at(batch);
+        int32_t const prefix = length - qLengths.at(batch);
+        cuQ.push_back(cuQ.back() + qLengths.at(batch));
+        cuKV.push_back(cuKV.back() + length);
+        std::vector<int32_t> begin(length, -1), end(length, -2);
+        if (batch != 2)
+        {
+            for (auto const& block : {std::pair{7, 139}, std::pair{151, 270}})
+            {
+                for (int32_t row = block.first; row <= std::min(block.second, length - 1); ++row)
+                {
+                    begin.at(row) = block.first;
+                    end.at(row) = std::min(block.second, length - 1);
+                }
+            }
+        }
+        std::vector<half> q(static_cast<size_t>(length) * kHEADS * headDim, __float2half(0.0F));
+        std::vector<half> k(static_cast<size_t>(length) * kKV_HEADS * headDim, __float2half(0.0F));
+        std::vector<half> v(k.size());
+        if (nonzeroQK)
+        {
+            std::mt19937 generator(kSEED + batch);
+            std::uniform_real_distribution<float> distribution(-1.0F, 1.0F);
+            auto const randomHalf = [&]() { return __float2half(distribution(generator)); };
+            std::generate(q.begin(), q.end(), randomHalf);
+            std::generate(k.begin(), k.end(), randomHalf);
+            std::generate(v.begin(), v.end(), randomHalf);
+        }
+        else
+        {
+            for (int32_t row = 0; row < length; ++row)
+            {
+                for (int32_t head = 0; head < kKV_HEADS; ++head)
+                {
+                    for (int32_t dim = 0; dim < headDim; ++dim)
+                    {
+                        size_t const index = (static_cast<size_t>(row) * kKV_HEADS + head) * headDim + dim;
+                        v.at(index) = __float2half(
+                            batch * 0.5F + head * 0.125F + static_cast<float>((row * (dim % 7 + 1)) % 281) / 281.0F);
+                    }
+                }
+            }
+        }
+        for (int32_t plane = 0; plane < kKV_PLANES; ++plane)
+        {
+            for (int32_t page = 0; page < kPAGES_PER_SEQ; ++page)
+            {
+                int32_t const physical = plane * kBATCH * kPAGES_PER_SEQ + (kBATCH - 1 - batch) * kPAGES_PER_SEQ
+                    + (kPAGES_PER_SEQ - 1 - page);
+                pages.at((batch * kKV_PLANES + plane) * kPAGES_PER_SEQ + page) = physical;
+                for (int32_t row = page * kPAGE; row < std::min((page + 1) * kPAGE, length); ++row)
+                {
+                    auto const& source = plane == 0 ? k : v;
+                    size_t const sourceOffset = static_cast<size_t>(row) * kKV_HEADS * headDim;
+                    size_t const targetOffset = pagedV2PoolIndex(physical, row % kPAGE, 0, 0, kKV_HEADS, headDim);
+                    std::copy_n(source.begin() + sourceOffset, kKV_HEADS * headDim, pool.begin() + targetOffset);
+                }
+            }
+        }
+        size_t const start = static_cast<size_t>(prefix) * kHEADS * headDim;
+        packedQ.insert(packedQ.end(), q.begin() + start, q.end());
+        if (!nonzeroQK)
+        {
+            rt::Tensor qDense({1, length, kHEADS, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+            rt::Tensor kDense({1, length, kKV_HEADS, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+            rt::Tensor vDense({1, length, kKV_HEADS, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+            rt::Tensor output({1, length, kHEADS, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+            rt::Tensor cuDense({2}, rt::DeviceType::kGPU, DataType::kINT32);
+            rt::Tensor beginDense({1, length}, rt::DeviceType::kGPU, DataType::kINT32);
+            rt::Tensor endDense({1, length}, rt::DeviceType::kGPU, DataType::kINT32);
+            copyHostToDevice(qDense, q);
+            copyHostToDevice(kDense, k);
+            copyHostToDevice(vDense, v);
+            copyHostToDevice(cuDense, std::vector<int32_t>{0, length});
+            copyHostToDevice(beginDense, begin);
+            copyHostToDevice(endDense, end);
+            CuteDslFMHAV2Runner padded(kHEADS, kKV_HEADS, headDim, 1, length, length);
+            ASSERT_TRUE(padded.runVisionBlock(qDense.rawPointer(), kDense.rawPointer(), vDense.rawPointer(),
+                output.rawPointer(), cuDense.dataPointer<int32_t>(), beginDense.dataPointer<int32_t>(),
+                endDense.dataPointer<int32_t>(), stream, 1.0F / std::sqrt(static_cast<float>(headDim)),
+                window == INT_MAX ? -1 : window));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            auto const paddedResult = copyDeviceToHost<half>(output);
+            expectedPadded.insert(expectedPadded.end(), paddedResult.begin() + start, paddedResult.end());
+        }
+        packedBegin.insert(packedBegin.end(), begin.begin() + prefix, begin.end());
+        packedEnd.insert(packedEnd.end(), end.begin() + prefix, end.end());
+        float const attentionScale = 1.0F / std::sqrt(static_cast<float>(headDim));
+        std::vector<float> weights(length);
+        for (int32_t row = prefix; row < length; ++row)
+        {
+            for (int32_t head = 0; head < kHEADS; ++head)
+            {
+                float maximum = -std::numeric_limits<float>::infinity();
+                for (int32_t key = 0; key < length; ++key)
+                {
+                    bool const causal = key <= row && (window == INT_MAX || row - key <= window);
+                    bool const sameImage = begin.at(row) >= 0 && key >= begin.at(row) && key <= end.at(row);
+                    float score = -std::numeric_limits<float>::infinity();
+                    if (causal || sameImage)
+                    {
+                        score = 0.0F;
+                        if (nonzeroQK)
+                        {
+                            for (int32_t dim = 0; dim < headDim; ++dim)
+                            {
+                                size_t const qIndex = (static_cast<size_t>(row) * kHEADS + head) * headDim + dim;
+                                size_t const kIndex
+                                    = (static_cast<size_t>(key) * kKV_HEADS + head / (kHEADS / kKV_HEADS)) * headDim
+                                    + dim;
+                                score += __half2float(q.at(qIndex)) * __half2float(k.at(kIndex));
+                            }
+                            score *= attentionScale;
+                        }
+                    }
+                    weights.at(key) = score;
+                    maximum = std::max(maximum, score);
+                }
+                float denominator = 0.0F;
+                for (float& weight : weights)
+                {
+                    weight = std::exp(weight - maximum);
+                    denominator += weight;
+                }
+                for (int32_t dim = 0; dim < headDim; ++dim)
+                {
+                    float sum = 0.0F;
+                    for (int32_t key = 0; key < length; ++key)
+                    {
+                        size_t const vIndex
+                            = (static_cast<size_t>(key) * kKV_HEADS + head / (kHEADS / kKV_HEADS)) * headDim + dim;
+                        sum += weights.at(key) * __half2float(v.at(vIndex));
+                    }
+                    expectedReference.push_back(sum / denominator);
+                }
+            }
+        }
+    }
+    int32_t const total = cuQ.back();
+    rt::Tensor q({total, kHEADS, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor output({total, kHEADS, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor kv({kFLAT_PAGES, kPAGE, kKV_HEADS, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor pageTable({kBATCH, kKV_PLANES, kPAGES_PER_SEQ}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor qOffsets({kBATCH + 1}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor kvOffsets({kBATCH + 1}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor begin({total}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor end({total}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice(q, packedQ);
+    copyHostToDevice(kv, pool);
+    copyHostToDevice(pageTable, pages);
+    copyHostToDevice(qOffsets, cuQ);
+    copyHostToDevice(kvOffsets, cuKV);
+    copyHostToDevice(begin, packedBegin);
+    copyHostToDevice(end, packedEnd);
+    CuteDslFMHAV2Runner runner(kHEADS, kKV_HEADS, headDim, kBATCH, 145, kPAGES_PER_SEQ * kPAGE);
+    ASSERT_TRUE(runner.preflightPagedRagged(stream, window, true));
+    CuteDslFMHAV2Runner::PagedRaggedParams params{};
+    params.qPtr = q.rawPointer();
+    params.pagedKVPoolPtr = kv.rawPointer();
+    params.kvCachePageList = pageTable.dataPointer<int32_t>();
+    params.oPtr = output.rawPointer();
+    params.cuQSeqLens = qOffsets.dataPointer<int32_t>();
+    params.cuKVSeqLens = kvOffsets.dataPointer<int32_t>();
+    params.totalQSeqLen = total;
+    params.maxQSeqLen = 145;
+    params.numFlatPages = kFLAT_PAGES;
+    params.maxPagesPerSeq = kPAGES_PER_SEQ;
+    params.tokensPerPage = kPAGE;
+    params.stream = stream;
+    params.attentionScale = 1.0F / std::sqrt(static_cast<float>(headDim));
+    params.slidingWindowSize = window;
+    params.bidirectionalBlockBegin = begin.dataPointer<int32_t>();
+    params.bidirectionalBlockEnd = end.dataPointer<int32_t>();
+    ASSERT_TRUE(runner.runPagedRagged(params));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    auto const actual = copyDeviceToHost<half>(output);
+    float maxAbsError = 0.0F;
+    for (size_t i = 0; i < actual.size(); ++i)
+    {
+        if (!nonzeroQK)
+        {
+            ASSERT_NEAR(__half2float(actual.at(i)), __half2float(expectedPadded.at(i)), 3e-3F) << "index=" << i;
+        }
+        maxAbsError = std::max(maxAbsError, std::abs(__half2float(actual.at(i)) - expectedReference.at(i)));
+        ASSERT_NEAR(__half2float(actual.at(i)), expectedReference.at(i), 3e-3F) << "index=" << i;
+    }
+    if (nonzeroQK)
+    {
+        std::cout << "Ragged vision nonuniform softmax: D=" << headDim << " window=" << window
+                  << " max_abs_error=" << maxAbsError << std::endl;
+    }
+}
+
+} // namespace
+
+TEST(ContextAttentionTest, pagedPackedRaggedVisionCapabilities)
+{
+    // Given vision attention configurations, when support is queried, then only shipped FP16 D256/D512
+    // variants with supported SMs and integral GQA groups are accepted.
+    for (int32_t const sm : {75, 80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121})
+    {
+        for (int32_t const headDim : {64, 128, 256, 512})
+        {
+            for (auto const dtype : {DataType::kHALF, DataType::kBF16, DataType::kFP8})
+            {
+                for (int32_t const qHeads : {0, 3, 8})
+                {
+                    bool supported = false;
+#if defined(CUTE_DSL_FMHA_ENABLED)
+                    supported
+                        = sm != 75 && (headDim == 256 || headDim == 512) && dtype == DataType::kHALF && qHeads == 8;
+#endif
+                    EXPECT_EQ(CuteDslFMHAV2Runner::canImplementPagedRagged(
+                                  qHeads, 2, headDim, sm, dtype, CuteDslFMHAV2MaskType::kVISION_BLOCK),
+                        supported)
+                        << "SM=" << sm << " D=" << headDim << " Hq=" << qHeads;
+                }
+            }
+        }
+    }
+}
+
+TEST(ContextAttentionTest, pagedPackedRaggedVisionBlocks)
+{
+    // Given heterogeneous text/image sequences with cached prefixes and multiple images crossing tiles/pages,
+    // when packed paged vision attention runs, then each output matches padded attention and the exact mask mean.
+    for (int32_t const headDim : {256, 512})
+    {
+        for (int32_t const window : {15, INT_MAX})
+        {
+            testRaggedVisionBlocks(headDim, window);
+        }
+    }
+}
+
+TEST(ContextAttentionTest, pagedPackedRaggedVisionNonuniformSoftmax)
+{
+    // Given deterministic nonzero Q/K/V with heterogeneous cached prefixes and vision blocks crossing tiles/pages,
+    // when packed paged attention runs, then its nonuniform softmax output matches an independent FP32 reference.
+    for (int32_t const headDim : {256, 512})
+    {
+        for (int32_t const window : {15, INT_MAX})
+        {
+            SCOPED_TRACE(::testing::Message() << "D=" << headDim << " window=" << window);
+            testRaggedVisionBlocks(headDim, window, true);
+        }
+    }
+}
+
 TEST(ContextAttentionTest, pagedPackedRaggedCold)
 {
     TestContextAttentionPagedAccuracy(
@@ -697,6 +1405,63 @@ TEST(ContextAttentionTest, pagedPackedRaggedD512)
 {
     TestContextAttentionPagedAccuracy(
         512, 4, 1, 17, 129, INT_MAX, std::nullopt, std::vector<int32_t>{17}, std::vector<int32_t>{17}, false, true);
+}
+
+TEST(ContextAttentionTest, pagedPackedRaggedAttentionSinks)
+{
+    // Given packed ragged FP16 Q with heterogeneous lengths, GQA paged KV and per-head sink logits,
+    // When causal and sliding kernels process multi-page tails,
+    // Then every output matches FP32 softmax with one sink denominator term per query/head and no sink value.
+    std::vector<float> const attentionSinks{-20.0F, -3.0F, -0.125F, 0.0F, 0.25F, 3.0F, 20.0F, 1.5F};
+    for (int32_t const headDim : {64, 128, 256, 512})
+    {
+        TestContextAttentionPagedAccuracy(headDim, 8, 2, 129, 257, INT_MAX, std::nullopt, {1, 65, 129}, {129, 193, 257},
+            false, true, 0.0F, false, false, false, attentionSinks);
+        TestContextAttentionPagedAccuracy(headDim, 8, 2, 129, 257, 63, std::nullopt, {1, 65, 129}, {129, 193, 257},
+            false, true, 0.0F, false, false, false, attentionSinks);
+    }
+}
+
+// Skip-softmax paged FMHA-v2: every supported head dim, GQA, ragged lengths (per-sequence lambda = S / seqlen_kv)
+// and a chunked-prefill offset. Sequences span several KV tiles so tiles after the diagonal actually skip. The
+// non-hot GQA heads see random scores, where a skipped tile may legitimately carry up to Bc * lambda of the row's
+// max weight, so lambda stays small enough to keep that inside the 0.1 gate.
+TEST(ContextAttentionTest, pagedAllHeadDimsSkipSoftmax)
+{
+    float constexpr kLambda = 0.001F;
+    TestContextAttentionPagedAccuracy(64, 8, 4, 768, 768, INT_MAX, std::nullopt, {}, {}, false, false, kLambda);
+    TestContextAttentionPagedAccuracy(128, 8, 2, 768, 768, INT_MAX, std::nullopt, {}, {}, false, false, kLambda);
+    TestContextAttentionPagedAccuracy(128, 8, 2, 300, 1100, INT_MAX, std::nullopt, std::vector<int32_t>{300, 200},
+        std::vector<int32_t>{1100, 700}, false, false, kLambda);
+    TestContextAttentionPagedAccuracy(256, 8, 2, 768, 768, INT_MAX, std::nullopt, {}, {}, false, false, kLambda);
+    TestContextAttentionPagedAccuracy(512, 4, 1, 768, 768, INT_MAX, std::nullopt, {}, {}, false, false, kLambda);
+}
+
+// A tiny S never trips the predicate: with the table bound the kernel must reproduce the dense result on
+// unstructured data (dense tolerance), covering the vote/no-skip path.
+TEST(ContextAttentionTest, pagedSkipSoftmaxNeverFiresMatchesDense)
+{
+    for (int32_t const headDim : {64, 128, 256, 512})
+    {
+        SCOPED_TRACE(::testing::Message() << "D=" << headDim);
+        TestContextAttentionPagedAccuracy(headDim, 8, 2, 65, 257, INT_MAX, std::nullopt, {}, {}, false, false, 1e-6F,
+            /*skipSoftmaxExpectDense=*/true);
+    }
+}
+
+// S >= seqlen_kv (lambda >= 1 would pass every tile): the in-kernel guard forces the threshold to -inf, so the
+// kernel reproduces the dense result although the table is bound. Covers S == L and S > L — the same guard that
+// runs unbound batches dense via the {0, 0} row.
+TEST(ContextAttentionTest, pagedSkipSoftmaxGuardMatchesDense)
+{
+    for (int32_t const headDim : {64, 128, 256, 512})
+    {
+        SCOPED_TRACE(::testing::Message() << "D=" << headDim);
+        TestContextAttentionPagedAccuracy(
+            headDim, 8, 2, 65, 257, INT_MAX, std::nullopt, {}, {}, false, false, 1.0F, /*skipSoftmaxExpectDense=*/true);
+    }
+    TestContextAttentionPagedAccuracy(
+        128, 8, 2, 65, 257, INT_MAX, std::nullopt, {}, {}, false, false, 2.0F, /*skipSoftmaxExpectDense=*/true);
 }
 
 TEST(ContextAttentionTest, pagedAllHeadDimsSliding)

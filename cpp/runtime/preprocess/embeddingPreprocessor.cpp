@@ -32,7 +32,7 @@ namespace rt
 EmbeddingPreprocessor::EmbeddingPreprocessor(EmbeddingData const& embedding, LLMEngineConfig const& config)
     : mEmbedding(embedding)
     , mConfig(config)
-    , mOwnedIndices(Coords{config.maxPhysicalTokens}, DeviceType::kGPU, nvinfer1::DataType::kINT32,
+    , mOwnedIndices(Coords{config.maxPhysicalTokens}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
           "EmbeddingPreprocessor::ownedMultimodalIndices")
 {
 }
@@ -60,12 +60,14 @@ void EmbeddingPreprocessor::embed(Tensor const& tokenIds, OptionalInputTensor vi
             mIndicesPtr = &mOwnedIndices;
         }
 
-        kernel::embeddingLookup(tokenIds, mEmbedding.table, mEmbedding.scalesAsOptional(), io.inputsEmbeds, stream,
-            std::optional{std::ref(*mIndicesPtr)}, imageTokenOpt, visionEmbeds, audioTokenOpt, audioEmbeds);
+        kernel::embeddingLookup(tokenIds, mEmbedding.table, mEmbedding.scalesAsOptional(), mEmbedding.descriptor,
+            io.inputsEmbeds, stream, std::optional{std::ref(*mIndicesPtr)}, imageTokenOpt, visionEmbeds, audioTokenOpt,
+            audioEmbeds);
     }
     else
     {
-        kernel::embeddingLookup(tokenIds, mEmbedding.table, mEmbedding.scalesAsOptional(), io.inputsEmbeds, stream);
+        kernel::embeddingLookup(
+            tokenIds, mEmbedding.table, mEmbedding.scalesAsOptional(), mEmbedding.descriptor, io.inputsEmbeds, stream);
     }
 }
 
@@ -117,17 +119,19 @@ void EmbeddingPreprocessor::prepareDeepstack(
         return;
     }
 
-    // Text-only request on a VLM engine: zero the deepstack slots so the engine reads known-zero bytes.
+    // Text-only request on a VLM engine: zero the deepstack slots so the engine reads known-zero bytes. Only the step's
+    // rows are bound; the clear is never skipped, as they may hold an earlier media step's features.
     LOG_DEBUG("Deepstack features configured but not available for this text-only request, using zero tensors.");
     auto const inputShape = tokenIds.getShape();
     int64_t const activeBatchSize = inputShape[0];
     int64_t const seqLen = inputShape[1];
     for (int32_t idx = 0; idx < mConfig.numDeepstackFeatures; ++idx)
     {
-        check::check(
-            io.deepstackEmbeds[idx].reshape({activeBatchSize, seqLen, mConfig.hiddenSize}), "Tensor reshape failed");
-        CUDA_CHECK(cudaMemsetAsync(
-            io.deepstackEmbeds[idx].rawPointer(), 0, io.deepstackEmbeds[idx].getMemoryCapacity(), stream));
+        Tensor& deepstack = io.deepstackEmbeds[idx];
+        check::check(deepstack.reshape({activeBatchSize, seqLen, mConfig.hiddenSize}), "Tensor reshape failed");
+        size_t const stepBytes
+            = static_cast<size_t>(deepstack.getShape().volume()) * utils::getTypeSize(deepstack.getDataType());
+        CUDA_CHECK(cudaMemsetAsync(deepstack.rawPointer(), 0, stepBytes, stream));
     }
 }
 

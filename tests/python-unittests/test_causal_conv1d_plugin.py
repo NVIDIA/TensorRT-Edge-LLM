@@ -29,11 +29,15 @@ Run:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import pytest
 from test_plugin_base import (DEPENDENCIES_AVAILABLE, IMPORT_ERROR,
-                              RAGGED_CASES, PluginRunner, assert_close,
-                              pf_int32, poison_padding)
+                              RAGGED_CASES, PluginRunner,
+                              PluginUnsupportedError, _device_sm, assert_close,
+                              assert_compact_workspace,
+                              assert_execute_rejected, pf_int32,
+                              poison_padding)
 
 if DEPENDENCIES_AVAILABLE:
     import tensorrt as trt
@@ -106,52 +110,69 @@ class ConvConfig:
     max_batch: int = 4
     max_seq: int = 64
     max_state_rows: int = 8
+    dilation: int = 1
+    # Columns of history the conv state holds. Mamba/GDN use `width`; the dilated
+    # HuggingFace/vLLM convention is the tight `(width - 1) * dilation`.
+    state_len: Optional[int] = None
+
+    @property
+    def window(self) -> int:
+        return self.width if self.state_len is None else self.state_len
 
 
 class ConvRunner:
     """Build and run the token-major ragged causal-conv ABI."""
 
-    def __init__(self, cfg: ConvConfig, *, use_mtp=False, use_ddtree=False):
+    def __init__(self,
+                 cfg: ConvConfig,
+                 *,
+                 use_mtp=False,
+                 use_ddtree=False,
+                 expect_unsupported=False):
         self.cfg = cfg
         self.use_mtp = use_mtp
         self.use_ddtree = use_ddtree
+        self.expect_unsupported = expect_unsupported
         self.runner = PluginRunner()
         self._build()
 
     def _build(self):
         c = self.cfg
         dim, w, mb, ms = c.dim, c.width, c.max_batch, c.max_seq
+        sl = c.window
         F16, I32 = trt.float16, trt.int32
         input_specs = [
             ("x", F16, (-1, dim)),
             ("weight", F16, (dim, 1, w)),
             ("bias", F16, (dim, )),
-            ("conv_state", F16, (-1, dim, w)),
+            ("conv_state", F16, (-1, dim, sl)),
             ("query_lengths", I32, (-1, )),
             ("query_start_offsets", I32, (-1, )),
             ("state_indices", I32, (-1, )),
             ("execution_phase_marker", I32, (-1, )),
             ("context_sequence_count_carrier", I32, (-1, )),
         ]
-        if self.use_ddtree:
+        if self.use_mtp or self.use_ddtree:
             input_specs += [("tree_parent_ids", I32, (-1, )),
-                            ("tree_depths", I32, (-1, ))]
+                            ("tree_depths", I32, (-1, )),
+                            ("spec_verify_layout", I32, (-1, ))]
         profiles = {
             "x": ((1, dim), (min(16, mb * ms), dim), (mb * ms, dim)),
             "weight": ((dim, 1, w), (dim, 1, w), (dim, 1, w)),
             "bias": ((dim, ), (dim, ), (dim, )),
             "conv_state":
-            ((1, dim, w), (mb, dim, w), (c.max_state_rows, dim, w)),
+            ((1, dim, sl), (mb, dim, sl), (c.max_state_rows, dim, sl)),
             "query_lengths": ((1, ), (mb, ), (mb, )),
             "query_start_offsets": ((2, ), (mb + 1, ), (mb + 1, )),
             "state_indices": ((1, ), (mb, ), (mb, )),
             "execution_phase_marker": ((1, ), (1, ), (8, )),
             "context_sequence_count_carrier": ((0, ), (mb, ), (mb, )),
         }
-        if self.use_ddtree:
+        if self.use_mtp or self.use_ddtree:
             profiles["tree_parent_ids"] = ((1, ), (min(16, mb * ms), ),
                                            (mb * ms, ))
             profiles["tree_depths"] = profiles["tree_parent_ids"]
+            profiles["spec_verify_layout"] = ((0, ), (1, ), (2, ))
         outputs = ["output", "conv_state_out"]
         if self.use_mtp or self.use_ddtree:
             outputs.append("intermediate_states")
@@ -162,13 +183,14 @@ class ConvRunner:
             plugin_version="1",
             plugin_fields=[
                 pf_int32("stride", 1),
-                pf_int32("padding", w - 1),  # causal left pad
-                pf_int32("dilation", 1),
+                pf_int32("padding", (w - 1) * c.dilation),  # causal left pad
+                pf_int32("dilation", c.dilation),
                 pf_int32("groups", dim),
-                pf_int32("use_mtp", int(self.use_mtp)),
-                pf_int32("use_ddtree", int(self.use_ddtree)),
+                pf_int32("use_spec_verify_state",
+                         int(self.use_mtp or self.use_ddtree)),
             ],
             profiles=profiles,
+            expect_unsupported=self.expect_unsupported,
         )
 
     def run(self,
@@ -181,7 +203,9 @@ class ConvRunner:
             phase,
             state_indices=None,
             tree_parent_ids=None,
-            tree_depths=None):
+            tree_depths=None,
+            layout=None,
+            cuda_graph=False):
         batch, seq, dim = x.shape
         if state_indices is None:
             state_indices = torch.arange(batch, dtype=torch.int32, device=DEV)
@@ -219,20 +243,109 @@ class ConvRunner:
         if self.use_mtp or self.use_ddtree:
             intermediate = torch.empty(batch * seq,
                                        dim,
-                                       self.cfg.width,
+                                       self.cfg.window,
                                        dtype=torch.float16,
                                        device=DEV)
             bindings["intermediate_states"] = intermediate
-        if self.use_ddtree:
+        if self.use_mtp or self.use_ddtree:
+            if tree_parent_ids is None:
+                tree_parent_ids = (
+                    torch.arange(seq, dtype=torch.int32, device=DEV) -
+                    1).repeat(batch)
+                tree_depths = torch.arange(seq, dtype=torch.int32,
+                                           device=DEV).repeat(batch)
+            extent = (
+                2 if self.use_ddtree else 1) if layout is None else layout
+            extent = extent if phase == 5 else 0
+            bindings["spec_verify_layout"] = torch.empty(max(1, extent),
+                                                         dtype=torch.int32,
+                                                         device=DEV)
             bindings["tree_parent_ids"] = tree_parent_ids.reshape(-1)
             bindings["tree_depths"] = tree_depths.reshape(-1)
         input_shapes = None
         if phase not in (1, 2):
             input_shapes = {"context_sequence_count_carrier": (0, )}
-        self.runner.execute(bindings, input_shapes=input_shapes)
+        if self.use_mtp or self.use_ddtree:
+            input_shapes = dict(input_shapes or {},
+                                spec_verify_layout=(extent, ))
+        if cuda_graph:
+            original_state = state_pool.clone()
+            self.runner.execute(bindings, input_shapes=input_shapes)
+            state_pool.copy_(original_state)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                self.runner.execute(bindings,
+                                    input_shapes=input_shapes,
+                                    synchronize=False)
+            graph.replay()
+            torch.cuda.current_stream().synchronize()
+        else:
+            self.runner.execute(bindings, input_shapes=input_shapes)
         return (output.reshape(batch, seq,
                                dim), state_pool, None if intermediate is None
-                else intermediate.reshape(batch, seq, dim, self.cfg.width))
+                else intermediate.reshape(batch, seq, dim, self.cfg.window))
+
+    def run_tokens(self, x, weight, bias, state_pool, query_lengths,
+                   state_indices, phase, num_prefill):
+        """Execute one step over an unpadded token run [T, dim] against a
+        resident state pool (updated in place); returns the output [T, dim].
+        """
+        q_len = torch.tensor(query_lengths, dtype=torch.int32, device=DEV)
+        offsets = torch.zeros(len(query_lengths) + 1,
+                              dtype=torch.int32,
+                              device=DEV)
+        offsets[1:] = torch.cumsum(q_len, 0)
+        output = torch.empty_like(x)
+        bindings = {
+            "x":
+            x,
+            "weight":
+            weight,
+            "bias":
+            bias,
+            "conv_state":
+            state_pool,
+            "query_lengths":
+            q_len,
+            "query_start_offsets":
+            offsets,
+            "state_indices":
+            torch.tensor(state_indices, dtype=torch.int32, device=DEV),
+            "execution_phase_marker":
+            torch.empty(phase, dtype=torch.int32, device=DEV),
+            "context_sequence_count_carrier":
+            torch.empty(max(1, num_prefill), dtype=torch.int32, device=DEV),
+            "output":
+            output,
+            "conv_state_out":
+            state_pool,
+        }
+        input_shapes = ({
+            "context_sequence_count_carrier": (0, )
+        } if num_prefill == 0 else None)
+        if self.use_mtp or self.use_ddtree:
+            # Inactive verify descriptor; a verify layer's phase 8 is rejected.
+            total = x.shape[0]
+            bindings.update({
+                "tree_parent_ids":
+                torch.arange(-1, total - 1, dtype=torch.int32, device=DEV),
+                "tree_depths":
+                torch.arange(total, dtype=torch.int32, device=DEV),
+                "spec_verify_layout":
+                torch.empty(1, dtype=torch.int32, device=DEV),
+                "intermediate_states":
+                torch.empty(total,
+                            x.shape[1],
+                            self.cfg.window,
+                            dtype=torch.float16,
+                            device=DEV),
+            })
+            input_shapes = dict(input_shapes or {}, spec_verify_layout=(0, ))
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            self.runner.execute(bindings, input_shapes=input_shapes)
+        return output
 
 
 def _spec_state_output_shape(*, context_profile: bool):
@@ -251,6 +364,9 @@ def _spec_state_output_shape(*, context_profile: bool):
         "state_indices": batch_profile,
         "execution_phase_marker": ((phase, ), (phase, ), (phase, )),
         "context_sequence_count_carrier": carrier_profile,
+        "tree_parent_ids": ((1, ), (8, ), (16, )),
+        "tree_depths": ((1, ), (8, ), (16, )),
+        "spec_verify_layout": ((0, ), (1, ), (2, )),
     }
     runner = PluginRunner().build(
         input_specs=[
@@ -263,6 +379,9 @@ def _spec_state_output_shape(*, context_profile: bool):
             ("state_indices", trt.int32, (-1, )),
             ("execution_phase_marker", trt.int32, (-1, )),
             ("context_sequence_count_carrier", trt.int32, (-1, )),
+            ("tree_parent_ids", trt.int32, (-1, )),
+            ("tree_depths", trt.int32, (-1, )),
+            ("spec_verify_layout", trt.int32, (-1, )),
         ],
         output_names=["output", "conv_state_out", "intermediate_states"],
         plugin_name="causal_conv1d",
@@ -272,7 +391,7 @@ def _spec_state_output_shape(*, context_profile: bool):
             pf_int32("padding", width - 1),
             pf_int32("dilation", 1),
             pf_int32("groups", dim),
-            pf_int32("use_mtp", 1),
+            pf_int32("use_spec_verify_state", 1),
         ],
         profiles=profiles,
     )
@@ -639,3 +758,443 @@ def test_batch_invariance():
         assert_close(f"conv-batch-inv.y[{new_i}]", out0[orig, :L],
                      out1[new_i, :L])
     assert_close("conv-batch-inv.state", st0[pcpu], st1)
+
+
+# --------------------------------------------------------------------------- #
+# Dilated short convolution (Qwen3.8-Flash-Next n-gram embedding: k=4, dilation=3)
+# --------------------------------------------------------------------------- #
+def dilated_conv1d_ref(
+        x: torch.Tensor,  # [b, s, c]
+        weight: torch.Tensor,  # [c, 1, width]
+        bias: torch.Tensor,  # [c]
+        conv_state0: torch.Tensor,  # [b, c, state_len]
+        dilation: int,
+        context_lengths: Optional[torch.Tensor] = None,  # [b]
+):
+    """Golden from ``F.conv1d(dilation=...)``. Returns (y, final_conv_state).
+
+    The conv state supplies the left context, so ``cat([state, x])`` is already
+    padded and a plain valid convolution over its last ``(width-1)*dilation + L``
+    columns yields the ``L`` outputs of the row.
+    """
+    b, s, c = x.shape
+    width = weight.shape[-1]
+    state_len = conv_state0.shape[-1]
+    span = (width - 1) * dilation
+    xf = x.float().transpose(1, 2)  # [b, c, s]
+    wf = weight.float()  # [c, 1, width]
+    state0 = conv_state0.float()
+
+    if context_lengths is None:
+        context_lengths = torch.full((b, ), s, dtype=torch.int64)
+    else:
+        context_lengths = context_lengths.to(torch.int64)
+
+    y = torch.zeros((b, c, s), dtype=torch.float32, device=x.device)
+    final_state = state0.clone()
+    for bi in range(b):
+        length = int(context_lengths[bi])
+        seq = torch.cat([state0[bi], xf[bi, :, :length]], dim=-1)
+        if length > 0:
+            window = seq[:, state_len - span:].unsqueeze(0)
+            y[bi, :, :length] = torch.nn.functional.conv1d(window,
+                                                           wf,
+                                                           bias.float(),
+                                                           dilation=dilation,
+                                                           groups=c)[0]
+        final_state[bi] = seq[:, -state_len:]
+    return y.transpose(1, 2), final_state
+
+
+def _dilated_cfg(**kwargs):
+    base = dict(dim=128,
+                width=4,
+                dilation=3,
+                state_len=9,
+                max_batch=4,
+                max_seq=32,
+                max_state_rows=8)
+    base.update(kwargs)
+    return ConvConfig(**base)
+
+
+@pytest.mark.parametrize("state_len", [9, 10], ids=lambda s: f"state{s}")
+def test_dilated_prefill(state_len):
+    """state_len 10 keeps one column the dilated taps must ignore."""
+    cfg = _dilated_cfg(state_len=state_len)
+    batch, seq = 3, 24
+    gen = torch.Generator().manual_seed(4100 + state_len)
+    runner = ConvRunner(cfg)
+    x, weight, bias = _rand(cfg, batch, seq, gen)
+    ctx = torch.tensor([24, 11, 2], dtype=torch.int32, device=DEV)
+    poison_padding(x, ctx)
+    state0 = (torch.randn(
+        batch, cfg.dim, state_len, generator=gen, dtype=torch.float32) *
+              0.3).to(torch.float16).to(DEV)
+
+    out, state_out, _ = runner.run(x,
+                                   weight,
+                                   bias,
+                                   state0.clone(),
+                                   ctx,
+                                   phase=1)
+
+    ref_y, ref_state = dilated_conv1d_ref(x, weight, bias, state0,
+                                          cfg.dilation, ctx)
+    for bi in range(batch):
+        length = int(ctx[bi])
+        assert_close(f"dilated y[b{bi}]", ref_y[bi, :length], out[bi, :length],
+                     2e-2, 2e-2)
+        assert torch.count_nonzero(out[bi, length:]) == 0
+    assert_close("dilated conv_state_out", ref_state, state_out, 2e-2, 2e-2)
+
+
+def test_dilated_decode():
+    cfg = _dilated_cfg()
+    batch = 2
+    gen = torch.Generator().manual_seed(4200)
+    runner = ConvRunner(cfg)
+    x, weight, bias = _rand(cfg, batch, 1, gen)
+    state0 = (torch.randn(
+        batch, cfg.dim, cfg.state_len, generator=gen, dtype=torch.float32) *
+              0.3).to(torch.float16).to(DEV)
+    ctx = torch.ones(batch, dtype=torch.int32, device=DEV)
+
+    out, state_out, _ = runner.run(x,
+                                   weight,
+                                   bias,
+                                   state0.clone(),
+                                   ctx,
+                                   phase=3)
+
+    ref_y, ref_state = dilated_conv1d_ref(x, weight, bias, state0,
+                                          cfg.dilation, ctx)
+    assert_close("dilated decode y", ref_y, out, 2e-2, 2e-2)
+    assert_close("dilated decode conv_state_out", ref_state, state_out, 2e-2,
+                 2e-2)
+
+
+def test_dilated_mtp_verify():
+    cfg = _dilated_cfg(max_seq=4)
+    batch, seq = 2, 4
+    gen = torch.Generator().manual_seed(4300)
+    runner = ConvRunner(cfg, use_mtp=True)
+    x, weight, bias = _rand(cfg, batch, seq, gen)
+    state_pool = (torch.randn(
+        4, cfg.dim, cfg.state_len, generator=gen, dtype=torch.float32) *
+                  0.2).to(dtype=torch.float16, device=DEV)
+    before = state_pool.clone()
+    state_indices = torch.tensor([3, 1], dtype=torch.int32, device=DEV)
+    lengths = torch.full((batch, ), seq, dtype=torch.int32, device=DEV)
+
+    output, state_out, intermediate = runner.run(x,
+                                                 weight,
+                                                 bias,
+                                                 state_pool,
+                                                 lengths,
+                                                 phase=5,
+                                                 state_indices=state_indices)
+
+    # Each draft token is one more step of the same dilated recurrence.
+    selected = before.index_select(0, state_indices.to(torch.int64))
+    state = selected.float()
+    expected_y = []
+    expected_states = []
+    for token in x.float().unbind(dim=1):
+        step_y, _ = dilated_conv1d_ref(
+            token.unsqueeze(1).half(), weight, bias, state.half(),
+            cfg.dilation)
+        expected_y.append(step_y[:, 0])
+        state = torch.cat([state[:, :, 1:], token.unsqueeze(-1)], dim=-1)
+        expected_states.append(state.clone())
+
+    assert state_out is state_pool
+    assert torch.equal(state_pool, before)
+    assert_close("dilated mtp output", torch.stack(expected_y, dim=1), output,
+                 2e-2, 2e-2)
+    assert_close("dilated mtp checkpoints",
+                 torch.stack(expected_states, dim=1), intermediate, 2e-2, 2e-2)
+
+
+# --------------------------------------------------------------------------- #
+# Shapes outside the supported range must be rejected at build time.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(("width", "dilation", "state_len"), [
+    (1, 1, 1),
+    (9, 1, 9),
+    (4, 5, 15),
+    (4, 3, 8),
+    (2, 1, 17),
+    (5, 4, 16),
+])
+def test_rejects_unsupported_shapes(width, dilation, state_len):
+    cfg = ConvConfig(dim=16,
+                     width=width,
+                     dilation=dilation,
+                     state_len=state_len,
+                     max_batch=2,
+                     max_seq=4,
+                     max_state_rows=4)
+    with pytest.raises(PluginUnsupportedError):
+        ConvRunner(cfg, expect_unsupported=True)
+
+
+def test_one_verify_artifact_executes_inactive_chain_and_tree():
+    # Given one verify-capable convolution artifact, when switching descriptor
+    # extents, then inactive prefill and both layouts retain causal outputs.
+    cfg = ConvConfig(dim=64, max_batch=1, max_seq=4)
+    runner = ConvRunner(cfg, use_mtp=True)
+    gen = torch.Generator().manual_seed(73)
+    x, weight, bias = _rand(cfg, 1, 4, gen)
+    lengths = torch.tensor([4], dtype=torch.int32, device=DEV)
+    initial = torch.zeros(1,
+                          cfg.dim,
+                          cfg.window,
+                          dtype=torch.float16,
+                          device=DEV)
+    expected, expected_state = causal_conv1d_ref(x, weight.squeeze(1), bias,
+                                                 initial, False)
+    parents = torch.tensor([[-1, 0, 0, 2]], dtype=torch.int32, device=DEV)
+    depths = torch.tensor([[0, 1, 1, 2]], dtype=torch.int32, device=DEV)
+    tree_output, tree_states = _tree_ref(x, weight, bias, initial, parents,
+                                         depths)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for cuda_graph in (False, True):
+            for phase, layout in ((1, 0), (5, 1), (5, 2)):
+                actual, state, snapshots = runner.run(
+                    x,
+                    weight,
+                    bias,
+                    initial.clone(),
+                    lengths,
+                    phase=phase,
+                    layout=layout,
+                    tree_parent_ids=parents if layout == 2 else None,
+                    tree_depths=depths if layout == 2 else None,
+                    cuda_graph=cuda_graph)
+                assert_close("layout output",
+                             tree_output if layout == 2 else expected, actual)
+                retained = state if phase == 1 else snapshots[:, -1]
+                assert_close(
+                    "retained state",
+                    tree_states[:, -1] if layout == 2 else expected_state,
+                    retained)
+
+
+@pytest.mark.parametrize("name,outputs",
+                         (("causal_conv1d", 3), ("gated_delta_net", 3),
+                          ("update_ssm_state", 6)))
+def test_recurrent_creator_declares_one_verify_capability(name, outputs):
+    # Given a version-1 creator, when creating a verify instance, then its
+    # fixed output arity needs neither topology nor replay-version fields.
+    PluginRunner()
+    creator = trt.get_plugin_registry().get_creator(name, "1", "")
+    fields = [pf_int32("use_spec_verify_state", 1)]
+    plugin = creator.create_plugin(name, trt.PluginFieldCollection(fields),
+                                   trt.TensorRTPhase.BUILD)
+    build = plugin.get_capability_interface(trt.PluginCapabilityType.BUILD)
+    assert (build.num_outputs, {field.name
+                                for field in creator.field_names}
+            & {"use_ddtree", "replay_format_version", "use_spec_verify_state"
+               }) == (outputs, {"use_spec_verify_state"})
+
+
+@pytest.mark.parametrize(
+    "name", ("causal_conv1d", "gated_delta_net", "update_ssm_state"))
+def test_recurrent_creator_rejects_missing_verify_capability(name):
+    # Given fields from an old artifact, when the version-1 creator loads them,
+    # then missing fixed-ABI capability is rejected instead of guessed.
+    PluginRunner()
+    creator = trt.get_plugin_registry().get_creator(name, "1", "")
+    plugin = creator.create_plugin(name, trt.PluginFieldCollection([]),
+                                   trt.TensorRTPhase.BUILD)
+    assert plugin is None
+
+
+# --------------------------------------------------------------------------- #
+# Compact phase 8: packed varlen prefill rows first, then single-step decode
+# rows, against one resident state pool with non-contiguous slots.
+# --------------------------------------------------------------------------- #
+COMPACT_CONV_SMS = frozenset(
+    {80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121})
+_CONV_POOL_ROWS = 6
+# (label, prefill [(slot, query_length, continued)], decode slots)
+_CONV_COMPACT_CASES = [
+    ("prefill_and_decode", [(4, 37, True), (1, 130, False)], [3, 0]),
+    ("prefill_only", [(2, 64, True), (5, 2, False)], []),
+    ("single_row_prefill", [(5, 1, True)], [1, 2, 4]),
+    ("decode_only", [], [3, 0, 5]),
+    # Profile 0 upper bound of the test engine: Np = B = 6, T_p = T_max.
+    ("profile_upper_bound_prefill_only", [(0, 256, True), (1, 256, False),
+                                          (2, 256, True), (3, 256, False),
+                                          (4, 256, True), (5, 256, True)], []),
+]
+
+
+def _conv_compact_setup(cfg, query_lengths, gen):
+    x = (torch.randn(sum(query_lengths), cfg.dim,
+                     generator=gen)).to(torch.float16).to(DEV)
+    weight = (torch.randn(cfg.dim, 1, cfg.width, generator=gen) * 0.3).to(
+        torch.float16).to(DEV)
+    bias = (torch.randn(cfg.dim, generator=gen) * 0.1).to(
+        torch.float16).to(DEV)
+    pool = (torch.randn(_CONV_POOL_ROWS, cfg.dim, cfg.window, generator=gen) *
+            0.3).to(torch.float16).to(DEV)
+    return x, weight, bias, pool
+
+
+@pytest.mark.skipif(_device_sm() not in COMPACT_CONV_SMS,
+                    reason="packed varlen causal conv1d is unsupported here")
+@pytest.mark.parametrize("state_len", [None, 3], ids=["state_w", "state_w1"])
+@pytest.mark.parametrize("label,prefill,decode", _CONV_COMPACT_CASES)
+def test_compact_phase_matches_separate_prefill_and_decode(
+        label, prefill, decode, state_len):
+    """Phase 8 equals separate execution on one state pool: each prefill
+    sequence (fresh or continued) matches its own prefill step in output and
+    its whole conv state bit for bit, the decode rows and their states match a
+    phase 3 step bit for bit, and pool rows outside the step stay unchanged,
+    up to the profile bound Np = B, T_p = T_max, with a conv state of width or
+    width - 1 columns."""
+    cfg = ConvConfig(dim=256,
+                     width=4,
+                     max_batch=_CONV_POOL_ROWS,
+                     max_seq=256,
+                     max_state_rows=8,
+                     state_len=state_len)
+    gen = torch.Generator().manual_seed(6160 + len(prefill) + len(decode))
+    query_lengths = [q for _, q, _ in prefill] + [1] * len(decode)
+    slots = [slot for slot, _, _ in prefill] + decode
+    x, weight, bias, pool = _conv_compact_setup(cfg, query_lengths, gen)
+    for slot, _, continued in prefill:
+        if not continued:
+            pool[slot].zero_()
+    runner = ConvRunner(cfg)
+
+    compact_pool = pool.clone()
+    compact_out = runner.run_tokens(x, weight, bias, compact_pool,
+                                    query_lengths, slots, 8, len(prefill))
+
+    offset = 0
+    for slot, q_len, continued in prefill:
+        ref_pool = pool.clone()
+        ref_out = runner.run_tokens(x[offset:offset + q_len].contiguous(),
+                                    weight, bias, ref_pool, [q_len], [slot],
+                                    2 if continued else 1, 1)
+        assert_close(f"conv-compact[{label}].y[slot{slot}]", ref_out,
+                     compact_out[offset:offset + q_len], 2e-2, 2e-2)
+        assert torch.equal(ref_pool[slot], compact_pool[slot]), \
+            f"conv-compact[{label}]: state of slot {slot} differs from padded"
+        offset += q_len
+    if decode:
+        ref_pool = pool.clone()
+        ref_out = runner.run_tokens(
+            x[offset:offset + len(decode)].contiguous(), weight, bias,
+            ref_pool, [1] * len(decode), decode, 3, 0)
+        assert torch.equal(ref_out, compact_out[offset:]), \
+            f"conv-compact[{label}]: decode rows differ from phase 3"
+        for slot in decode:
+            assert torch.equal(ref_pool[slot], compact_pool[slot]), \
+                f"conv-compact[{label}]: decode state of slot {slot} differs"
+    for slot in set(range(_CONV_POOL_ROWS)) - set(slots):
+        assert torch.equal(pool[slot], compact_pool[slot]), \
+            f"conv-compact[{label}]: untouched slot {slot} changed"
+
+
+@pytest.mark.skipif(_device_sm() not in COMPACT_CONV_SMS,
+                    reason="packed varlen causal conv1d is unsupported here")
+def test_compact_prefill_skips_out_of_range_state_indices():
+    """Prefill rows whose state index lies outside the pool are skipped like
+    padding slots: no state outside the pool is read or written, and the
+    valid rows of the step are unaffected."""
+    cfg = ConvConfig(dim=256,
+                     width=4,
+                     max_batch=8,
+                     max_seq=64,
+                     max_state_rows=8)
+    gen = torch.Generator().manual_seed(63)
+    query_lengths = [9, 5, 4]
+    x, weight, bias, pool = _conv_compact_setup(cfg, query_lengths, gen)
+    runner = ConvRunner(cfg)
+    # Guard rows on both sides of the pool catch out-of-range accesses.
+    guarded = torch.randn(_CONV_POOL_ROWS + 2,
+                          cfg.dim,
+                          cfg.width,
+                          generator=gen).to(torch.float16).to(DEV)
+    guarded[1:-1] = pool
+    before = guarded.clone()
+
+    compact_out = runner.run_tokens(x, weight, bias, guarded[1:-1],
+                                    query_lengths, [-1, 2, _CONV_POOL_ROWS], 8,
+                                    3)
+
+    ref_pool = pool.clone()
+    ref_out = runner.run_tokens(x[9:14].contiguous(), weight, bias, ref_pool,
+                                [5], [2], 2, 1)
+    assert_close("conv-compact[out_of_range].y[slot2]", ref_out,
+                 compact_out[9:14], 2e-2, 2e-2)
+    assert torch.equal(guarded[0], before[0]) and \
+        torch.equal(guarded[-1], before[-1]), \
+        "conv-compact[out_of_range]: state outside the pool was written"
+    for slot in set(range(_CONV_POOL_ROWS)) - {2}:
+        assert torch.equal(guarded[1 + slot], before[1 + slot]), \
+            f"conv-compact[out_of_range]: pool row {slot} changed"
+
+
+@pytest.mark.parametrize("cfg_overrides,runner_kwargs,shape", [
+    pytest.param({}, {"use_mtp": True},
+                 "256 channels, width 4, dilation 1, spec-verify state",
+                 id="spec_verify"),
+    pytest.param({
+        "dim": 128,
+        "dilation": 3,
+        "state_len": 9
+    }, {},
+                 "128 channels, width 4, dilation 3",
+                 id="dilation_3"),
+])
+def test_compact_phase_rejected_for_unsupported_layer(cfg_overrides,
+                                                      runner_kwargs, shape,
+                                                      capfd):
+    """On every GPU, a spec-verify layer or a dilated convolution rejects
+    phase 8 with the unsupported-layer error, which names the layer and its
+    shape, without touching the resident state pool."""
+    fields = dict(dim=256, width=4, max_batch=8, max_seq=64, max_state_rows=8)
+    fields.update(cfg_overrides)
+    cfg = ConvConfig(**fields)
+    gen = torch.Generator().manual_seed(61)
+    x, weight, bias, pool = _conv_compact_setup(cfg, [5, 1], gen)
+    before = pool.clone()
+    runner = ConvRunner(cfg, **runner_kwargs)
+    assert_execute_rejected(
+        capfd,
+        f"causal_conv1d 'causal_conv1d' ({shape}): compact execution is not "
+        "supported for this layer on this GPU.",
+        lambda: runner.run_tokens(x, weight, bias, pool, [5, 1], [2, 4], 8, 1))
+    assert torch.equal(pool, before), \
+        "phase 8 rejection must not write the state pool"
+
+
+@pytest.mark.parametrize("cfg_overrides,runner_kwargs,supported", [
+    pytest.param({}, {}, True, id="depthwise"),
+    pytest.param({}, {"use_mtp": True}, False, id="spec_verify"),
+    pytest.param({
+        "dim": 128,
+        "dilation": 3,
+        "state_len": 9
+    }, {},
+                 False,
+                 id="dilation_3"),
+])
+def test_build_reports_whether_the_layer_reserved_the_compact_workspace(
+        capfd, cfg_overrides, runner_kwargs, supported):
+    """The engine build reports the layer as reserving the compact
+    workspace exactly where it accepts compact execution: a depthwise layer
+    on the packed-varlen conv SMs, a spec-verify or dilated layer nowhere; a
+    layer that does not reserve it is named in a WARNING."""
+    fields = dict(dim=256, width=4, max_batch=8, max_seq=64, max_state_rows=8)
+    fields.update(cfg_overrides)
+    runner = ConvRunner(ConvConfig(**fields), **runner_kwargs)
+    assert_compact_workspace(runner.runner, supported
+                             and _device_sm() in COMPACT_CONV_SMS, capfd)

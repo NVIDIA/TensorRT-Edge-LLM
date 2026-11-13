@@ -18,6 +18,7 @@
 #include "sampler/diffusionGemma/diffusionGemmaSampling.h"
 
 #include "common/checkMacros.h"
+#include "common/counterRng.h"
 
 #include <cfloat>
 #include <cstdint>
@@ -152,18 +153,10 @@ __device__ __forceinline__ float diffusionInvTemp(float temperature)
     return (temperature < 1e-3F) ? 1000.0F : 1.0F / temperature;
 }
 
-__device__ __forceinline__ uint64_t diffusionSplitMix64(uint64_t value)
-{
-    value += 0x9E3779B97F4A7C15ULL;
-    value = (value ^ (value >> 30U)) * 0xBF58476D1CE4E5B9ULL;
-    value = (value ^ (value >> 27U)) * 0x94D049BB133111EBULL;
-    return value ^ (value >> 31U);
-}
-
 __device__ __forceinline__ float diffusionUniform01(
     uint64_t randomSeed, uint64_t row, uint64_t token, uint64_t randomOffset)
 {
-    uint64_t const mixed = diffusionSplitMix64(
+    uint64_t const mixed = counter_rng::splitMix64(
         randomSeed ^ (row * 0xD1B54A32D192ED03ULL) ^ (token * 0xABC98388FB8FAC03ULL) ^ randomOffset);
     uint32_t const value = static_cast<uint32_t>((mixed >> 40U) & 0x00FFFFFFU) + 1U;
     // Open interval: clamp only the largest 24-bit sample so Gumbel never sees
@@ -174,7 +167,7 @@ __device__ __forceinline__ float diffusionUniform01(
 __device__ __forceinline__ int32_t diffusionUniformToken(
     uint64_t randomSeed, uint64_t row, uint64_t randomOffset, int32_t vocabSize)
 {
-    uint64_t const mixed = diffusionSplitMix64(randomSeed ^ (row * 0xD1B54A32D192ED03ULL) ^ randomOffset);
+    uint64_t const mixed = counter_rng::splitMix64(randomSeed ^ (row * 0xD1B54A32D192ED03ULL) ^ randomOffset);
     return static_cast<int32_t>(mixed % static_cast<uint64_t>(vocabSize));
 }
 
@@ -671,9 +664,10 @@ void sampleDiffusionTokensFromLogits(rt::Tensor const& input, rt::Tensor& sample
 {
     check::check(input.getDeviceType() == rt::DeviceType::kGPU && sampledIds.getDeviceType() == rt::DeviceType::kGPU,
         "All tensors must be on GPU");
-    check::check((input.getDataType() == nvinfer1::DataType::kFLOAT || input.getDataType() == nvinfer1::DataType::kHALF
-                     || input.getDataType() == nvinfer1::DataType::kBF16)
-            && sampledIds.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(
+        (input.getDataType() == trt_edgellm::DataType::kFLOAT || input.getDataType() == trt_edgellm::DataType::kHALF
+            || input.getDataType() == trt_edgellm::DataType::kBF16)
+            && sampledIds.getDataType() == trt_edgellm::DataType::kINT32,
         "Invalid tensor data types");
 
     auto const inputShape = input.getShape();
@@ -690,12 +684,12 @@ void sampleDiffusionTokensFromLogits(rt::Tensor const& input, rt::Tensor& sample
     constexpr int32_t kBlockSize = 256;
     dim3 const grid(rows);
     dim3 const block(kBlockSize);
-    if (input.getDataType() == nvinfer1::DataType::kHALF)
+    if (input.getDataType() == trt_edgellm::DataType::kHALF)
     {
         diffusionGumbelSampleKernel<half, kBlockSize><<<grid, block, 0, stream>>>(input.dataPointer<half>(),
             sampledIds.dataPointer<int32_t>(), rows, vocabSize, temperature, random.seed, random.offset);
     }
-    else if (input.getDataType() == nvinfer1::DataType::kBF16)
+    else if (input.getDataType() == trt_edgellm::DataType::kBF16)
     {
         diffusionGumbelSampleKernel<__nv_bfloat16, kBlockSize>
             <<<grid, block, 0, stream>>>(input.dataPointer<__nv_bfloat16>(), sampledIds.dataPointer<int32_t>(), rows,
@@ -715,11 +709,12 @@ void sampleDiffusionTokensAndComputeEntropy(rt::Tensor const& input, rt::Tensor&
     check::check(input.getDeviceType() == rt::DeviceType::kGPU && sampledIds.getDeviceType() == rt::DeviceType::kGPU
             && topIndices.getDeviceType() == rt::DeviceType::kGPU && entropy.getDeviceType() == rt::DeviceType::kGPU,
         "All tensors must be on GPU");
-    check::check((input.getDataType() == nvinfer1::DataType::kFLOAT || input.getDataType() == nvinfer1::DataType::kHALF
-                     || input.getDataType() == nvinfer1::DataType::kBF16)
-            && sampledIds.getDataType() == nvinfer1::DataType::kINT32
-            && topIndices.getDataType() == nvinfer1::DataType::kINT32
-            && entropy.getDataType() == nvinfer1::DataType::kFLOAT,
+    check::check(
+        (input.getDataType() == trt_edgellm::DataType::kFLOAT || input.getDataType() == trt_edgellm::DataType::kHALF
+            || input.getDataType() == trt_edgellm::DataType::kBF16)
+            && sampledIds.getDataType() == trt_edgellm::DataType::kINT32
+            && topIndices.getDataType() == trt_edgellm::DataType::kINT32
+            && entropy.getDataType() == trt_edgellm::DataType::kFLOAT,
         "Invalid tensor data types");
 
     auto const inputShape = input.getShape();
@@ -742,13 +737,13 @@ void sampleDiffusionTokensAndComputeEntropy(rt::Tensor const& input, rt::Tensor&
     constexpr int32_t kBlockSize = 256;
     dim3 const grid(rows);
     dim3 const block(kBlockSize);
-    if (input.getDataType() == nvinfer1::DataType::kHALF)
+    if (input.getDataType() == trt_edgellm::DataType::kHALF)
     {
         diffusionSampleAndEntropyKernel<half, kBlockSize><<<grid, block, 0, stream>>>(input.dataPointer<half>(),
             sampledIds.dataPointer<int32_t>(), topIndices.dataPointer<int32_t>(), entropy.dataPointer<float>(), rows,
             vocabSize, temperature, random.seed, random.offset);
     }
-    else if (input.getDataType() == nvinfer1::DataType::kBF16)
+    else if (input.getDataType() == trt_edgellm::DataType::kBF16)
     {
         diffusionSampleAndEntropyKernel<__nv_bfloat16, kBlockSize><<<grid, block, 0, stream>>>(
             input.dataPointer<__nv_bfloat16>(), sampledIds.dataPointer<int32_t>(), topIndices.dataPointer<int32_t>(),
@@ -768,9 +763,10 @@ void selectDiffusionArgmaxFromLogits(
 {
     check::check(input.getDeviceType() == rt::DeviceType::kGPU && topIndices.getDeviceType() == rt::DeviceType::kGPU,
         "All tensors must be on GPU");
-    check::check((input.getDataType() == nvinfer1::DataType::kFLOAT || input.getDataType() == nvinfer1::DataType::kHALF
-                     || input.getDataType() == nvinfer1::DataType::kBF16)
-            && topIndices.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(
+        (input.getDataType() == trt_edgellm::DataType::kFLOAT || input.getDataType() == trt_edgellm::DataType::kHALF
+            || input.getDataType() == trt_edgellm::DataType::kBF16)
+            && topIndices.getDataType() == trt_edgellm::DataType::kINT32,
         "Invalid tensor data types");
 
     auto const inputShape = input.getShape();
@@ -788,12 +784,12 @@ void selectDiffusionArgmaxFromLogits(
     constexpr int32_t kBlockSize = 256;
     dim3 const grid(rows);
     dim3 const block(kBlockSize);
-    if (input.getDataType() == nvinfer1::DataType::kHALF)
+    if (input.getDataType() == trt_edgellm::DataType::kHALF)
     {
         diffusionArgmaxKernel<half, kBlockSize><<<grid, block, 0, stream>>>(
             input.dataPointer<half>(), topIndices.dataPointer<int32_t>(), rows, vocabSize, temperature);
     }
-    else if (input.getDataType() == nvinfer1::DataType::kBF16)
+    else if (input.getDataType() == trt_edgellm::DataType::kBF16)
     {
         diffusionArgmaxKernel<__nv_bfloat16, kBlockSize><<<grid, block, 0, stream>>>(
             input.dataPointer<__nv_bfloat16>(), topIndices.dataPointer<int32_t>(), rows, vocabSize, temperature);
@@ -815,11 +811,11 @@ void initializeDiffusionCanvas(rt::Tensor& canvasIds, rt::Tensor& previousArgmax
             && acceptedMask.getDeviceType() == rt::DeviceType::kGPU
             && prefixLengths.getDeviceType() == rt::DeviceType::kGPU,
         "All diffusion canvas sampler tensors must be on GPU");
-    check::check(canvasIds.getDataType() == nvinfer1::DataType::kINT32
-            && previousArgmaxIds.getDataType() == nvinfer1::DataType::kINT32
-            && stableCounts.getDataType() == nvinfer1::DataType::kINT32
-            && acceptedMask.getDataType() == nvinfer1::DataType::kINT8
-            && prefixLengths.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(canvasIds.getDataType() == trt_edgellm::DataType::kINT32
+            && previousArgmaxIds.getDataType() == trt_edgellm::DataType::kINT32
+            && stableCounts.getDataType() == trt_edgellm::DataType::kINT32
+            && acceptedMask.getDataType() == trt_edgellm::DataType::kINT8
+            && prefixLengths.getDataType() == trt_edgellm::DataType::kINT32,
         "Invalid diffusion canvas sampler tensor data types");
 
     auto const canvasShape = canvasIds.getShape();
@@ -866,17 +862,17 @@ void diffusionSampleAndUpdateCanvas(rt::Tensor const& sampledIds, rt::Tensor con
             && (!validCanvasLengths.has_value()
                 || validCanvasLengths.value().get().getDeviceType() == rt::DeviceType::kGPU),
         "All diffusion sampler tensors must be on GPU");
-    check::check(sampledIds.getDataType() == nvinfer1::DataType::kINT32
-            && argmaxIds.getDataType() == nvinfer1::DataType::kINT32
-            && entropy.getDataType() == nvinfer1::DataType::kFLOAT
-            && canvasIds.getDataType() == nvinfer1::DataType::kINT32
-            && argmaxCanvasIds.getDataType() == nvinfer1::DataType::kINT32
-            && previousArgmaxIds.getDataType() == nvinfer1::DataType::kINT32
-            && stableCounts.getDataType() == nvinfer1::DataType::kINT32
-            && acceptedMask.getDataType() == nvinfer1::DataType::kINT8
-            && prefixLengths.getDataType() == nvinfer1::DataType::kINT32
+    check::check(sampledIds.getDataType() == trt_edgellm::DataType::kINT32
+            && argmaxIds.getDataType() == trt_edgellm::DataType::kINT32
+            && entropy.getDataType() == trt_edgellm::DataType::kFLOAT
+            && canvasIds.getDataType() == trt_edgellm::DataType::kINT32
+            && argmaxCanvasIds.getDataType() == trt_edgellm::DataType::kINT32
+            && previousArgmaxIds.getDataType() == trt_edgellm::DataType::kINT32
+            && stableCounts.getDataType() == trt_edgellm::DataType::kINT32
+            && acceptedMask.getDataType() == trt_edgellm::DataType::kINT8
+            && prefixLengths.getDataType() == trt_edgellm::DataType::kINT32
             && (!validCanvasLengths.has_value()
-                || validCanvasLengths.value().get().getDataType() == nvinfer1::DataType::kINT32),
+                || validCanvasLengths.value().get().getDataType() == trt_edgellm::DataType::kINT32),
         "Invalid diffusion sampler tensor data types");
 
     auto const sampledShape = sampledIds.getShape();
@@ -929,8 +925,8 @@ void compactDiffusionCanvas(rt::Tensor const& canvasIds, rt::Tensor& commitCanva
     check::check(
         canvasIds.getDeviceType() == rt::DeviceType::kGPU && commitCanvasIds.getDeviceType() == rt::DeviceType::kGPU,
         "Diffusion commit canvas tensors must be on GPU");
-    check::check(canvasIds.getDataType() == nvinfer1::DataType::kINT32
-            && commitCanvasIds.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(canvasIds.getDataType() == trt_edgellm::DataType::kINT32
+            && commitCanvasIds.getDataType() == trt_edgellm::DataType::kINT32,
         "Diffusion commit canvas tensors must have INT32 data type");
     auto const canvasShape = canvasIds.getShape();
     auto const commitShape = commitCanvasIds.getShape();
@@ -957,9 +953,9 @@ void compactDiffusionCanvas(rt::Tensor const& canvasIds, rt::Tensor const& commi
             && commitLengths.getDeviceType() == rt::DeviceType::kGPU
             && commitCanvasIds.getDeviceType() == rt::DeviceType::kGPU,
         "Diffusion variable commit canvas tensors must be on GPU");
-    check::check(canvasIds.getDataType() == nvinfer1::DataType::kINT32
-            && commitLengths.getDataType() == nvinfer1::DataType::kINT32
-            && commitCanvasIds.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(canvasIds.getDataType() == trt_edgellm::DataType::kINT32
+            && commitLengths.getDataType() == trt_edgellm::DataType::kINT32
+            && commitCanvasIds.getDataType() == trt_edgellm::DataType::kINT32,
         "Diffusion variable commit canvas tensors must have INT32 data type");
 
     auto const canvasShape = canvasIds.getShape();

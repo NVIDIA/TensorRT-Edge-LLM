@@ -212,9 +212,9 @@ void moeSigmoidGroupTopk(rt::Tensor const& gatingOutput, rt::Tensor& topkWeights
     check::check(topkGroup > 0 && topkGroup <= nGroup, "topkGroup must be in [1, nGroup]");
 
     // Validate data types — FP32 only
-    check::check(gatingOutput.getDataType() == nvinfer1::DataType::kFLOAT, "gatingOutput must be float32");
-    check::check(topkWeights.getDataType() == nvinfer1::DataType::kFLOAT, "topkWeights must be float32");
-    check::check(topkIndices.getDataType() == nvinfer1::DataType::kINT32, "topkIndices must be int32");
+    check::check(gatingOutput.getDataType() == trt_edgellm::DataType::kFLOAT, "gatingOutput must be float32");
+    check::check(topkWeights.getDataType() == trt_edgellm::DataType::kFLOAT, "topkWeights must be float32");
+    check::check(topkIndices.getDataType() == trt_edgellm::DataType::kINT32, "topkIndices must be int32");
 
     // Validate device types
     check::check(gatingOutput.getDeviceType() == rt::DeviceType::kGPU, "gatingOutput must be on GPU");
@@ -229,7 +229,7 @@ void moeSigmoidGroupTopk(rt::Tensor const& gatingOutput, rt::Tensor& topkWeights
         auto const biasShape = biasTensor.getShape();
         check::check(biasShape.getNumDims() == 1, "correctionBias must be 1D tensor [numExperts]");
         check::check(biasShape[0] == numExperts, "correctionBias size must match numExperts");
-        check::check(biasTensor.getDataType() == nvinfer1::DataType::kFLOAT, "correctionBias must be float32");
+        check::check(biasTensor.getDataType() == trt_edgellm::DataType::kFLOAT, "correctionBias must be float32");
         check::check(biasTensor.getDeviceType() == rt::DeviceType::kGPU, "correctionBias must be on GPU");
         biasPtr = biasTensor.dataPointer<float>();
     }

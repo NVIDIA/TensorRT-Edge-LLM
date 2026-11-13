@@ -16,6 +16,7 @@
  */
 
 #include "common/checkMacros.h"
+#include "common/counterRng.h"
 #include "common/tensor.h"
 #include "references.h"
 #include "sampler/diffusionGemma/diffusionGemmaSampling.h"
@@ -34,6 +35,7 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 using namespace trt_edgellm;
@@ -308,17 +310,43 @@ TEST_F(SamplingTest, TemperatureZeroParameterOverride)
     }
 }
 
+TEST(SamplingUtilsTest, LaunchParamsFromARowMatchTheScalarConstructor)
+{
+    RowSamplingParams const row{0.7F, 40, 0.9F};
+    SamplingParams const fromRow(4, 20, row);
+    SamplingParams const scalar(4, 20, 0.7F, 40, 0.9F);
+    EXPECT_EQ(static_cast<RowSamplingParams const&>(fromRow), row);
+    EXPECT_EQ(fromRow.batchSize, scalar.batchSize);
+    EXPECT_EQ(fromRow.vocabSize, scalar.vocabSize);
+    EXPECT_EQ(fromRow.useTopK, scalar.useTopK);
+    EXPECT_EQ(fromRow.useTopP, scalar.useTopP);
+
+    // The near-zero temperature normalization applies through the row constructor too.
+    SamplingParams const greedy(4, 20, RowSamplingParams{0.0F, 20, 0.9F});
+    EXPECT_EQ(greedy.topK, 1);
+    EXPECT_EQ(greedy.topP, 1.0F);
+    EXPECT_TRUE(greedy.useTopK);
+    EXPECT_FALSE(greedy.useTopP);
+}
+
+TEST(SamplingUtilsTest, RowParamsFromApiValues)
+{
+    EXPECT_EQ(makeRowSamplingParams(0.7F, -1, 0.9F), (RowSamplingParams{0.7F, 0, 0.9F})) << "negative disables top-k";
+    EXPECT_EQ(makeRowSamplingParams(0.7F, 50, 0.9F), (RowSamplingParams{0.7F, 50, 0.9F}));
+    EXPECT_THROW(makeRowSamplingParams(0.7F, int64_t{1} << 40, 0.9F), std::invalid_argument);
+}
+
 TEST_F(SamplingTest, TopPProbabilitiesIncludeCrossingTokenAndPreserveVocabularyOrder)
 {
     constexpr int32_t rows{2};
     constexpr int32_t vocabSize{4};
-    rt::Tensor logits({rows, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor probabilities({rows, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor logits({rows, vocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor probabilities({rows, vocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice<float>(logits,
         {std::log(0.05F), std::log(0.50F), std::log(0.15F), std::log(0.30F), std::log(0.40F), std::log(0.10F),
             std::log(0.30F), std::log(0.20F)});
     rt::Tensor workspace({static_cast<int64_t>(getTopPProbabilitiesWorkspaceSize(rows, vocabSize))},
-        rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     topPProbabilitiesFromLogits(logits, probabilities, 1.0F, 0.75F, workspace, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -367,12 +395,12 @@ TEST_F(SamplingTest, ApplyLogitBiasAffectsGreedySamplingPerBatch)
 {
     constexpr int32_t kBATCH_SIZE = 2;
     constexpr int32_t kVOCAB_SIZE = 6;
-    rt::Tensor logitsTensor({kBATCH_SIZE, kVOCAB_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor logitsTensor({kBATCH_SIZE, kVOCAB_SIZE}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice<float>(logitsTensor, {5.0f, 4.0f, 3.0f, 2.0f, 1.0f, 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f});
 
-    rt::Tensor biasTokenIds({2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor biasValues({2}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor biasOffsets({kBATCH_SIZE + 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor biasTokenIds({2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor biasValues({2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor biasOffsets({kBATCH_SIZE + 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice<int32_t>(biasTokenIds, {3, 0});
     copyHostToDevice<float>(biasValues, {4.5f, 10.0f});
     copyHostToDevice<int32_t>(biasOffsets, {0, 1, 2});
@@ -380,9 +408,10 @@ TEST_F(SamplingTest, ApplyLogitBiasAffectsGreedySamplingPerBatch)
     applyLogitBias(logitsTensor, biasTokenIds, biasValues, biasOffsets, 0);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    rt::Tensor selectedIndicesTensor({kBATCH_SIZE, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor selectedIndicesTensor({kBATCH_SIZE, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     size_t workspaceSize = getSelectAllTopKWorkspaceSize(kBATCH_SIZE, kVOCAB_SIZE, 1);
-    rt::Tensor workspaceTensor({static_cast<int64_t>(workspaceSize)}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+    rt::Tensor workspaceTensor(
+        {static_cast<int64_t>(workspaceSize)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     selectAllTopK(logitsTensor, std::nullopt, selectedIndicesTensor, 1, workspaceTensor, 0);
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -397,12 +426,12 @@ TEST_F(SamplingTest, ApplyLogitBiasCanBanGreedyTopToken)
 {
     constexpr int32_t kBATCH_SIZE = 1;
     constexpr int32_t kVOCAB_SIZE = 4;
-    rt::Tensor logitsTensor({kBATCH_SIZE, kVOCAB_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor logitsTensor({kBATCH_SIZE, kVOCAB_SIZE}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice<float>(logitsTensor, {10.0f, 9.0f, 8.0f, 7.0f});
 
-    rt::Tensor biasTokenIds({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor biasValues({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor biasOffsets({kBATCH_SIZE + 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor biasTokenIds({1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor biasValues({1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor biasOffsets({kBATCH_SIZE + 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice<int32_t>(biasTokenIds, {0});
     copyHostToDevice<float>(biasValues, {-100.0f});
     copyHostToDevice<int32_t>(biasOffsets, {0, 1});
@@ -410,9 +439,10 @@ TEST_F(SamplingTest, ApplyLogitBiasCanBanGreedyTopToken)
     applyLogitBias(logitsTensor, biasTokenIds, biasValues, biasOffsets, 0);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    rt::Tensor selectedIndicesTensor({kBATCH_SIZE, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor selectedIndicesTensor({kBATCH_SIZE, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     size_t workspaceSize = getSelectAllTopKWorkspaceSize(kBATCH_SIZE, kVOCAB_SIZE, 1);
-    rt::Tensor workspaceTensor({static_cast<int64_t>(workspaceSize)}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+    rt::Tensor workspaceTensor(
+        {static_cast<int64_t>(workspaceSize)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     selectAllTopK(logitsTensor, std::nullopt, selectedIndicesTensor, 1, workspaceTensor, 0);
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -428,14 +458,14 @@ TEST_F(SamplingTest, ApplyLogitBiasRepeatedRowsUsesOwningBatchSlot)
     constexpr int32_t kROWS_PER_SLOT = 2;
     constexpr int32_t kVOCAB_SIZE = 5;
     rt::Tensor logitsTensor(
-        {kBATCH_SIZE * kROWS_PER_SLOT, kVOCAB_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+        {kBATCH_SIZE * kROWS_PER_SLOT, kVOCAB_SIZE}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice<float>(logitsTensor, std::vector<float>(kBATCH_SIZE * kROWS_PER_SLOT * kVOCAB_SIZE, 0.0F));
 
     // CSR bias layout: slot i owns entries [biasOffsets[i], biasOffsets[i + 1]).
     // Each entry adds biasValues[j] to token biasTokenIds[j] for that slot.
-    rt::Tensor biasTokenIds({3}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor biasValues({3}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor biasOffsets({kBATCH_SIZE + 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor biasTokenIds({3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor biasValues({3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor biasOffsets({kBATCH_SIZE + 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice<int32_t>(biasTokenIds, {1, 0, 4});
     copyHostToDevice<float>(biasValues, {3.0F, -2.0F, 5.0F});
     copyHostToDevice<int32_t>(biasOffsets, {0, 1, 3});
@@ -478,9 +508,9 @@ TEST_F(SamplingTest, SelectArgmaxAndComputeEntropy)
         4.0F,
     };
 
-    rt::Tensor logits({rows, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor indices({rows, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor logits({rows, vocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor indices({rows, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice<float>(logits, hostLogits);
 
     selectArgmaxAndComputeEntropy(logits, indices, entropy, /*temperature=*/1.0F, /*stream=*/0);
@@ -537,13 +567,13 @@ TEST_F(SamplingTest, DiffusionFusedSamplerMatchesSeparateKernels)
         -0.5F,
     };
 
-    rt::Tensor logits({rows, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor separateSampled({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor separateIndices({rows, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor separateEntropy({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor fusedSampled({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor fusedIndices({rows, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor fusedEntropy({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor logits({rows, vocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor separateSampled({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor separateIndices({rows, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor separateEntropy({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor fusedSampled({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor fusedIndices({rows, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor fusedEntropy({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice<float>(logits, hostLogits);
 
     DiffusionRandomParams random{};
@@ -595,11 +625,11 @@ TEST_F(SamplingTest, DiffusionArgmaxOnlySamplerMatchesFusedArgmax)
         -0.5F,
     };
 
-    rt::Tensor logits({rows, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor sampled({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor fusedIndices({rows, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor argmaxOnlyIndices({rows, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor logits({rows, vocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor sampled({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor fusedIndices({rows, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor argmaxOnlyIndices({rows, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice<float>(logits, hostLogits);
 
     DiffusionRandomParams random{};
@@ -623,16 +653,16 @@ TEST_F(SamplingTest, DiffusionCanvasSamplerUpdatesOnDevice)
     std::vector<int32_t> const hostSampled{6, 5, 4, 3, 2, 1};
     std::vector<float> const hostEntropy{0.01F, 0.20F, 0.20F, 0.01F, 0.20F, 0.20F};
 
-    rt::Tensor argmax({rows, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor sampled({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor argmaxCanvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor previous({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor stable({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor accepted({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
-    rt::Tensor prefix({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor commitCanvas({batchSize, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor argmax({rows, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor sampled({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor argmaxCanvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor previous({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor stable({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor accepted({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+    rt::Tensor prefix({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor commitCanvas({batchSize, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice<int32_t>(argmax, hostArgmax);
     copyHostToDevice<int32_t>(sampled, hostSampled);
     copyHostToDevice<float>(entropy, hostEntropy);
@@ -692,15 +722,15 @@ TEST_F(SamplingTest, DiffusionCanvasSamplerEntropyBudgetSortsAndIgnoresNonFinite
         0.1F,
     };
 
-    rt::Tensor argmax({rows, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor sampled({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor argmaxCanvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor previous({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor stable({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor accepted({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
-    rt::Tensor prefix({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor argmax({rows, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor sampled({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor argmaxCanvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor previous({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor stable({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor accepted({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+    rt::Tensor prefix({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice<int32_t>(argmax, hostArgmax);
     copyHostToDevice<int32_t>(sampled, hostSampled);
     copyHostToDevice<float>(entropy, hostEntropy);
@@ -744,16 +774,16 @@ TEST_F(SamplingTest, DiffusionCanvasSamplerHonorsValidLengths)
     std::vector<float> const hostEntropy{0.001F, 0.001F, 0.001F, 0.001F, 0.001F, 0.001F, 1000.0F, 1000.0F};
     std::vector<int32_t> const hostValidLengths{4, 2};
 
-    rt::Tensor argmax({rows, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor sampled({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor validLengths({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor argmaxCanvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor previous({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor stable({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor accepted({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
-    rt::Tensor prefix({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor argmax({rows, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor sampled({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor validLengths({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor argmaxCanvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor previous({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor stable({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor accepted({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+    rt::Tensor prefix({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice<int32_t>(argmax, hostArgmax);
     copyHostToDevice<int32_t>(sampled, hostSampled);
     copyHostToDevice<float>(entropy, hostEntropy);
@@ -810,9 +840,9 @@ TEST_F(SamplingTest, CompactDiffusionCanvasSupportsVariableCommitLengths)
     };
     std::vector<int32_t> const hostCommitLengths{1, 3, 4};
 
-    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor commitLengths({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor commitCanvas({batchSize, maxBlockLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor commitLengths({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor commitCanvas({batchSize, maxBlockLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice<int32_t>(canvas, hostCanvas);
     copyHostToDevice<int32_t>(commitLengths, hostCommitLengths);
 
@@ -847,15 +877,15 @@ TEST_F(SamplingTest, DiffusionCanvasConvergesAfterStableWindow)
     std::vector<int32_t> const hostArgmax{0, 1};
     std::vector<float> const hostEntropy{0.001F, 0.001F};
 
-    rt::Tensor argmax({rows, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor sampled({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor argmaxCanvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor previous({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor stable({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor accepted({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
-    rt::Tensor prefix({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor argmax({rows, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor sampled({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor argmaxCanvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor previous({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor stable({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor accepted({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+    rt::Tensor prefix({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice<int32_t>(argmax, hostArgmax);
     copyHostToDevice<int32_t>(sampled, hostArgmax);
     copyHostToDevice<float>(entropy, hostEntropy);
@@ -912,15 +942,15 @@ TEST_F(SamplingTest, DiffusionCanvasStabilityWindowOneRequiresPreviousObservatio
     std::vector<int32_t> const hostArgmax{0, 1};
     std::vector<float> const hostEntropy{0.001F, 0.001F};
 
-    rt::Tensor argmax({rows, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor sampled({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor argmaxCanvas({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor previous({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor stable({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor accepted({batchSize, canvasLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
-    rt::Tensor prefix({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor argmax({rows, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor sampled({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor entropy({rows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor canvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor argmaxCanvas({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor previous({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor stable({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor accepted({batchSize, canvasLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+    rt::Tensor prefix({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice<int32_t>(argmax, hostArgmax);
     copyHostToDevice<int32_t>(sampled, hostArgmax);
     copyHostToDevice<float>(entropy, hostEntropy);
@@ -1001,8 +1031,8 @@ protected:
         result.errorMessage = "";
 
         // Create tensors for the test
-        rt::Tensor logitsTensor({batchSize, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-        rt::Tensor selectedIndicesTensor({batchSize, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Tensor logitsTensor({batchSize, vocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor selectedIndicesTensor({batchSize, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
         std::vector<std::vector<float>> hostLogits;
         generateTestLogits(logitsTensor, hostLogits, batchSize, vocabSize);
@@ -1011,7 +1041,7 @@ protected:
         SamplingParams params(batchSize, vocabSize, temperature, topK, topP);
         size_t workspaceSize = getTopKtopPSamplingWorkspaceSize(batchSize, vocabSize, params);
         rt::Tensor workspaceTensor(
-            {static_cast<int64_t>(workspaceSize)}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+            {static_cast<int64_t>(workspaceSize)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
         topKtopPSamplingFromLogits(logitsTensor, selectedIndicesTensor, params, workspaceTensor, 0, TEST_SEED, 0);
         CUDA_CHECK(cudaDeviceSynchronize());
@@ -1046,16 +1076,16 @@ TEST_F(SamplingTest, PerRowUniformsAreStableUnderBatchReorder)
     std::vector<float> const uniforms{.05, .55, .95};
     std::vector<int32_t> const permutation{2, 0, 1};
     auto sample = [&](std::vector<float> const& values, std::vector<float> const& randoms) {
-        rt::Tensor logitsTensor({batchSize, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-        rt::Tensor uniformsTensor({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-        rt::Tensor selected({batchSize, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Tensor logitsTensor({batchSize, vocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor uniformsTensor({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor selected({batchSize, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         CUDA_CHECK(cudaMemcpy(
             logitsTensor.rawPointer(), values.data(), values.size() * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(
             uniformsTensor.rawPointer(), randoms.data(), randoms.size() * sizeof(float), cudaMemcpyHostToDevice));
         SamplingParams params(batchSize, vocabSize, 1.0F, vocabSize, 1.0F);
         rt::Tensor workspace({static_cast<int64_t>(getTopKtopPSamplingWorkspaceSize(batchSize, vocabSize, params))},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
         topKtopPSamplingFromLogits(logitsTensor, selected, params, workspace, 0, TEST_SEED, 0, &uniformsTensor);
         CUDA_CHECK(cudaDeviceSynchronize());
         return copyDeviceToHost<int32_t>(selected);
@@ -1086,16 +1116,16 @@ TEST_F(SamplingTest, NucleusSamplingKeepsTheFullCrossingToken)
 
     for (int32_t const topK : {0, kVOCAB_SIZE})
     {
-        rt::Tensor logitsTensor({kBATCH_SIZE, kVOCAB_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-        rt::Tensor uniformsTensor({kBATCH_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-        rt::Tensor selected({kBATCH_SIZE, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Tensor logitsTensor({kBATCH_SIZE, kVOCAB_SIZE}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor uniformsTensor({kBATCH_SIZE}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor selected({kBATCH_SIZE, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         CUDA_CHECK(cudaMemcpy(
             logitsTensor.rawPointer(), logits.data(), logits.size() * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(
             uniformsTensor.rawPointer(), uniforms.data(), uniforms.size() * sizeof(float), cudaMemcpyHostToDevice));
         SamplingParams params(kBATCH_SIZE, kVOCAB_SIZE, 1.0F, topK, kTOP_P);
         rt::Tensor workspace({static_cast<int64_t>(getTopKtopPSamplingWorkspaceSize(kBATCH_SIZE, kVOCAB_SIZE, params))},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
         topKtopPSamplingFromLogits(logitsTensor, selected, params, workspace, 0, TEST_SEED, 0, &uniformsTensor);
         CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -1109,16 +1139,16 @@ TEST_F(SamplingTest, NucleusSamplingNearOneUsesFullMassFallback)
     constexpr int32_t kVOCAB_SIZE{4097};
     std::vector<float> const logits(kVOCAB_SIZE, 0.0F);
     std::vector<float> const uniforms{std::nextafter(1.0F, 0.0F)};
-    rt::Tensor logitsTensor({kBATCH_SIZE, kVOCAB_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor uniformsTensor({kBATCH_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor selected({kBATCH_SIZE, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor logitsTensor({kBATCH_SIZE, kVOCAB_SIZE}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor uniformsTensor({kBATCH_SIZE}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor selected({kBATCH_SIZE, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     CUDA_CHECK(
         cudaMemcpy(logitsTensor.rawPointer(), logits.data(), logits.size() * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(
         uniformsTensor.rawPointer(), uniforms.data(), uniforms.size() * sizeof(float), cudaMemcpyHostToDevice));
     SamplingParams params(kBATCH_SIZE, kVOCAB_SIZE, 1.0F, 0, std::nextafter(1.0F, 0.0F));
     rt::Tensor workspace({static_cast<int64_t>(getTopKtopPSamplingWorkspaceSize(kBATCH_SIZE, kVOCAB_SIZE, params))},
-        rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     int32_t first{-1};
     for (int32_t iteration = 0; iteration < 10; ++iteration)
@@ -1133,6 +1163,59 @@ TEST_F(SamplingTest, NucleusSamplingNearOneUsesFullMassFallback)
             first = token;
         }
         EXPECT_EQ(token, first);
+    }
+}
+
+// Given rows of logits sampled once without caller uniforms and once with caller uniforms set to
+// counterUniform(seed, offset, row)
+// When the top-K and the top-P kernel run at several offsets
+// Then both runs pick the same tokens, so each kernel draws from (seed, offset, row)
+TEST_F(SamplingTest, RowsWithoutUniformsDrawCounterUniformOfSeedOffsetAndRow)
+{
+    constexpr int32_t kROWS{64};
+    std::vector<float> const probs{0.4F, 0.3F, 0.2F, 0.1F};
+    auto const vocabSize = static_cast<int32_t>(probs.size());
+    std::vector<float> logits;
+    for (int32_t row = 0; row < kROWS; ++row)
+    {
+        for (float const prob : probs)
+        {
+            logits.push_back(std::log(prob));
+        }
+    }
+    rt::Tensor logitsTensor({kROWS, vocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor uniformsTensor({kROWS}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor selected({kROWS, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    CUDA_CHECK(
+        cudaMemcpy(logitsTensor.rawPointer(), logits.data(), logits.size() * sizeof(float), cudaMemcpyHostToDevice));
+
+    for (auto const& [topK, topP] : {std::pair<int32_t, float>{vocabSize, 1.0F}, std::pair<int32_t, float>{0, 0.95F}})
+    {
+        SamplingParams params(kROWS, vocabSize, 1.0F, topK, topP);
+        rt::Tensor workspace({static_cast<int64_t>(getTopKtopPSamplingWorkspaceSize(kROWS, vocabSize, params))},
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+        for (uint64_t const offset : {0ULL, 1ULL, 7ULL})
+        {
+            topKtopPSamplingFromLogits(logitsTensor, selected, params, workspace, 0, TEST_SEED, offset);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            auto const withoutUniforms = copyDeviceToHost<int32_t>(selected);
+
+            std::vector<float> uniforms;
+            for (int32_t row = 0; row < kROWS; ++row)
+            {
+                uniforms.push_back(counter_rng::counterUniform(TEST_SEED, offset, static_cast<uint64_t>(row)));
+            }
+            CUDA_CHECK(cudaMemcpy(
+                uniformsTensor.rawPointer(), uniforms.data(), uniforms.size() * sizeof(float), cudaMemcpyHostToDevice));
+            topKtopPSamplingFromLogits(
+                logitsTensor, selected, params, workspace, 0, TEST_SEED, offset, &uniformsTensor);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            auto const withUniforms = copyDeviceToHost<int32_t>(selected);
+
+            ASSERT_GT(std::set<int32_t>(withUniforms.begin(), withUniforms.end()).size(), 1U)
+                << "every row picks the same token, so this fixture cannot tell rows apart";
+            EXPECT_EQ(withoutUniforms, withUniforms) << "topK=" << topK << " offset=" << offset;
+        }
     }
 }
 
@@ -1161,15 +1244,15 @@ protected:
         result.errorMessage = "";
 
         // Create tensors for the test
-        rt::Tensor inputTensor({batchSize, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-        rt::Tensor topKIndicesTensor({batchSize, topK}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Tensor inputTensor({batchSize, vocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor topKIndicesTensor({batchSize, topK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         rt::OptionalOutputTensor topKValuesOptional = std::nullopt;
         rt::Tensor topKValuesTensor;
 
         // Always test with values when requested
         if (testValues)
         {
-            topKValuesTensor = rt::Tensor({batchSize, topK}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+            topKValuesTensor = rt::Tensor({batchSize, topK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
             topKValuesOptional = std::ref(topKValuesTensor);
         }
 
@@ -1181,7 +1264,7 @@ protected:
         // Run test
         size_t workspaceSize = getSelectAllTopKWorkspaceSize(batchSize, vocabSize, topK);
         rt::Tensor workspaceTensor(
-            {static_cast<int64_t>(workspaceSize)}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+            {static_cast<int64_t>(workspaceSize)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
         selectAllTopK(inputTensor, topKValuesOptional, topKIndicesTensor, topK, workspaceTensor, 0);
         CUDA_CHECK(cudaDeviceSynchronize());

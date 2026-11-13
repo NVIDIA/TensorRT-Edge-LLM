@@ -35,6 +35,7 @@ enum class TokenLayoutBackend : int32_t
     kNativeCompactRagged,
 };
 
+//! The entry-padded backend requires mixedStepSupported == false; the compact backend requires it to be true.
 struct RaggedEngineContract
 {
     TokenLayoutBackend backend{TokenLayoutBackend::kEntryPaddedCompatibility};
@@ -95,10 +96,20 @@ struct RaggedExecutionBatch
 
     std::vector<int32_t> logitsToSequence;
     std::vector<SequenceWork> sequenceWorks;
+    //! Compact layout only: logits rows after the logitsToSequence.size() routed ones, one per sequence that selects
+    //! no logits (its last token row), in execution order. The exported graph sizes logits_indices by num_sequences,
+    //! so a compact step always has L = N; the engine computes these rows and they are discarded.
+    int32_t placeholderLogitsRows{0};
 
     void validateCommitSnapshot(StepId completedStepId, std::vector<CompletionSequence> const& current) const;
 };
 
+//! Lowers a ScheduledStep according to the contract backend.
+//!
+//! Entry-padded: every sequence occupies queryWidth physical rows; context and decode work cannot mix.
+//! Compact (phase 8): the step must list every context sequence before every decode sequence. Execution row i is
+//! step.sequences[i]; context rows [0, Np) own T_p tokens, decode rows [Np, N) own one token each, and tokens are
+//! packed without padding (T = T_p + N - Np). logitsToSequence maps each logits row to its execution row.
 class RaggedBatchBuilder
 {
 public:
@@ -114,6 +125,8 @@ public:
     static void validateExecutionBatch(RaggedExecutionBatch const& batch, RaggedEngineContract const& contract);
 
 private:
+    void buildCompactInto(ScheduledStep const& step, RaggedExecutionBatch& batch);
+
     RaggedEngineContract mContract;
     IdentitySetScratch mRequestIdentityScratch;
     IdentitySetScratch mResidentSlotScratch;

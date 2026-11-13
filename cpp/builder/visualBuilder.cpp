@@ -223,6 +223,32 @@ bool VisualBuilder::parseConfig()
         break;
     }
 
+    case multimodal::ModelType::GEMMA4_VISION:
+    {
+        // The per-image profile also controls resizing; preserve the checkpoint's image-token budget.
+        int64_t const imageTokens
+            = mModelConfig[kVisionConfigKey].value("default_output_length", mBuilderConfig.maxImageTokensPerImage);
+        if (imageTokens < 1)
+        {
+            LOG_ERROR("Gemma4 default_output_length must be positive, got %ld", imageTokens);
+            return false;
+        }
+        mBuilderConfig.maxImageTokensPerImage
+            = std::min({mBuilderConfig.maxImageTokensPerImage, imageTokens, mBuilderConfig.maxImageTokens});
+        if (mBuilderConfig.minImageTokens > mBuilderConfig.maxImageTokensPerImage)
+        {
+            LOG_ERROR(
+                "Gemma4 --minImageTokens (%ld) exceeds the checkpoint-capped --maxImageTokensPerImage (%ld). "
+                "Lower --minImageTokens to at most %ld to support single-image requests.",
+                mBuilderConfig.minImageTokens, mBuilderConfig.maxImageTokensPerImage,
+                mBuilderConfig.maxImageTokensPerImage);
+            return false;
+        }
+        LOG_INFO("Gemma4 visual profile: total max=%ld, checkpoint-capped max_per_image=%ld",
+            mBuilderConfig.maxImageTokens, mBuilderConfig.maxImageTokensPerImage);
+        break;
+    }
+
     case multimodal::ModelType::GEMMA4_UNIFIED_VISION:
     {
         // The exporter records the checkpoint's fixed per-image soft-token

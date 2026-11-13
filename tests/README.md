@@ -7,12 +7,12 @@
 export LLM_SDK_DIR=$(pwd)                           # Required: Project root
 export ONNX_DIR=/path/to/onnx/models                # Required: ONNX model directory
 export ENGINE_DIR=/path/to/engine/outputs           # Required for pipeline tests
-export LLM_MODELS_DIR=/path/to/pytorch/models       # Required for export tests (LLM torch models)
-export EDGELLM_DATA_DIR=/path/to/datasets           # Required for datasets and draft models
+export LLM_MODELS_DIR=/path/to/pytorch/models       # Optional with an explicit model ID or path
+export EDGELLM_DATA_DIR=/path/to/datasets           # Required only by tests using shared datasets
 export QUANT_CHECKPOINT_DIR=/path/to/quantized/checkpoints
 export HF_CHECKPOINT_DOWNLOAD_DIR=/managed/checkpoints/huggingface  # Optional
 export EDGE_LLM_ALLOW_HF_DOWNLOAD=0                 # Optional: disable downloads
-export TRT_PACKAGE_DIR=/path/to/tensorrt            # Optional: TensorRT installation
+export TRT_PACKAGE_DIR=/path/to/tensorrt            # Required for C++ build/runtime tests
 ```
 
 **Default Paths:**
@@ -46,8 +46,29 @@ Each model directory must contain `config.json` and Safetensors weights
 
 ### 2. Install Dependencies
 ```bash
-pip install -r tests/requirements.txt
+# Runtime/inference pipelines
+pip install \
+  -e ".[runtime]" \
+  -r tests/requirements.txt \
+  -r examples/accuracy/requirements-runtime.txt
+
+# Checkpoint export pipelines
+pip install -e ".[onnx]"
+
+# Full Python unit-test suite
+pip install -e ".[quantize,onnx,builder,runtime]"
+pip install -r tests/requirements-ut.txt
+
+# Python plugin tests on devices without a framework in the base image
+pip install -r tests/requirements-plugin.txt
 ```
+
+`tests/requirements.txt` contains only the shared pytest harness. Application
+dependencies come from the matching project extra, so test jobs cannot silently
+select different Torch, Transformers, ONNX, server, or ModelOpt versions.
+When `--priority` selects a test-list YAML, pytest also skips unlisted modules
+before importing them. Runtime jobs therefore do not need exporter frameworks
+just to collect and later deselect the Python unit tests.
 
 ### 3. Build Project
 ```bash
@@ -77,65 +98,12 @@ pytest --priority=l0_e2e_orin -v
 - **Pipeline Tests** (`test_llm_pipeline.py`, `test_vlm_pipeline.py`) - End-to-end inference
 - **Common Tests** (`test_common.py`) - Build and unit tests
 
-### Available Test Suites
-- `l0_onnx_export_1.yml` - Shared small-model checkpoint-to-ONNX exports
-- `l0_onnx_export_2.yml` - Parallel 4B speculative checkpoint-to-ONNX exports
-- `l0_e2e_a30.yml` - Audio, direct builds, few-layer validation, and speculative decoding on A30
-- `l0_e2e_a30_trtrtx.yml` - TensorRT RTX engine and runtime checks on A30
-- `l0_e2e_orin.yml` - INT4 VLM checks on Jetson Orin
-- `l0_e2e_drive_thor.yml` - VLM server, MTP, and EAGLE checks on DRIVE Thor
-- `l0_e2e_spark.yml` - DFlash checks on DGX Spark
-- `l0_e2e_b100.yml` - MTP, DSpark, and MoE validation on B100
-- `l0_e2e_rtx5090.yml` - JetSpec and few-layer validation on RTX 5090
+### L0 Model Cases
 
-## Parameter Format
-
-### Model Configuration String
-```
-Export:  ModelName-Precision-[LmHeadPrecision-][Additional-Export-Params]
-Runtime: ModelName-Precision-[LmHeadPrecision-]MaxSeqLen-MaxBatchSize-MaxInputLen-[Additional-Params]
-```
-
-### Core Parameters
-- **Model**: `Qwen2.5-0.5B-Instruct`, `InternVL3-1B-hf`
-- **Precision**: `fp16`, `fp8`, `int8_sq`, `int4_awq`, `nvfp4`, `int4_gptq`
-- **LM Head**: `lmfp16`, `lmfp8`, `lmint4_awq`, `lmnvfp4` (optional, defaults to fp16)
-- **Runtime Engine Config**: `mxsl4096` (max seq len), `mxbs1` (max batch), `mxil2048` (max input len)
-
-### Task-Specific Parameters
-**Build/Inference:**
-- `mxlr64` - Max LoRA rank (optional)
-- `mnit128`, `mxit1024`, `mxpiit512` - Min/max image tokens (VLM only)
-- `vitfp8` - Visual precision (VLM only)
-- `vitmhafp8` - Visual attention (ViT MHA) in FP8; requires `vitfp8` (VLM only)
-
-**Benchmark:**
-- `bs1` - Batch size, `isl2048` - Input seq len, `osl128` - Output seq len
-- `ttl1024`, `itl1024` - Text/image token lengths (VLM only)
-
-**Export:**
-- `lora` - Enable LoRA support
-- `eagle-<draft_id>-<precision>` - Enable EAGLE export with a named draft
-- `lm<precision>` after the draft precision - Draft LM head precision (optional, defaults to fp16)
-- Export tests do not take sequence length, batch, or input length parameters.
-
-### Examples
-```bash
-# LLM with FP16 precision
-Qwen2.5-0.5B-Instruct-fp16-mxsl4096-mxbs1-mxil2048
-
-# VLM with INT4 AWQ and LoRA
-Qwen2.5-VL-3B-Instruct-int4_awq-mxsl4096-mxbs1-mxil2048-mnit128-mxit2048-mxpiit512-mxlr32
-
-# Benchmark test with FP8
-Qwen2.5-0.5B-Instruct-fp8-mxsl4096-mxbs1-mxil2048-bs1-isl2048-osl128
-
-# EAGLE export with FP16 base and draft
-Qwen2.5-7B-Instruct-fp16-eagle-v1-fp16
-
-# EAGLE export with mixed precision
-Qwen2.5-7B-Instruct-fp8-lmfp8-eagle-v1-nvfp4-lmfp8
-```
+L0 deployment coverage is organized by base model in `model_configs/l0/`.
+See [model_configs/README.md](model_configs/README.md) for the schema and the
+custom merge-request pipeline format. Files under `test_lists/` retain only
+suite prerequisites and non-model tests.
 
 ## Directory Structure
 
@@ -153,13 +121,20 @@ tests/
 │       ├── command_execution.py
 │       ├── command_generation.py
 │       └── accuracy.py
-├── test_lists/             # Test configuration files
+├── ifb/                    # In-flight batching trace driver and correctness checker
+├── model_configs/l0/       # Model-owned L0 deployment cases
+├── test_lists/             # Suite prerequisites and non-model tests
 ├── test_cases/             # Test input/reference data
 └── conftest.py            # Pytest configuration
 ```
 
 ### Model Directory Structure
 **ONNX Models (`ONNX_DIR/`):**
+
+Pre-quantized GPTQ model identifiers keep their complete model name as the
+top-level directory, for example
+`Qwen3-8B-GPTQ-Int4/llm-int4_gptq-fp16/`.
+
 ```
 {ModelName}/
 ├── llm-{precision}-{lm_head_precision}/
@@ -219,7 +194,7 @@ FileNotFoundError: ONNX model not found
 
 **Build Executables Not Found:**
 ```bash
-Unit test executable not found: build/unittests/unitTestRuntime
+Unit test executable not found: build/bin/unitTests/unitTestRuntime
 ```
 → Ensure project is built with `cmake .. -DBUILD_UNIT_TESTS=ON`
 
@@ -235,7 +210,7 @@ OSError: libnvinfer.so.x: cannot open shared object file
 echo $LLM_SDK_DIR $ONNX_DIR $ENGINE_DIR
 
 # Verbose test output with logs
-pytest --priority=l0_pipeline_a30 -v -s --tb=long
+pytest --priority=l0_e2e_a30 -v -s --tb=long
 
 # Check individual logs
 ls logs/ && cat logs/test_build_project.log
@@ -243,20 +218,20 @@ ls logs/ && cat logs/test_build_project.log
 
 ## Adding New Tests
 
-### 1. Add to Test Suite
-Edit appropriate test list file (e.g., `tests/test_lists/l0_pipeline_a30.yml`):
-```yaml
-tests:
-  - tests/defs/test_llm_pipeline.py::test_engine_build[MyModel-fp16-mxsl4096-mxbs1-mxil2048]
-```
+Add a readable deployment case to the base model's YAML under
+`tests/model_configs/l0/`. Do not add an encoded model ID to a platform test
+list. See [the model-case schema](model_configs/README.md) for ONNX,
+checkpoint-direct, server, speculative-decoding, and inference fields.
 
-### 2. Ensure Model Files
-Place model files in correct `ONNX_DIR` structure:
-```
-ONNX_DIR/MyModel/llm-fp16-fp16-4096/model.onnx
-```
+Test the selected platform locally:
 
-### 3. Test Locally
 ```bash
-pytest --priority=l0_pipeline_a30 -k "MyModel" -v
+pytest --priority=l0_e2e_a30 -k "MyModel" -v
 ```
+
+## Server stress testing
+
+The opt-in server stress suite covers concurrent requests, overload recovery,
+cancellation, sustained load, and process lifecycle on x86 and DGX Spark.
+See [Server stress testing](server_stress/README.md) for setup, pytest commands,
+configuration, result metrics, and the HTTP benchmark CLI.

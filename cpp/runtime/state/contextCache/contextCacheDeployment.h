@@ -19,6 +19,7 @@
 
 #include "runtime/config/deploymentConfig.h"
 #include "runtime/state/contextCache/specReuseContract.h"
+#include "runtime/state/swaKVCacheState.h"
 
 #include <cstdint>
 #include <optional>
@@ -39,6 +40,7 @@ struct ContextCacheDeploymentProfile
 {
     ContextCacheModelStateKind baseStateKind{};
     std::optional<SpecReuseContract> specReuseContract;
+    std::optional<SwaCacheConfig> swaConfig;
 
     bool hasAttention() const noexcept
     {
@@ -68,6 +70,11 @@ struct ContextCacheDeploymentProfile
     bool ownsPagedSpecState() const noexcept
     {
         return isSpeculative() && specReuseContract->ownsPagedSpecState;
+    }
+
+    bool usesBoundedSwa() const noexcept
+    {
+        return swaConfig.has_value();
     }
 };
 

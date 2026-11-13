@@ -336,7 +336,7 @@ void gemma4AudioAttentionForward(rt::Tensor const& qRaw, rt::Tensor const& kRaw,
     rt::Tensor const& gamma, rt::Tensor const& relKey, rt::Tensor const& valid, rt::Tensor& out,
     Gemma4AudioAttentionParams const& params, cudaStream_t stream)
 {
-    using nvinfer1::DataType;
+    using trt_edgellm::DataType;
 
     // Element type and shapes are carried by the tensors. q/k/v/relKey/out share one floating type.
     DataType const dtype = qRaw.getDataType();

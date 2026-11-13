@@ -35,7 +35,6 @@
 #include <variant>
 #include <vector>
 
-using namespace nvinfer1;
 using namespace trt_edgellm;
 
 using XQADataType = xqa::kernels::Data_type;
@@ -51,21 +50,30 @@ constexpr uint32_t kSPLIT_HEAD_DIM_512_CTA_DIM_Z{2U};
 constexpr uint32_t kDEFAULT_XQA_CTA_DIM_Z{2U};
 constexpr uint32_t kDEFAULT_XQA_CTA_DIM_X{128U};
 constexpr uint32_t kHEAD_DIM_512_CTA_DIM_X{256U};
+constexpr uint32_t kMAX_KV_SPLITS{32U};
+constexpr uint32_t kTARGET_DECODE_CTAS{64U};
+constexpr uint32_t kKV_TILE_SIZE{256U};
+constexpr size_t kROW_STATS_BYTES{128U};
+
+size_t alignUp(size_t value, size_t alignment) noexcept
+{
+    return (value + alignment - 1U) / alignment * alignment;
+}
 // Max vanilla XQA kernel argument count. No-sliding kernels use one fewer argument.
 constexpr size_t kXQA_KERNEL_PARAM_COUNT{12U};
 // Max spec-decode XQA kernel argument count. No-sliding kernels use one fewer argument.
 constexpr size_t kSPEC_DECODE_XQA_KERNEL_PARAM_COUNT{17U};
 
 //! @throws std::runtime_error if datatype is unsupported
-XQADataType trtToXqaDataType(nvinfer1::DataType type)
+XQADataType trtToXqaDataType(trt_edgellm::DataType type)
 {
     XQADataType xqaType{XQADataType::DATA_TYPE_FP16};
     switch (type)
     {
-    case nvinfer1::DataType::kFLOAT: xqaType = XQADataType::DATA_TYPE_FP32; break;
-    case nvinfer1::DataType::kHALF: xqaType = XQADataType::DATA_TYPE_FP16; break;
-    case nvinfer1::DataType::kBF16: xqaType = XQADataType::DATA_TYPE_BF16; break;
-    case nvinfer1::DataType::kFP8: xqaType = XQADataType::DATA_TYPE_E4M3; break;
+    case trt_edgellm::DataType::kFLOAT: xqaType = XQADataType::DATA_TYPE_FP32; break;
+    case trt_edgellm::DataType::kHALF: xqaType = XQADataType::DATA_TYPE_FP16; break;
+    case trt_edgellm::DataType::kBF16: xqaType = XQADataType::DATA_TYPE_BF16; break;
+    case trt_edgellm::DataType::kFP8: xqaType = XQADataType::DATA_TYPE_E4M3; break;
     default: throw std::runtime_error("Unsupported datatype for XQA.");
     }
     return xqaType;
@@ -614,7 +622,7 @@ inline XQAKernelList* getXQAKernels(
 
 } // namespace
 
-DecoderXQARunner::DecoderXQARunner(nvinfer1::DataType const dataType, nvinfer1::DataType const kvDataType,
+DecoderXQARunner::DecoderXQARunner(trt_edgellm::DataType const dataType, trt_edgellm::DataType const kvDataType,
     int32_t batchSize, int32_t numQHeads, int32_t numKvHeads, int32_t headSize, int32_t smVersion) noexcept
     : mDataType(dataType)
     , mKVDataType(kvDataType)
@@ -638,6 +646,31 @@ XQALaunchParams DecoderXQARunner::initXQAParams() noexcept
     params.headGroupSize = params.numQheads / params.numKVheads;
 
     return params;
+}
+
+uint32_t DecoderXQARunner::getSemaphoreCount() noexcept
+{
+    // The occupancy bound permits KV splitting only when batch * KV heads * head splits < this target.
+    return kTARGET_DECODE_CTAS;
+}
+
+size_t DecoderXQARunner::getWorkspaceSize(uint32_t kvCacheCapacity) const noexcept
+{
+    if ((mHeadSize != 64U && mHeadSize != 128U && mHeadSize != 256U && mHeadSize != 512U)
+        || mDataType != DataType::kHALF || (mKVDataType != DataType::kHALF && mKVDataType != DataType::kFP8)
+        || mBatchSize == 0U || mNumKVHeads == 0U || mNumHeads % mNumKVHeads != 0U || mNumHeads / mNumKVHeads == 0U
+        || mNumHeads / mNumKVHeads > 32U || kvCacheCapacity <= kKV_TILE_SIZE)
+    {
+        return 0U;
+    }
+    size_t const sequences = static_cast<size_t>(mBatchSize) * mNumKVHeads;
+    size_t const partialBytes = static_cast<size_t>(mNumHeads / mNumKVHeads) * mHeadSize * sizeof(uint16_t);
+    size_t const partials = sequences * kMAX_KV_SPLITS;
+    // D512 may use two CTAs per head, each with its own row statistics.
+    size_t const maxHeadSplits = mHeadSize == kHEAD_DIM_512 ? kSPLIT_HEAD_DIM_512_CLUSTER_SIZE : 1U;
+    // MemSegmenter aligns each array to its element size, including the full partial output tile.
+    return partialBytes - 1U + alignUp(2U * kROW_STATS_BYTES * partials * maxHeadSplits, partialBytes)
+        + partialBytes * partials;
 }
 
 bool DecoderXQARunner::loadDecodeXQAKernelFromCubin(XQAJitKey const& key, void const* cubinData, size_t cubinSize)
@@ -671,11 +704,28 @@ void DecoderXQARunner::dispatchXQAKernel(XQALaunchParams& params, cudaStream_t c
 
     auto kernelParams = makeXQAKernelParams(params, kernelInfo.mSlidingWindow, kvCacheArg);
 
-    // The multi-block kernel launch is mainly for long sequence.
-    // TODO: Add multiple block launch logic. The launch configuration highly depends on usecase and performance
-    // context. Current measured workload doesn't get performance gain from multi-block launch.
-    dim3 const dimGrid{
-        getXQAKernelGridDimX(kernelInfo), static_cast<uint32_t>(mNumKVHeads), static_cast<uint32_t>(mBatchSize)};
+    uint32_t const headSplits = getXQAKernelGridDimX(kernelInfo);
+    uint32_t splits = 1U;
+    size_t const workspaceBytes = getWorkspaceSize(params.kvCache.capacity);
+    if (workspaceBytes > 0U && params.workspace != nullptr)
+    {
+        check::check(params.workspaceSize >= workspaceBytes, "Insufficient XQA multi-block workspace.");
+        size_t const sequences = static_cast<size_t>(mBatchSize) * mNumKVHeads * headSplits;
+        uint32_t const kvTileSize = kKV_TILE_SIZE * getCtaDimX(kernelInfo) / kDEFAULT_XQA_CTA_DIM_X;
+        uint32_t const kvLength = kernelInfo.mSlidingWindow ? std::min(params.kvCache.capacity, params.slidingWinSize)
+                                                            : params.kvCache.capacity;
+        splits = static_cast<uint32_t>(std::min(
+            {static_cast<size_t>(kMAX_KV_SPLITS), (static_cast<size_t>(kvLength) + kvTileSize - 1U) / kvTileSize,
+                (kTARGET_DECODE_CTAS + sequences - 1U) / sequences}));
+        if (splits > 1U)
+        {
+            size_t const partialBytes = static_cast<size_t>(mNumHeads / mNumKVHeads) * mHeadSize * sizeof(uint16_t);
+            check::check(params.semaphores != nullptr, "XQA multi-block counters must be initialized by the caller.");
+            params.scratch
+                = reinterpret_cast<void*>(alignUp(reinterpret_cast<uintptr_t>(params.workspace), partialBytes));
+        }
+    }
+    dim3 const dimGrid{splits * headSplits, mNumKVHeads, mBatchSize};
     dim3 const dimCta = getXQAKernelCtaDim(kernelInfo);
     launchXQAKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams.data(), params.enablePdl, mSmVersion);
 }

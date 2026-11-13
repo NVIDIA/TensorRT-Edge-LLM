@@ -103,7 +103,7 @@ TEST_F(LogitBiasTest, EmptySlotsClearPriorUploadAndAreANoop)
 
     auto populatedRequest = makeRequest({{{0, 9.0F}}, {{1, -4.0F}}});
     rt::prepareLogitBias(mLogitBias, populatedRequest, context);
-    rt::Tensor primingLogits({2, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "primingLogits");
+    rt::Tensor primingLogits({2, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "primingLogits");
     copyHostToDevice<float>(primingLogits, std::vector<float>(6, 0.0F));
     rt::applyLogitBias(mLogitBias, primingLogits, context, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
@@ -119,7 +119,7 @@ TEST_F(LogitBiasTest, EmptySlotsClearPriorUploadAndAreANoop)
     EXPECT_TRUE(context.logitBiasPerSlot[1].empty());
 
     std::vector<float> const input{1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F};
-    rt::Tensor logits({2, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "emptyBiasLogits");
+    rt::Tensor logits({2, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "emptyBiasLogits");
     copyHostToDevice(logits, input);
 
     rt::applyLogitBias(mLogitBias, logits, context, mStream);
@@ -142,7 +142,7 @@ TEST_F(LogitBiasTest, AppliesFullVocabBiasesAcrossMixedSlotsAndReusesUpload)
 
     std::vector<float> const zeros(12, 0.0F);
     std::vector<float> const expected{0.0F, 2.5F, 0.0F, -1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 4.0F, 0.0F, 0.0F, 0.0F};
-    rt::Tensor prefillLogits({3, 4}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "mixedPrefillLogits");
+    rt::Tensor prefillLogits({3, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "mixedPrefillLogits");
     copyHostToDevice(prefillLogits, zeros);
 
     rt::applyLogitBias(mLogitBias, prefillLogits, context, mStream);
@@ -151,7 +151,7 @@ TEST_F(LogitBiasTest, AppliesFullVocabBiasesAcrossMixedSlotsAndReusesUpload)
     EXPECT_EQ(mLogitBias.hostOffsets, (std::vector<int32_t>{0, 2, 2, 3}));
     expectDeviceFloats(prefillLogits, expected);
 
-    rt::Tensor decodeLogits({3, 4}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "mixedDecodeLogits");
+    rt::Tensor decodeLogits({3, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "mixedDecodeLogits");
     copyHostToDevice(decodeLogits, zeros);
     rt::applyLogitBias(mLogitBias, decodeLogits, context, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
@@ -167,7 +167,7 @@ TEST_F(LogitBiasTest, AppliesBiasToEverySpecVerificationRowPerSlot)
     rt::prepareLogitBias(mLogitBias, request, context);
 
     constexpr int32_t kROWS_PER_SLOT = 3;
-    rt::Tensor logits({2, kROWS_PER_SLOT, 4}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "specRowsLogits");
+    rt::Tensor logits({2, kROWS_PER_SLOT, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "specRowsLogits");
     copyHostToDevice<float>(logits, std::vector<float>(24, 0.0F));
 
     rt::applyLogitBiasRepeatedRows(mLogitBias, logits, context, kROWS_PER_SLOT, mStream);
@@ -198,7 +198,7 @@ TEST_F(LogitBiasTest, AppliesBiasToEverySpecVerificationRowPerSlot)
 
 TEST_F(LogitBiasTest, MapsFullVocabIdsIntoReducedVocabAndSkipsMissingTokens)
 {
-    rt::Tensor reducedToFull({3}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "reducedToFullVocabMap");
+    rt::Tensor reducedToFull({3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "reducedToFullVocabMap");
     copyHostToDevice<int32_t>(reducedToFull, {4, 1, 7});
     rt::setLogitBiasVocabMap(mLogitBias, reducedToFull, 8, 3, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
@@ -213,7 +213,7 @@ TEST_F(LogitBiasTest, MapsFullVocabIdsIntoReducedVocabAndSkipsMissingTokens)
     EXPECT_FLOAT_EQ(context.logitBiasPerSlot[0].at(1), 2.0F);
     EXPECT_FLOAT_EQ(context.logitBiasPerSlot[0].at(2), 3.0F);
 
-    rt::Tensor logits({1, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "reducedVocabLogits");
+    rt::Tensor logits({1, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "reducedVocabLogits");
     copyHostToDevice<float>(logits, {0.0F, 0.0F, 0.0F});
     rt::applyLogitBias(mLogitBias, logits, context, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
@@ -226,7 +226,7 @@ TEST_F(LogitBiasTest, CompactedSlotsAreReuploadedWithNewOffsets)
     auto context = makeContext(3, mStream);
     rt::prepareLogitBias(mLogitBias, request, context);
 
-    rt::Tensor initialLogits({3, 4}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "initialLogits");
+    rt::Tensor initialLogits({3, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "initialLogits");
     copyHostToDevice<float>(initialLogits, std::vector<float>(12, 0.0F));
     rt::applyLogitBias(mLogitBias, initialLogits, context, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
@@ -239,7 +239,7 @@ TEST_F(LogitBiasTest, CompactedSlotsAreReuploadedWithNewOffsets)
         [](auto const& slotBias) { return !slotBias.empty(); });
     context.logitBiasGpuDirty = context.hasLogitBias;
 
-    rt::Tensor compactedLogits({2, 4}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "compactedLogits");
+    rt::Tensor compactedLogits({2, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "compactedLogits");
     copyHostToDevice<float>(compactedLogits, std::vector<float>(8, 0.0F));
     rt::applyLogitBias(mLogitBias, compactedLogits, context, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
@@ -247,6 +247,34 @@ TEST_F(LogitBiasTest, CompactedSlotsAreReuploadedWithNewOffsets)
     EXPECT_FALSE(context.logitBiasGpuDirty);
     EXPECT_EQ(mLogitBias.hostOffsets, (std::vector<int32_t>{0, 1, 2}));
     expectDeviceFloats(compactedLogits, {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 3.0F, 0.0F});
+}
+
+TEST_F(LogitBiasTest, RowSetBiasFollowsContextRowsAndForcesNextBatchReupload)
+{
+    // Given three slots with different biases already uploaded for an all-rows step, when the
+    // row-set bias is applied to logits rows that sample context rows {2, 0}, then each logits row
+    // gets its own context row's bias (slot 1's bias is not applied), and the next all-rows
+    // applyLogitBias() still biases every slot with its own entries.
+    auto request = makeRequest({{{1, 1.0F}}, {{2, 2.0F}}, {{3, 3.0F}}});
+    auto context = makeContext(3, mStream);
+    rt::prepareLogitBias(mLogitBias, request, context);
+    rt::Tensor primingLogits({3, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "primingLogits");
+    copyHostToDevice<float>(primingLogits, std::vector<float>(12, 0.0F));
+    rt::applyLogitBias(mLogitBias, primingLogits, context, mStream);
+    CUDA_CHECK(cudaStreamSynchronize(mStream));
+    ASSERT_FALSE(context.logitBiasGpuDirty);
+
+    rt::Tensor rowSetLogits({2, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "rowSetLogits");
+    copyHostToDevice<float>(rowSetLogits, std::vector<float>(8, 0.0F));
+    rt::applyLogitBiasForRows(mLogitBias, rowSetLogits, context, {2, 0}, mStream);
+    CUDA_CHECK(cudaStreamSynchronize(mStream));
+    expectDeviceFloats(rowSetLogits, {0.0F, 0.0F, 0.0F, 3.0F, 0.0F, 1.0F, 0.0F, 0.0F});
+
+    rt::Tensor batchLogits({3, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "batchLogits");
+    copyHostToDevice<float>(batchLogits, std::vector<float>(12, 0.0F));
+    rt::applyLogitBias(mLogitBias, batchLogits, context, mStream);
+    CUDA_CHECK(cudaStreamSynchronize(mStream));
+    expectDeviceFloats(batchLogits, {0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 2.0F, 0.0F, 0.0F, 0.0F, 0.0F, 3.0F});
 }
 
 } // namespace

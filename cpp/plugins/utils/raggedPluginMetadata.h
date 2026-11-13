@@ -23,6 +23,7 @@
 #include <NvInferRuntime.h>
 #include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <string>
 
 namespace trt_edgellm::plugins
@@ -39,10 +40,49 @@ struct RaggedPluginMetadata
     rt::ExecutionPhase phase;
 };
 
+inline std::optional<rt::SpecVerifyLayout> decodeSpecVerifyLayout(
+    char const* pluginName, nvinfer1::PluginTensorDesc const& layoutMarker, rt::ExecutionPhase phase)
+{
+    auto fail
+        = [&](char const* reason) { check::check(false, std::string(pluginName) + " spec_verify_layout: " + reason); };
+    if (layoutMarker.dims.nbDims != 1 || layoutMarker.type != nvinfer1::DataType::kINT32
+        || layoutMarker.format != nvinfer1::TensorFormat::kLINEAR)
+    {
+        fail("marker must be rank-one linear INT32");
+    }
+    int64_t const extent = layoutMarker.dims.d[0];
+    if (!rt::isSpecVerifyLayoutExtentValid(phase, extent))
+    {
+        fail(phase == rt::ExecutionPhase::kSpecTargetVerify
+                ? "target verification requires extent 1 (chain) or 2 (tree)"
+                : "non-verification execution requires inactive extent 0");
+    }
+    if (phase == rt::ExecutionPhase::kSpecTargetVerify)
+    {
+        if (extent == 1)
+        {
+            return rt::SpecVerifyLayout::kChain;
+        }
+        if (extent == 2)
+        {
+            return rt::SpecVerifyLayout::kTree;
+        }
+    }
+    return std::nullopt;
+}
+
+//! Execution-row layouts a plugin can execute. Only kPaddedAndCompact admits phase 8.
+enum class RaggedLayoutSupport : int32_t
+{
+    kPaddedOnly,       //!< Entry-padded homogeneous phases; phase 8 is rejected
+    kPaddedAndCompact, //!< Additionally the compact phase 8 layout: prefill rows first, one row per decode
+};
+
 inline RaggedPluginMetadata decodeRaggedPluginMetadata(char const* pluginName,
     nvinfer1::PluginTensorDesc const& activation, nvinfer1::PluginTensorDesc const& queryLengths,
     nvinfer1::PluginTensorDesc const& queryStartOffsets, nvinfer1::PluginTensorDesc const& phaseMarker,
-    nvinfer1::PluginTensorDesc const& contextCountCarrier)
+    nvinfer1::PluginTensorDesc const& contextCountCarrier,
+    RaggedLayoutSupport layoutSupport = RaggedLayoutSupport::kPaddedOnly)
 {
     auto const extent
         = [](nvinfer1::PluginTensorDesc const& desc) { return desc.dims.nbDims > 0 ? desc.dims.d[0] : -1; };
@@ -75,13 +115,23 @@ inline RaggedPluginMetadata decodeRaggedPluginMetadata(char const* pluginName,
     auto const phase = static_cast<rt::ExecutionPhase>(phaseExtent);
     bool const contextPhase
         = phase == rt::ExecutionPhase::kContextPrefill || phase == rt::ExecutionPhase::kContextChunk;
+    if (phase == rt::ExecutionPhase::kMixedPrefillDecode && layoutSupport == RaggedLayoutSupport::kPaddedAndCompact)
+    {
+        int32_t const ndecode = n - nctx;
+        int32_t const contextExecutionRows = texec - ndecode;
+        if (contextExecutionRows < nctx || (nctx == 0) != (contextExecutionRows == 0))
+        {
+            fail("compact execution requires at least one row per prefill sequence and no prefill rows when Nctx = 0");
+        }
+        return {n, nctx, ndecode, texec, contextExecutionRows, ndecode, phase};
+    }
     if (phase == rt::ExecutionPhase::kMixedPrefillDecode)
     {
         if (nctx <= 0 || nctx >= n)
         {
-            fail("phase 8 requires 0 < Nctx < N");
+            fail("compact execution requires 0 < Nctx < N");
         }
-        fail("phase 8 mixed prefill/decode is reserved but unsupported");
+        fail("compact (mixed prefill/decode) execution is not supported by this plugin");
     }
     if (texec % n != 0)
     {

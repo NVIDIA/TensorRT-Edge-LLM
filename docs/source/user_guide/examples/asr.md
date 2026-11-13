@@ -22,6 +22,10 @@ trtedge export \
   $MODEL_NAME/onnx
 ```
 
+The audio encoder's attention exports on `ViTAttentionPlugin` over the chunk
+windows. Set `USE_AUDIO_ATTN_PLUGIN=0` on the export command to get the
+dense-mask graph instead.
+
 ## Step 2: Transfer to Device
 
 ```bash
@@ -39,7 +43,7 @@ export MODEL_NAME=Qwen3-ASR-0.6B
 cd /path/to/TensorRT-Edge-LLM
 
 # Build language model engine
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/llm \
   --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
   --max-batch-size 1 \
@@ -47,7 +51,7 @@ cd /path/to/TensorRT-Edge-LLM
   --max-kv-cache-capacity 4096
 
 # Build audio encoder engine
-./build/examples/multimodal/audio_build \
+./build/bin/audio_build \
   --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/audio \
   --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/audio \
   --min-time-steps 100 \
@@ -94,7 +98,7 @@ Run inference:
 ```bash
 cd /path/to/TensorRT-Edge-LLM
 
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
   --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
   --multimodal-engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/audio \
   --input-file $WORKSPACE_DIR/input_asr.json \

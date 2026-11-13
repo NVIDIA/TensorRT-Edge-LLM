@@ -50,6 +50,8 @@ _GLIBC_BASELINES = {
     ("drive", "7.2"): (2, 39),
     ("igx-thor", "current"): (2, 39),
     ("dgx-spark", "current"): (2, 39),
+    ("gb200", "current"): (2, 39),
+    ("gb300", "current"): (2, 39),
 }
 
 
@@ -189,6 +191,25 @@ def _audit_glibc_symbols(path: Path, row: Mapping[str, Any]) -> None:
             f"{baseline[0]}.{baseline[1]}.")
 
 
+def _audit_extension_exports(path: Path) -> None:
+    """Require a Python-only export surface for the native extension."""
+    symbols = _tool_output(
+        ["readelf", "--dyn-syms", "--wide",
+         os.fspath(path)])
+    exported = set()
+    for line in symbols.splitlines():
+        fields = line.split()
+        if (len(fields) >= 8 and fields[0].endswith(":")
+                and fields[4] in {"GLOBAL", "WEAK"} and fields[6] != "UND"):
+            exported.add(fields[7].split("@", 1)[0])
+    expected = {"PyInit__edgellm_runtime"}
+    if exported != expected:
+        raise RuntimeError(
+            f"{path} has unexpected dynamic exports: "
+            f"{sorted(exported - expected)}; missing={sorted(expected - exported)}."
+        )
+
+
 def _audit_device_images(path: Path, gpu_sm: int) -> None:
     executable = _audit_tool("cuobjdump")
     # Inspect one architecture at a time so a later malformed entry cannot
@@ -290,21 +311,16 @@ def _validate_payload_metadata(
     payload = _read_json(stage / "payload.json")
     missing = sorted(_REQUIRED - set(payload))
     extra = sorted(set(payload) - _REQUIRED)
-    if missing or extra or payload.get("schema_version") != 1:
+    if (missing or extra
+            or payload.get("schema_version") != CONTRACT.SCHEMA_VERSION):
         raise RuntimeError(
             f"Invalid payload metadata; missing={missing}, extra={extra}, "
             f"schema={payload.get('schema_version')}.")
     if not re.fullmatch(r"[0-9a-f]{40}", str(payload["source_revision"])):
         raise RuntimeError(
             "payload source_revision must be a full lowercase Git SHA.")
-    if not re.fullmatch(r"cp3\d{2}", str(payload["python_abi"])):
-        raise RuntimeError("payload python_abi must be cp3XY.")
-
-    matrix, rows = load_matrix(matrix_path.resolve())
+    _, rows = load_matrix(matrix_path.resolve())
     row = require_variant(rows, str(payload["variant_id"]))
-    if payload["python_abi"] not in matrix["qualified_python_abis"]:
-        raise RuntimeError(
-            f"Payload uses unqualified ABI {payload['python_abi']}.")
     fields = (
         "platform_family",
         "platform_release",
@@ -341,15 +357,12 @@ def _payload_binaries(stage: Path,
     payload_prefix = f"_native/payloads/{payload['variant_id']}/"
     extension_relative = str(payload["extension"])
     plugin_relative = str(payload["plugin"])
-    expected_extension = (
-        f"_edgellm_runtime.cpython-{str(payload['python_abi'])[2:]}-"
-        f"{payload['cpu_arch']}-linux-gnu.so")
+    expected_extension = "_edgellm_runtime.abi3.so"
     if (not extension_relative.startswith(payload_prefix)
             or "/" in extension_relative[len(payload_prefix):]
             or extension_relative[len(payload_prefix):] != expected_extension):
         raise RuntimeError(
-            "Extension SOABI architecture does not match the selected "
-            f"{payload['cpu_arch']} payload layout.")
+            "Extension path does not contain the stable-ABI runtime module.")
     if plugin_relative != payload_prefix + "lib/libNvInfer_edgellm_plugin.so":
         raise RuntimeError(
             "Plugin path does not match the selected variant layout.")
@@ -358,11 +371,6 @@ def _payload_binaries(stage: Path,
     plugin = _stage_path(package_stage, plugin_relative)
     _validate_payload_hash(extension, payload, "extension_sha256")
     _validate_payload_hash(plugin, payload, "plugin_sha256")
-    digits = str(payload["python_abi"])[2:]
-    if f"cpython-{digits}" not in extension.name:
-        raise RuntimeError(
-            f"Extension {extension.name} does not match ABI {payload['python_abi']}."
-        )
     return package_stage, extension, plugin
 
 
@@ -434,6 +442,7 @@ def _audit_cutedsl_evidence(metadata: Mapping[str, Any],
     symbols = evidence.get("generated_symbols")
     linked = set(evidence.get("linked_symbols") or [])
     defined = set(evidence.get("defined_symbols") or [])
+    archive_defined = set(evidence.get("archive_defined_symbols") or [])
     unresolved = set(evidence.get("unresolved_symbols") or [])
     if (not isinstance(variants, list) or not variants
             or not isinstance(members, list) or not members
@@ -448,8 +457,8 @@ def _audit_cutedsl_evidence(metadata: Mapping[str, Any],
     canonical_member_text = re.sub(r"__arch\d+(?=[_.]|$)", "", member_text)
     missing_variants = sorted(variant for variant in variants
                               if variant not in canonical_member_text)
-    missing_symbols = sorted(set(symbols) - linked - defined)
-    unresolved_generated = sorted(set(symbols) & unresolved)
+    missing_symbols = sorted(set(symbols) - linked - defined - archive_defined)
+    unresolved_generated = sorted((set(symbols) & unresolved) - defined)
     if missing_variants or missing_symbols or unresolved_generated:
         raise RuntimeError("CuTe link evidence is incomplete: "
                            f"variants={missing_variants[:20]}, "
@@ -587,9 +596,12 @@ def verify(stage: Path,
         raise RuntimeError(
             "Payload is missing the canonical, unmodified LICENSE file.")
     _audit_cutedsl_evidence(cutedsl_metadata, evidence)
+    _audit_extension_exports(extension)
     _audit_binary_dependencies(payload, extension, plugin, row, allowlist_path,
                                dependency_roots, require_dependency_resolution)
     if require_device_images:
+        # CuTe DSL cubins are runtime-loaded archive data rather than ELF CUDA
+        # sections; their complete SM inventory is checked by link evidence.
         for gpu_sm in CONTRACT.matrix_variant_gpu_sms(row):
             _audit_device_images(extension, gpu_sm)
             _audit_device_images(plugin, gpu_sm)
@@ -607,7 +619,7 @@ def main(argv=None) -> None:
                      matrix_path=args.matrix,
                      require_device_images=not args.no_device_image_check,
                      dependency_roots=args.dependency_root)
-    print(f"verified {payload['variant_id']} {payload['python_abi']}")
+    print(f"verified {payload['variant_id']} cp310-abi3")
 
 
 if __name__ == "__main__":

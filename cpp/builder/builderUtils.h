@@ -81,8 +81,26 @@ std::string printOptimizationProfile(nvinfer1::IOptimizationProfile const* profi
 
 //! Apply TensorRT compile workarounds via the __LUNOWUD environment variable.
 //! Must be called before createInferBuilder.
+//! @param useTrtNativeMoe The network uses TensorRT's native MoE layer (TRT_MoE / IMoELayer). That layer is
+//!        implemented only in the CUDA Tile code generator, so the workaround that disables CUDA Tile is skipped.
 //! @return The applied __LUNOWUD flag string (empty if none)
-std::string applyCompileWorkarounds();
+std::string applyCompileWorkarounds(bool useTrtNativeMoe = false);
+
+//! Resolve the official builder's draft token capacity while preserving explicit user input.
+//! @param modelConfig Exported model configuration
+//! @param requestedTokens Parsed --maxSpecDraftTokens value
+//! @param explicitlySet Whether --maxSpecDraftTokens was supplied by the user
+//! @return Physical draft query capacity
+inline int64_t resolveOfficialMaxSpecDraftTokens(
+    nlohmann::json const& modelConfig, int64_t requestedTokens, bool explicitlySet)
+{
+    if (explicitlySet || modelConfig.value("spec_decode_type", "") != "dspark")
+    {
+        return requestedTokens;
+    }
+    auto const dsparkConfig = modelConfig.value("dspark_config", nlohmann::json::object());
+    return requestedTokens + (dsparkConfig.value("sample_from_anchor", true) ? 0 : 1);
+}
 
 //! Create TensorRT builder and network definition with strongly typed flag.
 //! @return Pair of builder and network, or {nullptr, nullptr} on failure
@@ -93,7 +111,10 @@ std::pair<std::unique_ptr<nvinfer1::IBuilder>, std::unique_ptr<nvinfer1::INetwor
 //! @param enableAliasedPluginIO Enable the kALIASED_PLUGIN_IO preview. Only the
 //!        DFlash/DSpark draft engines declare aliased plugin I/O; every other
 //!        plugin returns -1 from getAliasedInput, so leave this off elsewhere.
-//! @return Builder config with monitor memory flag enabled (TRT >= 10.6)
+//! @return Builder config with monitor memory flag enabled (TRT >= 10.6). With TensorRT-RTX, the config targets
+//!         only the current GPU's compute capability, so the engine runs only on GPUs with that capability.
+//!         Returns nullptr if builder is nullptr, config creation fails, or TensorRT-RTX cannot target the
+//!         current GPU's compute capability.
 std::unique_ptr<nvinfer1::IBuilderConfig> createBuilderConfig(
     nvinfer1::IBuilder* builder, bool enableAliasedPluginIO = false);
 

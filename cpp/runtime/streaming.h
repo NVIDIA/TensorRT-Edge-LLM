@@ -44,6 +44,7 @@ namespace rt
 // runtime/state/decodingInferenceContext.h; the request struct lives in
 // llmRuntimeUtils.h and holds the streamChannels vector.
 struct DecodingInferenceContext;
+struct LogprobsSlot;
 struct LLMGenerationRequest;
 
 /*!
@@ -54,7 +55,8 @@ enum class FinishReason : uint8_t
 {
     //! The slot is still generating — carried by every non-terminal chunk.
     kNotFinished = 0,
-    //! Model sampled the tokenizer's end-of-sequence token. Normal completion.
+    //! Normal completion: an end-of-sequence token was sampled, or the output ended without one at a point
+    //! where only one could follow (a completed JSON guide) or at an action slot's trajectory start.
     kEndId = 1,
     //! Hit `request.maxGenerateLength` (or the KV-clamped cap). Output may be mid-sentence.
     kLength = 2,
@@ -94,35 +96,62 @@ struct StreamChunk
     //! Per-token top-K logprobs: logprobs[i] = [LogprobEntry, ...] for tokenIds[i].
     //! Empty when numLogprobs == 0.
     std::vector<std::vector<LogprobEntry>> logprobs;
+    //! Prompt tokens served from reused state rather than prefilled, or -1 before the prefill has run.
+    int32_t reusedPromptTokenCount{-1};
 };
 
 class StreamChannel; // For the friend-function signatures below.
+
+namespace scheduler
+{
+class RequestEngine;
+}
 
 // Free-function streaming helpers. Declared as friends of StreamChannel below
 // so they can reach the private producer API (push, finish, setOriginalBatchIdx)
 // while consumers remain restricted to consume/tryPop/waitPop/cancel.
 void attachStreamChannel(std::shared_ptr<StreamChannel> const& channel, int32_t originalIdx);
+//! Undo attachStreamChannel for a channel nothing was pushed to, so a later admission can attach it again.
+void detachStreamChannel(std::shared_ptr<StreamChannel> const& channel) noexcept;
 bool validateStreamingSubmission(LLMGenerationRequest const& request);
 void applyCancellationToFinishStates(DecodingInferenceContext& context);
 
 //! Stage 1 of the per-iter pipeline: decode new tokens into per-slot UTF-8 bytes
 //! and run stop-string matching. Sets `s.pendingEmitText` (bytes safe to emit
-//! this iter) and `s.stopMatchedThisIter` (signal for updateFinishStates to apply
+//! this iter) and `s.stopMatchedThisIter` (signal for applyStopMatches to apply
 //! the kStopWords override). Does not push chunks and does not modify
 //! finishedStates / terminalReason — termination decisions live in
-//! updateFinishStates.
+//! updateFinishStates and applyStopMatches.
 void decodePerSlot(DecodingInferenceContext& context, tokenizer::Tokenizer const& tokenizer);
 
-//! Stage 2 of the per-iter pipeline (after updateFinishStates): push chunks
+//! Stage 2 of the per-iter pipeline (after applyStopMatches): push chunks
 //! to channels using the pre-computed `pendingEmitText` and finalized
 //! `terminalReason`. Non-streaming slots are skipped here — their output is
 //! assembled at handleRequest finalization. `tokenizer` is used to resolve the
 //! raw token piece for per-token logprobs (LogprobEntry::piece).
 void emitChunks(DecodingInferenceContext& context, tokenizer::Tokenizer const& tokenizer);
 
-//! Fires `context.onTokenGenerated` for every token appended since the previous
-//! callback emission. Speculative decoders and DiffusionGemma can accept more
-//! than one token in a single decode iteration.
+//! The one-row forms of the three stages above (@p row is an execution row of the context, not a
+//! resident slot); the batch forms are loops over them. A token
+//! produced outside a batch-wide step -- the lookahead token of a sequence's seated prefill --
+//! takes exactly the same path through these, so there is one pipeline for every produced
+//! token rather than a per-step one and a per-admission one that drift apart.
+void applyCancellationToFinishState(DecodingInferenceContext& context, int32_t row);
+void decodeSlot(DecodingInferenceContext& context, int32_t row, tokenizer::Tokenizer const& tokenizer);
+void emitChunk(DecodingInferenceContext& context, int32_t row, tokenizer::Tokenizer const& tokenizer);
+
+//! The top-K entries of one generated token, with their pieces. A row written for a grammar-forced token holds
+//! only that token (logprob 0) followed by filler entries with a negative id, which are left out.
+std::vector<LogprobEntry> logprobEntriesForStep(
+    LogprobsSlot const& slot, int32_t step, int32_t topK, tokenizer::Tokenizer const& tokenizer);
+
+//! Fires `context.onTokenGenerated` for every token @p row appended since its previous callback
+//! emission. The seated prefill runs it for its one slot, so a sequence's first token reaches the
+//! callback the way every later one does.
+void emitTokenCallbackForSlot(DecodingInferenceContext& context, int32_t row);
+
+//! The batch form: every slot, in slot order. Speculative decoders and DiffusionGemma can accept
+//! more than one token in a single decode iteration.
 void emitTokenCallbacks(DecodingInferenceContext& context);
 
 /*! @brief Result of applyStopStringMatch. */
@@ -230,11 +259,15 @@ private:
 
     bool const mCollectMetrics;
     friend class StreamChannelFinalizer;
+    //! The request engine finishes the channel of a request that never reached the runtime
+    //! (rejected, cancelled while queued, failed before its first step) so its consumer is not
+    //! left parked; nothing else outside the runtime may finish a channel.
+    friend class scheduler::RequestEngine;
     friend void attachStreamChannel(std::shared_ptr<StreamChannel> const&, int32_t);
+    friend void detachStreamChannel(std::shared_ptr<StreamChannel> const&) noexcept;
     friend bool validateStreamingSubmission(LLMGenerationRequest const&);
-    friend void applyCancellationToFinishStates(DecodingInferenceContext&);
-    friend void decodePerSlot(DecodingInferenceContext&, tokenizer::Tokenizer const&);
-    friend void emitChunks(DecodingInferenceContext&, tokenizer::Tokenizer const&);
+    friend void applyCancellationToFinishState(DecodingInferenceContext&, int32_t);
+    friend void emitChunk(DecodingInferenceContext&, int32_t, tokenizer::Tokenizer const&);
 
     // ── Producer API (runtime-only) ──────────────────────────────────────────
     void push(StreamChunk chunk);
@@ -285,21 +318,35 @@ void StreamChannel::consume(Handler&& handler, std::chrono::milliseconds poll)
 //! One PCM chunk emitted by a streaming audio (TTS / Omni) pipeline.
 struct AudioChunk
 {
-    std::string pcm16;    //!< Little-endian int16 mono PCM samples.
-    bool isFinal{false};  //!< True on the last chunk of the request.
-    int32_t numFrames{0}; //!< Codec frames vocoded into this chunk.
+    std::string pcm16;      //!< Little-endian int16 PCM samples, interleaved across channels.
+    bool isFinal{false};    //!< True on the last chunk of the request.
+    int32_t numFrames{0};   //!< Codec frames vocoded into this chunk.
+    int32_t sampleRate{0};  //!< Samples per second of each channel.
+    int32_t numChannels{1}; //!< Interleaved channels in pcm16.
 };
 
-//! Thread-safe MPSC queue carrying PCM chunks from the vocode callback to a
+//! One group of decoded frames emitted by a video generation pipeline.
+struct VideoChunk
+{
+    std::string rgb8;    //!< Packed [numFrames, height, width, 3] 8-bit RGB.
+    bool isFinal{false}; //!< True on the last chunk of the request.
+    int32_t numFrames{0};
+    int32_t height{0};
+    int32_t width{0};
+    int32_t fps{0};
+};
+
+//! Thread-safe MPSC queue carrying media chunks from a pipeline stage to a
 //! single consumer. push()/finish() are public (unlike StreamChannel's
 //! friend-guarded producer API) because producers are pipeline callbacks
 //! composed outside the runtime.
-class AudioStreamChannel
+template <typename Chunk>
+class MediaStreamChannel
 {
 public:
     //! Blocking pop; nullopt on timeout or terminal wake — combine with
     //! isFinished()/isCancelled(). A zero timeout is a non-blocking pop.
-    std::optional<AudioChunk> waitPop(std::chrono::milliseconds timeout)
+    std::optional<Chunk> waitPop(std::chrono::milliseconds timeout)
     {
         std::unique_lock<std::mutex> lock(mMutex);
         mCv.wait_for(lock, timeout, [this] {
@@ -310,7 +357,7 @@ public:
         {
             return std::nullopt;
         }
-        AudioChunk chunk = std::move(mPending.front());
+        Chunk chunk = std::move(mPending.front());
         mPending.pop_front();
         return chunk;
     }
@@ -332,7 +379,7 @@ public:
         mCv.notify_all();
     }
 
-    void push(AudioChunk chunk)
+    void push(Chunk chunk)
     {
         {
             std::lock_guard<std::mutex> lock(mMutex);
@@ -351,9 +398,17 @@ public:
 private:
     mutable std::mutex mMutex;
     std::condition_variable mCv;
-    std::deque<AudioChunk> mPending;
+    std::deque<Chunk> mPending;
     std::atomic<bool> mFinished{false};
     std::atomic<bool> mCancelled{false};
+};
+
+class AudioStreamChannel final : public MediaStreamChannel<AudioChunk>
+{
+};
+
+class VideoStreamChannel final : public MediaStreamChannel<VideoChunk>
+{
 };
 
 /*!
@@ -365,6 +420,10 @@ struct SlotStreamState
 {
     //! Channel (null ⇒ streaming disabled for this slot).
     std::shared_ptr<StreamChannel> channel;
+
+    //! The request's own cancellation bit, when its owner supplied one (the request engine does).
+    //! Polled at the top of every step beside the channel's cancel flag; either stops the slot.
+    std::shared_ptr<std::atomic<bool> const> cancelToken;
 
     //! Non-streaming detokenization policy. Streaming slots read this from their channel.
     bool skipSpecialTokens{true};
@@ -399,7 +458,7 @@ struct SlotStreamState
     std::string pendingEmitText;
 
     //! True iff stop-string match fired in decodePerSlot this iteration. Read by
-    //! updateFinishStates to apply the kStopWords override; reset at top of each
+    //! applyStopMatches to apply the kStopWords override; reset at top of each
     //! decodePerSlot pass.
     bool stopMatchedThisIter{false};
 };

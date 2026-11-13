@@ -18,6 +18,7 @@
 #include "nvfp4A16BlackwellGemvJitRunner.h"
 
 #include "common/checkMacros.h"
+#include "kernels/PluginJitKernels/pluginJitModuleRegistry.h"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -25,27 +26,14 @@
 #include <array>
 #include <cstdint>
 #include <limits>
-#include <mutex>
 #include <stdexcept>
-#include <tuple>
-#include <type_traits>
-#include <unordered_map>
+#include <string>
 
 namespace trt_edgellm
 {
 
-struct Nvfp4A16BlackwellGemvLoadedModule
+struct Nvfp4A16BlackwellGemvLoadedModule : PluginJitLoadedModule<Nvfp4A16BlackwellGemvJitKey>
 {
-    ~Nvfp4A16BlackwellGemvLoadedModule()
-    {
-        if (module != nullptr)
-        {
-            (void) cuModuleUnload(module);
-        }
-    }
-
-    CUcontext context{};
-    CUmodule module{};
     std::array<std::array<CUfunction, 3>, 5> mainFunctions{};
     std::array<std::array<CUfunction, 3>, 5> reduceFunctions{};
     std::array<CUfunction, 2> runtimeSplitMainFunctions{};
@@ -171,118 +159,32 @@ size_t getRuntimeSplitMIndex(int32_t const m)
     throw std::invalid_argument("Unsupported NVFP4-A16 Blackwell GEMV runtime split-K M specialization");
 }
 
-struct RegistryKey
+void bindFunctions(Nvfp4A16BlackwellGemvLoadedModule& loaded)
 {
-    CUcontext context{};
-    Nvfp4A16BlackwellGemvJitKey jitKey{};
-    Nvfp4A16BlackwellGemvJitDigest digest{};
-
-    bool operator==(RegistryKey const& other) const noexcept
+    for (size_t index = 0; index < kSUPPORTED_M.size(); ++index)
     {
-        return context == other.context && jitKey == other.jitKey && digest == other.digest;
+        for (size_t splitIndex = 0; splitIndex < kSUPPORTED_SPLIT_K.size(); ++splitIndex)
+        {
+            std::string const mSuffix = std::to_string(kSUPPORTED_M[index]);
+            std::string const splitSuffix = std::to_string(kSUPPORTED_SPLIT_K[splitIndex]);
+            std::string const mainName = "nvfp4_a16_blackwell_gemv_m" + mSuffix + "_sk" + splitSuffix;
+            std::string const reduceName = "nvfp4_a16_blackwell_gemv_reduce_m" + mSuffix + "_sk" + splitSuffix;
+            CUDA_DRIVER_CHECK(
+                cuModuleGetFunction(&loaded.mainFunctions[index][splitIndex], loaded.module, mainName.c_str()));
+            CUDA_DRIVER_CHECK(
+                cuModuleGetFunction(&loaded.reduceFunctions[index][splitIndex], loaded.module, reduceName.c_str()));
+        }
     }
-};
+    CUDA_DRIVER_CHECK(cuModuleGetFunction(
+        &loaded.runtimeSplitMainFunctions[0], loaded.module, "nvfp4_a16_blackwell_gemv_m8_runtime"));
+    CUDA_DRIVER_CHECK(cuModuleGetFunction(
+        &loaded.runtimeSplitMainFunctions[1], loaded.module, "nvfp4_a16_blackwell_gemv_m16_runtime"));
+}
 
-struct RegistryKeyHasher
+PluginJitModuleRegistry<Nvfp4A16BlackwellGemvJitKey, Nvfp4A16BlackwellGemvLoadedModule>& getKernelRegistry()
 {
-    size_t operator()(RegistryKey const& key) const noexcept
-    {
-        auto mix = [](size_t hash, size_t value) noexcept {
-            constexpr size_t kPRIME{0x100000001B3ULL};
-            return (hash ^ value) * kPRIME;
-        };
-
-        using DataTypeValue = std::underlying_type_t<Nvfp4A16BlackwellGemvDataType>;
-        size_t hash{0xCBF29CE484222325ULL};
-        hash = mix(hash, reinterpret_cast<uintptr_t>(key.context));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.sm));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.layout));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.n));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.k));
-        hash = mix(hash, static_cast<size_t>(static_cast<DataTypeValue>(key.jitKey.dataType)));
-        hash = mix(hash, static_cast<size_t>(key.jitKey.sourceAbi));
-        hash = mix(hash, static_cast<size_t>(key.digest.lo));
-        return mix(hash, static_cast<size_t>(key.digest.hi));
-    }
-};
-
-class KernelRegistry
-{
-public:
-    std::shared_ptr<Nvfp4A16BlackwellGemvLoadedModule> load(Nvfp4A16BlackwellGemvJitKernel const& kernel)
-    {
-        if (!canCompileNvfp4A16BlackwellGemvJitKernel(kernel.key) || kernel.cubin.empty())
-        {
-            throw std::invalid_argument("Invalid NVFP4-A16 Blackwell GEMV JIT key or cubin");
-        }
-        Nvfp4A16BlackwellGemvJitDigest const actualDigest
-            = computeNvfp4A16BlackwellGemvJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
-        if (!(actualDigest == kernel.digest))
-        {
-            throw std::invalid_argument("NVFP4-A16 Blackwell GEMV JIT cubin digest mismatch");
-        }
-
-        CUDA_CHECK(cudaFree(nullptr));
-        CUcontext context{};
-        CUDA_DRIVER_CHECK(cuCtxGetCurrent(&context));
-        if (context == nullptr)
-        {
-            throw std::runtime_error("NVFP4-A16 Blackwell GEMV JIT module load requires a current CUDA context");
-        }
-
-        RegistryKey const registryKey{context, kernel.key, kernel.digest};
-        std::lock_guard<std::mutex> lock(mMutex);
-        auto const existing = mModules.find(registryKey);
-        if (existing != mModules.end())
-        {
-            if (auto loaded = existing->second.lock())
-            {
-                return loaded;
-            }
-            mModules.erase(existing);
-        }
-
-        auto loaded = std::make_shared<Nvfp4A16BlackwellGemvLoadedModule>();
-        loaded->context = context;
-        CUDA_DRIVER_CHECK(cuModuleLoadData(&loaded->module, kernel.cubin.data()));
-        try
-        {
-            for (size_t index = 0; index < kSUPPORTED_M.size(); ++index)
-            {
-                for (size_t splitIndex = 0; splitIndex < kSUPPORTED_SPLIT_K.size(); ++splitIndex)
-                {
-                    std::string const mSuffix = std::to_string(kSUPPORTED_M[index]);
-                    std::string const splitSuffix = std::to_string(kSUPPORTED_SPLIT_K[splitIndex]);
-                    std::string const mainName = "nvfp4_a16_blackwell_gemv_m" + mSuffix + "_sk" + splitSuffix;
-                    std::string const reduceName = "nvfp4_a16_blackwell_gemv_reduce_m" + mSuffix + "_sk" + splitSuffix;
-                    CUDA_DRIVER_CHECK(cuModuleGetFunction(
-                        &loaded->mainFunctions[index][splitIndex], loaded->module, mainName.c_str()));
-                    CUDA_DRIVER_CHECK(cuModuleGetFunction(
-                        &loaded->reduceFunctions[index][splitIndex], loaded->module, reduceName.c_str()));
-                }
-            }
-            CUDA_DRIVER_CHECK(cuModuleGetFunction(
-                &loaded->runtimeSplitMainFunctions[0], loaded->module, "nvfp4_a16_blackwell_gemv_m8_runtime"));
-            CUDA_DRIVER_CHECK(cuModuleGetFunction(
-                &loaded->runtimeSplitMainFunctions[1], loaded->module, "nvfp4_a16_blackwell_gemv_m16_runtime"));
-        }
-        catch (...)
-        {
-            loaded.reset();
-            throw;
-        }
-        mModules.emplace(registryKey, loaded);
-        return loaded;
-    }
-
-private:
-    std::mutex mMutex;
-    std::unordered_map<RegistryKey, std::weak_ptr<Nvfp4A16BlackwellGemvLoadedModule>, RegistryKeyHasher> mModules;
-};
-
-KernelRegistry& getKernelRegistry()
-{
-    static KernelRegistry registry;
+    static PluginJitModuleRegistry<Nvfp4A16BlackwellGemvJitKey, Nvfp4A16BlackwellGemvLoadedModule> registry{
+        "NVFP4-A16 Blackwell GEMV JIT"};
     return registry;
 }
 
@@ -315,9 +217,12 @@ size_t getNvfp4A16BlackwellGemvJitWorkspaceSize(
 
 void Nvfp4A16BlackwellGemvJitRunner::load(Nvfp4A16BlackwellGemvJitKernel const& kernel)
 {
-    mLoadedModule = getKernelRegistry().load(kernel);
+    if (!canCompileNvfp4A16BlackwellGemvJitKernel(kernel.key))
+    {
+        throw std::invalid_argument("Invalid NVFP4-A16 Blackwell GEMV JIT key");
+    }
+    mLoadedModule = getKernelRegistry().load(kernel, bindFunctions);
     mKey = kernel.key;
-    mDigest = kernel.digest;
 }
 
 void Nvfp4A16BlackwellGemvJitRunner::launch(void const* const activation, uint8_t const* const qweights,

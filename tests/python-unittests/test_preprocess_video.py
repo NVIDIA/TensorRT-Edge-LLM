@@ -14,10 +14,10 @@
 # limitations under the License.
 """
 Unit coverage for the server-side video frame sampler
-(``experimental/server/media/video_sampling.py``): sampling math vs the HF
+(``tensorrt_edgellm/server/media/video_sampling.py``): sampling math vs the HF
 pipelines,
 source resolution, PyAV decode on synthetic clips, and request-budget/estimator
-checks. Loaded standalone; only the pybind-marked tests need the C++ runtime.
+checks. Loaded standalone; only the nanobind-marked tests need the C++ runtime.
 
 Usage:
     python3 -m pytest tests/python-unittests/test_preprocess_video.py -v
@@ -25,36 +25,40 @@ Usage:
 from __future__ import annotations
 
 import base64
+import gc
 import os
+import weakref
 
 import pytest
 
-import experimental.server.media.video_sampling as vs
+import tensorrt_edgellm.server.media.video_sampling as vs
 
 
 def _load_edgellm_runtime():
-    """Resolve the pybind extension the way the server does: a bare import,
-    else glob EDGELLM_PYBIND_DIR (CI sets that, not PYTHONPATH). Returns the
+    """Resolve the nanobind extension the way the server does: a bare import,
+    else glob EDGELLM_NANOBIND_DIR (CI sets that, not PYTHONPATH). Returns the
     module or None when the extension is not built anywhere."""
     import importlib
     import importlib.util
+    import sys
     importlib.invalidate_caches()
     try:
         import _edgellm_runtime as rt
         return rt
     except ImportError:
         pass
-    pybind_dir = os.environ.get("EDGELLM_PYBIND_DIR")
-    if not pybind_dir:
+    nanobind_dir = os.environ.get("EDGELLM_NANOBIND_DIR")
+    if not nanobind_dir:
         return None
     import glob
-    so_files = glob.glob(os.path.join(pybind_dir, "*_edgellm_runtime*.so"))
+    so_files = glob.glob(os.path.join(nanobind_dir, "*_edgellm_runtime*.so"))
     if not so_files:
         return None
     spec = importlib.util.spec_from_file_location("_edgellm_runtime",
                                                   so_files[0])
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    sys.modules[spec.name] = mod
     return mod
 
 
@@ -217,6 +221,13 @@ def test_clamp_muse_uses_provider_video_resize_cap():
                                                  _MUSE_LIMITS)
     assert frames == 14
     assert tokens <= 1024
+
+
+def test_estimate_muse_image_uses_provider_resize_cap(monkeypatch):
+    """Muse still images use the provider grid search capped by the per-image
+    profile, not the Qwen smart resize."""
+    monkeypatch.setattr(vs, "_probe_image_size", lambda _source: (1280, 720))
+    assert vs.estimate_image_tokens(b"image", "muse", _MUSE_LIMITS) == 510
 
 
 def test_clamp_qwen25_total_budget():
@@ -1490,17 +1501,26 @@ def test_error_messages_never_echo_data_urls(tmp_path):
     assert len(str(exc.value)) < 512
 
 
-def test_pybind_video_rejects_non_finite_time_values():
-    # Direct pybind API: inf fps / nan timestamps must be rejected at the
+def test_nanobind_video_rejects_non_finite_time_values():
+    # Direct nanobind API: inf fps / nan timestamps must be rejected at the
     # binding (the HTTP server validates earlier; this is defense-in-depth
-    # for the raw C++/pybind surface).
+    # for the raw C++/nanobind surface).
     rt = _load_edgellm_runtime()
     if rt is None:
-        pytest.skip("_edgellm_runtime pybind extension is not importable; "
+        pytest.skip("_edgellm_runtime nanobind extension is not importable; "
                     "build with -DBUILD_PYTHON_BINDINGS=ON")
     np = pytest.importorskip("numpy")
     frames = np.zeros((2, 4, 4, 3), np.uint8)
-    rt.load_video_from_array(frames, 2.0, [0.0, 0.5])  # sane baseline
+    storage = weakref.ref(frames)
+    video = rt.load_video_from_array(frames, 2.0, [0.0, 0.5])
+    del frames
+    gc.collect()
+    assert storage() is not None
+    del video
+    gc.collect()
+    assert storage() is None
+
+    frames = np.zeros((2, 4, 4, 3), np.uint8)
     with pytest.raises(Exception, match="finite"):
         rt.load_video_from_array(frames, float("inf"), [0.0, 0.5])
     with pytest.raises(Exception, match="finite"):
@@ -1509,6 +1529,29 @@ def test_pybind_video_rejects_non_finite_time_values():
     # before any file access, so a placeholder path suffices).
     with pytest.raises(Exception, match="finite"):
         rt.load_video_from_paths(["/nonexistent.png"], float("inf"))
+
+
+def test_nanobind_video_shared_registration_lifetime():
+    from cuda.bindings import runtime as cuda_runtime
+
+    rt = _load_edgellm_runtime()
+    if rt is None:
+        pytest.skip("_edgellm_runtime nanobind extension is not importable")
+    np = pytest.importorskip("numpy")
+    frames = np.zeros((3, 4, 4, 3), dtype=np.uint8)
+    first = rt.load_video_from_array(frames, 2.0)
+    second = rt.load_video_from_array(frames[1:], 2.0)
+    del first
+    gc.collect()
+    status, attributes = cuda_runtime.cudaPointerGetAttributes(
+        frames.ctypes.data)
+    assert status == cuda_runtime.cudaError_t.cudaSuccess
+    assert attributes.type == cuda_runtime.cudaMemoryType.cudaMemoryTypeHost
+    third = rt.load_video_from_array(frames, 2.0)
+    assert second.frames == 2
+    assert third.frames == 3
+    del second, third
+    gc.collect()
 
 
 def test_qwen3d_infeasible_profile_raises():
@@ -1541,6 +1584,9 @@ def test_qwen3_still_image_uses_3d_exact_shape(tmp_path):
     img = tmp_path / "still.mp4"
     _write_synthetic_clip(img, n_frames=1, size=1024, fps=1)
     assert vs.estimate_image_tokens(str(img), "qwen", limits) == 4
+    # The estimate alone cannot detect a failed probe: the fallback cap is 4.
+    assert vs._probe_image_size(img.read_bytes()) == (1024, 1024)
+    assert vs.estimate_image_tokens(img.read_bytes(), "qwen", limits) == 4
 
 
 def test_cu_capacity_from_builder_recording():
@@ -1616,7 +1662,7 @@ def test_raw_per_group_token_cap(tmp_path):
                                              frame_limits=limits)
     assert est == 486
     # Raw still image intake (group = the image itself).
-    with pytest.raises(ValueError, match="per-image"):
+    with pytest.raises(vs.VisualProfileCapacityError, match="per-image"):
         vs.estimate_image_tokens(str(over), "qwen", limits, do_resize=False)
     assert vs.estimate_image_tokens(str(ok), "qwen", limits,
                                     do_resize=False) == 486

@@ -33,32 +33,31 @@ namespace plugins
 //!
 //! Fuses, in one enqueue:
 //!   1. packed-QKV split + per-head qk-norm (gammas pre-folded to 1+w) + partial RoPE +
-//!      paged-KV write + dense K/V scratch mirrors (kernel::launchApplyRopeFromPackedToSplit);
+//!      paged-KV write (kernel::launchApplyRopeFromPackedToSplit);
 //!   2. the QSA indexer (kernel::runQsaIndexerPrefill): weight-free block-compressed scoring,
-//!      per-row top-512 blocks, expand + causal tail -> int32 index lists [B, S, 2051];
-//!   3. sparse GQA attention over the dense mirrors (CuteDslQsaSparsePrefillRunner, CuTe DSL
-//!      AOT group "qsa").
+//!      per-row top-512 blocks, expand + causal tail -> int32 index lists [T_exec, 2051];
+//!   3. sparse GQA attention over the paged pool for initial and chunk prefill
+//!      (CuteDslQsaSparsePrefillRunner, CuTe DSL AOT group "qsa").
 //!   Decode: rope-append of the new token, indexer decode over the pool tails
-//!   (kernel::runQsaIndexerDecode — B1 fused q-prep + predicated tail write / compress, B2 block
+//!   (kernel::runQsaIndexerDecode — B1 fused q-prep + tail write / compress, B2 block
 //!   scores from the kbar tails, B3 deterministic radix top-512 + expand), then a single-launch
 //!   split-K sparse attention over the paged pool (CuteDslQsaSparseDecodeRunner).
 //!
-//! Contract: the mode is deduced from the kvcache_start_index runtime shape — [0] is normal
-//! prefill over padded activations; [B] is single-token decode, which requires S == 1 (chunked
-//! prefill and speculative decode are rejected). In decode the start-index values are the
-//! per-sequence past lengths and are never read; context_lengths carries the TOTAL lengths
-//! including the token being decoded. FP16 surface; all 11 inputs required (no optional slots).
-//! The attention output gate (out * sigmoid(gate)) and every projection stay in the graph.
+//! Contract: token-major ragged ABI (docs/source/developer_guide/customization/tensorrt-plugins.md).
+//! Phases 1-3 are prefill, chunk and decode. With use_spec_verify_state = 1 (speculative base and
+//! draft engines), phases 4 and 5 take tree_parent_ids / tree_depths and the spec_verify_layout
+//! marker: K/V and each node's indexer tails go to slot past + t, and the indexer scores each
+//! root-to-node path. Moving accepted rows (the runtime's commit) commits their tails too.
 //!
 //! KV pool contract (widened rows): past/present_key_value is
 //! [2, numPages, 128, Hkv, head_size + indexer_head_dim] — the pool head dimension is
 //! DERIVED from the plugin attributes, never a separate attribute. The leading head_size
 //! elements of each row hold roped K / raw V; the tail [head_size, head_size +
-//! indexer_head_dim) persists QSA indexer state across steps: block g's kbar lives in the
-//! V-row tail of token 4g (head 0) and, for the trailing incomplete block only, token t's
-//! raw index-K in its K-row tail (head 0). State
-//! boundary: the rope/attention kernels are tail-agnostic (the rope kernel writes only the
-//! leading head_size elements of each row); only the indexer kernels own the tails — see
+//! indexer_head_dim) persists QSA indexer state across steps (head 0): token t's raw index-K
+//! in its K-row tail, block g's rope row in the V-row tail of token 4g and its kbar in the
+//! V-row tail of token 4g + 1.
+//! State boundary: the rope/attention kernels are tail-agnostic (the rope kernel writes only
+//! the leading head_size elements of each row); only the indexer kernels own the tails — see
 //! cpp/kernels/qsaIndexer/qsaIndexerKernels.h.
 class QsaAttentionPlugin : public nvinfer1::IPluginV3,
                            public nvinfer1::IPluginV3OneCore,
@@ -68,7 +67,7 @@ class QsaAttentionPlugin : public nvinfer1::IPluginV3,
 public:
     QsaAttentionPlugin(std::string const& name, int32_t numQHeads, int32_t numKVHeads, int32_t headSize,
         int32_t indexerNumHeads, int32_t indexerHeadDim, int32_t indexerBudget, int32_t indexerCompressRatio,
-        float attentionScale, float rmsNormEps);
+        float attentionScale, float rmsNormEps, bool useSpecVerifyState);
 
     QsaAttentionPlugin(std::string const& name, nvinfer1::PluginFieldCollection const* fc);
 
@@ -112,15 +111,19 @@ private:
     int32_t enqueueImpl(nvinfer1::PluginTensorDesc const* inputDesc, nvinfer1::PluginTensorDesc const* outputDesc,
         void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream);
 
-    //! Decode path (S == 1, kvcache_start_index shape [B]): rope-append the new token,
-    //! run the indexer decode pipeline against the pool-tail state, then the single-launch
-    //! split-K sparse attention. Reached only through enqueueImpl's mode deduction.
+    //! Decode path (execution phase extent 3, T_exec == runtimeBatchSize): rope-append the new
+    //! token, run the indexer decode pipeline against the pool-tail state, then the
+    //! single-launch split-K sparse attention. Reached only through enqueueImpl's phase switch;
+    //! reads the TOTAL lengths from attention_sequence_lengths.
     int32_t enqueueDecode(nvinfer1::PluginTensorDesc const* inputDesc, nvinfer1::PluginTensorDesc const* outputDesc,
-        void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream);
+        void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream,
+        int32_t runtimeBatchSize);
 
     //! Validate the (numQHeads, numKVHeads, headSize, indexer*) configuration against the
     //! specialized kernels; throws on an unimplementable configuration.
     void validateConfiguration() const;
+
+    int32_t getNbInputs() const noexcept;
 
     std::string mLayerName;
     std::string mNamespace;
@@ -134,6 +137,8 @@ private:
     int32_t mIndexerCompressRatio{};
     float mAttentionScale{};
     float mRmsNormEps{};
+    bool mUseSpecVerifyState{false};
+    int32_t mUseSpecVerifyStateField{0};
 
     std::vector<nvinfer1::PluginField> mDataToSerialize;
     nvinfer1::PluginFieldCollection mFCToSerialize{};

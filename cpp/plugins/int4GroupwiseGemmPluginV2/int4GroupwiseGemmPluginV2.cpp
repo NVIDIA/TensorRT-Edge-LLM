@@ -30,6 +30,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -377,6 +378,10 @@ int32_t Int4GroupwiseGemmPluginV2::enqueue(PluginTensorDesc const* inputDesc, Pl
         {
             return -1;
         }
+        if (mGroupSize < 64 || mGroupSize % 64 != 0 || mGemmK % mGroupSize != 0)
+        {
+            return -1;
+        }
 
         // Decode regime: route small M to the CUDA-core GEMV. At small M the GEMM's
         // tensor-core MMA underfills its M rows, so the GEMV is the better compute
@@ -387,7 +392,8 @@ int32_t Int4GroupwiseGemmPluginV2::enqueue(PluginTensorDesc const* inputDesc, Pl
         constexpr int32_t kGemvDispatchMaxM = 4;
         if (M >= 1 && M <= kGemvDispatchMaxM && cuteDslInt4GemvSupported(M) && cuteDslInt4GemvLoadModules())
         {
-            return cuteDslInt4GemvLaunch(M, inputs[0], inputs[1], inputs[2], outputs[0], mGemmN, mGemmK, stream);
+            return cuteDslInt4GemvLaunch(
+                M, inputs[0], inputs[1], inputs[2], outputs[0], mGemmN, mGemmK, mGroupSize, stream);
         }
 #endif
 
@@ -424,7 +430,7 @@ int32_t Int4GroupwiseGemmPluginV2::enqueue(PluginTensorDesc const* inputDesc, Pl
         // input[1] is the fragment-layout weight buffer (INT8 bytes of the uint32
         // words); pass it straight through as mQW -- no repack, no cache.
         return cuteDslInt4GemmLaunch(v, inputs[0], inputs[1], inputs[2], outputs[0],
-            (v.splitK > 1) ? mLockWorkspace : nullptr, M, mGemmN, mGemmK, /*swizzle=*/1, stream);
+            (v.splitK > 1) ? mLockWorkspace : nullptr, M, mGemmN, mGemmK, mGroupSize, /*swizzle=*/1, stream);
 #else
         return -1;
 #endif

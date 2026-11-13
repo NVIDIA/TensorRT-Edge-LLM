@@ -1,0 +1,61 @@
+{
+  "url": "http://127.0.0.1:18080",
+  "model": "stress-model",
+  "command": [
+    "python",
+    "-m",
+    "experimental.server",
+    "Qwen/Qwen3.5-0.8B",
+    "--served-model-name",
+    "stress-model",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "18080",
+    "--cache-dir",
+    "logs/server-stress-engine-cache",
+    "--max-input-len",
+    "2048",
+    "--max-batch-size",
+    "4",
+    "--max-kv-cache-capacity",
+    "8192",
+    "--max-queued-requests",
+    "16",
+    "--enable-in-flight-batching"
+  ],
+  "cwd": ".",
+  "concurrency": [
+    1,
+    4,
+    16
+  ],
+  "duration_s": 60,
+  "soak_s": 600,
+  "request_timeout_s": 60,
+  "ready_timeout_s": 600,
+  "drain_timeout_s": 5,
+  "exit_timeout_s": 2,
+  "busy_exit_timeout_s": 30,
+  "load_repeats": 3,
+  "load_delays_s": [
+    0,
+    0.1,
+    0.3
+  ],
+  "load_pattern": "Loading runtime bundle from",
+  "cancellation_fraction": 0.3,
+  "cancel_after_s": 0.05,
+  "overload_concurrency": 64,
+  "max_tokens": 128,
+  "cancel_max_tokens": 1024,
+  "min_successes": 4,
+  "seed": 1802,
+  "max_error_rate": 0,
+  "max_p99_s": null,
+  "max_rss_growth_mb": null,
+  "prompts": [
+    "List the integers from 1 to 500, in order, one per line.",
+    "Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. Describe how a computer works in detail. "
+  ]
+}

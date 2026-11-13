@@ -14,24 +14,28 @@
 # limitations under the License.
 
 import json
+import os
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-pytest.importorskip("tensorrt")
+trt = pytest.importorskip("tensorrt")
 
-from experimental.builder.core import contracts
-from experimental.builder.core.artifacts.runtime_config import \
+from tensorrt_edgellm.builder.core import contracts
+from tensorrt_edgellm.builder.core.artifacts.runtime_config import \
     build_runtime_config
-from experimental.builder.core.artifacts.tensors import save_safetensors
-from experimental.builder.core.builder import BuildArgs, _setup_llm_profiles
-from experimental.builder.core.config import DeviceConfig
-from experimental.builder.core.safetensors_np import SafetensorsStore
-from experimental.builder.models import registry
-from experimental.builder.models.dflash2 import artifacts as dflash2_artifacts
-from experimental.builder.models.dflash2 import modeling_dflash2_draft
-from experimental.builder.ops.functional import speculative
+from tensorrt_edgellm.builder.core.artifacts.tensors import save_safetensors
+from tensorrt_edgellm.builder.core.builder import (BuildArgs,
+                                                   _setup_llm_profiles,
+                                                   build_engine)
+from tensorrt_edgellm.builder.core.config import DeviceConfig
+from tensorrt_edgellm.builder.core.safetensors_np import SafetensorsStore
+from tensorrt_edgellm.builder.models import registry
+from tensorrt_edgellm.builder.models.dflash2 import \
+    artifacts as dflash2_artifacts
+from tensorrt_edgellm.builder.models.dflash2 import modeling_dflash2_draft
+from tensorrt_edgellm.builder.ops.functional import speculative
 from tensorrt_edgellm.dflash import DFlashVersion
 
 
@@ -67,39 +71,36 @@ def _write_dflash2_config(model_dir):
     model_dir.mkdir()
     (model_dir / "config.json").write_text(json.dumps({
         "architectures": ["DFlash2DraftModel"],
-        "model_type":
-        "qwen3",
-        "hidden_size":
-        5120,
-        "num_hidden_layers":
-        5,
-        "num_attention_heads":
-        40,
-        "num_key_value_heads":
+        "speculators_model_type":
+        "dflash2",
+        "transformer_layer_config": {
+            "model_type": "qwen3",
+            "hidden_size": 5120,
+            "num_hidden_layers": 5,
+            "num_attention_heads": 40,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "intermediate_size": 17408,
+            "vocab_size": 248320,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10_000_000.0,
+            "max_position_embeddings": 262144,
+        },
+        "aux_hidden_state_layer_ids": [6, 20, 34, 48, 62],
+        "block_size":
         8,
-        "head_dim":
-        128,
-        "intermediate_size":
-        17408,
-        "vocab_size":
-        248320,
-        "rms_norm_eps":
-        1e-6,
-        "rope_theta":
-        10_000_000.0,
-        "max_position_embeddings":
-        262144,
-        "is_causal":
-        False,
-        "dflash_config": {
-            "target_layer_ids": [5, 19, 33, 47, 61],
-            "block_size": 8,
-            "mask_token_id": 248070,
-            "conv_kernel_size": 2,
-            "conv_group_size": 16,
-            "selector_rank": 256,
-            "selector_top_k": 16
-        }
+        "mask_token_id":
+        248070,
+        "sliding_window_non_causal":
+        True,
+        "conv_kernel_size":
+        2,
+        "conv_group_size":
+        16,
+        "selector_rank":
+        256,
+        "selector_top_k":
+        16,
     }),
                                            encoding="utf-8")
     return model_dir
@@ -176,18 +177,16 @@ def test_dflash2_checkpoint_contract_is_parsed_exactly(tmp_path):
 
 
 def test_dflash2_tree_base_is_rejected():
-    args = BuildArgs(
-        model_dir="target",
-        engine_dir="engine",
-        spec_role="base",
-        spec_type="dflash",
-        dflash_version=DFlashVersion.V2,
-        draft_model_dir="draft",
-        tree_base=True,
-    )
-
-    with pytest.raises(ValueError, match="tree-base.*not supported.*V2"):
-        args.validate()
+    # Given topology-independent artifacts, when a removed builder field is supplied,
+    # then construction rejects it before any checkpoint work.
+    with pytest.raises(TypeError, match="tree_base"):
+        BuildArgs(model_dir="target",
+                  engine_dir="engine",
+                  spec_role="base",
+                  spec_type="dflash",
+                  dflash_version=DFlashVersion.V2,
+                  draft_model_dir="draft",
+                  tree_base=True)
 
 
 def test_dflash2_base_requires_paired_draft():
@@ -249,7 +248,6 @@ def test_dflash2_base_configuration_reads_paired_draft_contract(monkeypatch):
     )
 
     assert configured.dflash_version == DFlashVersion.V2
-    assert configured.dflash_tree_base
     assert configured.dflash2_target_layer_ids == [5, 19, 33, 47, 61]
     assert configured.dflash2_block_size == 8
     assert configured.dflash2_selector_top_k == 16
@@ -307,8 +305,8 @@ def test_dflash2_runtime_metadata_is_versioned_and_sparse(monkeypatch):
         spec_type="dflash",
         dflash_version=DFlashVersion.V2,
         draft_model_dir="draft",
-        max_verify_tree_size=8,
-        max_draft_tree_size=8,
+        max_spec_verify_tokens=8,
+        max_spec_draft_tokens=8,
     )
 
     metadata = build_runtime_config(target, args)
@@ -362,19 +360,21 @@ def test_dflash2_artifact_writer_preserves_selector_codebooks(tmp_path):
                                       successor)
 
 
-def test_dflash2_build_profile_rejects_sizes_above_supported_maximum():
+def test_dflash2_draft_profile_rejects_sizes_above_supported_maximum():
+    """A DFlash2 draft proposes at most 16 tokens: its draft profile stays
+    within [2, 16] even though the base may verify a wider tree."""
     args = BuildArgs(
-        model_dir="target",
+        model_dir="draft",
         engine_dir="engine",
-        spec_role="base",
+        spec_role="draft",
         spec_type="dflash",
         dflash_version=DFlashVersion.V2,
-        draft_model_dir="draft",
-        max_verify_tree_size=60,
-        max_draft_tree_size=60,
+        target_model_dir="target",
+        max_spec_verify_tokens=8,
+        max_spec_draft_tokens=60,
     )
 
-    with pytest.raises(ValueError, match=r"verify.*draft.*\[2, 16\]"):
+    with pytest.raises(ValueError, match=r"draft profile.*\[2, 16\]"):
         args.validate()
 
 
@@ -386,8 +386,8 @@ def test_dflash2_build_profile_accepts_runtime_block_16():
         spec_type="dflash",
         dflash_version=DFlashVersion.V2,
         draft_model_dir="draft",
-        max_verify_tree_size=16,
-        max_draft_tree_size=16,
+        max_spec_verify_tokens=16,
+        max_spec_draft_tokens=16,
     )
 
     args.validate()
@@ -477,7 +477,10 @@ def test_dflash2_draft_profiles_do_not_bind_runtime_selector_inputs():
         vocab_size=248320,
         shares_target_kv=False,
         hidden_size_per_layer_input=5120,
+        vocab_size_per_layer_input=248320,
         dflash2_block_size=8,
+        is_lilicorr=False,
+        ngram_layers=[],
     )
     args = BuildArgs(model_dir="draft",
                      engine_dir="engine",
@@ -488,8 +491,8 @@ def test_dflash2_draft_profiles_do_not_bind_runtime_selector_inputs():
                      max_batch_size=8,
                      max_input_len=2048,
                      max_kv_cache_capacity=4096,
-                     max_verify_tree_size=16,
-                     max_draft_tree_size=16)
+                     max_spec_verify_tokens=16,
+                     max_spec_draft_tokens=16)
 
     _setup_llm_profiles(builder, config, network, cfg, args)
 
@@ -507,3 +510,189 @@ def test_dflash2_draft_profiles_do_not_bind_runtime_selector_inputs():
                                                             (128, ))
         assert profile.shapes["packed_attention_mask"] == ((2, 1), (64, 1),
                                                            (128, 1))
+
+
+def test_dflash2_draft_builds_through_the_direct_builder_at_max_batch_size_8(
+        tmp_path, monkeypatch):
+    """A five-layer DFlash2 draft builds through the checkpoint-direct builder at maxBatchSize 8."""
+    plugin_path = os.environ.get("EDGELLM_PLUGIN_PATH",
+                                 "build/lib/libNvInfer_edgellm_plugin.so")
+    if not os.path.isfile(plugin_path):
+        pytest.skip("Edge-LLM plugin library is not available")
+    trt_builder = trt.Builder
+
+    class FastBuilder:
+        """Builds at optimization level 0: about 35 s instead of 6 min for this graph."""
+
+        def __init__(self, logger):
+            self._builder = trt_builder(logger)
+
+        def __getattr__(self, name):
+            return getattr(self._builder, name)
+
+        def create_builder_config(self):
+            config = self._builder.create_builder_config()
+            config.builder_optimization_level = 0
+            return config
+
+    monkeypatch.setattr(trt, "Builder", FastBuilder)
+    hidden, vocab, heads, kv_heads, head_dim = 64, 256, 8, 2, 128
+    shared = {
+        "model_type": "qwen3",
+        "hidden_size": hidden,
+        "intermediate_size": 2 * hidden,
+        "num_attention_heads": heads,
+        "num_key_value_heads": kv_heads,
+        "head_dim": head_dim,
+        "vocab_size": vocab,
+        "rms_norm_eps": 1e-6,
+        "max_position_embeddings": 4096,
+        "tie_word_embeddings": False,
+    }
+    draft, target = tmp_path / "draft", tmp_path / "target"
+    draft.mkdir()
+    target.mkdir()
+    (draft / "config.json").write_text(
+        json.dumps({
+            **shared, "architectures": ["DFlash2DraftModel"],
+            "num_hidden_layers": 5,
+            "is_causal": False,
+            "dflash_config": {
+                "block_size": 8,
+                "conv_kernel_size": 2,
+                "conv_group_size": 16,
+                "mask_token_id": vocab - 1,
+                "selector_rank": 256,
+                "selector_top_k": 16,
+                "target_layer_ids": [1, 2, 3, 4, 5],
+            }
+        }))
+    (target / "config.json").write_text(
+        json.dumps({
+            **shared, "architectures": ["Qwen3ForCausalLM"],
+            "num_hidden_layers": 6
+        }))
+    rng = np.random.default_rng(0)
+
+    def weight(*shape):
+        return (0.02 * rng.standard_normal(shape)).astype(np.float16)
+
+    def ones(size):
+        return np.ones(size, dtype=np.float16)
+
+    tensors = {
+        "fc.weight": weight(hidden, 5 * hidden),
+        "hidden_norm.weight": ones(hidden),
+        "norm.weight": ones(hidden),
+        "lm_head.weight": weight(vocab, hidden),
+        "candidate_selector.hidden_projection.weight": weight(256, hidden),
+        "candidate_selector.predecessor_codebook": weight(vocab, 256),
+        "candidate_selector.successor_codebook": weight(vocab, 256),
+    }
+    for index in range(5):
+        layer = f"layers.{index}."
+        for name, shape in {
+                "input_layernorm.weight": None,
+                "post_attention_layernorm.weight": None,
+                "self_attn.q_proj.weight": (heads * head_dim, hidden),
+                "self_attn.k_proj.weight": (kv_heads * head_dim, hidden),
+                "self_attn.v_proj.weight": (kv_heads * head_dim, hidden),
+                "self_attn.o_proj.weight": (hidden, heads * head_dim),
+                "mlp.gate_proj.weight": (2 * hidden, hidden),
+                "mlp.up_proj.weight": (2 * hidden, hidden),
+                "mlp.down_proj.weight": (hidden, 2 * hidden),
+        }.items():
+            tensors[layer +
+                    name] = ones(hidden) if shape is None else weight(*shape)
+        for norm in ("q_norm", "k_norm"):
+            tensors[f"{layer}self_attn.{norm}.weight"] = ones(head_dim)
+        for conv in ("attention_conv", "mlp_conv"):
+            tensors[f"{layer}{conv}.base_kernel"] = weight(2, 2, hidden)
+            tensors[f"{layer}{conv}.kernel_projection.weight"] = weight(
+                2 * 2 * hidden // 16, hidden)
+    save_safetensors(str(draft / "model.safetensors"), tensors)
+    args = BuildArgs(model_dir=str(draft),
+                     engine_dir=str(tmp_path / "engine"),
+                     spec_role="draft",
+                     spec_type="dflash",
+                     dflash_version=DFlashVersion.V2,
+                     target_model_dir=str(target),
+                     max_batch_size=8,
+                     max_input_len=256,
+                     max_kv_cache_capacity=512,
+                     max_spec_verify_tokens=8,
+                     max_spec_draft_tokens=8,
+                     plugin_path=plugin_path)
+
+    result = build_engine(args)
+
+    assert os.path.getsize(result.engine_path) > 0
+
+
+def test_dflash2_unary_values_follow_the_checkpoint_logit_transform():
+    """Selector unary values are the target's final logits: the draft scales
+    its top-k lm_head values by dflash_config.output_multiplier and then
+    softcaps them by final_logit_softcapping; missing or null fields leave the
+    values unchanged, and a non-positive multiplier or a negative softcap is
+    rejected."""
+    from tensorrt_edgellm.dflash import resolve_dflash_contract
+
+    class Values:
+
+        def __init__(self, array):
+            self.array = np.asarray(array, dtype=np.float32)
+
+        def __mul__(self, scale):
+            return Values(self.array * scale)
+
+        def __truediv__(self, scale):
+            return Values(self.array / scale)
+
+        def tanh(self):
+            return Values(np.tanh(self.array))
+
+    fields = {
+        "block_size": 16,
+        "mask_token_id": 201818,
+        "target_layer_ids": [1, 13, 25, 37, 49],
+        "conv_kernel_size": 2,
+        "conv_group_size": 16,
+        "selector_rank": 256,
+        "selector_top_k": 16,
+    }
+    raw = [30.0, 5.0, -2.0]
+
+    def unary_values(extra):
+        contract = resolve_dflash_contract(
+            {
+                "architectures": ["DFlash2DraftModel"],
+                "is_causal": False
+            }, {"dflash_config": {
+                **fields,
+                **extra
+            }})
+        cfg = SimpleNamespace(
+            dflash2_output_multiplier=contract.output_multiplier,
+            dflash2_final_logit_softcapping=contract.final_logit_softcapping)
+        return modeling_dflash2_draft._target_logit_transform(
+            Values(raw), cfg).array
+
+    np.testing.assert_allclose(unary_values({
+        "output_multiplier": 0.25,
+        "final_logit_softcapping": 4.0
+    }),
+                               4.0 * np.tanh(np.asarray(raw) * 0.25 / 4.0),
+                               rtol=1e-6)
+    for extra in ({}, {
+            "output_multiplier": None,
+            "final_logit_softcapping": None
+    }):
+        np.testing.assert_array_equal(unary_values(extra),
+                                      np.asarray(raw, np.float32))
+    for extra, field in (({
+            "output_multiplier": 0
+    }, "output_multiplier"), ({
+            "final_logit_softcapping": -1.0
+    }, "final_logit_softcapping")):
+        with pytest.raises(ValueError, match=field):
+            unary_values(extra)

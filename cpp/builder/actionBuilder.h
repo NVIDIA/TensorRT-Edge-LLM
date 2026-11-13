@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -42,6 +42,9 @@ struct ActionBuilderConfig
     //! Maximum KV cache capacity (must match the LLM engine's maxKVCacheCapacity).
     int32_t maxKVCacheCapacity{0};
 
+    //! Fixed physical K-page count for the pool inputs; zero derives the minimum.
+    int32_t maxKVPoolPages{0};
+
     //! Convert configuration to JSON format for serialization.
     //! @return JSON object containing all configuration parameters
     Json toJson() const
@@ -77,6 +80,7 @@ struct ActionBuilderConfig
         oss << "ActionBuilderConfig:\n";
         oss << "  maxBatchSize: " << maxBatchSize << "\n";
         oss << "  maxKVCacheCapacity: " << maxKVCacheCapacity << "\n";
+        oss << "  maxKVPoolPages: " << maxKVPoolPages << "\n";
         return oss.str();
     }
 };
@@ -128,6 +132,14 @@ private:
     //! @param network TensorRT network definition (must not be null)
     //! @return true if setup was successful, false otherwise
     bool setupActionOptimizationProfile(
+        nvinfer1::IBuilder& builder, nvinfer1::IBuilderConfig& config, nvinfer1::INetworkDefinition const& network);
+
+    //! Profile the dense KV inputs used with TP-sharded LLMs.
+    bool setupDenseActionOptimizationProfile(
+        nvinfer1::IBuilder& builder, nvinfer1::IBuilderConfig& config, nvinfer1::INetworkDefinition const& network);
+
+    //! Profile the shared LLM pool and private action scratch for TP=1.
+    bool setupPagedActionOptimizationProfile(
         nvinfer1::IBuilder& builder, nvinfer1::IBuilderConfig& config, nvinfer1::INetworkDefinition const& network);
 
     //! Copy and save the model configuration with builder config.

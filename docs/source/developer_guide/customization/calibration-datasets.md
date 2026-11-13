@@ -34,8 +34,9 @@ there are no base classes or dataset objects. The datasets live in
 
 Text datasets are used for LLM weights, LM head, KV cache, CodePredictor, MTP,
 EAGLE3, and DFlash calibration. Image datasets are used when
-`--visual-quantization` is set. Audio datasets are used for Qwen3-ASR /
-audio-tower calibration.
+`--visual-quantization` is set and to calibrate the Alpamayo backbone, whose
+activation ranges depend on image tokens. Audio datasets are used for
+Qwen3-ASR / audio-tower calibration.
 
 ## The modality contracts
 

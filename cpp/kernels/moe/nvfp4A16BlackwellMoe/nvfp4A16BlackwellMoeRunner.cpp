@@ -109,11 +109,11 @@ cudaError_t launchRouting(Nvfp4A16BlackwellMoeParams const& p, int32_t* const to
             return cudaSuccess;
         }
         rt::Tensor const logits(const_cast<float*>(p.routerLogits), {p.numTokens, p.numExperts}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kFLOAT);
-        rt::Tensor weights(topkWeights, {p.numTokens, p.topK}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-        rt::Tensor indices(topkIndices, {p.numTokens, p.topK}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+            trt_edgellm::DataType::kFLOAT);
+        rt::Tensor weights(topkWeights, {p.numTokens, p.topK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor indices(topkIndices, {p.numTokens, p.topK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         rt::Tensor const bias(
-            const_cast<float*>(p.correctionBias), {p.numExperts}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+            const_cast<float*>(p.correctionBias), {p.numExperts}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
         rt::OptionalInputTensor optionalBias = std::nullopt;
         if (p.correctionBias != nullptr)
         {
@@ -415,13 +415,13 @@ cudaError_t runPrefill(
         {
             MoELayoutBuffers layout{};
             layout.tileIdxToGroupIdx = rt::Tensor(ws + l.tileGroupIdx, {static_cast<int32_t>(l.maxTiles)},
-                rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
             layout.tileIdxToMnLimit = rt::Tensor(ws + l.tileMnLimit, {static_cast<int32_t>(l.maxTiles)},
-                rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
             layout.permutedIdxToExpandedIdx = rt::Tensor(ws + l.permutedIdx, {static_cast<int32_t>(l.maxRowsPadded)},
-                rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
             layout.numNonExitingTiles
-                = rt::Tensor(ws + l.numValidTiles, {1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+                = rt::Tensor(ws + l.numValidTiles, {1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
             buildLayoutGpu(layout, reinterpret_cast<int32_t const*>(ws + l.topkIndices), p.numTokens, p.topK,
                 p.numExperts, l.tokenTile, stream);
         }

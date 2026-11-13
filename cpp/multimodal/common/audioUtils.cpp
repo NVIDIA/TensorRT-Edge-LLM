@@ -42,7 +42,7 @@ bool uploadHostMelFp32ToFp16Gpu(
         return false;
     }
     int64_t const numel = hsh.volume();
-    devOut = rt::Tensor({1, hsh[0], hsh[1]}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, debugName);
+    devOut = rt::Tensor({1, hsh[0], hsh[1]}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, debugName);
     std::vector<__half> halfBuf(static_cast<size_t>(numel));
     float const* srcF32 = hostMel.dataPointer<float>();
     for (int64_t i = 0; i < numel; ++i)
@@ -62,7 +62,7 @@ bool uploadHostPcmF32ToGpu(rt::Tensor const& hostPcm, rt::Tensor& devOut, cudaSt
         LOG_ERROR("uploadHostPcmF32ToGpu: empty PCM.");
         return false;
     }
-    if (hostPcm.getDeviceType() != rt::DeviceType::kCPU || hostPcm.getDataType() != nvinfer1::DataType::kFLOAT)
+    if (hostPcm.getDeviceType() != rt::DeviceType::kCPU || hostPcm.getDataType() != trt_edgellm::DataType::kFLOAT)
     {
         LOG_ERROR("uploadHostPcmF32ToGpu: PCM must be a host Float tensor.");
         return false;
@@ -87,7 +87,7 @@ bool fillMelFilterFp16Kmajor(
         return false;
     }
     Coords const& osh = out.getShape();
-    if (out.getDeviceType() != rt::DeviceType::kGPU || out.getDataType() != nvinfer1::DataType::kHALF
+    if (out.getDeviceType() != rt::DeviceType::kGPU || out.getDataType() != trt_edgellm::DataType::kHALF
         || osh.getNumDims() != 2 || osh[0] != nMel || osh[1] != kPad)
     {
         LOG_ERROR("fillMelFilterFp16Kmajor: out must be a pre-allocated [%d, %d] Half GPU tensor.", nMel, kPad);
@@ -217,8 +217,8 @@ bool chunkAndPadFeatures(
     if (paddedFeature.getShape().volume() < outputSize)
     {
         // Allocate as FP16 (Half precision)
-        paddedFeature = rt::Tensor(
-            {chunkInfo.numChunks, melBins, chunkInfo.maxChunkLength}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        paddedFeature = rt::Tensor({chunkInfo.numChunks, melBins, chunkInfo.maxChunkLength}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kHALF);
     }
     else
     {
@@ -279,7 +279,7 @@ bool createPaddedMask(ChunkInfo const& chunkInfo, [[maybe_unused]] int32_t nWind
     {
         // Reallocate if needed
         paddedMask
-            = rt::Tensor({chunkInfo.numChunks, maxLenAfterCNN}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
+            = rt::Tensor({chunkInfo.numChunks, maxLenAfterCNN}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
     }
     else
     {
@@ -385,7 +385,7 @@ bool convertMaskToIndices(rt::Tensor const& paddedMask, rt::Tensor& paddedMaskIn
     // Allocate or reshape output tensor
     if (paddedMaskIndices.getShape().volume() < numValid * 2)
     {
-        paddedMaskIndices = rt::Tensor({numValid, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
+        paddedMaskIndices = rt::Tensor({numValid, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
     }
     else
     {
@@ -399,40 +399,57 @@ bool convertMaskToIndices(rt::Tensor const& paddedMask, rt::Tensor& paddedMaskIn
     return true;
 }
 
-bool createChunkwiseAttentionMask(std::vector<int64_t> const& afterCNNLens, int32_t nWindow, int32_t nWindowInfer,
-    rt::Tensor& attentionMask, cudaStream_t stream)
+std::vector<int64_t> computeChunkwiseWindowLens(
+    std::vector<int64_t> const& afterCNNLens, int32_t nWindow, int32_t nWindowInfer)
 {
     // Matches modeling_qwen3_omni.py _prepare_attention_mask + cu_seqlens logic:
     //   window_aftercnn = padded_mask_after_cnn.shape[-1] * (n_window_infer // (n_window * 2))
     //   cu_seqlens built from aftercnn_lens split by window_aftercnn
-    //   Block-diagonal mask: tokens within the same window attend to each other.
     int64_t const chunkSize = static_cast<int64_t>(nWindow) * 2;
     int64_t maxLenAfterCNN = 0;
-    for (auto len : afterCNNLens)
-    {
-        maxLenAfterCNN = std::max(maxLenAfterCNN, len);
-    }
-    int64_t const windowAfterCNN = maxLenAfterCNN * (nWindowInfer / chunkSize);
-
-    // Global after-CNN length = sum of per-chunk after-CNN lengths
     int64_t globalAfterCNNLen = 0;
     for (auto len : afterCNNLens)
     {
+        maxLenAfterCNN = std::max(maxLenAfterCNN, len);
         globalAfterCNNLen += len;
     }
 
-    // Build window lengths from global aftercnn_lens
     std::vector<int64_t> windowLens;
-    int64_t numFull = globalAfterCNNLen / windowAfterCNN;
-    for (int64_t i = 0; i < numFull; ++i)
+    int64_t const windowAfterCNN = chunkSize > 0 ? maxLenAfterCNN * (nWindowInfer / chunkSize) : 0;
+    if (windowAfterCNN <= 0)
     {
-        windowLens.push_back(windowAfterCNN);
+        return windowLens;
     }
-    int64_t remainder = globalAfterCNNLen % windowAfterCNN;
+
+    int64_t const numFull = globalAfterCNNLen / windowAfterCNN;
+    windowLens.assign(static_cast<size_t>(numFull), windowAfterCNN);
+    int64_t const remainder = globalAfterCNNLen % windowAfterCNN;
     if (remainder != 0)
     {
         windowLens.push_back(remainder);
     }
+    return windowLens;
+}
+
+int64_t fillChunkwiseCuSeqlens(std::vector<int64_t> const& windowLens, int32_t* cuSeqlens)
+{
+    int64_t running = 0;
+    int64_t maxWindowLen = 0;
+    cuSeqlens[0] = 0;
+    for (size_t i = 0; i < windowLens.size(); ++i)
+    {
+        running += windowLens[i];
+        maxWindowLen = std::max(maxWindowLen, windowLens[i]);
+        cuSeqlens[i + 1] = static_cast<int32_t>(running);
+    }
+    return maxWindowLen;
+}
+
+bool createChunkwiseAttentionMask(std::vector<int64_t> const& afterCNNLens, int32_t nWindow, int32_t nWindowInfer,
+    rt::Tensor& attentionMask, cudaStream_t stream)
+{
+    // Tokens within the same window attend to each other; everything else is masked out.
+    std::vector<int64_t> const windowLens = computeChunkwiseWindowLens(afterCNNLens, nWindow, nWindowInfer);
 
     int64_t totalLen = 0;
     for (auto len : windowLens)
@@ -449,7 +466,7 @@ bool createChunkwiseAttentionMask(std::vector<int64_t> const& afterCNNLens, int3
     // Allocate or reshape mask tensor [total_len, total_len]
     if (attentionMask.getShape().volume() < totalLen * totalLen)
     {
-        attentionMask = rt::Tensor({totalLen, totalLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        attentionMask = rt::Tensor({totalLen, totalLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     }
     else
     {

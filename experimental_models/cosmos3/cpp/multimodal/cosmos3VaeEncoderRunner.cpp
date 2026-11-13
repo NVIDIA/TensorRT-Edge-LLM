@@ -17,6 +17,7 @@
 
 #include "multimodal/cosmos3VaeEncoderRunner.h"
 #include "common/cosmos3Bindings.h"
+#include "common/trtInterop.h"
 
 #include "common/checkMacros.h"
 #include "common/logger.h"
@@ -36,7 +37,7 @@ namespace cosmos3
 Cosmos3VaeEncoderRunner::Cosmos3VaeEncoderRunner(std::string const& engineDir, cudaStream_t stream)
 {
     std::string const enginePath = engineDir + "/vae_encoder.engine";
-    mRuntime = std::unique_ptr<IRuntime>(createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<IRuntime>(createInferRuntime(TrtLogger::instance()));
     ELLM_CHECK(mRuntime, "Failed to create TensorRT runtime");
 
     mEngine = deserializeCudaEngineFromFile(*mRuntime, enginePath);

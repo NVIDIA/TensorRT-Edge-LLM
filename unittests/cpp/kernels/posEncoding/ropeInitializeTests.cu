@@ -211,11 +211,9 @@ TEST(InitializeLongRopeCosSin, Benchmark)
     BenchmarkLongRopeCosSin(128, 4096);
 }
 
-// YaRN: the kernel only does the position sweep on a precomputed per-dim inverse
-// frequency, so the reference recomputes the same NTK-by-parts inv_freq (matching
-// computeYarnInvFreq in the runtime) and fills cos(pos*invFreq)*mscale.
-void TestYarnRopeCosSin(int32_t rotaryDim, int32_t maxPositions, float rotaryBaseFrequency = 10000.0F,
-    float factor = 32.0F, int32_t originalMaxPositionEmbeddings = 8192, float betaFast = 32.0F, float betaSlow = 1.0F)
+//! NTK-by-parts inverse frequencies of HF `_compute_yarn_parameters`.
+std::vector<float> computeYarnInvFreqReference(int32_t rotaryDim, float rotaryBaseFrequency, float factor,
+    int32_t originalMaxPositionEmbeddings, float betaFast = 32.0F, float betaSlow = 1.0F)
 {
     int32_t const halfDim = rotaryDim / 2;
     float const kPi = 3.14159265358979323846F;
@@ -242,7 +240,25 @@ void TestYarnRopeCosSin(int32_t rotaryDim, int32_t maxPositions, float rotaryBas
         float const extrapFactor = 1.0F - ramp;
         invFreq[d] = interp * (1.0F - extrapFactor) + extrap * extrapFactor;
     }
-    float const mscale = factor > 1.0F ? 0.1F * std::log(factor) + 1.0F : 1.0F;
+    return invFreq;
+}
+
+//! HF's default YaRN attention scale.
+float yarnMscaleReference(float factor)
+{
+    return factor > 1.0F ? 0.1F * std::log(factor) + 1.0F : 1.0F;
+}
+
+// YaRN: the kernel only does the position sweep on a precomputed per-dim inverse
+// frequency, so the reference recomputes the same NTK-by-parts inv_freq (matching
+// computeYarnInvFreq in the runtime) and fills cos(pos*invFreq)*mscale.
+void TestYarnRopeCosSin(int32_t rotaryDim, int32_t maxPositions, float rotaryBaseFrequency = 10000.0F,
+    float factor = 32.0F, int32_t originalMaxPositionEmbeddings = 8192, float betaFast = 32.0F, float betaSlow = 1.0F)
+{
+    int32_t const halfDim = rotaryDim / 2;
+    std::vector<float> const invFreq = computeYarnInvFreqReference(
+        rotaryDim, rotaryBaseFrequency, factor, originalMaxPositionEmbeddings, betaFast, betaSlow);
+    float const mscale = yarnMscaleReference(factor);
 
     std::vector<float> reference(maxPositions * rotaryDim);
     for (int32_t pos = 0; pos < maxPositions; ++pos)
@@ -475,6 +491,105 @@ TEST(InitializeMRopeCosSin, FractionalTemporalPositions)
     TestMRopeCosSinFractional(128, 512, 2, 5000000.0f, true, 20, 20, 6.5f);
     TestMRopeCosSinFractional(128, 512, 1, 5000000.0f, true, 20, 20, 3.25f);
     TestMRopeCosSinFractional(128, 512, 1, 10000.0f, false, 24, 24, 6.5f);
+}
+
+//! HF Qwen3_5TextRotaryEmbedding reference: each frequency pair takes the T, H or W position its section assigns, and
+//! cos/sin carry the YaRN attention scale.
+void TestYarnMRopeCosSin(int32_t rotaryDim, int32_t maxPositions, int32_t batchSize, float rotaryBaseFrequency,
+    bool interleaved, int32_t sectionH, int32_t sectionW, float factor, int32_t originalMaxPositionEmbeddings)
+{
+    int32_t const halfDim = rotaryDim / 2;
+    int32_t const numTemporalPairs = halfDim - sectionH - sectionW;
+    std::vector<float> const invFreq
+        = computeYarnInvFreqReference(rotaryDim, rotaryBaseFrequency, factor, originalMaxPositionEmbeddings);
+    float const mscale = yarnMscaleReference(factor);
+
+    // Independent T, H and W planes, so a pair that reads the wrong plane gets a different angle.
+    std::vector<int64_t> positions(batchSize * 3 * maxPositions);
+    uniformIntInitialization(positions, 0, maxPositions - 1);
+
+    std::vector<float> reference(batchSize * maxPositions * rotaryDim);
+    for (int32_t b = 0; b < batchSize; ++b)
+    {
+        for (int32_t i = 0; i < maxPositions; ++i)
+        {
+            for (int32_t j = 0; j < halfDim; ++j)
+            {
+                int32_t plane{};
+                if (interleaved)
+                {
+                    plane = (j % 3 == 1 && j < sectionH * 3) ? 1 : ((j % 3 == 2 && j < sectionW * 3) ? 2 : 0);
+                }
+                else
+                {
+                    plane = j < numTemporalPairs ? 0 : (j < numTemporalPairs + sectionH ? 1 : 2);
+                }
+                float const angle = static_cast<float>(positions[(b * 3 + plane) * maxPositions + i]) * invFreq[j];
+                int32_t const dst = (b * maxPositions + i) * rotaryDim + j;
+                reference[dst] = static_cast<float>(std::cos(static_cast<double>(angle))) * mscale;
+                reference[dst + halfDim] = static_cast<float>(std::sin(static_cast<double>(angle))) * mscale;
+            }
+        }
+    }
+
+    thrust::device_vector<float> cosSinCacheDevice(batchSize * maxPositions * rotaryDim);
+    thrust::device_vector<int64_t> positionsDevice(positions);
+    thrust::device_vector<float> invFreqDevice(invFreq);
+    cudaStream_t stream{nullptr};
+    // A theta that differs from the YaRN base: the inverse frequencies alone must decide the angles.
+    initializeMRopeCosSin(thrust::raw_pointer_cast(cosSinCacheDevice.data()),
+        thrust::raw_pointer_cast(positionsDevice.data()), /*rotaryBaseFrequency=*/10000.0F, rotaryDim, maxPositions,
+        batchSize, interleaved, sectionH, sectionW, stream, thrust::raw_pointer_cast(invFreqDevice.data()), mscale);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    thrust::host_vector<float> cosSinCacheHost(cosSinCacheDevice);
+    for (size_t i = 0; i < reference.size(); ++i)
+    {
+        ASSERT_NEAR(cosSinCacheHost[i], reference[i], 2e-6F) << "YaRN MRoPE cache mismatch at index " << i;
+    }
+}
+
+// Given distinct T, H and W positions and YaRN inverse frequencies
+// When the MRoPE cache is initialized, in the interleaved and the chunked section layouts
+// Then each pair holds cos/sin of its section's position times its inverse frequency, scaled by mscale
+TEST(InitializeMRopeCosSin, YarnInverseFrequenciesMatchHfReference)
+{
+    // Qwen3.5: rotaryDim=64, interleaved, section [11,11,10], theta 1e7, YaRN factor 4 over 262144.
+    TestYarnMRopeCosSin(64, 4096, 2, 10000000.0F, true, 11, 10, 4.0F, 262144);
+    // Qwen2.5-VL layout: rotaryDim=128, non-interleaved, section [16,24,24].
+    TestYarnMRopeCosSin(128, 2048, 2, 1000000.0F, false, 24, 24, 4.0F, 32768);
+}
+
+// Given text-only rows, whose T, H and W positions coincide
+// When the text-only MRoPE cache is filled with YaRN inverse frequencies
+// Then every slot holds the 1-D YaRN table
+TEST(InitializeTextOnlyMRopeCosSin, YarnFillsEverySlotWithTheYarnTable)
+{
+    constexpr int32_t kROTARY_DIM = 64;
+    constexpr int32_t kPOSITIONS = 1024;
+    constexpr int32_t kSLOTS = 3;
+    constexpr int32_t kSLOT_SIZE = kPOSITIONS * kROTARY_DIM;
+    std::vector<float> const invFreq = computeYarnInvFreqReference(kROTARY_DIM, 10000000.0F, 4.0F, 262144);
+    float const mscale = yarnMscaleReference(4.0F);
+    thrust::device_vector<float> invFreqDevice(invFreq);
+
+    thrust::device_vector<float> yarnDevice(kSLOT_SIZE);
+    initializeYarnCosSin(thrust::raw_pointer_cast(yarnDevice.data()), thrust::raw_pointer_cast(invFreqDevice.data()),
+        mscale, kROTARY_DIM, kPOSITIONS, nullptr);
+    thrust::device_vector<float> cacheDevice(kSLOTS * kSLOT_SIZE);
+    initializeTextOnlyMRopeCosSin(thrust::raw_pointer_cast(cacheDevice.data()), /*rotaryBaseFrequency=*/10000000.0F,
+        kROTARY_DIM, kPOSITIONS, kSLOTS, nullptr, thrust::raw_pointer_cast(invFreqDevice.data()), mscale);
+    CUDA_CHECK(cudaStreamSynchronize(nullptr));
+
+    thrust::host_vector<float> const yarn(yarnDevice);
+    thrust::host_vector<float> const cache(cacheDevice);
+    for (int32_t slot = 0; slot < kSLOTS; ++slot)
+    {
+        for (int32_t i = 0; i < kSLOT_SIZE; ++i)
+        {
+            ASSERT_EQ(cache[slot * kSLOT_SIZE + i], yarn[i]) << "slot " << slot << ", index " << i;
+        }
+    }
 }
 
 TEST(InitializeMRopeCosSin, Benchmark)

@@ -21,7 +21,6 @@
 #include "common/pagedKvTypes.h"
 #include "common/tensor.h"
 #include "runtime/hybridCacheManager.h"
-#include "runtime/state/contextCache/hybridSnapshotStorage.h"
 #include "runtime/state/kvPageTable.h"
 
 #include <cuda_fp16.h>
@@ -34,7 +33,6 @@
 #include <utility>
 #include <vector>
 
-using namespace nvinfer1;
 using namespace trt_edgellm;
 using namespace trt_edgellm::rt;
 
@@ -112,9 +110,10 @@ DeploymentConfig makeMtpDeployment()
     deployment.base = makeMtpBaseConfig();
     deployment.draft = makeMtpDraftConfig();
     SpecDecodeConfig spec;
-    spec.draftingTopK = 2;
-    spec.draftingStep = 2;
-    spec.verifySize = 4;
+    spec.draftTopK = 2;
+    spec.draftSteps = 2;
+    spec.verifyTokenCount = 4;
+    spec.baseOutputHiddenDim = kHIDDEN_SIZE;
     deployment.specConfig = spec;
     return deployment;
 }
@@ -173,33 +172,11 @@ protected:
         return table;
     }
 
-    //! Per-slot cost of one Hybrid+MTP checkpoint: the recurrent axis also carries the boundary hidden row, and the
-    //! partial-KV axis also carries the paired draft page.
-    size_t recurrentBytesPerSlot() const
-    {
-        return HybridSnapshotStorage::recurrentBytesPerSlot(mBaseCache->getMambaCacheManager().getConfig())
-            + HybridSnapshotStorage::boundaryHiddenBytesPerSlot(kHIDDEN_SIZE, DataType::kHALF);
-    }
-
-    size_t partialKvBytesPerSlot() const
-    {
-        return HybridSnapshotStorage::partialKvBytesPerSlot(mBaseCache->getKVCacheManager().getConfig())
-            + HybridSnapshotStorage::partialKvBytesPerSlot(mDraftCache->getKVCacheManager().getConfig());
-    }
-
     void createCoordinator(ContextCacheCoordinator::StreamSynchronizer synchronizer = {}, int32_t snapshotSlots = 4)
     {
         ASSERT_GT(snapshotSlots, 0);
-        createCoordinatorWithBudgets(static_cast<int64_t>(static_cast<size_t>(snapshotSlots) * recurrentBytesPerSlot()),
-            static_cast<int64_t>(static_cast<size_t>(snapshotSlots) * partialKvBytesPerSlot()),
-            std::move(synchronizer));
-    }
-
-    void createCoordinatorWithBudgets(int64_t recurrentPoolBytes, int64_t partialKvPoolBytes,
-        ContextCacheCoordinator::StreamSynchronizer synchronizer = {})
-    {
         ContextCachePhysicalResources resources{*mBaseCache, *mBasePageTable, mDraftCache.get(), mDraftPageTable.get()};
-        ContextCacheConfig config{/*.enabled=*/true, /*.maxRecords=*/16, recurrentPoolBytes, partialKvPoolBytes};
+        ContextCacheConfig config{/*.enabled=*/true, /*.maxRecords=*/16, /*.maxSnapshots=*/snapshotSlots};
         mCoordinator = std::make_unique<ContextCacheCoordinator>(config, mDeployment,
             validateContextCacheDeployment(mDeployment), resources, mStream, std::move(synchronizer));
     }
@@ -210,8 +187,9 @@ protected:
         ContextCacheBatchAdmission admission;
         admission.speculativeRequest = speculativeRequest;
         DecodingKvHeadroom const headroom = speculativeRequest ? DecodingKvHeadroom{4, 2} : DecodingKvHeadroom{1, 0};
-        admission.lookupPolicy = lookupPolicy;
-        admission.sequences.push_back(ContextCacheSequenceAdmission{std::move(tokens), {}, {}, ResidentRef{0, 1}});
+        ContextCacheSequenceAdmission sequence{std::move(tokens), {}, {}, ResidentRef{0, 1}};
+        sequence.lookupPolicy = lookupPolicy;
+        admission.sequences.push_back(std::move(sequence));
         ContextCacheCoordinator::BeginRequestResult result = mCoordinator->beginRequest(admission, headroom, mStream);
         EXPECT_EQ(result.status, ContextCacheCoordinatorStatus::kOk);
         EXPECT_TRUE(result.admission.has_value());
@@ -324,8 +302,8 @@ protected:
     std::unique_ptr<ContextCacheCoordinator> mCoordinator;
 };
 
-// The kHybridMtp deployment must construct with a draft cache and boundary-hidden snapshot storage.
-TEST_F(ContextCacheMtpCoordinatorTests, ConstructsHybridMtpDeployment)
+// The hybrid spec deployment must construct with a draft cache and boundary-hidden snapshot storage.
+TEST_F(ContextCacheMtpCoordinatorTests, ConstructsHybridSpecDeployment)
 {
     ContextCacheDeploymentProfile const profile = validateContextCacheDeployment(mDeployment);
     EXPECT_EQ(profile.baseStateKind, ContextCacheModelStateKind::kHybrid);
@@ -334,7 +312,7 @@ TEST_F(ContextCacheMtpCoordinatorTests, ConstructsHybridMtpDeployment)
     EXPECT_EQ(mCoordinator->manager().records().size(), 0U);
 }
 
-// A cold MTP producer publishes an exact checkpoint via publishHybridMtpEndpoint; a longer consumer then rebinds the
+// A cold MTP producer publishes an exact checkpoint via publishHybridSpecEndpoint; a longer consumer then rebinds the
 // paired base+draft path and restores the recurrent state, base partial page, and boundary hidden row on the hit.
 TEST_F(ContextCacheMtpCoordinatorTests, PublishEndpointBecomesReusableAndRestoresPairedState)
 {
@@ -352,7 +330,7 @@ TEST_F(ContextCacheMtpCoordinatorTests, PublishEndpointBecomesReusableAndRestore
     seedHiddenRow(0, kBoundaryRow, 0x51);
     ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
 
-    ASSERT_EQ(mCoordinator->publishHybridMtpEndpoint(producer.request, 0, kResidentLength, *mHidden, kBoundaryRow),
+    ASSERT_EQ(mCoordinator->publishHybridSpecEndpoint(producer.request, 0, kResidentLength, *mHidden, kBoundaryRow),
         ContextCacheCoordinatorStatus::kOk);
     ASSERT_EQ(mCoordinator->manager().records().size(), 1U);
 
@@ -371,7 +349,7 @@ TEST_F(ContextCacheMtpCoordinatorTests, PublishEndpointBecomesReusableAndRestore
 
     ASSERT_EQ(mCoordinator->preparePrefill(consumer.request), ContextCacheCoordinatorStatus::kOk);
     // The runtime fold restores the boundary hidden row within its own prefill stream (no coordinator sync here).
-    ASSERT_EQ(mCoordinator->restoreHybridMtpBoundaryHidden(consumer.request, 0, *mHidden, kBoundaryRow),
+    ASSERT_EQ(mCoordinator->restoreHybridSpecBoundaryHidden(consumer.request, 0, *mHidden, kBoundaryRow),
         ContextCacheCoordinatorStatus::kOk);
     ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
 
@@ -380,6 +358,52 @@ TEST_F(ContextCacheMtpCoordinatorTests, PublishEndpointBecomesReusableAndRestore
     expectHiddenRow(0, kBoundaryRow, 0x51);
     EXPECT_EQ(mCoordinator->metrics().hybridRestores, 1U);
     EXPECT_EQ(mCoordinator->finish(consumer.request), ContextCacheCoordinatorStatus::kOk);
+}
+
+// A sequence seated into an executing request publishes its checkpoint from its own prefill and leaves the request
+// with no request-wide work in flight, so the next sequence joins at once -- and reuses the checkpoint.
+TEST_F(ContextCacheMtpCoordinatorTests, SeatedSequencePublishes)
+{
+    constexpr int32_t kInputLength{kTOKENS_PER_PAGE + 1};
+    constexpr int32_t kBoundaryRow{kInputLength - 1};
+    DecodingKvHeadroom const headroom{4, 2};
+    ContextCacheBatchAdmission empty;
+    empty.speculativeRequest = true;
+    ContextCacheCoordinator::BeginRequestResult opened = mCoordinator->beginRequest(empty, headroom, mStream);
+    ASSERT_EQ(opened.status, ContextCacheCoordinatorStatus::kOk);
+    ContextCacheCoordinator::RequestHandle& session = opened.admission->request;
+    ASSERT_EQ(mCoordinator->preparePrefill(session), ContextCacheCoordinatorStatus::kOk);
+
+    ContextCacheSequenceAdmission producer{makeTokens(kInputLength), {}, {}, ResidentRef{0, 1}};
+    ASSERT_EQ(mCoordinator->admitSequence(session, producer, headroom).prefillStart, 0);
+    ASSERT_EQ(mCoordinator->prepareSequenceAdmission(session, 0), ContextCacheCoordinatorStatus::kOk);
+    seedRecurrent(0x31, 0x61);
+    seedHiddenRow(0, kBoundaryRow, 0x51);
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+    ASSERT_EQ(mCoordinator->publishHybridSpecEndpoint(session, 0, kInputLength, *mHidden, kBoundaryRow),
+        ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->manager().records().size(), 1U);
+    ASSERT_EQ(mCoordinator->completeSequenceAdmissionDeviceWork(session, 0), ContextCacheCoordinatorStatus::kOk);
+    int32_t const lookahead{9001};
+    ASSERT_EQ(mCoordinator->finalizeSequenceAdmission(
+                  session, 0, ContextCacheSequenceAdvance{&lookahead, 1, kInputLength}, kInputLength - 1),
+        ContextCacheCoordinatorStatus::kOk);
+
+    ContextCacheSequenceAdmission consumer{makeTokens(kInputLength + 1), {}, {}, ResidentRef{1, 1}};
+    ContextCacheCoordinator::AdmitSequenceResult const joined
+        = mCoordinator->admitSequence(session, consumer, headroom);
+    ASSERT_EQ(joined.status, ContextCacheCoordinatorStatus::kOk);
+    EXPECT_EQ(joined.prefillStart, kInputLength);
+    ASSERT_EQ(mCoordinator->prepareSequenceAdmission(session, 1), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->abortSequenceAdmission(session, 1), ContextCacheCoordinatorStatus::kOk);
+    // The runtime's seating holds each sequence's row in both cache managers' batches.
+    mBaseCache->setActiveBatchSize(2);
+    mDraftCache->setActiveBatchSize(2);
+    Tensor deviceMapping({2}, rt::DeviceType::kGPU, DataType::kINT32, "mtpCoordinatorMapping");
+    ASSERT_EQ(
+        mCoordinator->beginBatchCompaction(session, {-1, -1}, 0, deviceMapping), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->compactBatch(session), ContextCacheCoordinatorStatus::kOk);
+    EXPECT_EQ(mCoordinator->finish(session), ContextCacheCoordinatorStatus::kOk);
 }
 
 TEST_F(ContextCacheMtpCoordinatorTests, VanillaRequestOnMtpDeploymentRestoresOnlyBaseHybridState)
@@ -393,7 +417,7 @@ TEST_F(ContextCacheMtpCoordinatorTests, VanillaRequestOnMtpDeploymentRestoresOnl
     seedRecurrent(0x31, 0x61);
     seedHiddenRow(0, kBoundaryRow, 0x51);
     ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
-    ASSERT_EQ(mCoordinator->publishHybridMtpEndpoint(producer.request, 0, kResidentLength, *mHidden, kBoundaryRow),
+    ASSERT_EQ(mCoordinator->publishHybridSpecEndpoint(producer.request, 0, kResidentLength, *mHidden, kBoundaryRow),
         ContextCacheCoordinatorStatus::kOk);
     ASSERT_EQ(mCoordinator->finish(producer.request), ContextCacheCoordinatorStatus::kOk);
 
@@ -414,7 +438,7 @@ TEST_F(ContextCacheMtpCoordinatorTests, PublishEndpointGuardsSkipEmptyAndBypass)
     ASSERT_EQ(mCoordinator->preparePrefill(producer.request), ContextCacheCoordinatorStatus::kOk);
     ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
     // Non-positive resident length is a no-op.
-    ASSERT_EQ(mCoordinator->publishHybridMtpEndpoint(producer.request, 0, 0, *mHidden, 0),
+    ASSERT_EQ(mCoordinator->publishHybridSpecEndpoint(producer.request, 0, 0, *mHidden, 0),
         ContextCacheCoordinatorStatus::kOk);
     EXPECT_EQ(mCoordinator->manager().records().size(), 0U);
     ASSERT_EQ(mCoordinator->finish(producer.request), ContextCacheCoordinatorStatus::kOk);
@@ -422,7 +446,7 @@ TEST_F(ContextCacheMtpCoordinatorTests, PublishEndpointGuardsSkipEmptyAndBypass)
     auto bypass = begin(makeTokens(kInputLength), ContextCacheLookupPolicy::kBypass);
     ASSERT_EQ(mCoordinator->preparePrefill(bypass.request), ContextCacheCoordinatorStatus::kOk);
     ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
-    ASSERT_EQ(mCoordinator->publishHybridMtpEndpoint(bypass.request, 0, kInputLength, *mHidden, kInputLength - 1),
+    ASSERT_EQ(mCoordinator->publishHybridSpecEndpoint(bypass.request, 0, kInputLength, *mHidden, kInputLength - 1),
         ContextCacheCoordinatorStatus::kOk);
     EXPECT_EQ(mCoordinator->manager().records().size(), 0U);
     EXPECT_EQ(mCoordinator->finish(bypass.request), ContextCacheCoordinatorStatus::kOk);
@@ -448,7 +472,7 @@ TEST_F(ContextCacheMtpCoordinatorTests, PrefillPublishesTheLeasedDraftPagePathTo
     seedHiddenRow(0, kBoundaryRow, 0x51);
     ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
 
-    ASSERT_EQ(mCoordinator->publishHybridMtpEndpoint(producer.request, 0, kResidentLength, *mHidden, kBoundaryRow),
+    ASSERT_EQ(mCoordinator->publishHybridSpecEndpoint(producer.request, 0, kResidentLength, *mHidden, kBoundaryRow),
         ContextCacheCoordinatorStatus::kOk);
     // The boundary page is private and goes back to the pool at finish; only the snapshot can bring its content back.
     seedKvPage(*mDraftCache, producerDraftBoundaryPage, 0, 0);
@@ -470,28 +494,22 @@ TEST_F(ContextCacheMtpCoordinatorTests, PrefillPublishesTheLeasedDraftPagePathTo
     EXPECT_EQ(mCoordinator->finish(consumer.request), ContextCacheCoordinatorStatus::kOk);
 }
 
-// Snapshot pool sizing must charge a slot for every slab the storage allocates against it, or the pools overrun the
-// caller's declared device-memory ceiling by the paired draft partial-KV page and the boundary hidden row.
-TEST_F(ContextCacheMtpCoordinatorTests, SnapshotPoolSizingChargesThePairedDraftAndBoundaryHiddenSlabs)
+// Given a bypass-policy request on a hybrid+spec MTP deployment,
+// When finalizePrefillPublication is called with valid common-state lengths,
+// Then the coordinator accepts the request without asserting on null common-state lengths.
+TEST_F(ContextCacheMtpCoordinatorTests, BypassPolicyAcceptsCommonStateLengthsAtPrefillFinalization)
 {
-    constexpr int32_t kSlots{4};
-    size_t const baseOnlyRecurrent
-        = HybridSnapshotStorage::recurrentBytesPerSlot(mBaseCache->getMambaCacheManager().getConfig());
-    size_t const baseOnlyPartialKv
-        = HybridSnapshotStorage::partialKvBytesPerSlot(mBaseCache->getKVCacheManager().getConfig());
-    ASSERT_GT(recurrentBytesPerSlot(), baseOnlyRecurrent);
-    ASSERT_GT(partialKvBytesPerSlot(), baseOnlyPartialKv);
+    constexpr int32_t kInputLength{kTOKENS_PER_PAGE + 1};
+    auto bypass = begin(makeTokens(kInputLength), ContextCacheLookupPolicy::kBypass);
+    ASSERT_EQ(mCoordinator->preparePrefill(bypass.request), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
 
-    createCoordinatorWithBudgets(static_cast<int64_t>(static_cast<size_t>(kSlots) * baseOnlyRecurrent),
-        static_cast<int64_t>(static_cast<size_t>(kSlots) * baseOnlyPartialKv));
-    ContextCacheMetrics const underpriced = mCoordinator->metrics();
-    EXPECT_LT(underpriced.recurrentSnapshots.capacity, kSlots);
-    EXPECT_LT(underpriced.partialKvSnapshots.capacity, kSlots);
-
-    createCoordinator({}, kSlots);
-    ContextCacheMetrics const priced = mCoordinator->metrics();
-    EXPECT_EQ(priced.recurrentSnapshots.capacity, kSlots);
-    EXPECT_EQ(priced.partialKvSnapshots.capacity, kSlots);
+    int32_t lookahead = 9001;
+    std::vector<ContextCacheSequenceAdvance> progress{ContextCacheSequenceAdvance{&lookahead, 1, kInputLength}};
+    std::vector<int32_t> commonLengths{kInputLength};
+    EXPECT_EQ(mCoordinator->finalizePrefillPublication(bypass.request, progress, &commonLengths),
+        ContextCacheCoordinatorStatus::kOk);
+    EXPECT_EQ(mCoordinator->finish(bypass.request), ContextCacheCoordinatorStatus::kOk);
 }
 
 } // namespace

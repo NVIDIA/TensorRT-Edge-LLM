@@ -18,6 +18,7 @@
 #include "allReducePluginTestUtils.h"
 
 #include "common/cudaUtils.h"
+#include "common/trtUtils.h"
 #include "runtime/multiDevice/backends/nccl/tensorParallelNcclResources.h"
 #include "runtime/multiDevice/ncclCollectiveBackend.h"
 

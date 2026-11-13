@@ -42,7 +42,7 @@ struct Gemma4UnifiedAudioConfig
 class Gemma4UnifiedAudioRunner : public MultimodalRunner
 {
 public:
-    Gemma4UnifiedAudioRunner(std::string const& engineDir, cudaStream_t stream);
+    Gemma4UnifiedAudioRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
     ~Gemma4UnifiedAudioRunner() noexcept = default;
 
     bool preprocess(rt::LLMGenerationRequest const& request, std::vector<std::vector<int32_t>>& batchedInputIds,

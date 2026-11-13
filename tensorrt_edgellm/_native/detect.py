@@ -32,13 +32,13 @@ _CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75
 _CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR = 76
 _DGX_SPARK_MODEL_MARKERS = ("dgx spark", "gb10")
 _IGX_THOR_MODEL_MARKERS = ("igx thor", )
+_GRACE_BLACKWELL_MODEL_MARKERS = ("gb200", "gb300")
 
 
 @dataclass(frozen=True)
 class DetectedPlatform:
     """Raw facts used to select an installed native payload."""
 
-    python_abi: str
     platform_probe_source: str
     platform_probe_value: str
     cpu_arch: str
@@ -49,7 +49,6 @@ class DetectedPlatform:
     def as_dict(self) -> Dict[str, object]:
         """Return raw facts for selection diagnostics."""
         return {
-            "python_abi": self.python_abi,
             "platform_probe_source": self.platform_probe_source,
             "platform_probe_value": self.platform_probe_value,
             "cpu_arch": self.cpu_arch,
@@ -59,14 +58,13 @@ class DetectedPlatform:
         }
 
 
-def _python_abi() -> str:
+def _validate_python_runtime() -> None:
     cache_tag = getattr(sys.implementation, "cache_tag", "") or ""
     match = re.fullmatch(r"cpython-(\d{2,3})(?:t)?", cache_tag)
-    if not match or cache_tag.endswith("t"):
+    if (match is None or cache_tag.endswith("t") or int(match.group(1)) < 310):
         raise NativeDetectionError(
-            "TensorRT Edge-LLM wheels require a supported GIL-enabled CPython; "
-            f"detected cache tag {cache_tag!r}.")
-    return f"cp{match.group(1)}"
+            "TensorRT Edge-LLM wheels require GIL-enabled CPython 3.10 or "
+            f"newer; detected cache tag {cache_tag!r}.")
 
 
 def _cpu_arch() -> str:
@@ -106,8 +104,8 @@ def _device_model_probe() -> Optional[Tuple[str, str]]:
     model = path.read_text(encoding="utf-8", errors="replace").strip()
     normalized = re.sub(r"[_-]+", " ", model)
     if any(marker in normalized.casefold()
-           for marker in (*_DGX_SPARK_MODEL_MARKERS,
-                          *_IGX_THOR_MODEL_MARKERS)):
+           for marker in (*_DGX_SPARK_MODEL_MARKERS, *_IGX_THOR_MODEL_MARKERS,
+                          *_GRACE_BLACKWELL_MODEL_MARKERS)):
         return "device-model", normalized
     return None
 
@@ -130,6 +128,7 @@ def _drive_probe() -> Optional[Tuple[str, str]]:
                                      for marker in (
                                          *_DGX_SPARK_MODEL_MARKERS,
                                          *_IGX_THOR_MODEL_MARKERS,
+                                         *_GRACE_BLACKWELL_MODEL_MARKERS,
                                      )):
             return None
         rootfs = Path("/etc/nvidia/version-ubuntu-rootfs.txt")
@@ -263,6 +262,7 @@ def _cuda_device_sms() -> Tuple[int, ...]:
 
 def detect_platform() -> DetectedPlatform:
     """Detect the exact raw inputs required for payload selection."""
+    _validate_python_runtime()
     cpu_arch = _cpu_arch()
     probe_source, probe_value = _platform_probe(cpu_arch)
     distinct_sms = sorted(set(_cuda_device_sms()))
@@ -273,7 +273,6 @@ def detect_platform() -> DetectedPlatform:
             f"{rendered}. Relaunch with CUDA_VISIBLE_DEVICES=<GPU-UUID> or "
             "expose a homogeneous-SM set.")
     return DetectedPlatform(
-        python_abi=_python_abi(),
         platform_probe_source=probe_source,
         platform_probe_value=probe_value,
         cpu_arch=cpu_arch,

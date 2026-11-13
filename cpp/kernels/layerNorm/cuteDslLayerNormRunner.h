@@ -28,7 +28,7 @@
 #include "cutedsl_layernorm_all.h"
 #undef CUTE_DSL_CUDA_ERROR_CHECK
 
-#include <NvInferRuntime.h>
+#include "common/dataType.h"
 
 #include <cstdint>
 #include <cuda_runtime.h>
@@ -50,7 +50,7 @@ struct CuteDslLayerNormParams
     int32_t rows{};
     int32_t hiddenSize{};
     float epsilon{};
-    nvinfer1::DataType dataType{nvinfer1::DataType::kHALF};
+    trt_edgellm::DataType dataType{trt_edgellm::DataType::kHALF};
 };
 
 //! Dispatches the homogeneous FP16/BF16 CuTe DSL LayerNorm AOT variants.
@@ -68,7 +68,8 @@ public:
             || hiddenSize == 8192;
     }
 
-    static bool canImplement(int32_t rows, int32_t hiddenSize, int32_t smVersion, nvinfer1::DataType dataType) noexcept;
+    static bool canImplement(
+        int32_t rows, int32_t hiddenSize, int32_t smVersion, trt_edgellm::DataType dataType) noexcept;
     static int32_t run(CuteDslLayerNormParams const& params, cudaStream_t stream) noexcept;
 
 private:
@@ -87,7 +88,7 @@ private:
         kBf16H8192,
     };
 
-    static Variant selectVariant(int32_t hiddenSize, nvinfer1::DataType dataType) noexcept;
+    static Variant selectVariant(int32_t hiddenSize, trt_edgellm::DataType dataType) noexcept;
     static bool ensureKernelModule(Variant variant, cudaStream_t stream) noexcept;
 
     static detail::LazyKernelModule<layernorm_fp16_h4096_Kernel_Module_t> sFp16H4096Module;

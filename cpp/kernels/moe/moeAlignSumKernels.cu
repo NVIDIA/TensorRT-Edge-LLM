@@ -112,7 +112,6 @@ __global__ void computePaddedOffsetsKernel(int32_t const* counts, int32_t* padde
     }
 }
 
-// Build slot lists per expert using atomic offsets
 __global__ void buildSlotListsKernel(int32_t const* topkIndices, int32_t* slotsByExpertWorkspace,
     int32_t* slotsPerExpertWorkspace, int32_t numTokens, int32_t topK, int32_t numExperts)
 {
@@ -129,6 +128,104 @@ __global__ void buildSlotListsKernel(int32_t const* topkIndices, int32_t* slotsB
         }
         int32_t offset = atomicAdd(&slotsPerExpertWorkspace[expertId], 1);
         slotsByExpertWorkspace[expertId * totalSlots + offset] = slot;
+    }
+}
+
+constexpr int32_t kSlotListThreads = 256;
+constexpr int32_t kGroupedSlotListExperts = 8;
+constexpr int32_t kGroupedSlotListThreads = kGroupedSlotListExperts * WARP_SIZE;
+
+template <int32_t kItems>
+__global__ void buildStableSlotListsKernel(int32_t const* topkIndices, int32_t* slotsByExpertWorkspace,
+    int32_t* slotsPerExpertWorkspace, int32_t numTokens, int32_t topK)
+{
+    using BlockLoad = cub::BlockLoad<int32_t, kSlotListThreads, kItems,
+        kItems == 1 ? cub::BLOCK_LOAD_DIRECT : cub::BLOCK_LOAD_WARP_TRANSPOSE>;
+    using BlockScan = cub::BlockScan<int32_t, kSlotListThreads>;
+    __shared__ union
+    {
+        typename BlockLoad::TempStorage load;
+        typename BlockScan::TempStorage scan;
+    } storage;
+    int32_t const expertId = blockIdx.x;
+    int32_t const totalSlots = numTokens * topK;
+    int32_t count = 0;
+    // Stable expert rows prevent atomic arrival order from changing Marlin reduction partitions.
+    for (int64_t start = 0; start < totalSlots; start += kSlotListThreads * kItems)
+    {
+        int32_t ids[kItems];
+        int32_t const validSlots
+            = static_cast<int32_t>(min(static_cast<int64_t>(kSlotListThreads * kItems), totalSlots - start));
+        BlockLoad(storage.load).Load(topkIndices + start, ids, validSlots, -1);
+        if constexpr (kItems > 1)
+        {
+            __syncthreads();
+        }
+        // A bit per consecutive slot keeps the local scan in registers.
+        uint32_t mask = 0;
+#pragma unroll
+        for (int32_t item = 0; item < kItems; ++item)
+        {
+            mask |= static_cast<uint32_t>(ids[item] == expertId) << item;
+        }
+        int32_t offset;
+        int32_t tileCount;
+        BlockScan(storage.scan).ExclusiveSum(__popc(mask), offset, tileCount);
+        while (mask)
+        {
+            int32_t const item = __ffs(mask) - 1;
+            slotsByExpertWorkspace[static_cast<int64_t>(expertId) * totalSlots + count + offset++]
+                = static_cast<int32_t>(start + threadIdx.x * kItems + item);
+            mask &= mask - 1;
+        }
+        count += tileCount;
+        __syncthreads();
+    }
+    if (threadIdx.x == 0)
+    {
+        slotsPerExpertWorkspace[expertId] = count;
+    }
+}
+
+__global__ void buildStableSlotListsGroupedKernel(int32_t const* topkIndices, int32_t* slotsByExpertWorkspace,
+    int32_t* slotsPerExpertWorkspace, int32_t numTokens, int32_t topK, int32_t numExperts)
+{
+    __shared__ int32_t expertIds[kGroupedSlotListThreads];
+    int32_t const laneId = threadIdx.x % WARP_SIZE;
+    int32_t const warpId = threadIdx.x / WARP_SIZE;
+    int32_t const expertId = blockIdx.x * kGroupedSlotListExperts + warpId;
+    int32_t const totalSlots = numTokens * topK;
+    int32_t count = 0;
+
+    for (int32_t start = 0; start < totalSlots; start += kGroupedSlotListThreads)
+    {
+        int32_t const validSlots = min(kGroupedSlotListThreads, totalSlots - start);
+        expertIds[threadIdx.x] = threadIdx.x < validSlots ? topkIndices[start + threadIdx.x] : -1;
+        __syncthreads();
+
+        if (expertId < numExperts)
+        {
+#pragma unroll
+            for (int32_t warpStart = 0; warpStart < kGroupedSlotListThreads; warpStart += WARP_SIZE)
+            {
+                int32_t const localSlot = warpStart + laneId;
+                bool const selected = localSlot < validSlots && expertIds[localSlot] == expertId;
+                uint32_t const selectedMask = __ballot_sync(0xffffffffU, selected);
+                if (selected)
+                {
+                    int32_t const rank = __popc(selectedMask & ((1U << laneId) - 1));
+                    slotsByExpertWorkspace[static_cast<int64_t>(expertId) * totalSlots + count + rank]
+                        = start + localSlot;
+                }
+                count += __popc(selectedMask);
+            }
+        }
+        __syncthreads();
+    }
+
+    if (expertId < numExperts && laneId == 0)
+    {
+        slotsPerExpertWorkspace[expertId] = count;
     }
 }
 
@@ -149,6 +246,33 @@ void launchComputePaddedOffsetsKernel(int32_t const* counts, int32_t* paddedCoun
 {
     computePaddedOffsetsKernel<<<1, 1024, 0, stream>>>(
         counts, paddedCounts, paddedOffsets, numTokensPostPadded, numExperts, moeBlockSize);
+}
+
+bool shouldUseGroupedStableSlotLists(int32_t smVersion, int32_t numExperts)
+{
+    return smVersion == 110 && numExperts >= 128;
+}
+
+void launchBuildStableSlotListsKernel(int32_t const* topkIndices, int32_t* slotsByExpertWorkspace,
+    int32_t* slotsPerExpertWorkspace, int32_t numTokens, int32_t topK, int32_t numExperts, cudaStream_t stream)
+{
+    // SM110 benefits from sharing each input tile across expert warps; SM100 favors the per-expert grid.
+    if (shouldUseGroupedStableSlotLists(getSMVersion(), numExperts))
+    {
+        int32_t const blocks = static_cast<int32_t>(divUp(numExperts, kGroupedSlotListExperts));
+        buildStableSlotListsGroupedKernel<<<blocks, kGroupedSlotListThreads, 0, stream>>>(
+            topkIndices, slotsByExpertWorkspace, slotsPerExpertWorkspace, numTokens, topK, numExperts);
+    }
+    else if (static_cast<int64_t>(numTokens) * topK <= kSlotListThreads)
+    {
+        buildStableSlotListsKernel<1><<<numExperts, kSlotListThreads, 0, stream>>>(
+            topkIndices, slotsByExpertWorkspace, slotsPerExpertWorkspace, numTokens, topK);
+    }
+    else
+    {
+        buildStableSlotListsKernel<32><<<numExperts, kSlotListThreads, 0, stream>>>(
+            topkIndices, slotsByExpertWorkspace, slotsPerExpertWorkspace, numTokens, topK);
+    }
 }
 
 void launchBuildSlotListsKernel(int32_t const* topkIndices, int32_t* slotsByExpertWorkspace,

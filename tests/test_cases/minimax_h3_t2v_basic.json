@@ -1,0 +1,31 @@
+{
+    "requests": [
+        {
+            "prompt": "A red paper airplane flies through a sunlit classroom.",
+            "height": 256,
+            "width": 448,
+            "num_frames": 22,
+            "sampling": {
+                "seed": 0
+            }
+        },
+        {
+            "prompt": "A red paper airplane flies through a sunlit classroom.",
+            "height": 256,
+            "width": 448,
+            "num_frames": 22,
+            "sampling": {
+                "seed": 1
+            }
+        },
+        {
+            "prompt": "A golden retriever runs along a quiet beach at sunrise.",
+            "height": 256,
+            "width": 448,
+            "num_frames": 22,
+            "sampling": {
+                "seed": 0
+            }
+        }
+    ]
+}

@@ -37,8 +37,9 @@ reported as ``skipped``.
   the last real token's logits, so they compare directly.
 - **KV layout**: golden stores separate ``round_{r}.layer_{i}.key`` / ``.value`` of shape
   ``[B, kv_heads, seq, head_dim]``; edgellm stores a combined ``round_{r}.layer_{i}.kv`` of shape
-  ``[B, 2, kv_heads, maxSeqLen, head_dim]`` (dim 1: 0=key, 1=value), dumped full-length (the engine
-  does no truncation). The combined tensor is split, and each side is sliced to ``valid`` below.
+  ``[B, 2, kv_heads, maxSeqLen, pool_head_dim]`` (dim 1: 0=key, 1=value), dumped full-length (the
+  engine does no truncation). The combined tensor is split, and each side is sliced to ``valid``
+  and to the golden's ``head_dim`` below -- a QSA layer's pool row is wider than ``head_dim``.
 - **padding side**: golden is left-padded (real tokens occupy each row's right segment); edgellm is
   right-aligned (real tokens occupy ``[0, valid)``). So within the valid length ``valid`` for
   sequence b at round r:
@@ -354,6 +355,17 @@ def main() -> int:
                                     edgellm_logits, args.atol, args.rtol))
                 # ---- per-layer state: attention KV, or recurrent (Mamba / Gated DeltaNet) ----
                 for i in layers:
+                    # The n-gram injection sits on one layer that may be of either type, and its
+                    # convolution state is the tail of its own output -- the one tensor that
+                    # reaches the row lookup, the gate and the convolution at once.
+                    g_ple = f"round_{g}.layer_{i}.ngram_conv_state"
+                    e_ple = f"round_{r}.layer_{i}.ngram_conv_state"
+                    if g_ple in golden and e_ple in edgellm:
+                        round_stats.append(
+                            _compare_tensor(
+                                f"{tag}.layer_{i}.ngram_conv_state",
+                                golden[g_ple][gb], edgellm[e_ple][b],
+                                args.atol, args.rtol))
                     g_rec = f"round_{g}.layer_{i}.recurrent_state"
                     e_rec = f"round_{r}.layer_{i}.recurrent_state"
                     if g_rec in golden and e_rec in edgellm:
@@ -379,10 +391,12 @@ def main() -> int:
                                                                     -valid:, :]
                     golden_value = golden[f"round_{g}.layer_{i}.value"][
                         gb, :, -valid:, :]
-                    # edgellm: combined [B, 2, kv_heads, L, head_dim], split 0/1 and take the first valid cols.
+                    # edgellm: combined [B, 2, kv_heads, L, pool_head_dim], split 0/1 and take
+                    # the first valid cols; a QSA pool row's tail past head_dim is indexer state.
                     edgellm_kv = edgellm[f"round_{r}.layer_{i}.kv"]
-                    edgellm_key = edgellm_kv[b, 0, :, :valid, :]
-                    edgellm_value = edgellm_kv[b, 1, :, :valid, :]
+                    head_dim = golden_key.shape[-1]
+                    edgellm_key = edgellm_kv[b, 0, :, :valid, :head_dim]
+                    edgellm_value = edgellm_kv[b, 1, :, :valid, :head_dim]
                     round_stats.append(
                         _compare_tensor(f"{tag}.layer_{i}.key", golden_key,
                                         edgellm_key, args.atol, args.rtol))

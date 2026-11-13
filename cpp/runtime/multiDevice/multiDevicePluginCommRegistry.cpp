@@ -34,6 +34,7 @@ constexpr char const* kUnregisterNcclPluginSymbol = "edgellmUnregisterNcclCommFo
 using RegisterNcclPluginFn = bool (*)(int, void*, void*);
 using UnregisterNcclPluginFn = bool (*)(int, void*);
 
+
 } // namespace
 
 bool registerNcclCommForAllReducePlugin(int32_t deviceId, void* ncclComm) noexcept
@@ -79,6 +80,7 @@ bool unregisterNcclCommForAllReducePlugin(int32_t deviceId, void* ncclComm) noex
     }
     return true;
 }
+
 
 } // namespace rt
 } // namespace trt_edgellm

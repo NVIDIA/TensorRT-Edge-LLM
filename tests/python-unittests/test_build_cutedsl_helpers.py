@@ -36,7 +36,7 @@ build_cutedsl = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = build_cutedsl
 _SPEC.loader.exec_module(build_cutedsl)
 
-_FMHA_V2_SUPPORTED_SMS = [80, 86, 87, 89, 90, 100, 101, 110, 120, 121]
+_FMHA_V2_SUPPORTED_SMS = [80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121]
 _FMHA_V2_DENSE_VARIANTS = {
     "fmha_v2_d64",
     "fmha_v2_d64_small",
@@ -69,7 +69,18 @@ _FMHA_V2_RAGGED_PAGED_VARIANTS = {
     "fmha_v2_d256_sw_paged_ragged",
     "fmha_v2_d512_sw_paged_ragged",
 }
+# Causal native-paged kernels that carry the skip-softmax path (table ABI).
+_FMHA_V2_SKIP_SOFTMAX_PAGED_VARIANTS = {
+    "fmha_v2_d64_paged",
+    "fmha_v2_d128_paged",
+    "fmha_v2_d256_paged",
+    "fmha_v2_d512_paged",
+}
 _FMHA_V2_SPECIAL_VARIANTS = {
+    "fmha_v2_d256_vision_paged_ragged",
+    "fmha_v2_d512_vision_paged_ragged",
+    "fmha_v2_d128_non_causal_paged_two_pool",
+    "fmha_v2_d128_non_causal_paged_two_pool_fp8",
     "fmha_v2_d256_padding",
     "fmha_v2_vit_d64",
     "fmha_v2_vit_d72",
@@ -87,11 +98,11 @@ _BLACKWELL_PACKED_PAGED_VARIANTS = {
     for head_dim in (64, 128, 256, 512)
     for sliding in ("", "_sw")
     for fp8 in ("", "_fp8")
-}
-_LAYERNORM_SUPPORTED_SMS = [80, 86, 87, 90, 100, 101, 110, 120, 121]
+} | {"fmha_d512_packed_paged_bidirectional"}
+_LAYERNORM_SUPPORTED_SMS = [80, 86, 87, 90, 100, 101, 103, 110, 120, 121]
 _LAYERNORM_HIDDEN_SIZES = {4096, 4097, 5120, 7168, 8192}
 _LAYERNORM_DTYPES = {"fp16", "bf16"}
-_RMSNORM_SUPPORTED_SMS = [80, 86, 87, 90, 100, 101, 110, 120, 121]
+_RMSNORM_SUPPORTED_SMS = [80, 86, 87, 90, 100, 101, 103, 110, 120, 121]
 _RMSNORM_HIDDEN_SIZES = {4096, 5120, 7168, 8192}
 _RMSNORM_DTYPES = {"fp16", "bf16"}
 _RMSNORM_WEIGHT_BEFORE_CAST_MODES = {0, 1}
@@ -334,13 +345,16 @@ def test_tarball_builder_docker_matrix_matches_ci_targets():
     assert matrix.split(",") == [
         "x86_64:sm_80:13",
         "x86_64:sm_86:13",
+        "x86_64:sm_89:13",
         "x86_64:sm_90:13",
         "x86_64:sm_100:13",
         "x86_64:sm_120:13",
         "x86_64:sm_120:12",
         "aarch64:sm_87:13",
         "aarch64:sm_90:13",
+        "aarch64:sm_100:13",
         "aarch64:sm_101:12",
+        "aarch64:sm_103:13",
         "aarch64:sm_110:13",
         "aarch64:sm_110+sm_120:13",
         "aarch64:sm_121:12",
@@ -350,8 +364,8 @@ def test_tarball_builder_docker_matrix_matches_ci_targets():
 
 @pytest.mark.parametrize(("sm", "expected"),
                          [(80, "sm_80"), (87, "sm_87"), (90, "sm_90"),
-                          (100, "sm_100a"), (110, "sm_110a"), (120, "sm_120a"),
-                          (121, "sm_121a")])
+                          (100, "sm_100a"), (103, "sm_103a"), (110, "sm_110a"),
+                          (120, "sm_120a"), (121, "sm_121a")])
 def test_default_compile_gpu_arch_is_derived_from_target_sm(sm, expected):
     assert build_cutedsl.default_compile_gpu_arch(sm) == expected
 
@@ -359,39 +373,6 @@ def test_default_compile_gpu_arch_is_derived_from_target_sm(sm, expected):
 def test_parse_sms_preserves_order_and_removes_duplicates():
     assert build_cutedsl._parse_sms("sm_110,120,sm_110") == [110, 120]
     assert build_cutedsl._multi_sm_artifact_tag([110, 120]) == "sm_110_sm_120"
-
-
-@pytest.mark.parametrize(
-    ("is_windows", "expected"),
-    [
-        (True, Path("root/windows/x86_64/sm_110_sm_120")),
-        (False, Path("root/x86_64/sm_110_sm_120")),
-    ],
-)
-def test_artifact_output_dir_is_platform_aware(monkeypatch, is_windows,
-                                               expected):
-    monkeypatch.setattr(build_cutedsl, "_is_windows", lambda: is_windows)
-
-    assert build_cutedsl._artifact_output_dir(Path("root"), "x86_64",
-                                              "sm_110_sm_120") == expected
-
-
-def test_multi_sm_uses_artifact_output_dir(tmp_path, monkeypatch):
-    calls = []
-
-    def artifact_output_dir(output_dir, arch, artifact_tag):
-        calls.append((output_dir, arch, artifact_tag))
-        raise RuntimeError("artifact output selected")
-
-    monkeypatch.setattr(build_cutedsl, "detect_arch", lambda *_args: "x86_64")
-    monkeypatch.setattr(build_cutedsl, "_artifact_output_dir",
-                        artifact_output_dir)
-    args = argparse.Namespace(arch="x86_64", output_dir=str(tmp_path))
-
-    with pytest.raises(RuntimeError, match="artifact output selected"):
-        build_cutedsl._build_multi_sm(args, [110, 120])
-
-    assert calls == [(tmp_path, "x86_64", "sm_110_sm_120")]
 
 
 def test_multi_sm_headers_generate_canonical_dispatch(tmp_path):
@@ -520,12 +501,38 @@ def test_fmha_v2_registry_is_complete_for_supported_sms(sm):
                             1] == "4096"
         for variant in sliding_ragged_paged_variants)
 
+    skip_softmax_paged_variants = [
+        variant for variant in fmha_v2_variants
+        if variant.name in _FMHA_V2_SKIP_SOFTMAX_PAGED_VARIANTS
+    ]
+    assert {variant.name
+            for variant in skip_softmax_paged_variants
+            } == _FMHA_V2_SKIP_SOFTMAX_PAGED_VARIANTS
+    assert all(
+        "--paged_kv" in variant.script_args and "--skip_softmax" in
+        variant.script_args and "--window_size_left" not in variant.script_args
+        for variant in skip_softmax_paged_variants)
+    # Only the causal paged kernels carry the path: sliding-window, ragged, small-D64 and dense variants take no
+    # table.
+    assert not any("--skip_softmax" in variant.script_args
+                   for variant in fmha_v2_variants
+                   if variant.name not in _FMHA_V2_SKIP_SOFTMAX_PAGED_VARIANTS)
+    d64_paged = next(variant for variant in fmha_v2_variants
+                     if variant.name == "fmha_v2_d64_paged")
+    assert d64_paged.script_args[d64_paged.script_args.index("--m_block_size")
+                                 + 1] == "64"
+    assert d64_paged.script_args[d64_paged.script_args.index("--n_block_size")
+                                 + 1] == "64"
+
     padding_variant = next(variant for variant in fmha_v2_variants
                            if variant.name == "fmha_v2_d256_padding")
     assert "--is_causal" not in padding_variant.script_args
     assert "--fmha_v2_context" not in padding_variant.script_args
 
-    assert not any("_fp8" in variant.name for variant in fmha_v2_variants)
+    assert {
+        variant.name
+        for variant in fmha_v2_variants if "_fp8" in variant.name
+    } == {"fmha_v2_d128_non_causal_paged_two_pool_fp8"}
     assert not any("--kv_dtype" in variant.script_args
                    for variant in fmha_v2_variants)
 
@@ -533,27 +540,33 @@ def test_fmha_v2_registry_is_complete_for_supported_sms(sm):
         variant for variant in variants
         if variant.script == "fmha_cutedsl_blackwell/fmha.py"
     ]
-    assert bool(optimized_variants) == (sm in [100, 101, 110])
+    assert bool(optimized_variants) == (sm in [100, 101, 103, 110])
 
 
-@pytest.mark.parametrize("sm", [100, 101, 110])
-def test_fmha_registry_has_one_d512_bidirectional_variant(sm):
+@pytest.mark.parametrize("sm", [100, 101, 103, 110])
+def test_fmha_registry_has_d512_bidirectional_variants(sm):
+    """D512 vision-block kernels support padded and packed queries."""
     variants = build_cutedsl.select_variants(sm, "fmha")
     bidirectional_variants = [
         variant for variant in variants if variant.name.startswith("fmha_d512")
         and "bidirectional" in variant.name
     ]
 
-    assert [variant.name for variant in bidirectional_variants
-            ] == ["fmha_d512_paged_bidirectional"]
-    assert "--bidirectional" in bidirectional_variants[0].script_args
-    assert "--window_size" in bidirectional_variants[0].script_args
+    assert [variant.name for variant in bidirectional_variants] == [
+        "fmha_d512_paged_bidirectional",
+        "fmha_d512_packed_paged_bidirectional",
+    ]
+    assert all("--bidirectional" in variant.script_args
+               for variant in bidirectional_variants)
+    assert all("--window_size" in variant.script_args
+               for variant in bidirectional_variants)
     assert all("visionblock" not in variant.name for variant in variants
                if variant.name.startswith("fmha_d512"))
 
 
-@pytest.mark.parametrize("sm", [100, 101, 110])
+@pytest.mark.parametrize("sm", [100, 101, 103, 110])
 def test_blackwell_packed_paged_registry_is_complete(sm):
+    """Packed paged kernels retain their query layout, mask, and dtype options."""
     variants = [
         variant for variant in build_cutedsl.select_variants(sm, "fmha")
         if variant.script == "fmha_cutedsl_blackwell/fmha.py"
@@ -569,7 +582,8 @@ def test_blackwell_packed_paged_registry_is_complete(sm):
         for variant in variants if "--window_size" in variant.script_args
     } == {
         name
-        for name in _BLACKWELL_PACKED_PAGED_VARIANTS if "_packed_sw_" in name
+        for name in _BLACKWELL_PACKED_PAGED_VARIANTS
+        if "_packed_sw_" in name or name.endswith("_bidirectional")
     }
     assert {
         variant.name
@@ -578,6 +592,35 @@ def test_blackwell_packed_paged_registry_is_complete(sm):
         name
         for name in _BLACKWELL_PACKED_PAGED_VARIANTS if name.endswith("_fp8")
     }
+
+
+@pytest.mark.parametrize("sm", [100, 101, 103, 110])
+def test_lora_registry_uses_standalone_kernel_export_mode(sm):
+    # Given a supported Blackwell SM, when the LoRA variants are selected, then
+    # both GEMM specializations and the metadata kernel use their intended exporters.
+    variants = build_cutedsl.select_variants(sm, "lora")
+    variants_by_name = {variant.name: variant for variant in variants}
+
+    assert len(variants) == len(variants_by_name) == 3
+    assert set(variants_by_name) == {
+        "lora_blackwell_grouped_fp16",
+        "lora_blackwell_grouped_fp16_fused",
+        "lora_blackwell_metadata",
+    }
+    assert variants_by_name[
+        "lora_blackwell_grouped_fp16"].script == "lora_cutedsl/grouped_gemm_blackwell.py"
+    assert variants_by_name["lora_blackwell_grouped_fp16"].script_args == [
+        "--export_only"
+    ]
+    assert variants_by_name[
+        "lora_blackwell_grouped_fp16_fused"].script == "lora_cutedsl/grouped_gemm_blackwell.py"
+    assert variants_by_name[
+        "lora_blackwell_grouped_fp16_fused"].script_args == [
+            "--export_only", "--fuse_lora_epilogue"
+        ]
+    assert variants_by_name[
+        "lora_blackwell_metadata"].script == "lora_cutedsl/metadata.py"
+    assert variants_by_name["lora_blackwell_metadata"].script_args == []
 
 
 def test_fmha_v2_d512_registry_uses_32x32_tiles_and_two_warps():
@@ -595,6 +638,7 @@ def test_fmha_v2_d512_registry_uses_32x32_tiles_and_two_warps():
                 "fmha_v2_d512_paged_ragged",
                 "fmha_v2_d512_sw_paged_ragged",
                 "fmha_v2_d512_sw_paged",
+                "fmha_v2_d512_vision_paged_ragged",
             }
     assert all(variant.supported_sms == _FMHA_V2_SUPPORTED_SMS
                for variant in d512_variants)
@@ -609,7 +653,7 @@ def test_fmha_v2_d512_registry_uses_32x32_tiles_and_two_warps():
                                    1] == "64"
 
 
-@pytest.mark.parametrize("sm", [103])
+@pytest.mark.parametrize("sm", [75])
 def test_fmha_registry_rejects_unsupported_sms(sm):
     with pytest.raises(ValueError, match="No variants"):
         build_cutedsl.select_variants(sm, "fmha")
@@ -660,6 +704,23 @@ def test_nvfp4_a16_blackwell_moe_registry_is_sm110_fp16_fixed_set():
 def test_nvfp4_a16_blackwell_moe_registry_rejects_other_sms(sm):
     with pytest.raises(ValueError, match="No variants"):
         build_cutedsl.select_variants(sm, "nvfp4_a16_blackwell_moe")
+
+
+@pytest.mark.parametrize("sm", [120, 121])
+def test_qsa_sm12x_registry_has_prefill_and_decode_for_both_dtypes(sm):
+    """SM12x artifacts must supply all four wrappers used by the QSA runner.
+
+    Contract: selecting QSA for either SM12x target exports FP16 and BF16
+    prefill and decode entry points. Omitting a variant breaks runner linkage.
+    """
+    variants = build_cutedsl.select_variants(sm, "qsa")
+    assert {variant.name
+            for variant in variants} == {
+                "qsa_sparse_chunk_prefill_d256_fp16",
+                "qsa_sparse_chunk_prefill_d256_bf16",
+                "qsa_sparse_decode_d256_fp16",
+                "qsa_sparse_decode_d256_bf16",
+            }
 
 
 def test_qsa_decode_registry_matches_runner_split_k_constants():
@@ -738,7 +799,7 @@ def test_rmsnorm_registry_has_all_compile_time_variants(sm):
     }
 
 
-@pytest.mark.parametrize("sm", [89, 103])
+@pytest.mark.parametrize("sm", [89])
 def test_rmsnorm_registry_rejects_unqualified_sms(sm):
     with pytest.raises(ValueError, match="No variants"):
         build_cutedsl.select_variants(sm, "rmsnorm")
@@ -772,7 +833,7 @@ def test_layernorm_registry_has_all_compile_time_variants(sm):
                               for hidden_size in _LAYERNORM_HIDDEN_SIZES}
 
 
-@pytest.mark.parametrize("sm", [89, 103])
+@pytest.mark.parametrize("sm", [89])
 def test_layernorm_registry_rejects_unqualified_sms(sm):
     with pytest.raises(ValueError, match="No variants"):
         build_cutedsl.select_variants(sm, "layernorm")
@@ -795,19 +856,109 @@ def test_layernorm_compile_command_carries_the_target_sm(sm):
         assert command[command.index("--target_sm") + 1] == str(sm)
 
 
-def test_only_sm_specialized_variants_request_the_target_sm():
-    """No other kernel script is handed a flag its argparse would reject.
+def test_target_sm_requesters_read_the_flag():
+    """A kernel script is only handed --target_sm when its source reads it;
+    any other script's argparse would reject the flag.
 
-    LayerNorm and RMSNorm both specialize their compile-time launch geometry
-    (schedule / cluster shape / async-copy budget) on the target SM, so their
-    scripts accept --target_sm; every other script's argparse would reject it.
+    LayerNorm and RMSNorm specialize their compile-time launch geometry
+    (schedule / cluster shape / async-copy budget) on the target SM and so
+    read the flag; the CTM decode module is runtime-shaped and does not.
     """
     offenders = sorted(
         variant.name for variant in build_cutedsl.KERNEL_VARIANTS
-        if variant.wants_target_sm and variant.group not in ("layernorm",
-                                                             "rmsnorm"))
+        if variant.wants_target_sm and "--target_sm" not in (
+            _REPO_ROOT / "kernelSrcs" / variant.script).read_text())
 
     assert offenders == []
+
+
+@pytest.mark.parametrize("sm", [80, 86, 87, 89, 90])
+def test_packed_causal_conv1d_registry_covers_ampere_and_hopper(sm):
+    """The CI artifact matrix selects packed Conv1D variants on each target SM."""
+    variants = build_cutedsl.select_variants(sm, "causal_conv1d")
+
+    assert len(variants) == 14
+    assert all(variant.group == "causal_conv1d" for variant in variants)
+
+
+@pytest.mark.parametrize("sm", [120, 121])
+def test_sm12x_nvfp4_registry_covers_prefill_and_raw_scale_decode(sm):
+    # Given either supported SM12x target,
+    # When the NVFP4 GEMM registry is selected,
+    # Then all prefill and synchronized raw-scale decode artifacts are built.
+    variants = [
+        variant for variant in build_cutedsl.select_variants(sm, "gemm_nvfp4")
+        if variant.script == "gemm_cutedsl/gemm_blackwell_geforce_nvfp4.py"
+    ]
+    expected_names = {
+        "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64",
+        "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128",
+        "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256",
+        "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1",
+        "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1",
+        "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1",
+    }
+
+    assert {variant.name for variant in variants} == expected_names
+    for variant in variants:
+        is_raw_scale_decode = variant.name.endswith("raw_sfa_m1")
+        assert ("--raw_sfa" in variant.script_args) is is_raw_scale_decode
+        assert "--export_only" in variant.script_args
+
+
+def test_nvfp4_host_drivers_keep_alpha_pointer_contracts():
+    # Given the shared pointer allocator and the SM12x host driver,
+    # When their AST contracts are inspected without a GPU,
+    # Then alpha is allocated, returned, and passed to every launch.
+    ws_source = (_REPO_ROOT / "kernelSrcs" / "gemm_cutedsl" /
+                 "gemm_blackwell_nvfp4_ws.py").read_text()
+    ws_module = ast.parse(ws_source)
+    helper = next(node for node in ws_module.body
+                  if isinstance(node, ast.FunctionDef)
+                  and node.name == "_create_nvfp4_pointers")
+    assigned_names = {
+        target.id
+        for node in ast.walk(helper) if isinstance(node, ast.Assign)
+        for target in node.targets if isinstance(target, ast.Name)
+    }
+    returned_pointer_dict = next(
+        node for node in ast.walk(helper) if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name) and node.func.id == "dict")
+    returned_keys = {keyword.arg for keyword in returned_pointer_dict.keywords}
+
+    assert {"alpha_raw", "alpha_ptr"} <= assigned_names
+    assert "alpha" in returned_keys
+
+    geforce_source = (_REPO_ROOT / "kernelSrcs" / "gemm_cutedsl" /
+                      "gemm_blackwell_geforce_nvfp4.py").read_text()
+    geforce_module = ast.parse(geforce_source)
+    run_function = next(
+        node for node in geforce_module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "run")
+    launch_args = next(
+        node.value for node in ast.walk(run_function)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "launch_args"
+            for target in node.targets))
+
+    assert isinstance(launch_args, ast.Tuple)
+    assert ast.unparse(launch_args.elts[5]) == "ptrs['alpha']"
+    assert "backing[-1].fill(" in geforce_source
+    assert 'ptrs["alpha"] =' not in geforce_source
+
+
+def test_raw_sfa_path_uses_a_software_signaled_pipeline():
+    # Given raw SFA is written to shared memory with ordinary stores,
+    # When the producer and consumer synchronization contract is inspected,
+    # Then a separate software-signaled pipeline orders those stores.
+    source = (_REPO_ROOT / "kernelSrcs" / "nvfp4_fused_moe_cutedsl" /
+              "dense_gemm_sm120.py").read_text()
+
+    assert "raw_sfa_pipeline = pipeline.PipelineAsync.create" in source
+    assert "raw_sfa_pipeline.producer_acquire(raw_sfa_producer_state)" in source
+    assert "raw_sfa_pipeline.producer_commit(raw_sfa_producer_state)" in source
+    assert "raw_sfa_pipeline.consumer_wait(raw_sfa_consumer_state)" in source
+    assert "raw_sfa_pipeline.consumer_release(raw_sfa_consumer_state)" in source
 
 
 def test_layernorm_source_pins_flashinfer_and_keeps_odd_h_masked():
@@ -916,9 +1067,13 @@ def test_merge_artifact_metadata_rejects_incompatible_artifact():
 def test_cmake_treats_aarch64_build_as_boolean():
     paths = [
         _REPO_ROOT / "CMakeLists.txt",
-        _REPO_ROOT / "experimental" / "pybind" / "CMakeLists.txt",
+        _REPO_ROOT / "cmake" / "EdgeLLMBuild.cmake",
+        _REPO_ROOT / "cmake" / "EdgeLLMDependencies.cmake",
+        _REPO_ROOT / "cmake" / "EdgeLLMPlatform.cmake",
+        _REPO_ROOT / "python" / "nanobind" / "CMakeLists.txt",
     ]
     for path in paths:
         text = path.read_text(encoding="utf-8")
         assert "DEFINED AARCH64_BUILD" not in text
-        assert "if(AARCH64_BUILD)" in text
+
+    assert "if(AARCH64_BUILD)" in paths[-1].read_text(encoding="utf-8")

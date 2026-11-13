@@ -235,9 +235,12 @@ class ActionAttention(nn.Module):
 class ActionDecoderLayer(nn.Module):
     """Pre-norm transformer block for the action expert."""
 
-    def __init__(self, cfg: ActionConfig) -> None:
+    def __init__(self,
+                 cfg: ActionConfig,
+                 attention: nn.Module | None = None) -> None:
         super().__init__()
-        self.self_attn = ActionAttention(cfg)
+        self.self_attn = attention if attention is not None else ActionAttention(
+            cfg)
         self.input_layernorm = RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(cfg.hidden_size,
                                                 eps=cfg.rms_norm_eps)
@@ -252,29 +255,12 @@ class ActionDecoderLayer(nn.Module):
                                        cfg.hidden_size,
                                        bias=False)
 
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        k_cache: torch.Tensor,
-        v_cache: torch.Tensor,
-        rope_cos: torch.Tensor,
-        rope_sin: torch.Tensor,
-        position_ids: torch.Tensor,
-        kvcache_start_index: torch.Tensor,
-        attention_mask: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, hidden_states: torch.Tensor, *attention_inputs:
+                torch.Tensor) -> tuple:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, present_k, present_v = self.self_attn(
-            hidden_states,
-            k_cache,
-            v_cache,
-            rope_cos,
-            rope_sin,
-            position_ids,
-            kvcache_start_index,
-            attention_mask,
-        )
+        hidden_states, *present_kv = self.self_attn(hidden_states,
+                                                    *attention_inputs)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -285,7 +271,7 @@ class ActionDecoderLayer(nn.Module):
         hidden_states = self.mlp_down_proj(hidden_states)
         hidden_states = residual + hidden_states
 
-        return hidden_states, present_k, present_v
+        return (hidden_states, *present_kv)
 
 
 class ActionExpert(nn.Module):
@@ -336,13 +322,15 @@ class ActionExpert(nn.Module):
 class AlpamayoAction(nn.Module):
     """Wraps one flow-matching denoising step for ONNX export."""
 
-    def __init__(self, cfg: ActionConfig) -> None:
+    def __init__(self,
+                 cfg: ActionConfig,
+                 expert: nn.Module | None = None) -> None:
         super().__init__()
         self.cfg = cfg
         self.n_layers = cfg.num_hidden_layers
         self.n_diffusion_tokens = cfg.n_diffusion_tokens
         self.action_in_proj = ActionInProjection(cfg)
-        self.expert = ActionExpert(cfg)
+        self.expert = expert if expert is not None else ActionExpert(cfg)
         self.action_out_proj = nn.Linear(cfg.hidden_size, 2, bias=True)
 
     def forward(
@@ -374,8 +362,13 @@ class AlpamayoAction(nn.Module):
         half_dim = self.cfg.head_dim // 2
         rope_cos = rope_rotary_cos_sin[:, :, :half_dim]
         rope_sin = rope_rotary_cos_sin[:, :, half_dim:]
-        rope_cos = rope_cos[0:1, :, :].reshape(-1, half_dim).to(torch.float16)
-        rope_sin = rope_sin[0:1, :, :].reshape(-1, half_dim).to(torch.float16)
+        rope_cos = rope_cos.reshape(-1, half_dim).to(torch.float16)
+        rope_sin = rope_sin.reshape(-1, half_dim).to(torch.float16)
+        # RotaryEmbedding indexes a shared 2D table; select each request's rows.
+        rope_row_offsets = torch.arange(
+            bsz, device=attention_pos_id.device,
+            dtype=attention_pos_id.dtype).view(-1, 1) * self.n_diffusion_tokens
+        attention_pos_id = attention_pos_id + rope_row_offsets
 
         # Non-causal attention mask: 0.0 for valid, -inf beyond valid length
         max_kv_capacity = k_caches[0].shape[2]
@@ -546,10 +539,18 @@ def _load_action_weights(model: AlpamayoAction, weights: dict,
     logger.info("Loaded %d action expert tensors", loaded)
 
 
-def build_alpamayo_1_action(cfg: ActionConfig, weights: dict,
-                            dtype: torch.dtype) -> AlpamayoAction:
-    """Construct AlpamayoAction, load weights, return in eval mode."""
-    model = AlpamayoAction(cfg)
+def build_alpamayo_1_action(cfg: ActionConfig,
+                            weights: dict,
+                            dtype: torch.dtype,
+                            tp_size: int = 1) -> AlpamayoAction:
+    """Build paged action for TP=1, or dense action for a TP-sharded LLM."""
+    if tp_size < 1:
+        raise ValueError("tp_size must be positive")
+    if tp_size == 1:
+        from .modeling_alpamayo_action_paged import PagedAlpamayoAction
+        model = PagedAlpamayoAction(cfg)
+    else:
+        model = AlpamayoAction(cfg)
     model = model.to(dtype)
     _load_action_weights(model, weights, dtype)
     model.eval()

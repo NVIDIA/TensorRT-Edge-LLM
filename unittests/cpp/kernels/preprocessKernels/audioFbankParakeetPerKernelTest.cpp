@@ -24,6 +24,7 @@
 // --gtest_filter=AudioFbank*.
 
 #include "common/checkMacros.h"
+#include "common/cudaUtils.h"
 #include "common/tensor.h"
 #include "kernels/preprocessKernels/audioFbankKernels.h"
 #ifdef CUTE_DSL_GEMM_ENABLED
@@ -116,15 +117,15 @@ TEST(AudioFbankParakeetPerKernelTest, PcmPreemphFramesAndWindow)
             = static_cast<float>(0.5 * std::sin(2.0 * M_PI * 440.0 * static_cast<double>(i) / 16000.0));
     }
 
-    rt::Tensor pcmF32({N}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor pcmF32({N}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice(pcmF32, pcmHost);
 
     std::vector<float> windowHost;
     makeParakeetWindowHost(windowHost); // [kNFft], symmetric Hann centered at offset 56
-    rt::Tensor windowF32({kNFft}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor windowF32({kNFft}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice(windowF32, windowHost);
 
-    rt::Tensor framed({T_out, kNFft}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor framed({T_out, kNFft}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     kernel::pcmPreemphFramesAndWindow(pcmF32, windowF32, framed, kNFft, kHop, kCenterPad, kPreemph, T_out, stream);
 
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -207,15 +208,15 @@ TEST(AudioFbankParakeetPerKernelTest, StftR2C512FusedMagsq)
             * std::cos(2.0f * static_cast<float>(M_PI) * 5.0f * static_cast<float>(n) / static_cast<float>(kNFft));
     }
 
-    rt::Tensor framed({T_out, kNFft}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor framed({T_out, kNFft}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice(framed, framedHost);
     std::vector<float> twiddleHost;
     rt::audioUtils::makeFftTwiddleHost(kNFft, twiddleHost); // [kNFft, 2] — same table production builds
-    rt::Tensor fftTwiddle({kNFft, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor fftTwiddle({kNFft, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice(fftTwiddle, twiddleHost);
 
     // Pre-zero the mag buffer (caller contract; the AOT GEMM has no residue handling).
-    rt::Tensor magFp16({N_pad, kKPad}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor magFp16({N_pad, kKPad}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(cudaMemsetAsync(magFp16.rawPointer(), 0, static_cast<size_t>(N_pad) * kKPad * sizeof(__half), stream));
 
     kernel::stftR2C512FusedMagsq(framed, fftTwiddle, magFp16, T_out, kKPad, stream);
@@ -305,6 +306,14 @@ TEST(AudioFbankParakeetPerKernelTest, MelLinearGemmFp16inFp32out)
     GTEST_SKIP() << "FP16-in/FP32-out GEMM variant (gemm_blackwell_small_fp16in_fp32out) not compiled "
                     "in this artifact.";
 #else
+    // gemm_blackwell_small_fp16in_fp32out is AOT-built only for the SMs in its `supported_sms` in
+    // kernelSrcs/build_cutedsl.py. A multi-SM artifact (e.g. sm_110_sm_120) defines the macro above because of its
+    // SM110 variant, but SM120/121 select a GeForce variant that has no FP32-out GEMM, so skip on the device SM.
+    int32_t const smVersion = trt_edgellm::getSMVersion();
+    if (!hasSm100FamilyCuteDslKernels(smVersion))
+    {
+        GTEST_SKIP() << "FP16-in/FP32-out GEMM variant is not built for SM" << smVersion;
+    }
     if (!CuteDslGemmRunner::loadKernelModule())
     {
         GTEST_SKIP() << "CuteDslGemmRunner module unavailable on this build / GPU.";
@@ -342,11 +351,11 @@ TEST(AudioFbankParakeetPerKernelTest, MelLinearGemmFp16inFp32out)
         }
     }
 
-    rt::Tensor aDev({M, K}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor aDev({M, K}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     copyHostToDevice(aDev, aHost);
-    rt::Tensor bDev({N, K}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor bDev({N, K}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     copyHostToDevice(bDev, bHost);
-    rt::Tensor cDev({M, N}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT); // FP32 out
+    rt::Tensor cDev({M, N}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT); // FP32 out
 
     kernel::melLinearGemmFp16inFp32out(aDev, bDev, cDev, stream);
 
@@ -420,10 +429,10 @@ TEST(AudioFbankParakeetPerKernelTest, MelStatsLnPerFeature)
     melHost[0] = 1e-20f;
     melHost[static_cast<size_t>(5) * N_pad + 0] = 1e-20f;
 
-    rt::Tensor melPower({M, N_pad}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor melPower({M, N_pad}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice(melPower, melHost);
-    rt::Tensor mean({M}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor invDenom({M}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor mean({M}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor invDenom({M}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
 
     kernel::melStatsLnPerFeature(melPower, T_out, kLogGuard, kNormEps, mean, invDenom, stream);
 
@@ -516,13 +525,13 @@ TEST(AudioFbankParakeetPerKernelTest, MelNormalizeZScoreTimeFirst)
         invHost[static_cast<size_t>(m)] = static_cast<float>(1.0 / (std::sqrt(var) + kNormEps));
     }
 
-    rt::Tensor melPower({M, N_pad}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor melPower({M, N_pad}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice(melPower, melHost);
-    rt::Tensor mean({M}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor mean({M}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice(mean, meanHost);
-    rt::Tensor invDenom({M}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor invDenom({M}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice(invDenom, invHost);
-    rt::Tensor melOut({1, T_out, M}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF); // time-first
+    rt::Tensor melOut({1, T_out, M}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF); // time-first
 
     kernel::melNormalizeZScoreTimeFirst(melPower, T_out, kLogGuard, mean, invDenom, melOut, stream);
 
@@ -582,10 +591,10 @@ TEST(AudioFbankParakeetPerKernelTest, MelStatsLnSilenceNoNaN)
     // exact variance 0 → the degenerate cancellation case.
     std::vector<float> melHost(static_cast<size_t>(M) * N_pad, 0.0f);
 
-    rt::Tensor melPower({M, N_pad}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor melPower({M, N_pad}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     copyHostToDevice(melPower, melHost);
-    rt::Tensor mean({M}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor invDenom({M}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor mean({M}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor invDenom({M}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
 
     kernel::melStatsLnPerFeature(melPower, T_out, kLogGuard, kNormEps, mean, invDenom, stream);
 

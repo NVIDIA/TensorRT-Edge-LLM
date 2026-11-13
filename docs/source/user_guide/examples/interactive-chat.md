@@ -75,7 +75,7 @@ checkpoint in a supported quantization format.
 
 ## Speculative decoding
 
-See the [speculative decoding reference](experimental-server.md#speculative-decoding)
+See the [speculative decoding reference](server.md#speculative-decoding)
 for supported methods and `--speculative-config` field definitions.
 
 To use speculative decoding, choose a method supported by your checkpoint.
@@ -112,6 +112,35 @@ trtedge chat /path/to/checkpoint --prompt-file question.txt > answer.txt
 Pass `--no-color` to disable ANSI colors, `--no-metrics` to suppress timing
 summaries, or `--verbose` to enable debug logs. Use `--system-file system.txt`
 to read a system message from a file.
+
+## Agentic chat
+
+Pass `--agentic` to let the model call a `device_status` tool, which reports GPU
+memory usage, utilization, and temperature of the device running the model:
+
+```bash
+trtedge chat Qwen/Qwen3.5-4B --agentic --prompt "How much memory is my GPU using?"
+```
+
+```text
+[device_status] {"device": "p3960-0010", "memory_used_mib": 7514.0, "memory_reserved_mib": 44160.0, "memory_total_mib": 59669.0, "utilization_percent": 0.0, "temperature_c": 39.875, "unified_memory": true}
+Your GPU is currently using 7,514 MiB (approximately 7.3 GB) of memory. ...
+```
+
+Each tool call and its JSON result are shown on `stderr` before the answer.
+`--agentic` appends tool instructions to the system message, or adds one if
+there is none. A turn makes at most three tool rounds, then the model must answer.
+The timing summary's `total` covers every round and tool call in the turn;
+the other metrics describe the final round.
+
+| Platform | Source | Notes |
+| --- | --- | --- |
+| Systems with `nvidia-smi` | `nvidia-smi` | Reports the GPU running the model |
+| Jetson and DRIVE without `nvidia-smi` | `tegrastats` | Memory is RAM shared by the CPU and GPU; unused huge pages are reported as `memory_reserved_mib` |
+
+Fields a platform cannot report are `null`. Use a model with tool-calling
+support. `--agentic` cannot be combined with `--json-schema` or
+`--guided-decoding`.
 
 ## Save settings
 
@@ -171,4 +200,4 @@ counts are rounded.
 
 Unavailable values display `n/a`. Stopped responses show the available metrics.
 Use `--no-metrics` to hide the summary. For API details, see
-[Streaming Metrics](experimental-server.md#streaming-metrics).
+[Streaming Metrics](server.md#streaming-metrics).

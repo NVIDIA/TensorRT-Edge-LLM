@@ -199,9 +199,11 @@ class FullyFusedGdnPrefillBlackwellGeforce:
         self.o_stage = 1
         self.alpha_beta_stage = 2
 
+    @cute.jit
     def get_next_work(
         self,
         context_lengths: cute.Tensor,
+        packed_varlen: cutlass.Constexpr[bool],
         state_indices: cute.Tensor,
         use_state_indices: cutlass.Int32,
         physical_seq_len: cutlass.Int32,
@@ -216,6 +218,17 @@ class FullyFusedGdnPrefillBlackwellGeforce:
         v_head_idx = o_head_idx * num_v_heads // num_sab_heads
         tok_start = seq_idx * physical_seq_len
         seq_len = cutlass.Int32(context_lengths[seq_idx])
+        if packed_varlen:
+            tok_start = cutlass.Int32(context_lengths[seq_idx])
+            tok_end = cutlass.Int32(context_lengths[seq_idx + 1])
+            seq_len = tok_end - tok_start
+            if (
+                cute.elem_less(tok_start, cutlass.Int32(0))
+                or cute.elem_less(tok_end, tok_start)
+                or cute.elem_less(physical_seq_len, tok_end)
+            ):
+                tok_start = cutlass.Int32(0)
+                seq_len = cutlass.Int32(0)
         indexed_state_idx = cutlass.Int32(state_indices[seq_idx])
         state_idx = cutlass.Int32(
             seq_idx + use_state_indices * (indexed_state_idx - seq_idx)
@@ -1455,6 +1468,7 @@ class FullyFusedGdnPrefillBlackwellGeforce:
         g_init_state: cute.Tensor,
         g_tensormaps: cute.Tensor,
         context_lengths: cute.Tensor,
+        packed_varlen: cutlass.Constexpr[bool],
         state_indices: cute.Tensor,
         use_state_indices: cutlass.Int32,
         state_pool_rows: cutlass.Int32,
@@ -1615,6 +1629,7 @@ class FullyFusedGdnPrefillBlackwellGeforce:
             g_init_state,
             g_tensormaps,
             context_lengths,
+            packed_varlen,
             state_indices,
             use_state_indices,
             state_pool_rows,
@@ -1654,6 +1669,7 @@ class FullyFusedGdnPrefillBlackwellGeforce:
         g_init_state: cute.Tensor,
         g_tensormaps: cute.Tensor,
         context_lengths: cute.Tensor,
+        packed_varlen: cutlass.Constexpr[bool],
         state_indices: cute.Tensor,
         use_state_indices: cutlass.Int32,
         state_pool_rows: cutlass.Int32,
@@ -1697,6 +1713,7 @@ class FullyFusedGdnPrefillBlackwellGeforce:
 
         work_desc = self.get_next_work(
             context_lengths,
+            packed_varlen,
             state_indices,
             use_state_indices,
             physical_seq_len,
@@ -1884,13 +1901,14 @@ class FullyFusedGdnPrefillBlackwellGeforce:
                     num_q_heads,
                     num_v_heads,
                 )
-                self.zero_output_padding(
-                    g_o,
-                    work_desc,
-                    physical_seq_len,
-                    num_q_heads,
-                    num_v_heads,
-                )
+                if not packed_varlen:
+                    self.zero_output_padding(
+                        g_o,
+                        work_desc,
+                        physical_seq_len,
+                        num_q_heads,
+                        num_v_heads,
+                    )
                 if enable_pdl:
                     # Release after output TMA while the state-store tail drains.
                     with cute.arch.elect_one():
@@ -2038,6 +2056,7 @@ def run_gdn_prefill_blackwell_geforce(
         h0_in,
         tensormap_scratch,
         context_lengths,
+        False,
         state_indices,
         use_state_indices,
         cutlass.Int32(state_pool_rows),
@@ -2049,6 +2068,93 @@ def run_gdn_prefill_blackwell_geforce(
         cutlass.Int32(n),
         enable_pdl,
         n * num_v_heads,
+        stream,
+    )
+
+
+@cute.jit
+def run_gdn_prefill_blackwell_geforce_varlen(
+    q: cute.Tensor,
+    k: cute.Tensor,
+    v: cute.Tensor,
+    a: cute.Tensor,
+    b: cute.Tensor,
+    A_log: cute.Tensor,
+    dt_bias: cute.Tensor,
+    h0_in: cute.Tensor,
+    h0_out: cute.Tensor,
+    state_indices: cute.Tensor,
+    use_state_indices: cutlass.Int32,
+    cu_seqlens: cute.Tensor,
+    num_seqs: cutlass.Int32,
+    o: cute.Tensor,
+    tensormap_scratch: cute.Tensor,
+    enable_pdl: cutlass.Int32,
+    stream: cuda.CUstream,
+):
+    total_tokens = q.layout.shape[0]
+    num_q_heads = q.layout.shape[1]
+    d = q.layout.shape[2]
+    num_v_heads = v.layout.shape[1]
+    state_pool_rows = h0_out.layout.shape[0]
+
+    q_tma = cute.make_tensor(
+        q.iterator,
+        cute.make_layout(
+            (total_tokens, d, num_q_heads),
+            stride=(num_q_heads * d, 1, d),
+        ),
+    )
+    k_tma = cute.make_tensor(
+        k.iterator,
+        cute.make_layout(
+            (d, total_tokens, num_q_heads),
+            stride=(1, num_q_heads * d, d),
+        ),
+    )
+    v_tma = cute.make_tensor(
+        v.iterator,
+        cute.make_layout(
+            (d, total_tokens, num_v_heads),
+            stride=(1, num_v_heads * d, d),
+        ),
+    )
+    o_tma = cute.make_tensor(
+        o.iterator,
+        cute.make_layout(
+            (d, total_tokens, num_v_heads),
+            stride=(1, num_v_heads * d, d),
+        ),
+    )
+    ab_layout = cute.make_layout((total_tokens * num_v_heads,), stride=(1,))
+    a_flat = cute.make_tensor(a.iterator, ab_layout)
+    b_flat = cute.make_tensor(b.iterator, ab_layout)
+
+    _kernel_instance(
+        q_tma,
+        k_tma,
+        v_tma,
+        o_tma,
+        a_flat,
+        b_flat,
+        A_log,
+        dt_bias,
+        h0_out,
+        h0_in,
+        tensormap_scratch,
+        cu_seqlens,
+        True,
+        state_indices,
+        use_state_indices,
+        cutlass.Int32(state_pool_rows),
+        cutlass.Int32(total_tokens),
+        cutlass.Float32(AOT_HEAD_DIM ** -0.5),
+        cutlass.Int32(num_q_heads),
+        cutlass.Int32(num_v_heads),
+        cutlass.Int32(num_v_heads),
+        num_seqs,
+        enable_pdl,
+        num_seqs * num_v_heads,
         stream,
     )
 
@@ -2190,6 +2296,52 @@ def _make_aot_cute_tensors(n, t, hqk, hv):
     }
 
 
+def _make_aot_cute_varlen_tensors(n, total_tokens, hqk, hv):
+    """Build AOT tensors with the public packed token shapes."""
+
+    def _compact(dtype, shape, assumed_align=16):
+        return aot_placeholders.make_compact_tensor(dtype, shape, assumed_align=assumed_align)
+
+    def _mark(dtype, shape, leading_dim, rank):
+        order = tuple(range(rank))
+        tensor = _compact(dtype, shape)
+        tensor = tensor.mark_layout_dynamic(leading_dim=leading_dim)
+        for mode in range(rank):
+            tensor = tensor.mark_compact_shape_dynamic(mode=mode, stride_order=order)
+        return tensor
+
+    def _mark_state(dtype, shape):
+        order = (0, 1, 2, 3)
+        return (
+            _compact(dtype, shape)
+            .mark_compact_shape_dynamic(mode=0, stride_order=order)
+            .mark_compact_shape_dynamic(mode=1, stride_order=order)
+        )
+
+    def _mark_1d(dtype, shape, assumed_align=16):
+        return _compact(dtype, shape, assumed_align=assumed_align) \
+            .mark_compact_shape_dynamic(mode=0, stride_order=(0,))
+
+    d = AOT_HEAD_DIM
+    return {
+        "q": _mark(cutlass.Float16, (total_tokens, hqk, d), 2, 3),
+        "k": _mark(cutlass.Float16, (total_tokens, hqk, d), 2, 3),
+        "v": _mark(cutlass.Float16, (total_tokens, hv, d), 2, 3),
+        "a": _mark(cutlass.Float16, (total_tokens, hv), 1, 2),
+        "b": _mark(cutlass.Float16, (total_tokens, hv), 1, 2),
+        "A_log": _mark_1d(cutlass.Float32, (hv,)),
+        "dt_bias": _mark_1d(cutlass.Float16, (hv,)),
+        "h0_in": _mark_state(cutlass.Float32, (n, hv, d, d)),
+        "h0_out": _mark_state(cutlass.Float32, (n, hv, d, d)),
+        "state_indices": _mark_1d(cutlass.Int32, (n,)),
+        "cu_seqlens": _mark_1d(cutlass.Int32, (n + 1,)),
+        "o": _mark(cutlass.Float16, (total_tokens, hv, d), 2, 3),
+        "tensormap_scratch": _mark_1d(
+            cutlass.Uint8, (AOT_TENSORMAP_BYTES,), assumed_align=128
+        ),
+    }
+
+
 def compile_gdn_prefill_blackwell_geforce(gpu_arch="", export_only=False):
     if export_only:
         tensors = _make_aot_cute_tensors(
@@ -2227,6 +2379,41 @@ def compile_gdn_prefill_blackwell_geforce(gpu_arch="", export_only=False):
         *args,
         **({"options": options} if options else {}),
     )
+
+
+def compile_gdn_prefill_blackwell_geforce_varlen(gpu_arch=""):
+    tensors = _make_aot_cute_varlen_tensors(
+        AOT_PLACEHOLDER_N, AOT_PLACEHOLDER_T, AOT_PLACEHOLDER_HQK, AOT_PLACEHOLDER_HV
+    )
+    stream = aot_placeholders.make_stream()
+    options = aot_placeholders.compile_options(
+        ("--gpu-arch " + gpu_arch) if gpu_arch else ""
+    )
+    args = (
+        tensors["q"], tensors["k"], tensors["v"], tensors["a"], tensors["b"],
+        tensors["A_log"], tensors["dt_bias"], tensors["h0_in"], tensors["h0_out"],
+        tensors["state_indices"], cutlass.Int32(1), tensors["cu_seqlens"],
+        cutlass.Int32(AOT_PLACEHOLDER_N), tensors["o"],
+        tensors["tensormap_scratch"], cutlass.Int32(1), stream,
+    )
+    return cute.compile(
+        run_gdn_prefill_blackwell_geforce_varlen,
+        *args,
+        **({"options": options} if options else {}),
+    )
+
+
+def export_gdn_prefill_blackwell_geforce_varlen(
+    output_dir, file_name, function_prefix, gpu_arch=""
+):
+    compiled = compile_gdn_prefill_blackwell_geforce_varlen(gpu_arch=gpu_arch)
+    os.makedirs(output_dir, exist_ok=True)
+    compiled.export_to_c(
+        file_path=output_dir,
+        file_name=file_name,
+        function_prefix=function_prefix,
+    )
+    return compiled
 
 
 def export_gdn_prefill_blackwell_geforce(
@@ -2406,6 +2593,7 @@ def _parse_args(argv=None):
         description="Blackwell GeForce CuTe DSL GDN prefill"
     )
     parser.add_argument("--export_only", action="store_true")
+    parser.add_argument("--varlen", action="store_true")
     parser.add_argument("--output_dir", default=".")
     parser.add_argument("--file_name", default="gdn_prefill_blackwell_geforce")
     parser.add_argument("--function_prefix", default="gdn_prefill_blackwell_geforce")
@@ -2423,12 +2611,26 @@ def _parse_args(argv=None):
 def main():
     args = _parse_args(_saved_argv)
     if args.export_only:
-        export_gdn_prefill_blackwell_geforce(
-            output_dir=args.output_dir,
-            file_name=args.file_name,
-            function_prefix=args.function_prefix,
-            gpu_arch=args.gpu_arch,
-        )
+        if args.varlen:
+            file_name = args.file_name
+            function_prefix = args.function_prefix
+            if file_name == "gdn_prefill_blackwell_geforce":
+                file_name = "gdn_prefill_blackwell_geforce_varlen"
+            if function_prefix == "gdn_prefill_blackwell_geforce":
+                function_prefix = "gdn_prefill_blackwell_geforce_varlen"
+            export_gdn_prefill_blackwell_geforce_varlen(
+                output_dir=args.output_dir,
+                file_name=file_name,
+                function_prefix=function_prefix,
+                gpu_arch=args.gpu_arch,
+            )
+        else:
+            export_gdn_prefill_blackwell_geforce(
+                output_dir=args.output_dir,
+                file_name=args.file_name,
+                function_prefix=args.function_prefix,
+                gpu_arch=args.gpu_arch,
+            )
     else:
         run_accuracy_test(
             args.n, args.h, args.hv, args.k, args.v, args.seq_len,

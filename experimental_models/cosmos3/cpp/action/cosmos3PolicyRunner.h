@@ -166,7 +166,7 @@ private:
     //! stream. Per-token float (fps-modulated) positions are computed on host (tiny), and the
     //! [genLen, headDim] transcendental cache is computed on device by the interleaved-mRoPE kernel.
     void buildRopeAndPositions(int32_t actionLen, int32_t undLen, cudaStream_t stream);
-    //! \brief Initialize the packed device state [video ⧺ action]: Philox device noise, frame-0
+    //! \brief Initialize the packed device state [video ⧺ action]: seeded device noise, frame-0
     //! conditioning injection (2D D2D copy), and padded-action-dim zeroing (2D memset).
     void initializeLatents(rt::Tensor const& condLatent, cudaStream_t stream);
     //! \brief Set dynamic input shapes for one denoising step.

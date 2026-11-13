@@ -217,7 +217,7 @@ class MuseGlimmerAttention(nn.Module):
             "attention_scale": self.attention_scale,
             "enable_context_mask_selector": False,
             "enable_vision_block_attention": False,
-            "skip_softmax_scale_factor": 0.0,
+            "skip_softmax_prefill_input": 0,
             "qkv_scales": getattr(self, "_qkv_scales_float", [1.0, 1.0, 1.0]),
             "query_start_offsets": query_start_offsets,
             "attention_sequence_lengths": attention_sequence_lengths,

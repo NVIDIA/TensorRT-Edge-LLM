@@ -22,13 +22,12 @@
 #include "common/logger.h"
 #include "common/mathUtils.h"
 #include "common/safetensorsUtils.h"
+#include "kernels/dart/dartGatherKernels.h"
 #include "kernels/embeddingKernels/embeddingKernels.h"
-#include "kernels/gdnKernels/gdnTreeChunkKernels.h"
 #include "kernels/posEncoding/applyRopeWriteKV.h"
 #include "kernels/speculative/batchEvictKernels.h"
 #include "kernels/speculative/ddtreeKernels.h"
-#include "kernels/speculative/eagleAcceptKernels.h"
-#include "kernels/speculative/eagleUtilKernels.h"
+#include "kernels/speculative/speculativeKernels.h"
 #include "profiling/metrics.h"
 #include "profiling/nvtx_wrapper.h"
 #include "profiling/timer.h"
@@ -36,6 +35,7 @@
 #include "runtime/decoding/decoderUtils.h"
 #include "runtime/decoding/guidedDecoder.h"
 #include "runtime/decoding/logitBias.h"
+#include "runtime/decoding/specDecodeUtils.h"
 #include "runtime/preprocess/embeddingPreprocessor.h"
 #include "sampler/sampling.h"
 
@@ -59,8 +59,7 @@ constexpr int32_t kDecodeProfile{1};
 } // namespace
 
 MTPDecoder::MTPDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
-    SpecDecodeDraftingConfig const& draftingConfig, std::unique_ptr<EngineExecutor> draftExecutor,
-    ExternalWeightManager draftWeights, cudaStream_t stream)
+    std::unique_ptr<EngineExecutor> draftExecutor, ExternalWeightManager draftWeights, cudaStream_t stream)
     : mRuntime(runtime)
     , mDraftCacheManager(*runtime.base.sharedResources.cacheManagers[1])
     , mDraftExecutor(std::move(draftExecutor))
@@ -75,22 +74,25 @@ MTPDecoder::MTPDecoder(DecodingRuntimeContext& runtime, std::filesystem::path co
 
     int32_t const maxRuntimeBatchSize = mRuntime.maxRuntimeBatchSize;
     int32_t const effectiveMaxDraftProposalSize = mRuntime.deployment.effectiveMaxDraftProposalSize();
-    // Tree drafting (draftingTopK > 1) does NOT expand branches with the draft engine:
+    // Tree drafting (draftTopK > 1) does NOT expand branches with the draft engine:
     // the engine walks one greedy chain (top-1 per round) and keeps each round's full
     // logits row; branching happens afterwards in ddtreeBuild, which picks the top
-    // draftingTopK candidates per depth row. The EAGLE draft-table machinery below only
-    // drives that chain walk, so it is sized with topK = 1 in tree mode; draftingTopK
+    // draftTopK candidates per depth row. The EAGLE draft-table machinery below only
+    // drives that chain walk, so it is sized with topK = 1 in tree mode; draftTopK
     // itself is consumed as the tree-build candidate fanout (see buildTreeVerifyInputs).
-    mUseTree = draftingConfig.draftingTopK > 1;
-    int32_t const effectiveDraftTopK = mUseTree ? 1 : draftingConfig.draftingTopK;
-    int32_t const effectiveMaxAcceptDepth = draftingConfig.draftingStep + 1;
-    int32_t const draftFullTableLength
-        = 1 + effectiveDraftTopK + (draftingConfig.draftingStep - 1) * effectiveDraftTopK * effectiveDraftTopK;
+    mUseTree = mRuntime.deployment.specConfig->draftTopK > 1;
+    int32_t const effectiveDraftTopK = mUseTree ? 1 : mRuntime.deployment.specConfig->draftTopK;
+    // A jump-forward grafting round accepts up to jumpMaxPathLength tokens, and the draft accept step after it re-reads
+    // them all.
+    int32_t const effectiveMaxAcceptDepth
+        = std::max(mRuntime.deployment.specConfig->draftSteps + 1, mRuntime.deployment.specConfig->jumpMaxPathLength);
+    int32_t const draftFullTableLength = 1 + effectiveDraftTopK
+        + (mRuntime.deployment.specConfig->draftSteps - 1) * effectiveDraftTopK * effectiveDraftTopK;
 
-    mDraftProposalSize
-        = Tensor({maxRuntimeBatchSize}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "SpecDecode::draftProposalSize");
+    mDraftProposalSize = Tensor(
+        {maxRuntimeBatchSize}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "SpecDecode::draftProposalSize");
     mDraftAttentionMask = Tensor({maxRuntimeBatchSize, effectiveMaxDraftProposalSize, effectiveMaxDraftProposalSize},
-        DeviceType::kGPU, nvinfer1::DataType::kINT8, "SpecDecode::draftAttentionMask");
+        DeviceType::kGPU, trt_edgellm::DataType::kINT8, "SpecDecode::draftAttentionMask");
 
     buildTensorMapForSpecDecodeDraft(
         mDraftTensorMap, mRuntime.base.pipelineIO, mRuntime.base.sharedResources, *mRuntime.deployment.draft);
@@ -101,56 +103,60 @@ MTPDecoder::MTPDecoder(DecodingRuntimeContext& runtime, std::filesystem::path co
     mDraftExternalWeightManager.registerTensorMapEntries(mDraftTensorMap);
 
     mDraftTokenIdsFullTable = Tensor({maxRuntimeBatchSize, draftFullTableLength}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "SpecDecode::idsFull");
+        trt_edgellm::DataType::kINT32, "SpecDecode::idsFull");
     mDraftTokenScoreFullTable = Tensor({maxRuntimeBatchSize, draftFullTableLength}, DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "SpecDecode::scoreFull");
+        trt_edgellm::DataType::kFLOAT, "SpecDecode::scoreFull");
     mDraftTokenPredecessorFullTable = Tensor({maxRuntimeBatchSize, draftFullTableLength}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "SpecDecode::predFull");
+        trt_edgellm::DataType::kINT32, "SpecDecode::predFull");
     mDraftVocabMappingTable = Tensor({mRuntime.deployment.draft->outputVocabSize}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "SpecDecode::draftVocabMap");
+        trt_edgellm::DataType::kINT32, "SpecDecode::draftVocabMap");
     mDraftRootTokenId
-        = Tensor({maxRuntimeBatchSize}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "SpecDecode::rootToken");
+        = Tensor({maxRuntimeBatchSize}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "SpecDecode::rootToken");
     mDraftTokenIdsTable = Tensor({maxRuntimeBatchSize, effectiveDraftTopK * effectiveDraftTopK}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "SpecDecode::idsTable");
+        trt_edgellm::DataType::kINT32, "SpecDecode::idsTable");
     mDraftTokenScoresTable = Tensor({maxRuntimeBatchSize, effectiveDraftTopK * effectiveDraftTopK}, DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "SpecDecode::scoresTable");
+        trt_edgellm::DataType::kFLOAT, "SpecDecode::scoresTable");
     mDraftTokenIntermediateScores = Tensor({maxRuntimeBatchSize, effectiveDraftTopK}, DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "SpecDecode::intermediateScores");
+        trt_edgellm::DataType::kFLOAT, "SpecDecode::intermediateScores");
     mDraftTokenIntermediateParents = Tensor({maxRuntimeBatchSize, effectiveDraftTopK}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "SpecDecode::intermediateParents");
+        trt_edgellm::DataType::kINT32, "SpecDecode::intermediateParents");
     mAcceptedTokenIds = Tensor({maxRuntimeBatchSize, effectiveMaxAcceptDepth}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "SpecDecode::acceptedIds");
+        trt_edgellm::DataType::kINT32, "SpecDecode::acceptedIds");
     mAcceptedTokenIndices = Tensor({maxRuntimeBatchSize, effectiveMaxAcceptDepth}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "SpecDecode::acceptedIndices");
+        trt_edgellm::DataType::kINT32, "SpecDecode::acceptedIndices");
     mAcceptLength
-        = Tensor({maxRuntimeBatchSize}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "SpecDecode::acceptLength");
-    mHostAcceptLengths
-        = Tensor({maxRuntimeBatchSize}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "SpecDecode::hostAcceptLengths");
+        = Tensor({maxRuntimeBatchSize}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "SpecDecode::acceptLength");
+    mCommonStateTracker.reserve(maxRuntimeBatchSize);
+    mHostAcceptLengths = Tensor(
+        {maxRuntimeBatchSize}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "SpecDecode::hostAcceptLengths");
+    mHostSeatStaging = Tensor(
+        {maxRuntimeBatchSize, 2}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "SpecDecode::hostSeatStaging");
     mHostAcceptedTokenIds = Tensor({maxRuntimeBatchSize, effectiveMaxAcceptDepth}, DeviceType::kCPU,
-        nvinfer1::DataType::kINT32, "SpecDecode::hostAcceptedIds");
+        trt_edgellm::DataType::kINT32, "SpecDecode::hostAcceptedIds");
+    mAcceptedHiddenStates
+        = Tensor({maxRuntimeBatchSize * effectiveMaxAcceptDepth, mRuntime.deployment.specConfig->baseOutputHiddenDim},
+            DeviceType::kGPU, trt_edgellm::DataType::kHALF, "SpecDecode::acceptedHidden");
 
     if (mUseTree)
     {
-        int32_t const verifySize = draftingConfig.verifySize;
+        int32_t const verifyTokenCount = mRuntime.deployment.specConfig->verifyTokenCount;
         int32_t const draftVocabSize = mRuntime.deployment.draft->outputVocabSize;
         // Tree proposal rows: row 0 is the root placeholder (ignored by the builder),
-        // rows 1..draftingStep hold the per-depth candidate logits.
-        int32_t const proposalDepthSize = draftingConfig.draftingStep + 1;
+        // rows 1..draftSteps hold the per-depth candidate logits.
+        int32_t const proposalDepthSize = mRuntime.deployment.specConfig->draftSteps + 1;
         mStackedDraftLogits = Tensor({maxRuntimeBatchSize, proposalDepthSize, draftVocabSize}, DeviceType::kGPU,
-            nvinfer1::DataType::kFLOAT, "SpecDecode::stackedDraftLogits");
-        mTreeTokenIds = Tensor({maxRuntimeBatchSize, verifySize}, DeviceType::kGPU, nvinfer1::DataType::kINT32,
+            trt_edgellm::DataType::kFLOAT, "SpecDecode::stackedDraftLogits");
+        mTreeTokenIds = Tensor({maxRuntimeBatchSize, verifyTokenCount}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
             "SpecDecode::treeTokenIds");
-        mTreeNodeScores = Tensor({maxRuntimeBatchSize, verifySize}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT,
-            "SpecDecode::treeNodeScores");
+        mTreeNodeScores = Tensor({maxRuntimeBatchSize, verifyTokenCount}, DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT, "SpecDecode::treeNodeScores");
         mValidCounts
-            = Tensor({maxRuntimeBatchSize}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "SpecDecode::validCounts");
-        mVerifyTreeMask = Tensor({maxRuntimeBatchSize, verifySize, verifySize}, DeviceType::kGPU,
-            nvinfer1::DataType::kINT8, "SpecDecode::verifyTreeMask");
-        size_t const buildWorkspaceSize = kernel::getDDTreeBuildWorkspaceSize(
-            maxRuntimeBatchSize, proposalDepthSize, verifySize, draftVocabSize, draftingConfig.draftingTopK);
+            = Tensor({maxRuntimeBatchSize}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "SpecDecode::validCounts");
+        size_t const buildWorkspaceSize = kernel::getDDTreeBuildWorkspaceSize(maxRuntimeBatchSize, proposalDepthSize,
+            verifyTokenCount, draftVocabSize, mRuntime.deployment.specConfig->draftTopK);
         ELLM_CHECK(buildWorkspaceSize > 0, "MTPDecoder: invalid tree-build workspace size.");
         mTreeBuildWorkspace = Tensor({static_cast<int64_t>(buildWorkspaceSize)}, DeviceType::kGPU,
-            nvinfer1::DataType::kUINT8, "SpecDecode::treeBuildWorkspace");
+            trt_edgellm::DataType::kUINT8, "SpecDecode::treeBuildWorkspace");
         CUDA_CHECK(
             cudaMemsetAsync(mStackedDraftLogits.rawPointer(), 0, mStackedDraftLogits.getMemoryCapacity(), stream));
         // Zero the root ids as well so the capture-time tree build (which runs on the
@@ -158,12 +164,17 @@ MTPDecoder::MTPDecoder(DecodingRuntimeContext& runtime, std::filesystem::path co
         CUDA_CHECK(cudaMemsetAsync(mDraftRootTokenId.rawPointer(), 0, mDraftRootTokenId.getMemoryCapacity(), stream));
     }
 
+    // A tree takes forced chains under any node; a chain takes one, which replaces the draft after its node.
+    mJump.initialize(mRuntime.tokenizer, mRuntime.guidedDecoder, maxRuntimeBatchSize,
+        mUseTree ? JumpGraftGeometry::kTree : JumpGraftGeometry::kChain, *mRuntime.deployment.specConfig,
+        mRuntime.deployment.specConfig->verifyTokenCount);
+
     if (mRuntime.deployment.draft->reducedVocabSize > 0)
     {
         // The sidecar is DIRECT (full = T[i]), while the EAGLE utility kernels consume
         // OFFSETS (full = i + T[i]); normalize it once at load.
         ELLM_CHECK(!mUseTree,
-            "MTP tree drafting (draftingTopK > 1) does not support a reduced draft vocabulary; use "
+            "MTP tree drafting (draftTopK > 1) does not support a reduced draft vocabulary; use "
             "--specDraftTopK 1 or re-export the draft without --draft-reduced-vocab-dir.");
         auto const draftVocabMapPath = engineDir / binding_names::kDraftVocabMapFileName;
         ELLM_CHECK(std::filesystem::exists(draftVocabMapPath),
@@ -177,8 +188,8 @@ MTPDecoder::MTPDecoder(DecodingRuntimeContext& runtime, std::filesystem::path co
         // dataPointer<int32_t>() below is an unchecked reinterpret_cast: a
         // wrong-dtype sidecar (e.g. int64) of the right length would pass the
         // shape/range checks and silently corrupt the table, so refuse it here.
-        check::check(
-            vocabMapTensors[0].getDataType() == nvinfer1::DataType::kINT32, "draft vocab_map tensor should be INT32");
+        check::check(vocabMapTensors[0].getDataType() == trt_edgellm::DataType::kINT32,
+            "draft vocab_map tensor should be INT32");
         check::check(vocabMapTensors[0].getShape().getNumDims() == 1, "draft vocab_map tensor should be 1D");
         int32_t const reducedVocabSize = static_cast<int32_t>(vocabMapTensors[0].getShape()[0]);
         check::check(reducedVocabSize == mRuntime.deployment.draft->outputVocabSize,
@@ -205,11 +216,17 @@ MTPDecoder::MTPDecoder(DecodingRuntimeContext& runtime, std::filesystem::path co
     }
 }
 
-DecodingKvHeadroom MTPDecoder::requiredKvHeadroom() const
+DecodingKvHeadroomPolicy MTPDecoder::kvHeadroom() const
 {
     auto const& config = *mRuntime.deployment.specConfig;
-    ELLM_CHECK(config.verifySize > 0 && config.draftingStep > 0, "MTP KV headroom must be positive");
-    return {config.verifySize, config.draftingStep};
+    ELLM_CHECK(config.verifyTokenCount > 0 && config.draftSteps > 0, "MTP KV headroom must be positive");
+    ELLM_CHECK(config.jumpVerifyTokenCount >= config.verifyTokenCount,
+        "MTP jump-forward KV headroom is outside the supported range");
+    // A grafting round verifies jumpVerifyTokenCount rows, and the draft accept step after it binds jumpMaxPathLength
+    // rows behind a draft length one accepted path short of the base's.
+    int32_t const jumpDraftExtra = std::max(config.draftSteps, config.jumpMaxPathLength - 1);
+    return {/*.plain=*/{config.verifyTokenCount, config.draftSteps},
+        /*.jumpForward=*/{config.jumpVerifyTokenCount, jumpDraftExtra}};
 }
 
 int64_t MTPDecoder::getRequiredContextMemorySize() const noexcept
@@ -227,68 +244,122 @@ void MTPDecoder::setContextMemory(Tensor& memory)
 
 bool MTPDecoder::initializeForGeneration(DecodingInferenceContext& context)
 {
-    // Default MTP keeps its decode-round-0 draft prefill; only the Hybrid+MTP endpoint-reuse path runs the draft
-    // prefill here (pre-publication), mirroring EagleDecoder::initializeForGeneration. The runtime folds the reused
-    // checkpoint boundary into baseHiddenStates and prepends the boundary token before this call, so the standard
-    // runDraftModelPrefill body is reused unchanged.
-    if (!context.hybridMtpEndpointReuse || context.speculativeDraftPrefillComplete)
+    if (context.speculativeDraftPrefillComplete)
+    {
+        return true;
+    }
+    // The common-state tracker must be initialized on every path so that finalizePrefillPublication receives valid
+    // materialized state lengths (the coordinator's HybridSpecPolicy asserts non-null). The draft prefill only runs
+    // when a hybrid checkpoint was actually restored — bypass and cold-cache requests skip it.
+    mCommonStateTracker.initialize(context);
+    if (!context.hybridSpecEndpointReuse)
     {
         return true;
     }
     if (!runDraftModelPrefill(context))
     {
-        LOG_ERROR("Failed to run the Hybrid+MTP pre-publication draft prefill.");
+        LOG_ERROR("Failed to run the Hybrid+spec pre-publication draft prefill.");
         return false;
     }
+    mCommonStateTracker.markDraftPrefillOutputsPending();
     context.speculativeDraftPrefillComplete = true;
     return true;
 }
 
+void MTPDecoder::beginBatch() noexcept
+{
+    mDraftPrimed = false;
+}
+
+void MTPDecoder::appendRow(int32_t executionRow) noexcept
+{
+    // Within capacity by construction: the session appends no row past the runtime batch.
+    check::check(mAcceptedTokenIds.reshape({executionRow + 1, mAcceptedTokenIds.getShape()[1]})
+            && mAcceptLength.reshape({executionRow + 1}),
+        "Tensor reshape failed");
+    mCommonStateTracker.appendRow(executionRow);
+}
+
+bool MTPDecoder::seatRow(DecodingInferenceContext& context, int32_t executionRow)
+{
+    int32_t const maxAcceptDepth = static_cast<int32_t>(mAcceptedTokenIds.getShape()[1]);
+    // The draft prefill covers the prompt but its last position, which the next accept pass takes with the first
+    // sampled token, like a resident's accepted span.
+    if (context.effectivePrefillLengths[0] > 1 && !runDraftModelPrefill(context, /*heldBackTokens=*/1))
+    {
+        LOG_ERROR("Failed to prefill the MTP draft model for a seated row.");
+        return false;
+    }
+    int32_t const prefillTokens = context.effectivePrefillLengths[0];
+    check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape(
+                     {prefillTokens, mRuntime.deployment.specConfig->baseOutputHiddenDim}),
+        "Tensor reshape failed");
+    decoder_utils::seatAcceptedSpan(context, executionRow, mAcceptedTokenIds, mAcceptLength, mHostSeatStaging,
+        mAcceptedHiddenStates, maxAcceptDepth, mRuntime.base.pipelineIO.baseHiddenStates, context.stream);
+    // Both models now hold the prompt but its last position, which the next decode step's draft pass takes.
+    mCommonStateTracker.seatRow(
+        executionRow, static_cast<int32_t>(context.rawBatchedInputIds[0].size()) - 1, /*pendingLength=*/1);
+    mDraftPrimed = true;
+    return true;
+}
+
+bool MTPDecoder::prefillSeatedChunk(DecodingInferenceContext& context)
+{
+    return runDraftModelPrefill(context);
+}
+
+std::vector<int32_t> const& MTPDecoder::commonMaterializedStateLengths() const noexcept
+{
+    return mCommonStateTracker.commonMaterializedStateLengths();
+}
+
 bool MTPDecoder::decodeStep(DecodingInferenceContext& context)
 {
-    if (mUseTree && ::trt_edgellm::shouldUseNonGreedySampling(context.temperature, context.topK, context.topP))
+    if (mUseTree && ::trt_edgellm::shouldUseNonGreedySampling(context.uniformSamplingParams()))
     {
         LOG_ERROR(
             "MTPDecoder: tree drafting supports greedy decoding only; route the request through vanilla or use "
-            "draftingTopK=1.");
+            "draftTopK=1.");
         return false;
     }
     // Draft KV for a round's accepted tokens is written lazily, by the *next* round's accept-token pass, so the draft
     // cache trails the base cache by the last accepted span (see ContextCacheCommitPolicy::kPrefillStateOnly).
-    if (context.generationRound == 0)
+    // The Hybrid+spec endpoint-reuse path already ran the draft prefill in initializeForGeneration; its outputs feed
+    // this round's proposal directly.
+    bool const draftPrefillRanAhead = mCommonStateTracker.draftPrefillOutputsPending();
+    if (!draftPrefillRanAhead && !mDraftPrimed)
     {
-        // Skip when the Hybrid+MTP endpoint-reuse path already ran the draft prefill in initializeForGeneration.
-        if (!context.speculativeDraftPrefillComplete)
+        if (!runDraftModelPrefill(context))
         {
-            if (!runDraftModelPrefill(context))
-            {
-                LOG_ERROR("Failed to execute prefill step for draft model.");
-                return false;
-            }
-            context.speculativeDraftPrefillComplete = true;
+            LOG_ERROR("Failed to execute prefill step for draft model.");
+            return false;
         }
+        context.speculativeDraftPrefillComplete = true;
     }
-    else if (!runDraftModelAcceptToken(context))
+    else if (!draftPrefillRanAhead && !runDraftModelAcceptToken(context))
     {
         LOG_ERROR("Failed to execute accept token step for draft model.");
         return false;
     }
+    mCommonStateTracker.materializePending(context.activeBatchSize);
 
     if (!constructDraftProposal(context))
     {
         LOG_ERROR("Failed to construct draft proposal.");
         return false;
     }
+    mCommonStateTracker.consumeDraftPrefillOutputs();
 
     if (!runBaseModelVerification(context))
     {
         LOG_ERROR("Failed to verify draft proposal with base model.");
         return false;
     }
+    mCommonStateTracker.recordAccepted(mHostAcceptLengths.dataPointer<int32_t>(), context.activeBatchSize);
     return true;
 }
 
-bool MTPDecoder::runDraftModelPrefill(DecodingInferenceContext& context)
+bool MTPDecoder::runDraftModelPrefill(DecodingInferenceContext& context, int32_t heldBackTokens)
 {
     mRuntime.base.pipelineIO.waitForStepHostStaging();
     assert(mDraftExecutor != nullptr);
@@ -303,21 +374,28 @@ bool MTPDecoder::runDraftModelPrefill(DecodingInferenceContext& context)
 
     int32_t const activeBatchSize = context.activeBatchSize;
     int32_t const draftHiddenSize = mRuntime.deployment.specConfig->draftHiddenSize;
+    int32_t const baseOutputHiddenDim = mRuntime.deployment.specConfig->baseOutputHiddenDim;
     int32_t const draftVocabSize = mRuntime.deployment.draft->outputVocabSize;
-    int32_t const inputIdsLength
-        = *std::max_element(context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.end());
+    // Over the active batch: a seated row's prefill runs as a batch of one while the per-slot vectors keep every
+    // resident's entry.
+    int32_t const targetPrefillLength = *std::max_element(
+        context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.begin() + activeBatchSize);
+    // Held-back positions trail each row; only a seated row (a batch of one) holds any back, so the rows the pass
+    // reads stay a prefix of the target's prefill outputs.
+    check::check(heldBackTokens == 0 || activeBatchSize == 1, "Only a seated row's draft prefill holds positions back");
+    int32_t const inputIdsLength = targetPrefillLength - heldBackTokens;
 
     check::check(mRuntime.base.pipelineIO.baseHiddenStates.getShape().getNumDims() == 2
-            && mRuntime.base.pipelineIO.baseHiddenStates.getShape()[0] == activeBatchSize * inputIdsLength,
+            && mRuntime.base.pipelineIO.baseHiddenStates.getShape()[0] == activeBatchSize * targetPrefillLength,
         "BaseHiddenStates token dimension shall match the physical prefill token count.");
 
     check::check(mRuntime.preprocess.idsInput.reshape({activeBatchSize, inputIdsLength}), "Tensor reshape failed");
     check::check(
-        mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({activeBatchSize, inputIdsLength, draftHiddenSize}),
+        mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({activeBatchSize, inputIdsLength, baseOutputHiddenDim}),
         "Tensor reshape failed");
     check::check(
         mRuntime.base.pipelineIO.outputLogits.reshape({activeBatchSize, draftVocabSize}), "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize, draftHiddenSize}),
+    check::check(mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize, baseOutputHiddenDim}),
         "Tensor reshape failed");
     check::check(mRuntime.base.pipelineIO.hostContextLengths.reshape({activeBatchSize}), "Tensor reshape failed");
 
@@ -329,8 +407,8 @@ bool MTPDecoder::runDraftModelPrefill(DecodingInferenceContext& context)
     std::fill_n(hostPackedTokenIdsData, activeBatchSize * inputIdsLength, 0);
     for (int32_t i = 0; i < activeBatchSize; ++i)
     {
-        std::copy(
-            context.tokenIds[i].begin() + 1, context.tokenIds[i].end(), hostPackedTokenIdsData + i * inputIdsLength);
+        std::copy(context.tokenIds[i].begin() + 1, context.tokenIds[i].end() - heldBackTokens,
+            hostPackedTokenIdsData + i * inputIdsLength);
     }
     CUDA_CHECK(cudaMemcpyAsync(mRuntime.preprocess.idsInput.rawPointer(), hostPackedTokenIdsData,
         activeBatchSize * inputIdsLength * sizeof(int32_t), cudaMemcpyHostToDevice, context.stream));
@@ -343,15 +421,11 @@ bool MTPDecoder::runDraftModelPrefill(DecodingInferenceContext& context)
     // multimodal indices on-device and shares this decoder's embedding table.
     mRuntime.preprocess.embeddingPreprocessor.embed(
         mRuntime.preprocess.idsInput, context.visualEmbeddings, std::nullopt, mRuntime.base.pipelineIO, context.stream);
-    if (mRuntime.preprocess.gemma4Ple)
-    {
-        mRuntime.preprocess.gemma4Ple->embed(mRuntime.preprocess.idsInput, context.stream);
-    }
 
     int32_t* ctxLenData = mRuntime.base.pipelineIO.hostContextLengths.dataPointer<int32_t>();
     for (int32_t i = 0; i < activeBatchSize; ++i)
     {
-        ctxLenData[i] = context.effectivePrefillLengths[i];
+        ctxLenData[i] = context.effectivePrefillLengths[i] - heldBackTokens;
     }
     CUDA_CHECK(cudaMemcpyAsync(mRuntime.base.pipelineIO.contextLengths.rawPointer(), ctxLenData,
         activeBatchSize * sizeof(int32_t), cudaMemcpyHostToDevice, context.stream));
@@ -363,7 +437,7 @@ bool MTPDecoder::runDraftModelPrefill(DecodingInferenceContext& context)
     int64_t* selectData = mRuntime.base.pipelineIO.hostSelectTokenIndices.dataPointer<int64_t>();
     for (int32_t i = 0; i < activeBatchSize; ++i)
     {
-        selectData[i] = context.effectivePrefillLengths[i] - 1;
+        selectData[i] = context.effectivePrefillLengths[i] - heldBackTokens - 1;
     }
     CUDA_CHECK(cudaMemcpyAsync(mRuntime.base.pipelineIO.selectTokenIndices.rawPointer(),
         mRuntime.base.pipelineIO.hostSelectTokenIndices.rawPointer(), activeBatchSize * sizeof(int64_t),
@@ -373,28 +447,35 @@ bool MTPDecoder::runDraftModelPrefill(DecodingInferenceContext& context)
     ExecutionPhase const phase = decoder_utils::contextPrefillPhase(context.prefillStartLengths, activeBatchSize);
     auto const prefillDims = mRuntime.deployment.draft->prefillDims(activeBatchSize, inputIdsLength, phase);
     decoder_utils::prepareSpecPrefillRaggedBindings(
-        mRuntime, *mRuntime.deployment.draft, 1, context, inputIdsLength, prefillDims, context.stream);
+        mRuntime, *mRuntime.deployment.draft, 1, context, inputIdsLength, prefillDims, context.stream, heldBackTokens);
+
     int32_t const physicalTokens = activeBatchSize * inputIdsLength;
     check::check(
         mRuntime.base.pipelineIO.inputsEmbeds.reshape({physicalTokens, draftHiddenSize}), "Tensor reshape failed");
     check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape(
                      {physicalTokens, mRuntime.deployment.specConfig->baseOutputHiddenDim}),
         "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({physicalTokens, draftHiddenSize}),
+    check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({physicalTokens, baseOutputHiddenDim}),
         "Tensor reshape failed");
     check::check(
         mRuntime.base.pipelineIO.outputLogits.reshape({activeBatchSize, draftVocabSize}), "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize, draftHiddenSize}),
+    check::check(mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize, baseOutputHiddenDim}),
         "Tensor reshape failed");
 
-    bool prefillSuccess = mDraftExecutor->prepare(kPrefillProfile, prefillDims, mDraftTensorMap, context.stream);
-    if (prefillSuccess)
+    bool prefillSuccess;
     {
-        prefillSuccess = mDraftExecutor->execute(context.stream);
+        auto forward = gTimer.startForward(
+            "draft", prefillDims.batch, prefillDims.seqLen, prefillDims.selectLen, context.stream);
+        prefillSuccess = mDraftExecutor->prepare(kPrefillProfile, prefillDims, mDraftTensorMap, context.stream);
+        if (prefillSuccess)
+        {
+            prefillSuccess = mDraftExecutor->execute(context.stream);
+        }
     }
     if (prefillSuccess)
     {
         mDraftCacheManager.commitSequenceLength(mRuntime.base.pipelineIO.contextLengths, context.stream);
+        mDraftPrimed = true;
     }
     return prefillSuccess;
 }
@@ -415,16 +496,16 @@ bool MTPDecoder::constructDraftProposal(DecodingInferenceContext& context)
     int32_t const draftHiddenSize = mRuntime.deployment.specConfig->draftHiddenSize;
     int32_t const baseOutputHiddenDim = mRuntime.deployment.specConfig->baseOutputHiddenDim;
     int32_t const draftVocabSize = mRuntime.deployment.draft->outputVocabSize;
-    // Tree mode drafts the chain with topK=1 mechanics; draftingTopK only sets the
+    // Tree mode drafts the chain with topK=1 mechanics; draftTopK only sets the
     // tree-build candidate fanout consumed in buildTreeVerifyInputs.
-    int32_t const draftTopK = mUseTree ? 1 : mRuntime.deployment.specConfig->draftingTopK;
+    int32_t const draftTopK = mUseTree ? 1 : mRuntime.deployment.specConfig->draftTopK;
     int32_t const draftFullTableLength = static_cast<int32_t>(mDraftTokenIdsFullTable.getShape()[1]);
 
     // Tree mode: stash the current frontier's full logits row per batch as the
     // depth-`depthRow` candidates for the tree builder. outputLogits holds one
     // contiguous [draftVocabSize] FLOAT row per batch entry at every call site.
     auto const copyLogitsRowToStack = [&](int32_t depthRow) {
-        int32_t const proposalDepthSize = mRuntime.deployment.specConfig->draftingStep + 1;
+        int32_t const proposalDepthSize = mRuntime.deployment.specConfig->draftSteps + 1;
         size_t const rowBytes = static_cast<size_t>(draftVocabSize) * sizeof(float);
         CUDA_CHECK(cudaMemcpy2DAsync(
             static_cast<char*>(mStackedDraftLogits.rawPointer()) + static_cast<size_t>(depthRow) * rowBytes,
@@ -466,14 +547,14 @@ bool MTPDecoder::constructDraftProposal(DecodingInferenceContext& context)
         mDraftVocabMappingTable, mDraftTokenIdsFullTable, mDraftTokenScoreFullTable, mDraftTokenPredecessorFullTable,
         draftTopK, context.stream);
 
-    int32_t const paddedDraftProposalSize = mRuntime.deployment.specConfig->draftingStep * draftTopK;
+    int32_t const paddedDraftProposalSize = mRuntime.deployment.specConfig->draftSteps * draftTopK;
     check::check(
         mRuntime.preprocess.idsInput.reshape({activeBatchSize, paddedDraftProposalSize}), "Tensor reshape failed");
     check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape(
                      {activeBatchSize, paddedDraftProposalSize, baseOutputHiddenDim}),
         "Tensor reshape failed");
     check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape(
-                     {activeBatchSize, paddedDraftProposalSize, draftHiddenSize}),
+                     {activeBatchSize, paddedDraftProposalSize, baseOutputHiddenDim}),
         "Tensor reshape failed");
 
     // Must stay below the reshapes: only the bound region is cleared.
@@ -493,10 +574,11 @@ bool MTPDecoder::constructDraftProposal(DecodingInferenceContext& context)
 
     check::check(mRuntime.base.pipelineIO.outputLogits.reshape({activeBatchSize, draftTopK, draftVocabSize}),
         "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize, draftTopK, draftHiddenSize}),
+    check::check(
+        mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize, draftTopK, baseOutputHiddenDim}),
         "Tensor reshape failed");
 
-    for (int32_t round = 0; round < mRuntime.deployment.specConfig->draftingStep - 1; round++)
+    for (int32_t round = 0; round < mRuntime.deployment.specConfig->draftSteps - 1; round++)
     {
         if (round == 0)
         {
@@ -510,7 +592,7 @@ bool MTPDecoder::constructDraftProposal(DecodingInferenceContext& context)
             selectAllTopK(mDraftTokenScoresTable, std::ref(mRuntime.sampling.scores), mRuntime.sampling.indices,
                 draftTopK, mRuntime.sampling.workspace, context.stream);
             check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape(
-                             {activeBatchSize, paddedDraftProposalSize, draftHiddenSize}),
+                             {activeBatchSize, paddedDraftProposalSize, baseOutputHiddenDim}),
                 "Tensor reshape failed");
             kernel::assembleDraftTreeInput(mDraftTokenIdsTable, mRuntime.base.pipelineIO.draftHiddenStatesOut,
                 mRuntime.sampling.indices, mRuntime.preprocess.idsInput, mRuntime.base.pipelineIO.draftHiddenStatesIn,
@@ -522,13 +604,14 @@ bool MTPDecoder::constructDraftProposal(DecodingInferenceContext& context)
         check::check(mRuntime.base.pipelineIO.outputLogits.reshape({activeBatchSize, draftTopK, draftVocabSize}),
             "Tensor reshape failed");
         check::check(
-            mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize, draftTopK, draftHiddenSize}),
+            mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize, draftTopK, baseOutputHiddenDim}),
             "Tensor reshape failed");
         check::check(
             mRuntime.base.pipelineIO.inputsEmbeds.reshape({activeBatchSize, paddedDraftProposalSize, draftHiddenSize}),
             "Tensor reshape failed");
         kernel::embeddingLookup(mRuntime.preprocess.idsInput, mRuntime.preprocess.embedding.table,
-            mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.base.pipelineIO.inputsEmbeds, context.stream);
+            mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.preprocess.embedding.descriptor,
+            mRuntime.base.pipelineIO.inputsEmbeds, context.stream);
 
         {
             Tensor const& draftKVCacheLengths = mDraftCacheManager.getKVCacheLengths();
@@ -538,7 +621,7 @@ bool MTPDecoder::constructDraftProposal(DecodingInferenceContext& context)
             check::check(
                 mRuntime.base.pipelineIO.specDecodePositionIds.reshape({activeBatchSize, paddedDraftProposalSize}),
                 "Tensor reshape failed");
-            kernel::prepareEagleDraftProposalInputs(mDraftAttentionMask, mDraftProposalSize, draftKVCacheLengths,
+            kernel::prepareSpecDraftProposalInputs(mDraftAttentionMask, mDraftProposalSize, draftKVCacheLengths,
                 mRuntime.base.pipelineIO.packedAttentionMask, mRuntime.base.pipelineIO.specDecodePositionIds,
                 mRuntime.base.pipelineIO.selectTokenIndices, mRuntime.base.pipelineIO.contextLengths, context.stream);
             decoder_utils::prepareSpecRaggedBindings(mRuntime, *mRuntime.deployment.draft, 1,
@@ -554,12 +637,12 @@ bool MTPDecoder::constructDraftProposal(DecodingInferenceContext& context)
             mRuntime.base.pipelineIO.inputsEmbeds.reshape({proposalTokens, draftHiddenSize}), "Tensor reshape failed");
         check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape({proposalTokens, baseOutputHiddenDim}),
             "Tensor reshape failed");
-        check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({proposalTokens, draftHiddenSize}),
+        check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({proposalTokens, baseOutputHiddenDim}),
             "Tensor reshape failed");
         check::check(mRuntime.base.pipelineIO.outputLogits.reshape({activeBatchSize * draftTopK, draftVocabSize}),
             "Tensor reshape failed");
         check::check(
-            mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize * draftTopK, draftHiddenSize}),
+            mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize * draftTopK, baseOutputHiddenDim}),
             "Tensor reshape failed");
         check::check(mRuntime.base.pipelineIO.specDecodePositionIds.reshape({proposalTokens}), "Tensor reshape failed");
         check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
@@ -568,9 +651,14 @@ bool MTPDecoder::constructDraftProposal(DecodingInferenceContext& context)
 
         auto const proposalDims
             = mRuntime.deployment.draft->proposalDims(activeBatchSize, paddedDraftProposalSize, draftTopK);
-        check::check(mDraftExecutor->prepare(kDecodeProfile, proposalDims, mDraftTensorMap, context.stream),
-            "Failed to prepare draft model for draft proposal step.");
-        check::check(mDraftExecutor->execute(context.stream), "Failed to execute draft model for draft proposal step.");
+        {
+            auto forward = gTimer.startForward(
+                "draft", proposalDims.batch, proposalDims.seqLen, proposalDims.selectLen, context.stream);
+            check::check(mDraftExecutor->prepare(kDecodeProfile, proposalDims, mDraftTensorMap, context.stream),
+                "Failed to prepare draft model for draft proposal step.");
+            check::check(
+                mDraftExecutor->execute(context.stream), "Failed to execute draft model for draft proposal step.");
+        }
 
         check::check(mRuntime.base.pipelineIO.outputLogits.reshape({activeBatchSize * draftTopK, draftVocabSize}),
             "Tensor reshape failed");
@@ -580,7 +668,7 @@ bool MTPDecoder::constructDraftProposal(DecodingInferenceContext& context)
             copyLogitsRowToStack(/*depthRow=*/round + 2);
         }
         check::check(
-            mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize * draftTopK, draftHiddenSize}),
+            mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize * draftTopK, baseOutputHiddenDim}),
             "Tensor reshape failed");
         check::check(
             mRuntime.sampling.indices.reshape({activeBatchSize * draftTopK, draftTopK}), "Tensor reshape failed");
@@ -610,51 +698,81 @@ bool MTPDecoder::constructDraftProposal(DecodingInferenceContext& context)
         {
             return false;
         }
-        if (context.hasGuidedDecoding)
-        {
-            // Outside buildTreeVerifyInputs on purpose: graph capture calls that function with
-            // an unpopulated tree, and copying it would leave the host buffer holding garbage
-            // for the first real step.
-            mRuntime.guidedDecoder.captureDraftTree(mTreeTokenIds, mRuntime.base.pipelineIO.specTreeParentIds,
-                std::ref(mValidCounts), activeBatchSize, mRuntime.deployment.specConfig->verifySize, context.stream);
-        }
+        // Outside buildTreeVerifyInputs on purpose: graph capture calls that function with an unpopulated tree, and
+        // copying it would leave the guided decoder's host buffer holding garbage for the first real step.
+        finishVerifyInput(context);
         return true;
     }
 
-    check::check(mRuntime.sampling.indices.reshape({activeBatchSize, mRuntime.deployment.specConfig->verifySize}),
+    check::check(mRuntime.sampling.indices.reshape({activeBatchSize, mRuntime.deployment.specConfig->verifyTokenCount}),
         "Tensor reshape failed");
     selectAllTopK(mDraftTokenScoreFullTable, std::nullopt, mRuntime.sampling.indices,
-        mRuntime.deployment.specConfig->verifySize, mRuntime.sampling.workspace, context.stream);
+        mRuntime.deployment.specConfig->verifyTokenCount, mRuntime.sampling.workspace, context.stream);
 
-    check::check(mRuntime.preprocess.idsInput.reshape({activeBatchSize, mRuntime.deployment.specConfig->verifySize}),
+    check::check(
+        mRuntime.preprocess.idsInput.reshape({activeBatchSize, mRuntime.deployment.specConfig->verifyTokenCount}),
         "Tensor reshape failed");
-    check::check(mDraftAttentionMask.reshape({activeBatchSize, mRuntime.deployment.specConfig->verifySize,
-                     mRuntime.deployment.specConfig->verifySize}),
-        "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
-                     {activeBatchSize, mRuntime.deployment.specConfig->verifySize,
-                         static_cast<int64_t>(divUp(mRuntime.deployment.specConfig->verifySize, 32))}),
-        "Tensor reshape failed");
-    kernel::constructVerificationDraftTree(mDraftTokenIdsFullTable, mDraftTokenPredecessorFullTable,
-        mRuntime.sampling.indices, mRuntime.preprocess.idsInput, mDraftAttentionMask, std::nullopt, context.stream);
-
-    if (context.hasGuidedDecoding)
+    int64_t const verifyTokenCount = mRuntime.deployment.specConfig->verifyTokenCount;
+    int64_t const draftTableStride = mDraftTokenIdsFullTable.getShape()[1];
+    // Selected indices are local to each request's draft table.
+    for (int32_t batchIdx = 0; batchIdx < activeBatchSize; ++batchIdx)
     {
-        // Copy the chain out while the stream still holds only drafting work, so the mask fill
-        // can wait on just this copy instead of on the verify forward enqueued after it.
-        mRuntime.guidedDecoder.captureDraftChains(
-            mRuntime.preprocess.idsInput, activeBatchSize, mRuntime.deployment.specConfig->verifySize, context.stream);
+        kernel::gatherRows(mRuntime.preprocess.idsInput.dataPointer<int32_t>() + batchIdx * verifyTokenCount,
+            mDraftTokenIdsFullTable.dataPointer<int32_t>() + batchIdx * draftTableStride,
+            mRuntime.sampling.indices.dataPointer<int32_t>() + batchIdx * verifyTokenCount, verifyTokenCount,
+            sizeof(int32_t), context.stream);
     }
 
+    finishVerifyInput(context);
     return true;
+}
+
+void MTPDecoder::finishVerifyInput(DecodingInferenceContext& context)
+{
+    auto const& specConfig = *mRuntime.deployment.specConfig;
+    auto& io = mRuntime.base.pipelineIO;
+    int32_t const activeBatchSize = context.activeBatchSize;
+    SpecVerifyLayout const layout = mUseTree ? SpecVerifyLayout::kTree : SpecVerifyLayout::kChain;
+    Tensor* const parents = mUseTree ? &io.specTreeParentIds : nullptr;
+    SpecVerifyInputs const drafted{mUseTree ? mTreeTokenIds : mRuntime.preprocess.idsInput,
+        mUseTree ? &mValidCounts : nullptr, parents, nullptr, activeBatchSize, specConfig.verifyTokenCount,
+        specConfig.maxPathLength, layout};
+
+    // A slot that may jump has its draft walked on the host before verification; a round that grafts a chain verifies
+    // at the grafting width and pads the other slots.
+    using Walk = JumpGraftSession::Walk;
+    Walk const walk = mJump.walk(context, drafted);
+    if (mJump.wide())
+    {
+        mJump.grafter().upload(
+            mRuntime.preprocess.idsInput, parents, mUseTree ? &io.specTreeDepths : nullptr, context.stream);
+        if (mUseTree)
+        {
+            mJump.prepareGraftedTreeDescriptors(
+                io, mRuntime.base.cacheManager.getKVCacheLengths(), activeBatchSize, context.stream);
+        }
+    }
+
+    // Copied while the stream still holds only drafting work, so the mask fill waits on just this copy instead of on
+    // the verify forward enqueued after it. After a walk that grafted nothing the guided decoder already holds the
+    // draft; a grafting round captures the grafted input with its node counts, which end each slot's mask walk.
+    if (context.hasGuidedDecoding && walk != Walk::kNoChain)
+    {
+        mRuntime.guidedDecoder.captureDraft(mJump.wide()
+                ? SpecVerifyInputs{mRuntime.preprocess.idsInput, mJump.grafter().validCounts(), parents, nullptr,
+                      activeBatchSize, specConfig.jumpVerifyTokenCount, specConfig.maxPathLength, layout, false,
+                      mJump.grafter().forcedFlags()}
+                : drafted,
+            context.stream);
+    }
 }
 
 bool MTPDecoder::buildTreeVerifyInputs(int32_t activeBatchSize, cudaStream_t stream)
 {
     NVTX_SCOPED_RANGE(nvtx_mtp_tree_build, "MTPDecoder::buildTreeVerifyInputs", nvtx_colors::LIGHT_ORANGE);
 
-    int32_t const verifySize = mRuntime.deployment.specConfig->verifySize;
-    int32_t const proposalDepthSize = mRuntime.deployment.specConfig->draftingStep + 1;
+    int32_t const verifyTokenCount = mRuntime.deployment.specConfig->verifyTokenCount;
+    int32_t const proposalDepthSize = mRuntime.deployment.specConfig->draftSteps + 1;
     int32_t const draftVocabSize = mRuntime.deployment.draft->outputVocabSize;
 
     check::check(
@@ -662,23 +780,22 @@ bool MTPDecoder::buildTreeVerifyInputs(int32_t activeBatchSize, cudaStream_t str
     // Also reshape here (not only in constructDraftProposal): graph capture calls this
     // directly, and ddtreeBuild requires rootTokenIds to be [batch].
     check::check(mDraftRootTokenId.reshape({activeBatchSize}), "Tensor reshape failed");
-    check::check(mTreeTokenIds.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
-    check::check(mTreeNodeScores.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
+    check::check(mTreeTokenIds.reshape({activeBatchSize, verifyTokenCount}), "Tensor reshape failed");
+    check::check(mTreeNodeScores.reshape({activeBatchSize, verifyTokenCount}), "Tensor reshape failed");
     check::check(mValidCounts.reshape({activeBatchSize}), "Tensor reshape failed");
-    check::check(
-        mRuntime.base.pipelineIO.specTreeParentIds.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
-    check::check(
-        mRuntime.base.pipelineIO.specTreeDepths.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
-    check::check(mRuntime.preprocess.idsInput.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
-    check::check(
-        mRuntime.base.pipelineIO.specDecodePositionIds.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
-                     {activeBatchSize, verifySize, static_cast<int64_t>(divUp(verifySize, 32))}),
+    check::check(mRuntime.base.pipelineIO.specTreeParentIds.reshape({activeBatchSize, verifyTokenCount}),
         "Tensor reshape failed");
-    check::check(mVerifyTreeMask.reshape({activeBatchSize, verifySize, verifySize}), "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.contextLengths.reshape({activeBatchSize}), "Tensor reshape failed");
     check::check(
-        mRuntime.base.pipelineIO.selectTokenIndices.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
+        mRuntime.base.pipelineIO.specTreeDepths.reshape({activeBatchSize, verifyTokenCount}), "Tensor reshape failed");
+    check::check(mRuntime.preprocess.idsInput.reshape({activeBatchSize, verifyTokenCount}), "Tensor reshape failed");
+    check::check(mRuntime.base.pipelineIO.specDecodePositionIds.reshape({activeBatchSize, verifyTokenCount}),
+        "Tensor reshape failed");
+    check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
+                     {activeBatchSize, verifyTokenCount, static_cast<int64_t>(divUp(verifyTokenCount, 32))}),
+        "Tensor reshape failed");
+    check::check(mRuntime.base.pipelineIO.contextLengths.reshape({activeBatchSize}), "Tensor reshape failed");
+    check::check(mRuntime.base.pipelineIO.selectTokenIndices.reshape({activeBatchSize, verifyTokenCount}),
+        "Tensor reshape failed");
 
     // Reduced-vocabulary MTP is chain-only. ddtreeBuild expects a DIRECT map
     // (full = T[i]), while mDraftVocabMappingTable holds OFFSETS (full = i + T[i]).
@@ -686,9 +803,9 @@ bool MTPDecoder::buildTreeVerifyInputs(int32_t activeBatchSize, cudaStream_t str
     kernel::DDTreeBuildParams const buildParams{{mStackedDraftLogits, mDraftRootTokenId, baseKVCacheLengths, nullptr},
         {mTreeTokenIds, mRuntime.base.pipelineIO.specTreeDepths, mRuntime.base.pipelineIO.specTreeParentIds,
             mTreeNodeScores, mValidCounts, mRuntime.preprocess.idsInput, mRuntime.base.pipelineIO.specDecodePositionIds,
-            mRuntime.base.pipelineIO.packedAttentionMask, mVerifyTreeMask, mRuntime.base.pipelineIO.contextLengths,
+            mRuntime.base.pipelineIO.packedAttentionMask, mRuntime.base.pipelineIO.contextLengths,
             mRuntime.base.pipelineIO.selectTokenIndices},
-        mRuntime.deployment.specConfig->draftingTopK, mTreeBuildWorkspace.rawPointer(),
+        mRuntime.deployment.specConfig->draftTopK, mTreeBuildWorkspace.rawPointer(),
         static_cast<size_t>(mTreeBuildWorkspace.getMemoryCapacity()), stream};
     kernel::ddtreeBuild(buildParams);
 
@@ -706,89 +823,35 @@ bool MTPDecoder::runBaseModelVerification(DecodingInferenceContext& context)
             .c_str(),
         nvtx_colors::MAGENTA);
 
+    auto const& specConfig = *mRuntime.deployment.specConfig;
     int32_t const activeBatchSize = context.activeBatchSize;
-    int32_t const baseOutputHiddenDim = mRuntime.deployment.specConfig->baseOutputHiddenDim;
+    // A grafting round verifies the grafted input at the jump width and accepts up to its path capacity. The layout
+    // stays the deployment's: a grafted chain is still a chain, and its accepted path a prefix of it.
+    int32_t const verifyTokenCount = mJump.verifyWidth(specConfig.verifyTokenCount);
+    Tensor const* const validCounts = mJump.validCounts(mUseTree ? &mValidCounts : nullptr);
+    Tensor const* const forcedFlags = mJump.forcedFlags();
 
-    Tensor const& verifyTreeMask = mUseTree ? mVerifyTreeMask : mDraftAttentionMask;
     check::check(mRuntime.preprocess.idsInput.getShape()[0] == activeBatchSize
-            && mRuntime.preprocess.idsInput.getShape()[1] == mRuntime.deployment.specConfig->verifySize,
+            && mRuntime.preprocess.idsInput.getShape()[1] == verifyTokenCount,
         "IdsInput shall have shape [batch_size, verify_size]");
-    check::check(verifyTreeMask.getShape()[0] == activeBatchSize
-            && verifyTreeMask.getShape()[1] == mRuntime.deployment.specConfig->verifySize
-            && verifyTreeMask.getShape()[2] == mRuntime.deployment.specConfig->verifySize,
-        "Verify tree mask shall have shape [batch_size, verify_size, verify_size]");
 
-    check::check(mRuntime.base.pipelineIO.inputsEmbeds.reshape({activeBatchSize,
-                     mRuntime.deployment.specConfig->verifySize, mRuntime.deployment.base.hiddenSize}),
-        "Tensor reshape failed");
-    kernel::embeddingLookup(mRuntime.preprocess.idsInput, mRuntime.preprocess.embedding.table,
-        mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.base.pipelineIO.inputsEmbeds, context.stream);
-    if (mRuntime.preprocess.gemma4Ple)
-    {
-        mRuntime.preprocess.gemma4Ple->embed(mRuntime.preprocess.idsInput, context.stream);
-    }
-
-    int32_t const selectTokenSize = activeBatchSize * mRuntime.deployment.specConfig->verifySize;
-    check::check(
-        mRuntime.base.pipelineIO.outputLogits.reshape({selectTokenSize, mRuntime.deployment.base.outputVocabSize}),
-        "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape({selectTokenSize, baseOutputHiddenDim}),
-        "Tensor reshape failed");
-
-    // Tree mode: ddtreeBuild already emitted the packed mask, position ids, select
-    // indices, and context lengths in buildTreeVerifyInputs.
-    if (!mUseTree)
-    {
-        int32_t const verifySize = mRuntime.deployment.specConfig->verifySize;
-        Tensor const& baseKVCacheLengths = mRuntime.base.cacheManager.getKVCacheLengths();
-        check::check(mRuntime.base.pipelineIO.selectTokenIndices.reshape({activeBatchSize, verifySize}),
-            "Tensor reshape failed");
-        check::check(mRuntime.base.pipelineIO.contextLengths.reshape({activeBatchSize}), "Tensor reshape failed");
-        check::check(mRuntime.base.pipelineIO.specDecodePositionIds.reshape({activeBatchSize, verifySize}),
-            "Tensor reshape failed");
-        kernel::prepareEagleBaseTreeDecodingInputs(mDraftAttentionMask, baseKVCacheLengths,
-            mRuntime.base.pipelineIO.packedAttentionMask, mRuntime.base.pipelineIO.specDecodePositionIds,
-            mRuntime.base.pipelineIO.selectTokenIndices, mRuntime.base.pipelineIO.contextLengths, context.stream);
-    }
-    int32_t const verifySize = mRuntime.deployment.specConfig->verifySize;
-    Tensor const* validCounts = mUseTree ? &mValidCounts : nullptr;
-    decoder_utils::prepareSpecRaggedBindings(mRuntime, mRuntime.deployment.base, 0,
-        mRuntime.base.pipelineIO.specDecodePositionIds, mRuntime.base.cacheManager.getKVCacheLengths(), validCounts,
-        mRuntime.base.pipelineIO.selectTokenIndices, activeBatchSize * verifySize, &context.residentRefs,
-        activeBatchSize, verifySize, mRuntime.deployment.base.specVerifyDims(activeBatchSize, verifySize),
-        context.stream);
-    check::check(mRuntime.base.pipelineIO.inputsEmbeds.reshape(
-                     {activeBatchSize * verifySize, mRuntime.deployment.base.hiddenSize}),
-        "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.specDecodePositionIds.reshape({activeBatchSize * verifySize}),
-        "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
-                     {activeBatchSize * verifySize, static_cast<int64_t>(divUp(verifySize, 32))}),
-        "Tensor reshape failed");
-    if (mUseTree)
-    {
-        check::check(mRuntime.base.pipelineIO.specTreeParentIds.reshape({activeBatchSize * verifySize}),
-            "Tensor reshape failed");
-        check::check(
-            mRuntime.base.pipelineIO.specTreeDepths.reshape({activeBatchSize * verifySize}), "Tensor reshape failed");
-    }
-
-    if (mRuntime.preprocess.deepstack)
-    {
-        mRuntime.preprocess.deepstack->useZeroTarget(mRuntime.base.tensorMap);
-    }
-
-    // MTP: inline prepareBaseVerificationState
-    mRuntime.base.cacheManager.getMambaCacheManager().reshapeIntermediateStates(
-        context.activeBatchSize, mRuntime.deployment.specConfig->verifySize);
-
+    SpecVerifyInputs const verifyInputs{mRuntime.preprocess.idsInput, validCounts,
+        mUseTree ? &mRuntime.base.pipelineIO.specTreeParentIds : nullptr,
+        mUseTree ? &mRuntime.base.pipelineIO.specTreeDepths : nullptr, activeBatchSize, verifyTokenCount,
+        specConfig.maxPathLength, specConfig.verifyLayout, mUseTree};
+    spec_decode::prepareTargetVerifyInputs(verifyInputs, mRuntime, context, 0);
     auto const verifyDims
-        = mRuntime.deployment.base.specVerifyDims(activeBatchSize, mRuntime.deployment.specConfig->verifySize);
-    bool verifySuccess
-        = mRuntime.base.executor.prepare(kDecodeProfile, verifyDims, mRuntime.base.tensorMap, context.stream);
-    if (verifySuccess)
+        = mRuntime.deployment.base.specVerifyDims(activeBatchSize, verifyTokenCount, verifyInputs.layout);
+    bool verifySuccess;
     {
-        verifySuccess = mRuntime.base.executor.execute(context.stream);
+        auto forward
+            = gTimer.startForward("base", verifyDims.batch, verifyDims.seqLen, verifyDims.selectLen, context.stream);
+        verifySuccess
+            = mRuntime.base.executor.prepare(kDecodeProfile, verifyDims, mRuntime.base.tensorMap, context.stream);
+        if (verifySuccess)
+        {
+            verifySuccess = mRuntime.base.executor.execute(context.stream);
+        }
     }
     if (!verifySuccess)
     {
@@ -799,25 +862,26 @@ bool MTPDecoder::runBaseModelVerification(DecodingInferenceContext& context)
     // GCOVR_EXCL_START
     if (context.hasLogitBias)
     {
-        applyLogitBiasRepeatedRows(mRuntime.logitBias, mRuntime.base.pipelineIO.outputLogits, context,
-            mRuntime.deployment.specConfig->verifySize, context.stream);
+        applyLogitBiasRepeatedRows(
+            mRuntime.logitBias, mRuntime.base.pipelineIO.outputLogits, context, verifyTokenCount, context.stream);
     }
     // GCOVR_EXCL_STOP
 
     if (context.hasGuidedDecoding)
     {
         // After the logit bias, as in vanilla decode: the grammar is a hard constraint and has to
-        // land last. eagleAccept below takes the base's top-1 per row, so masking here is what
+        // land last. Target selection takes the base's top-1 per row, so masking here is what
         // makes every accepted token grammar-legal.
         applyGuidedDecodingMaskForDraftTree(mRuntime.guidedDecoder, context, mRuntime.base.pipelineIO.outputLogits,
-            activeBatchSize, mRuntime.deployment.specConfig->verifySize, context.stream);
+            activeBatchSize, verifyTokenCount, context.stream);
     }
 
     // A tree with fewer verify nodes than the full chain depth caps the acceptable
-    // path length at verifySize.
-    int32_t const chainAcceptDepth = mRuntime.deployment.specConfig->draftingStep + 1;
-    int32_t const maxAcceptDepth
-        = mUseTree ? std::min(chainAcceptDepth, mRuntime.deployment.specConfig->verifySize) : chainAcceptDepth;
+    // path length at verifyTokenCount.
+    int32_t const chainAcceptDepth = specConfig.draftSteps + 1;
+    int32_t const plainAcceptDepth
+        = mUseTree ? std::min(chainAcceptDepth, specConfig.verifyTokenCount) : chainAcceptDepth;
+    int32_t const maxAcceptDepth = mJump.acceptDepth(plainAcceptDepth);
     check::check(mAcceptedTokenIds.reshape({activeBatchSize, maxAcceptDepth}), "Tensor reshape failed");
     check::check(mAcceptedTokenIndices.reshape({activeBatchSize, maxAcceptDepth}), "Tensor reshape failed");
     check::check(mAcceptLength.reshape({activeBatchSize}), "Tensor reshape failed");
@@ -825,25 +889,16 @@ bool MTPDecoder::runBaseModelVerification(DecodingInferenceContext& context)
     OptionalInputTensor vocabMappingTable = (mRuntime.deployment.base.reducedVocabSize > 0)
         ? std::optional{std::ref(mRuntime.sampling.baseVocabMappingTable)}
         : std::nullopt;
-    Tensor const& acceptTokenIds = mUseTree ? mTreeTokenIds : mRuntime.preprocess.idsInput;
-    kernel::eagleAccept(mRuntime.base.pipelineIO.outputLogits, acceptTokenIds, verifyTreeMask, mAcceptedTokenIds,
-        mAcceptedTokenIndices, mAcceptLength, vocabMappingTable, mRuntime.sampling.workspace.rawPointer(),
-        mRuntime.sampling.workspace.getMemoryCapacity(), context.stream);
-
-    auto& cacheMgrBase = mRuntime.base.cacheManager;
-    Tensor const& kvCacheLengths = cacheMgrBase.getKVCacheLengths();
-    auto& kvMgrBase = cacheMgrBase.getKVCacheManager();
-    auto const kvHeadDimGroups = cacheMgrBase.getKVHeadDimGroups();
-    auto const kvCacheType = kvMgrBase.getConfig().kvCacheType;
-
-    check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape(
-                     {activeBatchSize, mRuntime.deployment.specConfig->verifySize, baseOutputHiddenDim}),
-        "Tensor reshape failed");
-
-    auto const& basePageTable = *mRuntime.base.sharedResources.kvPageTables[0];
-    int32_t const* basePageTablePtr = basePageTable.kernelView().dataPointer<int32_t>();
-    int32_t const baseNumPages = kvMgrBase.numPages();
-    int32_t const baseMaxPagesPerSeq = basePageTable.maxPagesPerSeq();
+    // The grafted input lives only in idsInput; mTreeTokenIds holds the tree as drafted.
+    Tensor const& acceptTokenIds = mUseTree && !mJump.wide() ? mTreeTokenIds : mRuntime.preprocess.idsInput;
+    Tensor const targetTokenIds = kernel::selectSpecTargetTokens(mRuntime.base.pipelineIO.outputLogits,
+        vocabMappingTable, mRuntime.sampling.workspace, activeBatchSize, verifyTokenCount, context.stream);
+    SpecVerifyInputs const acceptVerify{acceptTokenIds, verifyInputs.executionValidTokenCounts, verifyInputs.parentIds,
+        verifyInputs.depths, activeBatchSize, verifyTokenCount, verifyInputs.maxPathLength, verifyInputs.layout,
+        verifyInputs.metadataReady};
+    spec_decode::accept(GreedyAcceptInputs{acceptVerify, targetTokenIds, validCounts, forcedFlags}, mAcceptedTokenIds,
+        mAcceptLength, &mAcceptedTokenIndices, context.stream,
+        decoder_utils::forcedAcceptanceLength(mRuntime, context));
 
     decoder_utils::clampAcceptLengthsToRemainingGeneration(context, mAcceptLength, context.stream);
 
@@ -854,63 +909,30 @@ bool MTPDecoder::runBaseModelVerification(DecodingInferenceContext& context)
     decoder_utils::applyForcedAcceptance(context, mHostAcceptLengths, mHostAcceptedTokenIds, mAcceptLength,
         mAcceptedTokenIds, ownTokens, maxAcceptDepth, context.stream);
 
-    for (auto const& group : kvHeadDimGroups)
-    {
-        kernel::eagleBaseCommitKVCache(mAcceptedTokenIndices, mAcceptLength, kvCacheLengths,
-            mRuntime.base.pipelineIO.stateIndices, group.deviceLayerInfos, group.numLayers, group.headDim,
-            group.maxKVHeads, activeBatchSize, mRuntime.deployment.base.recurrentPoolRows, maxAcceptDepth, kvCacheType,
-            context.stream, basePageTablePtr, baseNumPages, baseMaxPagesPerSeq);
-    }
-    kernel::eagleBaseAssembleHiddenState(
-        mAcceptedTokenIndices, mAcceptLength, mRuntime.base.pipelineIO.baseHiddenStates, context.stream);
-    mRuntime.base.cacheManager.commitSequenceLength(mAcceptLength, context.stream);
-
-    // MTP: inline commitAcceptedBaseState
-    auto& mambaMgr = mRuntime.base.cacheManager.getMambaCacheManager();
-    if (mUseTree)
-    {
-        if (mambaMgr.hasIntermediateRecurrentStates() || mambaMgr.hasIntermediateConvStates())
-        {
-            int32_t const verifySize = mRuntime.deployment.specConfig->verifySize;
-            if (mambaMgr.recurrentUsesReplay() || kernel::gdnTreeChunkVerifyEnabled(verifySize))
-            {
-                mambaMgr.replayCommitAcceptedTreeStates(
-                    mAcceptedTokenIndices, mAcceptLength, mRuntime.base.pipelineIO.stateIndices, context.stream);
-            }
-            else
-            {
-                mambaMgr.scatterAcceptedTreeStates(
-                    mAcceptedTokenIndices, mAcceptLength, mRuntime.base.pipelineIO.stateIndices, context.stream);
-            }
-        }
-    }
-    else
-    {
-        mambaMgr.scatterAcceptedLinearStates(mAcceptLength, mRuntime.base.pipelineIO.stateIndices, context.stream);
-    }
-
-    check::check(
-        mRuntime.base.pipelineIO.baseHiddenStates.reshape({activeBatchSize, maxAcceptDepth, baseOutputHiddenDim}),
-        "Tensor reshape failed");
+    spec_decode::commitAcceptedTargetPath(mRuntime, context,
+        SpecAcceptResult{mAcceptedTokenIds, mAcceptLength, &mAcceptedTokenIndices, maxAcceptDepth}, verifyTokenCount);
+    decoder_utils::copyLeadingElements(mAcceptedHiddenStates, mRuntime.base.pipelineIO.baseHiddenStates,
+        mRuntime.base.pipelineIO.baseHiddenStates.getShape().volume(), context.stream);
 
     // Enqueue logprobs device work + D2H before appendAcceptedTokens so everything rides
     // that call's single round synchronization.
-    if (context.numLogprobs > 0)
+    if (context.maxNumLogprobs() > 0)
     {
-        int32_t const verifyTreeSize = mRuntime.deployment.specConfig->verifySize;
         int32_t const vocabSize = mRuntime.deployment.base.outputVocabSize;
         int32_t const gatheredRows = activeBatchSize * maxAcceptDepth;
         check::check(mRuntime.logprobs.gatheredLogits.reshape({gatheredRows, vocabSize}), "Tensor reshape failed");
         gatherSpecVerifyAcceptedLogitRows(mRuntime.base.pipelineIO.outputLogits, mAcceptedTokenIndices,
-            mRuntime.logprobs.gatheredLogits, activeBatchSize, verifyTreeSize, maxAcceptDepth, vocabSize,
+            mRuntime.logprobs.gatheredLogits, activeBatchSize, verifyTokenCount, maxAcceptDepth, vocabSize,
             context.stream);
         decoder_utils::enqueueLogprobsD2H(
-            mRuntime.logprobs.gatheredLogits, gatheredRows, mRuntime, context.numLogprobs, context.stream);
+            mRuntime.logprobs.gatheredLogits, gatheredRows, mRuntime, context.maxNumLogprobs(), context.stream);
     }
 
+    std::optional<decoder_utils::ForcedPathInfo> forcedPath = mJump.forcedPath(mAcceptedTokenIndices);
+    // A grafting round proposes the plain round's drafts; its forced tokens are neither drafts nor bonus.
     decoder_utils::appendAcceptedTokens(context, mHostAcceptLengths, mHostAcceptedTokenIds, mAcceptLength,
-        mAcceptedTokenIds, maxAcceptDepth, mRuntime.tokenizer, context.stream,
-        mRuntime.deployment.specConfig->verifySize - 1);
+        mAcceptedTokenIds, maxAcceptDepth, mRuntime.tokenizer, context.stream, specConfig.verifyTokenCount - 1, nullptr,
+        decoder_utils::forcedAcceptanceLength(mRuntime, context), !mUseTree, forcedPath ? &*forcedPath : nullptr);
 
     if (context.hasGuidedDecoding)
     {
@@ -923,14 +945,16 @@ bool MTPDecoder::runBaseModelVerification(DecodingInferenceContext& context)
     // Few-layer-validation dump (no-op unless EDGELLM_DUMP_LOGITS_KVCACHE_* are set).
     decoder_utils::dumpSpecRound(context, mRuntime.base.cacheManager, *mRuntime.base.sharedResources.kvPageTables[0],
         mRuntime.base.sharedResources.getSwaKVPageTable(0), mRuntime.base.pipelineIO.outputLogits,
-        mAcceptedTokenIndices, mHostAcceptLengths, ownTokens, mRuntime.deployment.specConfig->verifySize,
-        maxAcceptDepth, context.stream);
+        mAcceptedTokenIndices, mHostAcceptLengths, ownTokens, verifyTokenCount, maxAcceptDepth, context.stream);
 
-    if (context.numLogprobs > 0)
+    if (context.maxNumLogprobs() > 0)
     {
         decoder_utils::collectSpecLogprobsFromHost(mRuntime, context, activeBatchSize, maxAcceptDepth,
-            mHostAcceptLengths.dataPointer<int32_t>(), context.numLogprobs);
+            mHostAcceptLengths.dataPointer<int32_t>(), context.maxNumLogprobs());
     }
+
+    mJump.account(context, mHostAcceptLengths.dataPointer<int32_t>(), mHostAcceptedTokenIds.dataPointer<int32_t>(),
+        maxAcceptDepth);
 
     return true;
 }
@@ -949,16 +973,17 @@ bool MTPDecoder::runDraftModelAcceptToken(DecodingInferenceContext& context)
 
     int32_t const activeBatchSize = context.activeBatchSize;
     int32_t const draftHiddenSize = mRuntime.deployment.specConfig->draftHiddenSize;
+    int32_t const baseOutputHiddenDim = mRuntime.deployment.specConfig->baseOutputHiddenDim;
     int32_t const draftVocabSize = mRuntime.deployment.draft->outputVocabSize;
     int64_t const inputIdsLength = mAcceptedTokenIds.getShape()[1];
 
     check::check(mRuntime.preprocess.idsInput.reshape({activeBatchSize, inputIdsLength}), "Tensor reshape failed");
     check::check(
-        mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({activeBatchSize, inputIdsLength, draftHiddenSize}),
+        mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({activeBatchSize, inputIdsLength, baseOutputHiddenDim}),
         "Tensor reshape failed");
     check::check(
         mRuntime.base.pipelineIO.outputLogits.reshape({activeBatchSize, draftVocabSize}), "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize, draftHiddenSize}),
+    check::check(mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({activeBatchSize, baseOutputHiddenDim}),
         "Tensor reshape failed");
 
     decoder_utils::zeroActiveRegion(mRuntime.base.pipelineIO.draftHiddenStatesIn, context.stream);
@@ -974,11 +999,8 @@ bool MTPDecoder::runDraftModelAcceptToken(DecodingInferenceContext& context)
     check::check(mRuntime.base.pipelineIO.inputsEmbeds.reshape({activeBatchSize, inputIdsLength, draftHiddenSize}),
         "Tensor reshape failed");
     kernel::embeddingLookup(mRuntime.preprocess.idsInput, mRuntime.preprocess.embedding.table,
-        mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.base.pipelineIO.inputsEmbeds, context.stream);
-    if (mRuntime.preprocess.gemma4Ple)
-    {
-        mRuntime.preprocess.gemma4Ple->embed(mRuntime.preprocess.idsInput, context.stream);
-    }
+        mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.preprocess.embedding.descriptor,
+        mRuntime.base.pipelineIO.inputsEmbeds, context.stream);
 
     {
         int32_t const acceptedTokenNum = static_cast<int32_t>(inputIdsLength);
@@ -991,7 +1013,7 @@ bool MTPDecoder::runDraftModelAcceptToken(DecodingInferenceContext& context)
         check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
                          {activeBatchSize, acceptedTokenNum, static_cast<int64_t>(divUp(acceptedTokenNum, 32))}),
             "Tensor reshape failed");
-        kernel::prepareEagleAcceptDecodeTokenInputs(draftKVCacheLengths, mAcceptLength,
+        kernel::prepareSpecAcceptedDraftInputs(draftKVCacheLengths, mAcceptLength,
             mRuntime.base.pipelineIO.packedAttentionMask, mRuntime.base.pipelineIO.specDecodePositionIds,
             mRuntime.base.pipelineIO.selectTokenIndices, mRuntime.base.pipelineIO.contextLengths, context.stream);
         decoder_utils::prepareSpecRaggedBindings(mRuntime, *mRuntime.deployment.draft, 1,
@@ -1007,7 +1029,9 @@ bool MTPDecoder::runDraftModelAcceptToken(DecodingInferenceContext& context)
     check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape(
                      {physicalTokens, mRuntime.deployment.specConfig->baseOutputHiddenDim}),
         "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({physicalTokens, draftHiddenSize}),
+    decoder_utils::copyLeadingElements(mRuntime.base.pipelineIO.baseHiddenStates, mAcceptedHiddenStates,
+        mRuntime.base.pipelineIO.baseHiddenStates.getShape().volume(), context.stream);
+    check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({physicalTokens, baseOutputHiddenDim}),
         "Tensor reshape failed");
     check::check(mRuntime.base.pipelineIO.specDecodePositionIds.reshape({physicalTokens}), "Tensor reshape failed");
     check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
@@ -1015,9 +1039,13 @@ bool MTPDecoder::runDraftModelAcceptToken(DecodingInferenceContext& context)
         "Tensor reshape failed");
 
     auto const acceptDims = mRuntime.deployment.draft->acceptDims(activeBatchSize, inputIdsLength);
-    check::check(mDraftExecutor->prepare(kDecodeProfile, acceptDims, mDraftTensorMap, context.stream),
-        "Failed to prepare draft model for accept token step.");
-    check::check(mDraftExecutor->execute(context.stream), "Failed to execute draft model for accept token step.");
+    {
+        auto forward
+            = gTimer.startForward("draft", acceptDims.batch, acceptDims.seqLen, acceptDims.selectLen, context.stream);
+        check::check(mDraftExecutor->prepare(kDecodeProfile, acceptDims, mDraftTensorMap, context.stream),
+            "Failed to prepare draft model for accept token step.");
+        check::check(mDraftExecutor->execute(context.stream), "Failed to execute draft model for accept token step.");
+    }
     mDraftCacheManager.commitSequenceLength(mAcceptLength, context.stream);
 
     return true;
@@ -1028,6 +1056,14 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
     bool draftProposalCaptureStatus{true};
     bool draftAcceptCaptureStatus{true};
     bool baseVerificationCaptureStatus{true};
+
+    DecodingInferenceContext captureContext;
+    captureContext.stream = stream;
+    captureContext.residentRefs.resize(mRuntime.maxRuntimeBatchSize);
+    for (int32_t slot = 0; slot < mRuntime.maxRuntimeBatchSize; ++slot)
+    {
+        captureContext.residentRefs[slot].slot = slot;
+    }
 
     static constexpr int32_t kSimulateCacheLength{128};
 
@@ -1044,7 +1080,7 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
     } stateGuard{[&]() noexcept {
         std::vector<int32_t> zeroCacheLens(mRuntime.maxRuntimeBatchSize, 0);
         Tensor zeroCacheLensTensor(
-            zeroCacheLens.data(), {mRuntime.maxRuntimeBatchSize}, DeviceType::kCPU, nvinfer1::DataType::kINT32);
+            zeroCacheLens.data(), {mRuntime.maxRuntimeBatchSize}, DeviceType::kCPU, trt_edgellm::DataType::kINT32);
         mRuntime.base.cacheManager.resetForNewSequences(zeroCacheLensTensor, stream);
         mDraftCacheManager.resetForNewSequences(zeroCacheLensTensor, stream);
         if (!mRuntime.base.executor.prepare(
@@ -1054,18 +1090,31 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
         }
     }};
 
-    // Tree mode drafts a chain (topK=1 shapes); draftingTopK is only the tree candidate fanout.
-    int32_t const draftTopK = mUseTree ? 1 : mRuntime.deployment.specConfig->draftingTopK;
-    int32_t const paddedDraftProposalSize = mRuntime.deployment.specConfig->draftingStep * draftTopK;
-    int32_t const draftingStep = mRuntime.deployment.specConfig->draftingStep;
+    // Tree mode drafts a chain (topK=1 shapes); draftTopK is only the tree candidate fanout.
+    int32_t const draftTopK = mUseTree ? 1 : mRuntime.deployment.specConfig->draftTopK;
+    int32_t const paddedDraftProposalSize = mRuntime.deployment.specConfig->draftSteps * draftTopK;
+    int32_t const draftSteps = mRuntime.deployment.specConfig->draftSteps;
     int32_t const draftHiddenSize = mRuntime.deployment.specConfig->draftHiddenSize;
     int32_t const baseOutputHiddenDim = mRuntime.deployment.specConfig->baseOutputHiddenDim;
     int32_t const draftVocabSize = mRuntime.deployment.draft->outputVocabSize;
 
+    // A deployment that can jump also runs grafting rounds: the base verifies jumpVerifyTokenCount rows and the draft
+    // re-reads up to jumpMaxPathLength accepted tokens. Tree mode caps a plain round's accepted path at
+    // verifyTokenCount (see runBaseModelVerification).
+    auto const& specConfig = *mRuntime.deployment.specConfig;
+    int32_t const plainAcceptDepth = mUseTree ? std::min(draftSteps + 1, specConfig.verifyTokenCount) : draftSteps + 1;
+    std::vector<int32_t> acceptLengths;
+    for (int32_t acceptLength = 1; acceptLength <= plainAcceptDepth; ++acceptLength)
+    {
+        acceptLengths.push_back(acceptLength);
+    }
+    std::vector<int32_t> verifyWidths{specConfig.verifyTokenCount};
+    mJump.addGraphTiers(verifyWidths, &acceptLengths);
+
     for (int32_t batchSize = 1; batchSize <= mRuntime.maxRuntimeBatchSize; ++batchSize)
     {
         std::vector<int32_t> simCacheLens(batchSize, kSimulateCacheLength);
-        Tensor simCacheLensTensor(simCacheLens.data(), {batchSize}, DeviceType::kCPU, nvinfer1::DataType::kINT32);
+        Tensor simCacheLensTensor(simCacheLens.data(), {batchSize}, DeviceType::kCPU, trt_edgellm::DataType::kINT32);
         mRuntime.base.cacheManager.resetForNewSequences(simCacheLensTensor, stream);
         mDraftCacheManager.resetForNewSequences(simCacheLensTensor, stream);
         std::vector<int32_t> simCtxLens(batchSize, kSimulateCacheLength + paddedDraftProposalSize);
@@ -1077,7 +1126,7 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
                              {batchSize, paddedDraftProposalSize, baseOutputHiddenDim}),
                 "Tensor reshape failed");
             check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape(
-                             {batchSize, paddedDraftProposalSize, draftHiddenSize}),
+                             {batchSize, paddedDraftProposalSize, baseOutputHiddenDim}),
                 "Tensor reshape failed");
             check::check(mDraftProposalSize.reshape({batchSize}), "Tensor reshape failed");
             check::check(mDraftAttentionMask.reshape({batchSize, paddedDraftProposalSize, paddedDraftProposalSize}),
@@ -1087,7 +1136,8 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
                 "Tensor reshape failed");
             check::check(mRuntime.base.pipelineIO.outputLogits.reshape({batchSize, draftTopK, draftVocabSize}),
                 "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({batchSize, draftTopK, draftHiddenSize}),
+            check::check(
+                mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({batchSize, draftTopK, baseOutputHiddenDim}),
                 "Tensor reshape failed");
             check::check(
                 mRuntime.base.pipelineIO.inputsEmbeds.reshape({batchSize, paddedDraftProposalSize, draftHiddenSize}),
@@ -1098,7 +1148,7 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
                 mRuntime.base.pipelineIO.selectTokenIndices.reshape({batchSize, draftTopK}), "Tensor reshape failed");
             check::check(mRuntime.base.pipelineIO.specDecodePositionIds.reshape({batchSize, paddedDraftProposalSize}),
                 "Tensor reshape failed");
-            kernel::prepareEagleDraftProposalInputs(mDraftAttentionMask, mDraftProposalSize, draftKVCacheLengths,
+            kernel::prepareSpecDraftProposalInputs(mDraftAttentionMask, mDraftProposalSize, draftKVCacheLengths,
                 mRuntime.base.pipelineIO.packedAttentionMask, mRuntime.base.pipelineIO.specDecodePositionIds,
                 mRuntime.base.pipelineIO.selectTokenIndices, mRuntime.base.pipelineIO.contextLengths, stream);
             decoder_utils::prepareSpecRaggedBindings(mRuntime, *mRuntime.deployment.draft, 1,
@@ -1111,12 +1161,12 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
                 "Tensor reshape failed");
             check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape({proposalTokens, baseOutputHiddenDim}),
                 "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({proposalTokens, draftHiddenSize}),
+            check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({proposalTokens, baseOutputHiddenDim}),
                 "Tensor reshape failed");
             check::check(mRuntime.base.pipelineIO.outputLogits.reshape({batchSize * draftTopK, draftVocabSize}),
                 "Tensor reshape failed");
             check::check(
-                mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({batchSize * draftTopK, draftHiddenSize}),
+                mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({batchSize * draftTopK, baseOutputHiddenDim}),
                 "Tensor reshape failed");
             check::check(
                 mRuntime.base.pipelineIO.specDecodePositionIds.reshape({proposalTokens}), "Tensor reshape failed");
@@ -1139,18 +1189,15 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
         {
             check::check(
                 mRuntime.base.pipelineIO.outputLogits.reshape({batchSize, draftVocabSize}), "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({batchSize, draftHiddenSize}),
+            check::check(mRuntime.base.pipelineIO.draftHiddenStatesOut.reshape({batchSize, baseOutputHiddenDim}),
                 "Tensor reshape failed");
-            // Tree mode caps the accepted path length at verifySize (see runBaseModelVerification).
-            int32_t const maxAcceptDepth
-                = mUseTree ? std::min(draftingStep + 1, mRuntime.deployment.specConfig->verifySize) : draftingStep + 1;
-            for (int32_t acceptLength = 1; acceptLength <= maxAcceptDepth; acceptLength++)
+            for (int32_t const acceptLength : acceptLengths)
             {
                 check::check(
                     mRuntime.base.pipelineIO.baseHiddenStates.reshape({batchSize, acceptLength, baseOutputHiddenDim}),
                     "Tensor reshape failed");
-                check::check(
-                    mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({batchSize, acceptLength, draftHiddenSize}),
+                check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape(
+                                 {batchSize, acceptLength, baseOutputHiddenDim}),
                     "Tensor reshape failed");
                 check::check(mAcceptLength.reshape({batchSize}), "Tensor reshape failed");
                 std::vector<int32_t> acceptLengthsVec(batchSize, acceptLength);
@@ -1168,7 +1215,7 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
                 check::check(mRuntime.base.pipelineIO.contextLengths.reshape({batchSize}), "Tensor reshape failed");
                 check::check(mRuntime.base.pipelineIO.specDecodePositionIds.reshape({batchSize, acceptLength}),
                     "Tensor reshape failed");
-                kernel::prepareEagleAcceptDecodeTokenInputs(draftKVCacheLengths, mAcceptLength,
+                kernel::prepareSpecAcceptedDraftInputs(draftKVCacheLengths, mAcceptLength,
                     mRuntime.base.pipelineIO.packedAttentionMask, mRuntime.base.pipelineIO.specDecodePositionIds,
                     mRuntime.base.pipelineIO.selectTokenIndices, mRuntime.base.pipelineIO.contextLengths, stream);
                 decoder_utils::prepareSpecRaggedBindings(mRuntime, *mRuntime.deployment.draft, 1,
@@ -1180,7 +1227,7 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
                     "Tensor reshape failed");
                 check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape({acceptTokens, baseOutputHiddenDim}),
                     "Tensor reshape failed");
-                check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({acceptTokens, draftHiddenSize}),
+                check::check(mRuntime.base.pipelineIO.draftHiddenStatesIn.reshape({acceptTokens, baseOutputHiddenDim}),
                     "Tensor reshape failed");
                 check::check(
                     mRuntime.base.pipelineIO.specDecodePositionIds.reshape({acceptTokens}), "Tensor reshape failed");
@@ -1200,68 +1247,41 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
             }
         }
 
+        for (int32_t const verifyTokenCount : verifyWidths)
         {
-            int32_t const verifySize = mRuntime.deployment.specConfig->verifySize;
-            int32_t const selectTokenSize = batchSize * verifySize;
-            int32_t const packedMaskLen = static_cast<int32_t>(divUp(verifySize, 32));
-            check::check(mRuntime.base.pipelineIO.outputLogits.reshape(
-                             {selectTokenSize, mRuntime.deployment.base.outputVocabSize}),
-                "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape({selectTokenSize, baseOutputHiddenDim}),
-                "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape({batchSize, verifySize, packedMaskLen}),
-                "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.inputsEmbeds.reshape(
-                             {batchSize, verifySize, mRuntime.deployment.base.hiddenSize}),
-                "Tensor reshape failed");
-            check::check(mRuntime.preprocess.idsInput.reshape({batchSize, verifySize}), "Tensor reshape failed");
-            check::check(
-                mRuntime.base.pipelineIO.selectTokenIndices.reshape({batchSize, verifySize}), "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.contextLengths.reshape({batchSize}), "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.specDecodePositionIds.reshape({batchSize, verifySize}),
-                "Tensor reshape failed");
-            if (mRuntime.preprocess.gemma4Ple)
+            bool const wide = verifyTokenCount > specConfig.verifyTokenCount;
+            check::check(mRuntime.preprocess.idsInput.reshape({batchSize, verifyTokenCount}), "Tensor reshape failed");
+            if (wide)
             {
-                mRuntime.preprocess.gemma4Ple->reshapeOutputsTokenMajor(batchSize * verifySize);
+                CUDA_CHECK(cudaMemsetAsync(mRuntime.preprocess.idsInput.rawPointer(), 0,
+                    static_cast<size_t>(batchSize) * verifyTokenCount * sizeof(int32_t), stream));
             }
-
-            if (!mUseTree)
+            if (mUseTree && !wide)
             {
-                Tensor const& baseKVCacheLengths = mRuntime.base.cacheManager.getKVCacheLengths();
-                check::check(mDraftAttentionMask.reshape({batchSize, verifySize, verifySize}), "Tensor reshape failed");
-                kernel::prepareEagleBaseTreeDecodingInputs(mDraftAttentionMask, baseKVCacheLengths,
-                    mRuntime.base.pipelineIO.packedAttentionMask, mRuntime.base.pipelineIO.specDecodePositionIds,
-                    mRuntime.base.pipelineIO.selectTokenIndices, mRuntime.base.pipelineIO.contextLengths, stream);
-            }
-            else
-            {
-                // Run the real tree builder to populate all verify metadata. At capture
-                // time the stacked logits buffer holds its zero initialization, which is
-                // a valid uniform distribution and yields a deterministic tree; replays
-                // read whatever metadata later real builds write into these same buffers.
                 buildTreeVerifyInputs(batchSize, stream);
             }
-            Tensor const* validCounts = mUseTree ? &mValidCounts : nullptr;
-            Tensor const& baseKVCacheLengths = mRuntime.base.cacheManager.getKVCacheLengths();
-            decoder_utils::prepareSpecRaggedBindings(mRuntime, mRuntime.deployment.base, 0,
-                mRuntime.base.pipelineIO.specDecodePositionIds, baseKVCacheLengths, validCounts,
-                mRuntime.base.pipelineIO.selectTokenIndices, selectTokenSize, nullptr, batchSize, verifySize,
-                mRuntime.deployment.base.specVerifyDims(batchSize, verifySize), stream);
-            check::check(
-                mRuntime.base.pipelineIO.inputsEmbeds.reshape({selectTokenSize, mRuntime.deployment.base.hiddenSize}),
-                "Tensor reshape failed");
-            check::check(
-                mRuntime.base.pipelineIO.specDecodePositionIds.reshape({selectTokenSize}), "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape({selectTokenSize, packedMaskLen}),
-                "Tensor reshape failed");
-            if (mRuntime.preprocess.deepstack)
+            else if (mUseTree)
             {
-                mRuntime.preprocess.deepstack->useZeroTarget(mRuntime.base.tensorMap);
+                Tensor& mask = mJump.grafter().mask();
+                check::check(mask.reshape({batchSize, verifyTokenCount, verifyTokenCount}), "Tensor reshape failed");
+                CUDA_CHECK(cudaMemsetAsync(mask.rawPointer(), 0,
+                    static_cast<size_t>(batchSize) * verifyTokenCount * verifyTokenCount, stream));
+                check::check(mRuntime.base.pipelineIO.specTreeParentIds.reshape({batchSize, verifyTokenCount}),
+                    "Tensor reshape failed");
+                check::check(mRuntime.base.pipelineIO.specTreeDepths.reshape({batchSize, verifyTokenCount}),
+                    "Tensor reshape failed");
+                mJump.prepareGraftedTreeDescriptors(
+                    mRuntime.base.pipelineIO, mRuntime.base.cacheManager.getKVCacheLengths(), batchSize, stream);
             }
-
-            // MTP: inline prepareBaseVerificationCapture
-            mRuntime.base.cacheManager.getMambaCacheManager().reshapeIntermediateStates(batchSize, verifySize);
-            auto const verifyDims = mRuntime.deployment.base.specVerifyDims(batchSize, verifySize);
+            captureContext.activeBatchSize = batchSize;
+            SpecVerifyInputs const verifyInputs{mRuntime.preprocess.idsInput,
+                mUseTree && !wide ? &mValidCounts : nullptr,
+                mUseTree ? &mRuntime.base.pipelineIO.specTreeParentIds : nullptr,
+                mUseTree ? &mRuntime.base.pipelineIO.specTreeDepths : nullptr, batchSize, verifyTokenCount,
+                specConfig.maxPathLength, specConfig.verifyLayout, mUseTree};
+            spec_decode::prepareTargetVerifyInputs(verifyInputs, mRuntime, captureContext, 0);
+            auto const verifyDims
+                = mRuntime.deployment.base.specVerifyDims(batchSize, verifyTokenCount, verifyInputs.layout);
             baseVerificationCaptureStatus &= mRuntime.base.captureGraph(verifyDims, stream);
         }
     }
@@ -1269,50 +1289,33 @@ bool MTPDecoder::captureCudaGraphs(cudaStream_t stream)
     return draftProposalCaptureStatus && draftAcceptCaptureStatus && baseVerificationCaptureStatus;
 }
 
-bool MTPDecoder::hasSystemPromptKVCache(SystemPromptCacheKey const& key) const
-{
-    return mSystemPromptKVCacheDraft.find(key) != mSystemPromptKVCacheDraft.end();
-}
-
-void MTPDecoder::restoreSystemPromptKVCache(SystemPromptCacheKey const& key, int32_t residentSlot, cudaStream_t stream)
-{
-    check::check(mSystemPromptKVCacheDraft.count(key) > 0, "System prompt cache missing for draft model");
-    auto& cacheMgrDraft = mDraftCacheManager;
-    cacheMgrDraft.restoreKVCache(mSystemPromptKVCacheDraft[key].kvCacheLayers, residentSlot, stream);
-}
-
-bool MTPDecoder::runSystemPromptPrefill(DecodingInferenceContext& context)
-{
-    if (!runDraftModelPrefill(context))
-    {
-        return false;
-    }
-    return true;
-}
-
-void MTPDecoder::saveSystemPromptKVCache(SystemPromptCacheKey const& key, std::string const& prompt,
-    std::vector<tokenizer::Rank> const& tokenizedPrompt, int32_t promptIdsLength, cudaStream_t stream)
-{
-    auto& cacheMgrDraft = mDraftCacheManager;
-    constexpr int32_t CACHE_BATCH_IDX{0};
-
-    SystemPromptKVCache savedKVCacheDraft;
-    savedKVCacheDraft.systemPrompt = prompt;
-    savedKVCacheDraft.tokenizedPrompt = tokenizedPrompt;
-    savedKVCacheDraft.kvCacheLayers = cacheMgrDraft.captureKVCache(CACHE_BATCH_IDX, promptIdsLength, stream);
-    mSystemPromptKVCacheDraft.insert({key, std::move(savedKVCacheDraft)});
-}
-
 void MTPDecoder::resetForNewSequences(Tensor& reuseLengths, cudaStream_t stream)
 {
+    mCommonStateTracker.reset();
     mDraftCacheManager.resetForNewSequences(reuseLengths, stream);
+    mDraftPrimed = false;
 }
 
-void MTPDecoder::onBatchEvict(std::vector<int32_t> const&, int32_t oldActiveBatch, int32_t newActiveBatch,
+void MTPDecoder::onBatchEvict(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch, int32_t newActiveBatch,
     Tensor& deviceBatchMapping, cudaStream_t stream)
 {
+    mCommonStateTracker.compact(batchMapping, oldActiveBatch, newActiveBatch);
     auto const baseHiddenShape = mRuntime.base.pipelineIO.baseHiddenStates.getShape();
-    if (baseHiddenShape.getNumDims() == 2 && oldActiveBatch > 0 && baseHiddenShape[0] % oldActiveBatch == 0
+    if (mDraftPrimed)
+    {
+        // Between rounds the carried span is the decoder's own copy; the pipeline buffer is scratch.
+        if (newActiveBatch > 0)
+        {
+            check::check(mAcceptedHiddenStates.reshape(
+                             {oldActiveBatch * mAcceptedTokenIds.getShape()[1], mAcceptedHiddenStates.getShape()[1]}),
+                "Tensor reshape failed");
+            kernel::compactExecutionTensorBatch(
+                mAcceptedHiddenStates, deviceBatchMapping, oldActiveBatch, newActiveBatch, stream);
+        }
+    }
+    // Before the first draft prefill (the blocking path's round zero), the pipeline buffer holds the target's
+    // prefill hidden states that prefill still has to read.
+    else if (baseHiddenShape.getNumDims() == 2 && oldActiveBatch > 0 && baseHiddenShape[0] % oldActiveBatch == 0
         && newActiveBatch > 0)
     {
         int32_t const rowsPerSequence = static_cast<int32_t>(baseHiddenShape[0] / oldActiveBatch);
@@ -1347,6 +1350,10 @@ void MTPDecoder::onBatchEvict(std::vector<int32_t> const&, int32_t oldActiveBatc
         kernel::compactTensorBatch(
             mAcceptLength, deviceBatchMapping, mAcceptLength, oldActiveBatch, newActiveBatch, stream);
         check::check(mAcceptLength.reshape({newActiveBatch}), "Tensor reshape failed");
+    }
+    if (newActiveBatch == 0)
+    {
+        mDraftPrimed = false;
     }
 }
 

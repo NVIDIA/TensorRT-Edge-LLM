@@ -24,7 +24,7 @@ from conftest import EnvironmentConfig, RemoteConfig
 from pytest_helpers import (record_library_size_report, run_command,
                             timer_context)
 
-from .utils.device import DeviceConfig
+from .utils.device import DeviceConfig, _get_compute_capability
 
 
 def _get_trt_env_vars(env_config: EnvironmentConfig) -> Optional[dict]:
@@ -39,20 +39,51 @@ def test_build_project(env_config: EnvironmentConfig,
                        remote_config: Optional[RemoteConfig],
                        test_logger: logging.Logger):
     """Test project build - builds all components"""
-    _build_project(env_config, remote_config, test_logger, build_pybind=False)
+    _build_project(env_config,
+                   remote_config,
+                   test_logger,
+                   build_nanobind=False)
 
 
-def test_build_project_with_pybind(env_config: EnvironmentConfig,
-                                   remote_config: Optional[RemoteConfig],
-                                   test_logger: logging.Logger):
-    """Project build that also builds + import-checks the pybind runtime
+def test_build_project_with_nanobind(env_config: EnvironmentConfig,
+                                     remote_config: Optional[RemoteConfig],
+                                     test_logger: logging.Logger):
+    """Project build that also builds + import-checks the nanobind runtime
     (the unit-job lists use this; pipeline lists use test_build_project)."""
-    _build_project(env_config, remote_config, test_logger, build_pybind=True)
+    _build_project(env_config, remote_config, test_logger, build_nanobind=True)
+
+
+def _build_project_windows(env_config: EnvironmentConfig,
+                           test_logger: logging.Logger, build_nanobind: bool):
+    """Native Windows build, as the SDK Windows CI job does, with unit tests.
+
+    Run it from an MSVC developer environment with CUDA_PATH set."""
+    if build_nanobind:
+        pytest.skip('Python bindings are not built on native Windows')
+    gpu_arch = _get_compute_capability(None, test_logger)
+    configure = [
+        'cmake', '-S', env_config.llm_sdk_dir, '-B', env_config.build_dir,
+        '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_C_COMPILER=cl',
+        '-DCMAKE_CXX_COMPILER=cl', '-DCMAKE_CUDA_COMPILER=' +
+        os.path.join(os.environ['CUDA_PATH'], 'bin', 'nvcc.exe'),
+        f'-DCMAKE_CUDA_ARCHITECTURES={gpu_arch}', '-DENABLE_CUTE_DSL=ALL',
+        f'-DCUTE_DSL_ARTIFACT_TAG=sm_{gpu_arch}', '-DBUILD_UNIT_TESTS=ON',
+        f'-DTRT_PACKAGE_DIR={env_config.trt_package_dir}'
+    ]
+    build = ['cmake', '--build', env_config.build_dir, '--parallel', '16']
+    for cmd in (configure, build):
+        if not run_command(
+                cmd=cmd, remote_config=None, timeout=1800,
+                logger=test_logger)['success']:
+            pytest.fail("Build failed")
 
 
 def _build_project(env_config: EnvironmentConfig,
                    remote_config: Optional[RemoteConfig],
-                   test_logger: logging.Logger, build_pybind: bool):
+                   test_logger: logging.Logger, build_nanobind: bool):
+    if os.name == 'nt' and remote_config is None:
+        _build_project_windows(env_config, test_logger, build_nanobind)
+        return
     execution_mode = "remote" if remote_config else "local"
     device_config = DeviceConfig.auto_detect(remote_config, test_logger)
     test_logger.info(
@@ -65,37 +96,40 @@ def _build_project(env_config: EnvironmentConfig,
         'cmake', '..', '-DBUILD_UNIT_TESTS=ON',
         '-DENABLE_CUTEDSL_MODULE_TEST_HOOK=ON'
     ]
+    weightless = os.environ.get('ENABLE_EXPERIMENTAL_WEIGHTLESS', 'OFF')
+    cmake_cmd.append(f'-DENABLE_EXPERIMENTAL_WEIGHTLESS={weightless}')
+    media_ipc_server = os.environ.get('BUILD_MEDIA_IPC_SERVER', 'OFF')
+    cmake_cmd.append(f'-DBUILD_MEDIA_IPC_SERVER={media_ipc_server}')
     if os.environ.get('ENABLE_MULTI_DEVICE') == 'ON':
         cmake_cmd.append('-DENABLE_MULTI_DEVICE=ON')
     if os.environ.get('ENABLE_MULTI_DEVICE_MPI') == 'ON':
         cmake_cmd.append('-DENABLE_MULTI_DEVICE_MPI=ON')
 
-    # Opt-in for jobs whose test lists import the pybind runtime (the
-    # preprocessing suites); resolved from the pytest interpreter's pybind11.
-    if build_pybind:
-        import pybind11
+    # Opt-in for jobs whose test lists import the nanobind runtime (the
+    # preprocessing suites); resolved from the pytest interpreter's nanobind.
+    if build_nanobind:
+        import nanobind
         cmake_cmd.append('-DBUILD_PYTHON_BINDINGS=ON')
-        cmake_cmd.append(f'-Dpybind11_DIR={pybind11.get_cmake_dir()}')
+        cmake_cmd.append(f'-Dnanobind_DIR={nanobind.cmake_dir()}')
     else:
         # Explicit OFF: a build/ dir previously configured ON would keep
-        # building pybind from the CMake cache.
+        # building nanobind from the CMake cache.
         cmake_cmd.append('-DBUILD_PYTHON_BINDINGS=OFF')
 
     # Use trt_package_dir from env_config
     if env_config.trt_package_dir:
         cmake_cmd.append(f'-DTRT_PACKAGE_DIR={env_config.trt_package_dir}')
-    cmake_cmd.append(f'-DCUDA_CTK_VERSION={device_config.cuda_version}')
 
     if device_config.target in [
-            'jetson-orin', 'auto-thor', 'jetson-thor', 'igx-thor', 'gb10'
+            'jetson-orin', 'auto-thor', 'jetson-thor', 'igx-thor', 'gb10',
+            'gb300'
     ]:
         cmake_cmd.append(f'-DEMBEDDED_TARGET={device_config.target}')
-        cmake_cmd.append(
-            '-DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake')
 
     # Enable all available CuTe DSL kernels for aarch64 targets.
     if device_config.target in [
-            'jetson-orin', 'auto-thor', 'jetson-thor', 'igx-thor', 'gb10'
+            'jetson-orin', 'auto-thor', 'jetson-thor', 'igx-thor', 'gb10',
+            'gb300'
     ]:
         cmake_cmd.append('-DENABLE_CUTE_DSL=ALL')
         test_logger.info("CuTe DSL: using available artifact")
@@ -160,35 +194,37 @@ def _build_project(env_config: EnvironmentConfig,
         test_logger.warning("Library size report failed; continuing")
 
     expected_files = [
-        'unittests/unitTestRuntime',
-        'examples/llm/llm_build',
-        'examples/llm/llm_inference',
-        'examples/multimodal/visual_build',
-        'examples/multimodal/audio_build',
+        'bin/unitTests/unitTestRuntime',
+        'bin/llm_build',
+        'bin/llm_inference',
+        'bin/multistage_inference',
+        'bin/visual_build',
+        'bin/audio_build',
     ]
-    if build_pybind:
+    if build_nanobind:
         # The preprocessing suites skip when this module is missing; gate with
-        # a real import so a pybind link/ABI regression fails the build step
+        # a real import so a nanobind link/ABI regression fails the build step
         # instead of silently skipping every parity test.
         import_check = ('import importlib; importlib.invalidate_caches(); '
                         'import _edgellm_runtime')
         result = run_command(cmd=[
-            'bash', '-c', f'PYTHONPATH={build_dir}/pybind '
+            'bash', '-c', f'PYTHONPATH={build_dir}/lib '
             f'python3 -c "{import_check}"'
         ],
                              remote_config=remote_config,
                              timeout=120,
                              logger=test_logger)
         if not result['success']:
-            pytest.fail('pybind build requested but _edgellm_runtime is not '
-                        f'importable from {build_dir}/pybind: '
+            pytest.fail('nanobind build requested but _edgellm_runtime is not '
+                        f'importable from {build_dir}/lib: '
                         f"{result.get('output', '')[-500:]}")
     # Executables that support --help smoke test
     help_check_files = [
-        'examples/llm/llm_build',
-        'examples/llm/llm_inference',
-        'examples/multimodal/visual_build',
-        'examples/multimodal/audio_build',
+        'bin/llm_build',
+        'bin/llm_inference',
+        'bin/multistage_inference',
+        'bin/visual_build',
+        'bin/audio_build',
     ]
 
     env_vars = _get_trt_env_vars(env_config)
@@ -234,11 +270,16 @@ def test_unit_tests(env_config: EnvironmentConfig,
     unit_test_cmd = [
         'bash', '-c', f'cd {build_dir} && ctest --output-on-failure'
     ]
+    if os.name == 'nt' and remote_config is None:
+        # No bash on native Windows; the runner puts the DLL paths on PATH.
+        unit_test_cmd = [
+            'ctest', '--test-dir', build_dir, '--output-on-failure'
+        ]
     env_vars = _get_trt_env_vars(env_config)
 
     result = run_command(cmd=unit_test_cmd,
                          remote_config=remote_config,
-                         timeout=600,
+                         timeout=1200,
                          logger=test_logger,
                          env_vars=env_vars)
 

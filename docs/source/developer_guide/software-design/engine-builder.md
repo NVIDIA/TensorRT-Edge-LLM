@@ -202,7 +202,7 @@ The LLM Builder adapts its optimization profiles and tensor configurations based
 - **Base Models**: Standard LLM inputs plus speculative verification attention patterns
 - **Draft Models**: Draft hidden-state inputs, packed attention masks, and proposal tokens
 - **DFlash Draft Models**: DFlash target hidden-state inputs, delta lengths, and cached draft KV bindings
-- **Tree / Block Size Limits**: Configurable maximum sizes for verification (`maxVerifyTreeSize`) and draft generation (`maxDraftTreeSize`)
+- **Tree / Block Size Limits**: Configurable maximum sizes for verification (`maxSpecVerifyTokens`) and draft generation (`maxSpecDraftTokens`)
 - **Vocabulary Mapping**: Draft-to-target token mapping for EAGLE3 (`d2t.safetensors` file)
 
 **Vision-Language Models** (`setupVLMProfiles`):
@@ -305,7 +305,7 @@ Same as the LLM Builder: each layer keeps the precision set in the ONNX model. F
 ### Standard LLM Build
 
 ```bash
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir=onnx_models/qwen2.5-0.5b \
   --engine-dir=engines/qwen2.5-0.5b \
   --max-batch-size=1 \
@@ -318,7 +318,7 @@ Same as the LLM Builder: each layer keeps the precision set in the ONNX model. F
 Base and draft engine directories should be the same. This example uses EAGLE3; MTP and DFlash use the same `--spec-base` and `--spec-draft` build roles with their own ONNX directories.
 ```bash
 # Build base model
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir=onnx_models/qwen2.5-vl-7b_eagle3_base \
   --engine-dir=engines/qwen2.5-vl-7b_eagle3 \
   --max-batch-size=1 \
@@ -327,7 +327,7 @@ Base and draft engine directories should be the same. This example uses EAGLE3; 
   --spec-base
 
 # Build draft model
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir=onnx_models/qwen2.5-vl-7b_eagle3_draft \
   --engine-dir=engines/qwen2.5-vl-7b_eagle3 \
   --max-batch-size=1 \
@@ -336,7 +336,7 @@ Base and draft engine directories should be the same. This example uses EAGLE3; 
   --spec-draft
 
 # Build visual encoder (required for VLM)
-./build/examples/multimodal/visual_build \
+./build/bin/visual_build \
   --onnx-dir=onnx_models/qwen2.5-vl-7b/visual_enc_onnx \
   --engine-dir=visual_engines/qwen2.5-vl-7b_eagle3 \
   --min-image-tokens=128 \
@@ -348,7 +348,7 @@ Base and draft engine directories should be the same. This example uses EAGLE3; 
 
 ```bash
 # Build LLM engine
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir=onnx_models/qwen2.5-vl-3b \
   --engine-dir=engines/qwen2.5-vl-3b \
   --max-batch-size=1 \
@@ -356,7 +356,7 @@ Base and draft engine directories should be the same. This example uses EAGLE3; 
   --max-kv-cache-capacity=4096
 
 # Build visual encoder
-./build/examples/multimodal/visual_build \
+./build/bin/visual_build \
   --onnx-dir=onnx_models/qwen2.5-vl-3b/visual_enc_onnx \
   --engine-dir=visual_engines/qwen2.5-vl-3b \
   --min-image-tokens=128 \
@@ -367,7 +367,7 @@ Base and draft engine directories should be the same. This example uses EAGLE3; 
 ### LoRA-Enabled Build
 
 ```bash
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir=onnx_models/qwen2.5-0.5b \
   --engine-dir=engines/qwen2.5-0.5b-lora \
   --max-batch-size=1 \

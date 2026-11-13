@@ -64,7 +64,7 @@ AudioData wrapPcm(std::shared_ptr<rt::Tensor> samples, int32_t sampleRate)
 {
     ELLM_CHECK(samples != nullptr, "wrapPcm: samples is null.");
     ELLM_CHECK(samples->getDeviceType() == rt::DeviceType::kCPU, "wrapPcm: samples shall be host memory.");
-    ELLM_CHECK(samples->getDataType() == nvinfer1::DataType::kFLOAT, "wrapPcm: samples shall be Float.");
+    ELLM_CHECK(samples->getDataType() == trt_edgellm::DataType::kFLOAT, "wrapPcm: samples shall be Float.");
     ELLM_CHECK(samples->getShape().getNumDims() == 1, "wrapPcm: samples shall be one-dimensional.");
     ELLM_CHECK(samples->getShape().volume() > 0, "wrapPcm: samples shall not be empty.");
     ELLM_CHECK(samples->getShape().volume() <= std::numeric_limits<int32_t>::max(),

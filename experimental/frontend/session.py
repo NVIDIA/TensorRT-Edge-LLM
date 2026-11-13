@@ -15,9 +15,13 @@
 """Conversation history and serial turn lifecycle."""
 
 import copy
+import json
 import signal
+import time
 
-from experimental.server.runtime import engine
+from experimental.frontend import agent
+from tensorrt_edgellm.server.parsing import tool_calling
+from tensorrt_edgellm.server.runtime import engine
 
 HELP = """/help        Show commands
 /clear       Reset the conversation to its initial messages
@@ -33,8 +37,9 @@ Ctrl+C stops a response. Ctrl+C at the prompt or Ctrl+D exits."""
 class Session:
     """Run one turn at a time and retain only completed or visible responses."""
 
-    def __init__(self, backend, messages):
+    def __init__(self, backend, messages, agentic=False):
         self.backend = backend
+        self.agentic = agentic
         self.initial_messages = copy.deepcopy(messages)
         self.history = copy.deepcopy(messages)
         self.state = "ready"
@@ -65,22 +70,58 @@ class Session:
             metrics.prompt_tokens = self.metrics.prompt_tokens
         self.metrics = metrics
 
-    def generate(self, prompt, write, write_reasoning=None):
+    def generate(self, prompt, write, write_reasoning=None, show_tool=None):
         """Stream a turn on the main thread; SIGINT cancels and drains it."""
         messages = self.history + [{"role": "user", "content": prompt}]
-        self._generate(messages, write, write_reasoning)
+        self._generate(messages, write, write_reasoning, show_tool)
 
-    def regenerate(self, write, write_reasoning=None):
+    def regenerate(self, write, write_reasoning=None, show_tool=None):
         """Replace the latest response, committing history only after generation."""
         self.metrics = engine.GenerationMetrics()
         self.interrupted = False
-        if (len(self.history) < len(self.initial_messages) + 2
-                or self.history[-1]["role"] != "assistant"
-                or self.history[-2]["role"] != "user"):
+        prompts = [
+            index for index, message in enumerate(self.history) if
+            index >= len(self.initial_messages) and message["role"] == "user"
+        ]
+        if not prompts or self.history[-1]["role"] != "assistant":
             raise ValueError("No response to regenerate. Send a prompt first.")
-        self._generate(self.history[:-1], write, write_reasoning)
+        self._generate(self.history[:prompts[-1] + 1], write, write_reasoning,
+                       show_tool)
 
-    def _generate(self, messages, write, write_reasoning):
+    def _call_tools(self, calls, visible, reasoning, show_tool):
+        """Return the assistant tool-call message followed by each tool result."""
+        request = {"role": "assistant", "content": "".join(visible)}
+        if reasoning:
+            request["reasoning_content"] = "".join(reasoning)
+        request["tool_calls"] = []
+        results = []
+        for call in calls:
+            if self.interrupted:
+                break
+            try:
+                arguments = json.loads(call.arguments or "{}")
+            except json.JSONDecodeError:
+                arguments = {}
+            # Object arguments render through chat templates that iterate them.
+            request["tool_calls"].append({
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.name,
+                    "arguments": arguments
+                },
+            })
+            result = agent.call(call.name)
+            if show_tool:
+                show_tool(call.name, result)
+            results.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": result
+            })
+        return [request] + results
+
+    def _generate(self, messages, write, write_reasoning, show_tool):
         if self.state != "ready":
             raise RuntimeError(
                 f"Cannot generate while session is {self.state}")
@@ -90,24 +131,51 @@ class Session:
         visible = []
         reasoning = []
         completed = False
+        started = time.monotonic()
+        tool_round = 0
         previous_handler = signal.signal(signal.SIGINT, self._cancel)
         try:
-            self.metrics.prompt_tokens = self.backend.validate(messages)
-            if self.interrupted:
-                return
-            self._stream = self.backend.stream(messages, self._set_metrics)
-            if self.interrupted:
-                self._stream.cancel()
-            for delta in self._stream:
+            for tool_round in range(agent.MAX_TOOL_ROUNDS + 1):
+                tools = None
+                request = messages
+                if tool_round < agent.MAX_TOOL_ROUNDS:
+                    tools = agent.TOOLS if self.agentic else None
+                else:
+                    # Not committed to history; makes the last round answer.
+                    request = messages + [agent.FINAL_ROUND_MESSAGE]
+                visible = []
+                reasoning = []
+                calls = []
+                # A round that fails before streaming leaves no stale metrics.
+                self.metrics = engine.GenerationMetrics()
+                self.metrics.prompt_tokens = self.backend.validate(
+                    request, tools)
                 if self.interrupted:
+                    return
+                self._stream = self.backend.stream(request, self._set_metrics,
+                                                   tools)
+                if self.interrupted:
+                    self._stream.cancel()
+                for delta in self._stream:
+                    if self.interrupted:
+                        break
+                    if isinstance(delta, tool_calling.ToolCall):
+                        calls.append(delta)
+                    elif delta.text:
+                        if getattr(delta, "field", "content") == "reasoning":
+                            (write_reasoning or write)(delta.text)
+                            reasoning.append(delta.text)
+                        else:
+                            write(delta.text)
+                            visible.append(delta.text)
+                self._stream.close()
+                self._stream = None
+                if self.interrupted or not calls:
                     break
-                if delta.text:
-                    if getattr(delta, "field", "content") == "reasoning":
-                        (write_reasoning or write)(delta.text)
-                        reasoning.append(delta.text)
-                    else:
-                        write(delta.text)
-                        visible.append(delta.text)
+                messages = messages + self._call_tools(calls, visible,
+                                                       reasoning, show_tool)
+            if tool_round:
+                self.metrics.total_time = time.monotonic() - started
             completed = not self.interrupted
         finally:
             # A second Ctrl+C must not interrupt native worker cleanup.

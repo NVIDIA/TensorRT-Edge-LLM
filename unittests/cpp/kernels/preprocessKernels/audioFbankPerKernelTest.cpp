@@ -90,7 +90,7 @@ void makeFftTwiddle(std::vector<float>& twoChan)
 
 rt::Tensor uploadF32(std::vector<float> const& host, rt::Coords const& shape, cudaStream_t stream)
 {
-    rt::Tensor t(shape, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor t(shape, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     CUDA_CHECK(
         cudaMemcpyAsync(t.rawPointer(), host.data(), host.size() * sizeof(float), cudaMemcpyHostToDevice, stream));
     return t;
@@ -98,7 +98,7 @@ rt::Tensor uploadF32(std::vector<float> const& host, rt::Coords const& shape, cu
 
 rt::Tensor uploadFp16(std::vector<__half> const& host, rt::Coords const& shape, cudaStream_t stream)
 {
-    rt::Tensor t(shape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor t(shape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(
         cudaMemcpyAsync(t.rawPointer(), host.data(), host.size() * sizeof(__half), cudaMemcpyHostToDevice, stream));
     return t;
@@ -185,7 +185,7 @@ TEST(AudioFbankPerKernelTest, PcmToFramesAndWindow)
     makeHannPeriodic(hannHost);
     rt::Tensor hannWindow = uploadF32(hannHost, {kNFft}, stream);
 
-    rt::Tensor framed({T_full, kNFft}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor framed({T_full, kNFft}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     kernel::pcmToFramesAndWindow(pcmF32, hannWindow, framed, kNFft, kHop, kPad, stream);
 
     std::vector<float> gpuOut;
@@ -254,7 +254,7 @@ TEST(AudioFbankPerKernelTest, StftR2C400FusedMagsq)
     rt::Tensor fftTwiddle = uploadF32(twiddleHost, {kNFft, 2}, stream);
 
     // Pre-zero the mag buffer (caller contract).
-    rt::Tensor magFp16({N_pad, kKPad}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor magFp16({N_pad, kKPad}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(cudaMemsetAsync(magFp16.rawPointer(), 0, static_cast<size_t>(N_pad) * kKPad * sizeof(__half), stream));
 
     kernel::stftR2C400FusedMagsq(framed, fftTwiddle, magFp16, T_out, kKPad, stream);
@@ -382,7 +382,7 @@ TEST(AudioFbankPerKernelTest, MelLinearGemmFp16TC)
 
     rt::Tensor aDev = uploadFp16(aHost, {M, K}, stream);
     rt::Tensor bDev = uploadFp16(bHost, {N, K}, stream);
-    rt::Tensor cDev({M, N}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor cDev({M, N}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     kernel::melLinearGemmFp16TC(aDev, bDev, cDev, stream);
 
@@ -453,7 +453,7 @@ TEST(AudioFbankPerKernelTest, Log10MaxReduce)
     melHost[0] = __float2half_rn(1e-15f);
 
     rt::Tensor melPower = uploadFp16(melHost, {M, N_pad}, stream);
-    rt::Tensor maxLog({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor maxLog({1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
 
     kernel::log10MaxReduce(melPower, T_out, maxLog, kMelFloor, stream);
     std::vector<float> gpuOut;
@@ -531,7 +531,7 @@ TEST(AudioFbankPerKernelTest, LogMelNormalizeAndCastF16)
     rt::Tensor melPower = uploadFp16(melHost, {M, N_pad}, stream);
     std::vector<float> maxLogHost{refMax};
     rt::Tensor maxLog = uploadF32(maxLogHost, {1}, stream);
-    rt::Tensor melOut({1, M, T_out}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor melOut({1, M, T_out}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     kernel::logMelNormalizeAndCastF16(melPower, T_out, maxLog, melOut, kMelFloor, stream);
 
@@ -577,14 +577,14 @@ TEST(AudioFbankPerKernelTest, UploadHostPcmRejectsNonHostFloatSamples)
 {
     cudaStream_t stream{};
     CUDA_CHECK(cudaStreamCreate(&stream));
-    rt::Tensor staging({1024}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor staging({1024}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
 
     std::vector<float> host(16, 0.5f);
-    rt::Tensor const device({16}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor const half({16}, rt::DeviceType::kCPU, nvinfer1::DataType::kHALF);
+    rt::Tensor const device({16}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor const half({16}, rt::DeviceType::kCPU, trt_edgellm::DataType::kHALF);
     rt::Tensor const empty(
-        host.data(), rt::Coords{static_cast<int64_t>(0)}, rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor const valid(host.data(), rt::Coords{16}, rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT);
+        host.data(), rt::Coords{static_cast<int64_t>(0)}, rt::DeviceType::kCPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor const valid(host.data(), rt::Coords{16}, rt::DeviceType::kCPU, trt_edgellm::DataType::kFLOAT);
 
     EXPECT_FALSE(rt::audioUtils::uploadHostPcmF32ToGpu(device, staging, stream));
     EXPECT_FALSE(rt::audioUtils::uploadHostPcmF32ToGpu(half, staging, stream));

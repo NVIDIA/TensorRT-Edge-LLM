@@ -20,6 +20,7 @@
 #include "common/checkMacros.h"
 #include "common/cudaUtils.h"
 #include "common/logger.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 #include "kernels/common/argmaxKernel.h"
 
@@ -79,11 +80,12 @@ int64_t encoderFramesForMel(int64_t melFrames) noexcept
 }
 
 void checkTensorDataType(
-    nvinfer1::ICudaEngine const& engine, char const* name, nvinfer1::DataType expected, char const* engineLabel)
+    nvinfer1::ICudaEngine const& engine, char const* name, trt_edgellm::DataType expected, char const* engineLabel)
 {
-    check::check(engine.getTensorDataType(name) == expected,
-        std::string(engineLabel) + ": tensor '" + name + "' has dtype "
-            + getDataTypeString(engine.getTensorDataType(name)) + ", expected " + getDataTypeString(expected));
+    trt_edgellm::DataType const actual = fromTrt(engine.getTensorDataType(name));
+    check::check(actual == expected,
+        std::string(engineLabel) + ": tensor '" + name + "' has dtype " + getDataTypeString(actual) + ", expected "
+            + getDataTypeString(expected));
 }
 
 void checkTensorShape(nvinfer1::ICudaEngine const& engine, char const* name, std::initializer_list<int64_t> expected,
@@ -108,7 +110,7 @@ NemotronAsrRuntime::NemotronAsrRuntime(
 {
     loadConfig(engineDir / kConfigFile);
 
-    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
     check::check(mRuntime != nullptr, "Failed to create TRT runtime");
 
     auto const enginePaths = resolveEnginePaths(engineDir);
@@ -123,17 +125,17 @@ NemotronAsrRuntime::NemotronAsrRuntime(
     check::check(mStepContext != nullptr, "Failed to create step execution context");
 
     // Validate the I/O contract this runtime hardcodes.
-    checkTensorDataType(*mEncoderEngine, "input_features", nvinfer1::DataType::kHALF, "encoder");
-    checkTensorDataType(*mEncoderEngine, "prompt_ids", nvinfer1::DataType::kINT64, "encoder");
-    checkTensorDataType(*mEncoderEngine, "encoder_frames", nvinfer1::DataType::kHALF, "encoder");
+    checkTensorDataType(*mEncoderEngine, "input_features", trt_edgellm::DataType::kHALF, "encoder");
+    checkTensorDataType(*mEncoderEngine, "prompt_ids", trt_edgellm::DataType::kINT64, "encoder");
+    checkTensorDataType(*mEncoderEngine, "encoder_frames", trt_edgellm::DataType::kHALF, "encoder");
     checkTensorShape(*mEncoderEngine, "input_features", {1, -1, mMelBins}, "encoder");
     checkTensorShape(*mEncoderEngine, "prompt_ids", {1}, "encoder");
     checkTensorShape(*mEncoderEngine, "encoder_frames", {1, -1, mDecoderHiddenSize}, "encoder");
-    checkTensorDataType(*mStepEngine, "decoder_input_ids", nvinfer1::DataType::kINT64, "rnnt_step");
+    checkTensorDataType(*mStepEngine, "decoder_input_ids", trt_edgellm::DataType::kINT64, "rnnt_step");
     for (char const* name :
         {"hidden_state", "cell_state", "encoder_frame", "logits", "present_hidden_state", "present_cell_state"})
     {
-        checkTensorDataType(*mStepEngine, name, nvinfer1::DataType::kHALF, "rnnt_step");
+        checkTensorDataType(*mStepEngine, name, trt_edgellm::DataType::kHALF, "rnnt_step");
     }
     checkTensorShape(*mStepEngine, "decoder_input_ids", {1, 1}, "rnnt_step");
     checkTensorShape(*mStepEngine, "hidden_state", {mNumDecoderLayers, 1, mDecoderHiddenSize}, "rnnt_step");
@@ -206,30 +208,30 @@ void NemotronAsrRuntime::loadConfig(std::filesystem::path const& configPath)
 
 void NemotronAsrRuntime::allocateBuffers(cudaStream_t)
 {
-    mInputFeatures = Tensor(
-        {1, mMaxMelFrames, mMelBins}, DeviceType::kGPU, nvinfer1::DataType::kHALF, "NemotronAsrRuntime::inputFeatures");
-    mPromptIds = Tensor({1}, DeviceType::kGPU, nvinfer1::DataType::kINT64, "NemotronAsrRuntime::promptIds");
-    mEncoderFrames = Tensor({1, mMaxEncoderFrames, mDecoderHiddenSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF,
+    mInputFeatures = Tensor({1, mMaxMelFrames, mMelBins}, DeviceType::kGPU, trt_edgellm::DataType::kHALF,
+        "NemotronAsrRuntime::inputFeatures");
+    mPromptIds = Tensor({1}, DeviceType::kGPU, trt_edgellm::DataType::kINT64, "NemotronAsrRuntime::promptIds");
+    mEncoderFrames = Tensor({1, mMaxEncoderFrames, mDecoderHiddenSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF,
         "NemotronAsrRuntime::encoderFrames");
     mEncoderFrameStaging = Tensor(
-        {1, mDecoderHiddenSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF, "NemotronAsrRuntime::frameStaging");
+        {1, mDecoderHiddenSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF, "NemotronAsrRuntime::frameStaging");
     mDecoderInputIds
-        = Tensor({1, 1}, DeviceType::kGPU, nvinfer1::DataType::kINT64, "NemotronAsrRuntime::decoderInputIds");
+        = Tensor({1, 1}, DeviceType::kGPU, trt_edgellm::DataType::kINT64, "NemotronAsrRuntime::decoderInputIds");
     for (int i = 0; i < 2; ++i)
     {
         mHiddenState[i] = Tensor({mNumDecoderLayers, 1, mDecoderHiddenSize}, DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "NemotronAsrRuntime::hiddenState");
-        mCellState[i] = Tensor({mNumDecoderLayers, 1, mDecoderHiddenSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF,
-            "NemotronAsrRuntime::cellState");
+            trt_edgellm::DataType::kHALF, "NemotronAsrRuntime::hiddenState");
+        mCellState[i] = Tensor({mNumDecoderLayers, 1, mDecoderHiddenSize}, DeviceType::kGPU,
+            trt_edgellm::DataType::kHALF, "NemotronAsrRuntime::cellState");
     }
-    mLogits = Tensor({1, mVocabSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF, "NemotronAsrRuntime::logits");
-    mTokenOut = Tensor({1}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "NemotronAsrRuntime::tokenOut");
+    mLogits = Tensor({1, mVocabSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF, "NemotronAsrRuntime::logits");
+    mTokenOut = Tensor({1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "NemotronAsrRuntime::tokenOut");
 
     mMelHostFp16 = Tensor(
-        {mMaxMelFrames, mMelBins}, DeviceType::kCPU, nvinfer1::DataType::kHALF, "NemotronAsrRuntime::melHostFp16");
-    mTokenHostI64 = Tensor({1}, DeviceType::kCPU, nvinfer1::DataType::kINT64, "NemotronAsrRuntime::tokenHostI64");
-    mPromptHostI64 = Tensor({1}, DeviceType::kCPU, nvinfer1::DataType::kINT64, "NemotronAsrRuntime::promptHostI64");
-    mTokenHostI32 = Tensor({1}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "NemotronAsrRuntime::tokenHostI32");
+        {mMaxMelFrames, mMelBins}, DeviceType::kCPU, trt_edgellm::DataType::kHALF, "NemotronAsrRuntime::melHostFp16");
+    mTokenHostI64 = Tensor({1}, DeviceType::kCPU, trt_edgellm::DataType::kINT64, "NemotronAsrRuntime::tokenHostI64");
+    mPromptHostI64 = Tensor({1}, DeviceType::kCPU, trt_edgellm::DataType::kINT64, "NemotronAsrRuntime::promptHostI64");
+    mTokenHostI32 = Tensor({1}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "NemotronAsrRuntime::tokenHostI32");
 }
 
 NemotronAsrRuntime::~NemotronAsrRuntime() noexcept

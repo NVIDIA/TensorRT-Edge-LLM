@@ -51,6 +51,9 @@ def repository_root(start: Optional[Path] = None) -> Path:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE)
     except (OSError, subprocess.CalledProcessError) as error:
+        for candidate in (location, *location.parents):
+            if (candidate / ".git").exists():
+                return candidate
         raise RuntimeError(
             f"Cannot determine the Git repository root from {location}."
         ) from error
@@ -98,6 +101,7 @@ def cuda_driver_stub(row: Mapping[str, Any]) -> Optional[Path]:
         cuda_dir / "lib64" / "stubs" / "libcuda.so",
         cuda_dir / "lib" / "stubs" / "libcuda.so",
         cuda_dir / "targets" / target_arch / "lib" / "stubs" / "libcuda.so",
+        cuda_dir / "targets" / "sbsa-linux" / "lib" / "stubs" / "libcuda.so",
     )
     return next((path.resolve() for path in candidates if path.is_file()),
                 None)
@@ -352,6 +356,13 @@ def _validate_matrix_header(
             not re.fullmatch(r"cp3\d{2}", value) for value in python_abis):
         raise RuntimeError(
             "qualified_python_abis must be unique cp3XY values.")
+    if matrix.get("wheel_python_tag") != "cp310" or matrix.get(
+            "wheel_abi_tag") != "abi3":
+        raise RuntimeError(
+            "variants.toml must declare the cp310-abi3 wheel contract.")
+    if python_abis[0] != matrix["wheel_python_tag"]:
+        raise RuntimeError(
+            "The stable-ABI floor must be the first qualified Python ABI.")
     trt_majors = set(matrix.get("qualified_tensorrt_majors", []))
     if not trt_majors or any(not isinstance(value, int)
                              for value in trt_majors):
@@ -384,7 +395,8 @@ def _validate_cutedsl_artifacts(matrix: Mapping[str, Any],
 
 
 _EMBEDDED_TARGETS = {
-    "", "auto-thor", "gb10", "igx-thor", "jetson-orin", "jetson-thor"
+    "", "auto-thor", "gb10", "gb200", "gb300", "igx-thor", "jetson-orin",
+    "jetson-thor"
 }
 
 

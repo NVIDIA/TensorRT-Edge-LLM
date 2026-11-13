@@ -18,6 +18,7 @@
 #include "pluginJitCompiler.h"
 
 #include "common/logger.h"
+#include "pluginJitCubin.h"
 
 #include <chrono>
 #include <memory>
@@ -135,6 +136,10 @@ std::vector<uint8_t> compilePluginJitKernel(
     }
     std::vector<uint8_t> cubin(cubinSize);
     checkNvrtc(nvrtcGetCUBIN(nvrtcProgram.get(), reinterpret_cast<char*>(cubin.data())), "nvrtcGetCUBIN");
+    if (!isNativeCubin(cubin.data(), cubin.size()))
+    {
+        throw std::runtime_error("NVRTC did not return a native ELF cubin for " + description);
+    }
     LOG_INFO("Compiled %s with NVRTC (%zu bytes, %lld ms)", description.c_str(), cubin.size(),
         static_cast<long long>(compileMs));
     return cubin;

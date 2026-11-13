@@ -48,10 +48,20 @@ constexpr int32_t kQSA_INDEXER_SCORES_THREADS
 constexpr int32_t kQSA_INDEXER_TOPK_THREADS = 512;
 
 //! Rotary geometry of the indexer heads: partial neox (non-interleaved) rope over the first
-//! 64 of 128 dims; dims [64, 128) are passed through unrotated. The cos/sin table row layout
-//! is [maxPositions, 64] with cos in columns [0, 32) and sin in columns [32, 64), matching
-//! initializeNormalRopeCosSin (rotaryDim = 64).
+//! 64 of 128 dims; dims [64, 128) are passed through unrotated. The kernels consume the
+//! runtime's TOKEN-ALIGNED cos/sin rows (the ragged ABI `rope_rotary_cos_sin` gather): in
+//! prefill row b*S + t is the cos/sin of token (b, t); in decode row b is the cos/sin of
+//! sequence b's new token. Row layout is cos in columns [0, 32) and sin in [32, 64),
+//! matching initializeNormalRopeCosSin (rotaryDim = 64). The only rope of a PAST position --
+//! a block is roped at its first token 4g -- is served by the block rope row kept in the pool
+//! (see "Pool tails" below).
 constexpr int32_t kQSA_INDEXER_ROTARY_DIM = 64;
+
+//! Maximum padded tree size; bounds the quadratic ancestor workspace.
+constexpr int32_t kQSA_VERIFY_MAX_NODES = 128;
+//! Blocks launchQsaIndexerSeal recompresses per sequence: a verify commits at most
+//! kQSA_VERIFY_MAX_NODES tokens, which complete at most this many blocks.
+constexpr int32_t kQSA_SEAL_BLOCKS = kQSA_VERIFY_MAX_NODES / kQSA_COMPRESS_RATIO;
 
 //! Where the QSA indexer's persistent state lives. Kernels are state-location-agnostic:
 //! they receive this struct and compute addresses from it; only plugin launch sites know
@@ -61,14 +71,9 @@ constexpr int32_t kQSA_INDEXER_ROTARY_DIM = 64;
 //! element (page, row, head, col) lives at element offset
 //!   page * 128 * numKVHeads * poolHeadDim + row * numKVHeads * poolHeadDim
 //!       + head * poolHeadDim + col.
-//! - Raw index-K of token t, valid only while t's 4-token block is incomplete (token 4g+3 is
-//!   never written; rows of completed blocks are stale and never read): K plane, page
-//!   pageTable[b][0][t >> 7], row t & 127, head 0, columns [headSize, headSize + 128) — the
-//!   token's indexQk columns [512, 640) stored BIT-UNMODIFIED (keeps the decode compress
-//!   bit-identical to prefill K1b).
-//! - kbar of block g: V plane, page pageTable[b][1][(4 * g) >> 7] (the id already includes
-//!   the +numPages V-plane offset — do NOT re-add it), row (4 * g) & 127, head 0, same
-//!   columns.
+//! Token t's tails are head 0, columns [headSize, headSize + 128) of row t & 127 on K page
+//! pageTable[b][0][t >> 7] and V page pageTable[b][1][t >> 7] (the V id already includes the
+//! +numPages offset — do NOT re-add it). What they hold is under "Pool tails" below.
 //! Page-table entries equal to kUNUSED_PAGE_ENTRY (-1, cpp/common/pagedKvTypes.h) are
 //! guarded BEFORE dereferencing; kernels treat them as "nothing persistable here".
 struct QsaIndexerPoolState
@@ -81,6 +86,24 @@ struct QsaIndexerPoolState
     int32_t poolHeadDim; //!< 384
     int32_t headSize;    //!< 256 == tail column offset
 };
+
+//! Pool tails
+//! ----------
+//!   K-tail[t]     raw index-K of token t: its indexQk columns [512, 640), BIT-UNMODIFIED.
+//!   V-tail[4g]    block rope row: the 64 FP32 cos/sin of position 4g as raw bytes (256 B ==
+//!                 128 T), never converted to T.
+//!   V-tail[4g+1]  kbar of block g.
+//!   V-tail[4g+2], V-tail[4g+3] unused.
+//! Every path that writes a token's K/V (prefill, chunk, decode, verify) writes its K-tail and,
+//! at 4g, its V-tail. Cells belong to their own token's row, so moving whole rows (the
+//! speculative commit) moves the state with them.
+//! kbar is a pure function of the block's four K-tails and its rope row, so it can be
+//! recomputed at any time: prefill, chunk and decode compress the blocks their query rows
+//! complete, and launchQsaIndexerSeal recompresses the last kQSA_SEAL_BLOCKS complete blocks
+//! before a chunk or verify reads them. Every compress runs the same routine, so all of them are
+//! bit-identical to prefill K1b.
+//! Readers gather kbar only for g < length / 4. Alignment: checkPoolState requires headSize
+//! and numKVHeads * poolHeadDim to be even, so the FP32 rope row is 4-byte aligned.
 
 //! \brief Compile (NVRTC) and driver-load the QSA indexer kernels for activation type T.
 //!
@@ -105,8 +128,8 @@ void ensureQsaIndexerKernelsLoaded();
 //! Exact numerics (FP32 unless stated): per (b, t, h) head, meanSq = sum(x_f32^2) / 128 via
 //! warp reduction; y = x_f32 * rsqrtf(meanSq + rmsEps) * (1.0f + w_f32) with w the RAW
 //! checkpoint gamma (the kernel adds the +1, do NOT pre-fold); then neox rope on dims
-//! [0, 64): pair (i, i+32) -> (x0*cos - x1*sin, x1*cos + x0*sin) with cos = cosSin[t][i],
-//! sin = cosSin[t][32 + i]; single cast to T at the very end.
+//! [0, 64): pair (i, i+32) -> (x0*cos - x1*sin, x1*cos + x0*sin) with cos = cosSin[b*S + t][i],
+//! sin = cosSin[b*S + t][32 + i] (token-aligned rows); single cast to T at the very end.
 //!
 //! Padding semantics: rows with t >= contextLengths[b] are written as exact zeros; their
 //! `indexQk` contents are never read (NaN-safe).
@@ -116,7 +139,8 @@ void ensureQsaIndexerKernelsLoaded();
 //! \tparam T Activation type: half or __nv_bfloat16.
 //! \param[out] qNormed [batchSize, seqLen, 4, 128] T, contiguous, naturally aligned
 //! \param[in] indexQk [batchSize, seqLen, 640] T (4 q-heads x 128 then raw k x 128 per row)
-//! \param[in] cosSin FP32 [maxPositions, 64] with maxPositions >= seqLen; cos [0:32], sin [32:64]
+//! \param[in] cosSin FP32 [batchSize * seqLen, 64] token-aligned rows (row b*S + t = token (b, t));
+//!            cos [0:32], sin [32:64]
 //! \param[in] contextLengths Device INT32 [batchSize], 0 <= contextLengths[b] <= seqLen
 //! \param[in] wQ T [128] indexer q-norm gamma as stored in the checkpoint (raw w, not 1+w)
 //! \param[in] rmsEps RMS norm epsilon (1e-6f for qwen4_exp)
@@ -130,60 +154,52 @@ void launchQsaIndexQPrep(T* qNormed, T const* indexQk, float const* cosSin, int3
 
 //! \brief K1b: compress raw index-K into per-block keys, then Gemma-norm + partial neox rope.
 //!
-//! For each (b, g) with g in [blockBegin, blockEnd): the block is valid iff it is complete
-//! and fully inside the provided rows, i.e. 4*g + 3 < contextLengths[b] and 4*g >= pastLen.
+//! For each (b, g) with g in [0, numBlocks): the block is valid iff it is complete,
+//! i.e. 4*g + 3 < contextLengths[b].
 //! Valid blocks compute, per dim d:
 //!   mean = (((k0 + k1) + k2) + k3) * 0.25f      (FP32, FIXED sequential order)
 //!   cast mean to T, re-load as FP32              (bit-compatibility-critical cast)
 //!   y = m_f32 * rsqrtf(meanSq + rmsEps) * (1.0f + w_f32)   (meanSq over the 128 cast values)
-//!   neox rope at position 4*g (same pairing/table layout as launchQsaIndexQPrep)
+//!   neox rope at position 4*g, read from the token-aligned row of token 4*g, i.e. row
+//!   b*seqLen + 4*g (same pairing/row layout as launchQsaIndexQPrep)
 //!   cast to T at the very end.
-//! kj is the raw index-K row of token 4*g + j, read from indexQk row (4*g + j - pastLen),
+//! kj is the raw index-K row of token 4*g + j, read from indexQk row 4*g + j,
 //! columns [512, 640). Invalid blocks are written as exact zeros and never read (NaN-safe).
 //!
-//! The prefill pipeline passes blockBegin = 0, blockEnd = numBlocks = ceilDiv(seqLen, 4), pastLen = 0.
-//! The (blockBegin, blockEnd, pastLen) triplet compresses a sub-range of blocks of a longer
-//! sequence (the decode bit-parity gtest relies on it); the decode pipeline itself compresses
-//! the newly completed block in-kernel (B1, launchQsaIndexerPreDecode).
-//!
-//! Launch: grid(batchSize * (blockEnd - blockBegin)), block(32) = one warp per block, 4 dims/lane.
+//! Launch: grid(batchSize * numBlocks), block(32) = one warp per block, 4 dims/lane.
 //!
 //! \tparam T Activation type: half or __nv_bfloat16.
-//! \param[out] kbar [batchSize, numBlocks, 128] T; only rows [blockBegin, blockEnd) are written
+//! \param[out] kbar [batchSize, numBlocks, 128] T
 //! \param[in] indexQk [batchSize, seqLen, 640] T (raw k occupies columns [512, 640))
-//! \param[in] cosSin FP32 [maxPositions, 64] with maxPositions >= 4 * blockEnd - 3
-//! \param[in] contextLengths Device INT32 [batchSize] TOTAL context length (past + new)
+//! \param[in] cosSin FP32 [batchSize * seqLen, 64] token-aligned rows (row b*seqLen + t = token (b, t))
+//! \param[in] contextLengths Device INT32 [batchSize], 0 <= contextLengths[b] <= seqLen
 //! \param[in] wK T [128] indexer k-norm gamma as stored in the checkpoint (raw w, not 1+w)
 //! \param[in] rmsEps RMS norm epsilon
 //! \param[in] batchSize Batch size B
 //! \param[in] seqLen Number of token rows present in indexQk
-//! \param[in] numBlocks Row stride of kbar: ceilDiv(maxTotalLen, 4) (== ceilDiv(seqLen, 4) in prefill)
-//! \param[in] blockBegin First block index to compute (inclusive)
-//! \param[in] blockEnd Last block index to compute (exclusive), blockEnd <= numBlocks
-//! \param[in] pastLen Tokens already in the cache before indexQk row 0 (0 for prefill)
+//! \param[in] numBlocks Number of output blocks, >= ceilDiv(seqLen, 4)
 //! \param[in] stream CUDA stream
 //! \throws std::runtime_error on invalid arguments or launch failure
 template <typename T>
 void launchQsaIndexKCompress(T* kbar, T const* indexQk, float const* cosSin, int32_t const* contextLengths, T const* wK,
-    float rmsEps, int32_t batchSize, int32_t seqLen, int32_t numBlocks, int32_t blockBegin, int32_t blockEnd,
-    int32_t pastLen, cudaStream_t stream);
+    float rmsEps, int32_t batchSize, int32_t seqLen, int32_t numBlocks, cudaStream_t stream);
 
 //! \brief K2: block-relevance logits for a chunk of query rows.
 //!
 //! For global rows r = b * seqLen + t in [rowStart, rowStart + numRows) writes
-//! logits[r - rowStart][g] for all g in [0, numBlocks):
+//! logits[r - rowStart][g] for visible blocks g in [0, nVis(t)):
 //!   logits = (1 / sqrtf(128)) * sum_{h < 4} fmaxf(0.f, sum_d q[r][h][d] * kbar[b][g][d])
 //! FP32 dot per head, relu PER HEAD, sum over heads (ascending h), scale AFTER the sum.
-//! Causal visibility: g >= nVis(t) = (t + 1) / 4 is masked to -FLT_MAX. Padded rows
-//! (t >= contextLengths[b] or contextLengths[b] == 0) write -FLT_MAX for the whole row and
-//! never read q or kbar (NaN-safe).
+//! Causal visibility: nVis(t) = (t + 1) / 4 for live queries and zero for padding.
+//! Columns outside this prefix are untouched. Padded rows never read q or kbar (NaN-safe).
 //!
 //! Launch: grid(numRows, ceilDiv(numBlocks, 64)), block(256); the CTA stages the row's
 //! 4 x 128 q values in FP32 shared memory (2 KB); each warp evaluates one block-column at
 //! a time via lane-strided FP32 FMA + warp shuffle reduction.
 //!
 //! \tparam T Activation type: half or __nv_bfloat16.
-//! \param[out] logits FP32 [numRows, numBlocks] chunk-local rows
+//! \param[out] logits FP32 [numRows, numBlocks] chunk-local rows; visible prefix only
+//! \param[out] visibleCounts Device INT32 [numRows], number of visible blocks per chunk-local row
 //! \param[in] qNormed [batchSize, seqLen, 4, 128] T from launchQsaIndexQPrep
 //! \param[in] kbar [batchSize, numBlocks, 128] T from launchQsaIndexKCompress
 //! \param[in] contextLengths Device INT32 [batchSize]
@@ -195,8 +211,9 @@ void launchQsaIndexKCompress(T* kbar, T const* indexQk, float const* cosSin, int
 //! \param[in] stream CUDA stream
 //! \throws std::runtime_error on invalid arguments or launch failure
 template <typename T>
-void launchQsaIndexScores(float* logits, T const* qNormed, T const* kbar, int32_t const* contextLengths,
-    int32_t batchSize, int32_t seqLen, int32_t numBlocks, int32_t rowStart, int32_t numRows, cudaStream_t stream);
+void launchQsaIndexScores(float* logits, int32_t* visibleCounts, T const* qNormed, T const* kbar,
+    int32_t const* contextLengths, int32_t batchSize, int32_t seqLen, int32_t numBlocks, int32_t rowStart,
+    int32_t numRows, cudaStream_t stream);
 
 //! \brief Fill per-segment block ids for the segmented sort: ids[r * numBlocks + c] = c.
 //!
@@ -210,84 +227,70 @@ void launchQsaIndexIdsFill(int32_t* ids, int32_t numRows, int32_t numBlocks, cud
 //! \brief K4: expand top blocks into token indices and append the causal tail.
 //!
 //! For global rows r = b * seqLen + t in [rowStart, rowStart + numRows), with
-//! nVis = (t + 1) / 4, kSel = min(512, nVis), tail = (t + 1) % 4:
+//! total = past_b + t + 1, nVis = total / 4, kSel = min(512, nVis), tail = total % 4:
 //!   out[r][4*i + j] = sortedIds[r - rowStart][i] * 4 + j   for i < kSel, j in {0,1,2,3}
 //!   out[r][4*kSel + j] = 4 * nVis + j                      for j < tail (ALWAYS appended)
 //!   out[r][j] = -1                                          for all remaining slots.
 //! sortedIds holds block ids sorted by descending logit (only the first kSel entries are
 //! read). Padded rows (t >= contextLengths[b] or contextLengths[b] == 0) are written as
-//! all -1 and never read sortedIds. Output token indices are distinct, in [0, t], unsorted.
+//! all -1 and never read sortedIds. Output token indices are distinct, in [0, past_b + t], unsorted.
 //!
 //! Launch: grid(numRows), block(256), threads stride the 2051 output slots.
 //!
 //! \param[out] outIdx INT32 [batchSize * seqLen, 2051]; rows [rowStart, rowStart + numRows) written
 //! \param[in] sortedIds INT32 [numRows, numBlocks] chunk-local descending-logit block ids
 //! \param[in] contextLengths Device INT32 [batchSize]
+//! \param[in] pastLengths Optional device INT32 [batchSize] prefix lengths; nullptr means zero past.
+//!            contextLengths counts new rows, and visibility/tails use pastLengths[b] + t + 1.
 //! \param[in] batchSize Batch size B
 //! \param[in] seqLen Padded sequence length S
-//! \param[in] numBlocks ceilDiv(seqLen, 4)
+//! \param[in] numBlocks Sorted row width; must cover all visible compressed groups
 //! \param[in] rowStart First global row of the chunk
 //! \param[in] numRows Rows in the chunk
 //! \param[in] stream CUDA stream
 //! \throws std::runtime_error on invalid arguments or launch failure
-void launchQsaIndexExpand(int32_t* outIdx, int32_t const* sortedIds, int32_t const* contextLengths, int32_t batchSize,
-    int32_t seqLen, int32_t numBlocks, int32_t rowStart, int32_t numRows, cudaStream_t stream);
+void launchQsaIndexExpand(int32_t* outIdx, int32_t const* sortedIds, int32_t const* contextLengths,
+    int32_t const* pastLengths, int32_t batchSize, int32_t seqLen, int32_t numBlocks, int32_t rowStart, int32_t numRows,
+    cudaStream_t stream);
 
-//! \brief Prefill raw-K tail scatter: persist the raw index-K of the trailing incomplete
-//! block's tokens, t in [ctx_b - ctx_b % 4, ctx_b), into their pool K-tails (see
-//! QsaIndexerPoolState for the addressing contract).
+//! \brief Prefill tail write: the pool tails of every valid query row (see "Pool tails").
 //!
-//! Each such token copies indexQk row (b, t) columns [512, 640) BIT-UNMODIFIED to K plane
-//! page pageTable[b][0][t >> 7], row t & 127, head 0, columns [headSize, headSize + 128).
-//! Sequences with ctx_b % 4 == 0 and tokens whose page-table slot is out of range or
+//! Query row (b, t) is token past_b + t. It copies indexQk row (b, t) columns [512, 640)
+//! BIT-UNMODIFIED into its K-tail; a token at 4g also copies cosSin row b*S + t (64 FP32, raw
+//! bytes) into its V-tail. Padded rows and tokens whose page-table slot is out of range or
 //! kUNUSED_PAGE_ENTRY write nothing; no other pool cell is touched.
 //!
-//! Launch: grid(batchSize, kQSA_COMPRESS_RATIO - 1), block(32) = one warp per (sequence,
-//! trailing-block slot), 4 columns/lane.
+//! Launch: grid(batchSize * seqLen), block(32) = one warp per query row, 4 columns/lane.
 //!
 //! \tparam T Activation type: half or __nv_bfloat16 (must match the pool element type).
 //! \param[in] indexQk [batchSize, seqLen, 640] T (raw k occupies columns [512, 640))
+//! \param[in] cosSin FP32 [batchSize * seqLen, 64] token-aligned rope rows (as launchQsaIndexQPrep)
 //! \param[in] contextLengths Device INT32 [batchSize], 0 <= contextLengths[b] <= seqLen
+//! \param[in] pastLengths Optional device INT32 [batchSize] prefix lengths; nullptr means zero past.
 //! \param[in] poolState Paged indexer state; see QsaIndexerPoolState
 //! \param[in] batchSize Batch size B
 //! \param[in] seqLen Padded sequence length S
 //! \param[in] stream CUDA stream
 //! \throws std::runtime_error on invalid arguments or launch failure
 template <typename T>
-void launchQsaRawKTailWritePrefill(T const* indexQk, int32_t const* contextLengths,
-    QsaIndexerPoolState const& poolState, int32_t batchSize, int32_t seqLen, cudaStream_t stream);
+void launchQsaRawKTailWritePrefill(T const* indexQk, float const* cosSin, int32_t const* contextLengths,
+    int32_t const* pastLengths, QsaIndexerPoolState const& poolState, int32_t batchSize, int32_t seqLen,
+    cudaStream_t stream);
 
-//! \brief K1b variant that ALSO persists each valid kbar row to the pool V-tail of the
-//! block's first token (page pageTable[b][1][(4g) >> 7], row (4g) & 127, head 0, columns
-//! [headSize, headSize + 128)).
-//!
-//! The dense `kbar` output and its numerics are bit-identical to launchQsaIndexKCompress
-//! (the prefill scorer still consumes the dense workspace); the pool write is additive.
-//! Invalid blocks write dense zeros and never touch the pool; out-of-range/unused page
-//! entries skip the pool write only. Parameters as launchQsaIndexKCompress plus poolState.
-//!
-//! \throws std::runtime_error on invalid arguments or launch failure
-template <typename T>
-void launchQsaIndexKCompressPaged(T* kbar, T const* indexQk, float const* cosSin, int32_t const* contextLengths,
-    T const* wK, float rmsEps, QsaIndexerPoolState const& poolState, int32_t batchSize, int32_t seqLen,
-    int32_t numBlocks, int32_t blockBegin, int32_t blockEnd, int32_t pastLen, cudaStream_t stream);
-
-//! \brief B1: fused decode pre-pass — q-prep + predicated raw-K tail write / block compress.
+//! \brief B1: fused decode pre-pass — q-prep + the new token's tail write + block compress.
 //!
 //! One CTA per sequence; every sequence carries exactly one new token whose TOTAL context
 //! length (including it) is contextLengths[b], so its position is pos = contextLengths[b]-1.
 //! Three phases:
-//!   1. (all 4 warps) K1a numerics VERBATIM at S = 1 with rope position pos — decode rows
+//!   1. (all 4 warps) K1a numerics VERBATIM at S = 1 with the token-aligned rope row b
+//!      (position pos) — decode rows
 //!      are never padded, so there is no padding branch (contextLengths[b] <= 0 writes
 //!      exact zeros and skips phases 2-3). Output qNormed [batchSize, 1, 4, 128].
-//!   2. (warp 0) only when contextLengths[b] % 4 != 0 (pos's block stays incomplete):
-//!      indexQk columns [512, 640) stored BIT-UNMODIFIED to the pool K-tail of token pos.
-//!   3. (warp 0) only when contextLengths[b] % 4 == 0: block g = contextLengths[b]/4 - 1
-//!      just completed; raw keys of tokens 4g..4g+2 are read from their pool K-tails (same
-//!      page as pos — a 4-token block never straddles a 128-token page) and token 4g+3's
-//!      key is taken from registers; then K1b numerics
-//!      VERBATIM (fixed-order FP32 mean x0.25 -> cast to T -> reload FP32 -> gemma norm
-//!      (1+wK) -> rope at 4g -> cast) and the kbar row is written to the V-tail of token 4g.
+//!   2. (warp 0) indexQk columns [512, 640) stored BIT-UNMODIFIED to the K-tail of token pos;
+//!      when pos opens a block, rope row b goes as raw bytes into its V-tail (see "Pool tails").
+//!   3. (warp 0) only when contextLengths[b] % 4 == 0: the block pos completes is compressed
+//!      (the K1b routine, rope row from token 4g's V-tail) into the V-tail of token 4g + 1.
+//! Decode does not reseal earlier blocks, so it must not directly follow a speculative commit.
 //! The launch is unconditional and device-masked: safe to capture in a CUDA graph.
 //!
 //! Launch: grid(batchSize), block(128) = 4 warps.
@@ -295,7 +298,7 @@ void launchQsaIndexKCompressPaged(T* kbar, T const* indexQk, float const* cosSin
 //! \tparam T Activation type: half or __nv_bfloat16 (must match the pool element type).
 //! \param[out] qNormed [batchSize, 1, 4, 128] T
 //! \param[in] indexQk [batchSize, 1, 640] T (4 q-heads x 128 then raw k x 128 per row)
-//! \param[in] cosSin FP32 [maxPositions, 64] with maxPositions >= max contextLengths[b]
+//! \param[in] cosSin FP32 [batchSize, 64] token-aligned rows (row b = sequence b's new token)
 //! \param[in] contextLengths Device INT32 [batchSize] TOTAL lengths including the new token
 //! \param[in] wQ T [128] indexer q-norm gamma (raw checkpoint w, not 1+w)
 //! \param[in] wK T [128] indexer k-norm gamma, same raw-w convention
@@ -309,11 +312,30 @@ void launchQsaIndexerPreDecode(T* qNormed, T const* indexQk, float const* cosSin
     T const* wQ, T const* wK, float rmsEps, QsaIndexerPoolState const& poolState, int32_t batchSize,
     cudaStream_t stream);
 
+//! \brief Seal: recompress the last kQSA_SEAL_BLOCKS complete blocks of [0, lengths[b]) from the
+//! pool tails into their kbar cells (see "Pool tails"); every tail of those tokens must be in
+//! the pool. Idempotent. Blocks on unallocated pages and sequences with lengths[b] < 4 write
+//! nothing.
+//!
+//! Launch: grid(kQSA_SEAL_BLOCKS, batchSize), block(32) = one warp per block.
+//!
+//! \tparam T Activation type: half or __nv_bfloat16 (must match the pool element type).
+//! \param[in] lengths Device INT32 [batchSize] token counts whose tails are in the pool
+//! \param[in] wK T [128] indexer k-norm gamma (raw checkpoint w, not 1+w)
+//! \param[in] rmsEps RMS norm epsilon
+//! \param[in] poolState Paged indexer state; see QsaIndexerPoolState
+//! \param[in] batchSize Batch size B
+//! \param[in] stream CUDA stream
+//! \throws std::runtime_error on invalid arguments or launch failure
+template <typename T>
+void launchQsaIndexerSeal(int32_t const* lengths, T const* wK, float rmsEps, QsaIndexerPoolState const& poolState,
+    int32_t batchSize, cudaStream_t stream);
+
 //! \brief B2: decode block-relevance logits from the paged kbar V-tails.
 //!
 //! K2 numerics at S = 1: logits[b][g] = (1/sqrtf(128)) * sum_h relu(q[b][h] . kbar[b][g])
 //! (FP32 dot per head, relu PER HEAD, sum ascending h, scale AFTER the sum) for every
-//! g < nVis(b) = contextLengths[b] / 4, with kbar gathered from the V-tail of token 4g.
+//! g < nVis(b) = contextLengths[b] / 4, with kbar gathered from the V-tail of token 4g + 1.
 //! ONLY the valid prefix [0, nVis) of each row is written (no -FLT_MAX fill; downstream
 //! reads only the valid prefix). The grid is fixed from the host-static maxBlocks; CTAs
 //! (and warps) past nVis early-out, and each warp's 8 block-columns share one page-table
@@ -368,6 +390,46 @@ void launchQsaIndexScoresDecode(float* logits, T const* qNormed, int32_t const* 
 //! \throws std::runtime_error on invalid arguments or launch failure
 void launchQsaTopKExpandDecode(int32_t* outIdx, float const* logits, int32_t const* contextLengths,
     int32_t* splitCounters, int32_t numKVHeads, int32_t batchSize, int32_t maxBlocks, cudaStream_t stream);
+
+//! \brief Compress groups completed by the current query rows into their paged V-tails.
+//! New indexQk/cosSin rows are [batchSize, seqLen, 640/64]; queryLengths counts valid new
+//! rows and optional pastLengths counts cached tokens (nullptr means zero past). A boundary
+//! group reads the cached raw K and block rope row from the pool. Other groups read current
+//! rows directly.
+//! Uses the prefill FP32 mean, cast-to-T, Gemma norm and rope numerics. Zero-length entries
+//! touch no input or pool data. The pool format is unchanged.
+template <typename T>
+void launchQsaIndexKCompressAppend(T const* indexQk, float const* cosSin, int32_t const* queryLengths,
+    int32_t const* pastLengths, T const* wK, float rmsEps, QsaIndexerPoolState const& poolState, int32_t batchSize,
+    int32_t seqLen, cudaStream_t stream);
+
+//! \brief Score query rows against paged kbar without copying historical keys.
+//! Writes per-row visible counts and matches launchQsaIndexScores with visibility
+//! (pastLengths[b] + t + 1) / 4 and queryLengths[b] valid rows; nullptr means zero past.
+//! Invisible and padded entries are untouched. Missing pages in the visible prefix
+//! receive -FLT_MAX.
+//! maxBlocks is the logits row stride and must cover all visible compressed groups.
+template <typename T>
+void launchQsaIndexScoresPaged(float* logits, int32_t* visibleCounts, T const* qNormed, int32_t const* queryLengths,
+    int32_t const* pastLengths, QsaIndexerPoolState const& poolState, int32_t batchSize, int32_t seqLen,
+    int32_t maxBlocks, int32_t rowStart, int32_t numRows, cudaStream_t stream);
+
+//! Scratch buffers for the tree indexer; allocated by runQsaIndexerVerify, never retained by a kernel.
+struct QsaIndexerVerifyScratch
+{
+    void* qNormed;           //!< T [B,S,4,128].
+    void* newKbar;           //!< T [B,S,128], keyed by the node completing a block.
+    int32_t* paths;          //!< INT32 [B,S,S], ancestors in depth order, then -1.
+    int32_t* logicalLengths; //!< INT32 [B,S], prefix length + depth + 1, zero for invalid/padded rows.
+    float* logits;           //!< FP32 [B,S,maxBlocks], only the visible prefix is initialized.
+};
+
+//! Internal launch sequence; arguments and ownership follow runQsaIndexerVerify.
+template <typename T>
+void launchQsaIndexerVerify(int32_t* outIdx, T const* indexQk, float const* cosSin, int32_t const* parents,
+    int32_t const* depths, int32_t const* queryLengths, int32_t const* pastLengths, T const* wQ, T const* wK,
+    float rmsEps, QsaIndexerPoolState const& poolState, QsaIndexerVerifyScratch const& scratch, int32_t batchSize,
+    int32_t seqLen, int32_t maxBlocks, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

@@ -211,7 +211,8 @@ struct PrunerHarness
             embedsFloat[i] = __half2float(hostHalf[i]);
         }
 
-        io.inputsEmbeds = rt::Tensor({1, seqLen, kHidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "embeds");
+        io.inputsEmbeds
+            = rt::Tensor({1, seqLen, kHidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "embeds");
         CUDA_CHECK(cudaMemcpy(
             io.inputsEmbeds.rawPointer(), hostHalf.data(), hostHalf.size() * sizeof(half), cudaMemcpyHostToDevice));
 
@@ -224,7 +225,7 @@ struct PrunerHarness
                 std::fill_n(marker.begin() + static_cast<int64_t>(r) * kHidden, kHidden, __float2half(float(r)));
             }
             io.deepstackEmbeds.emplace_back(
-                rt::Coords{1, seqLen, kHidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "deepstack");
+                rt::Coords{1, seqLen, kHidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "deepstack");
             CUDA_CHECK(cudaMemcpy(io.deepstackEmbeds.back().rawPointer(), marker.data(), marker.size() * sizeof(half),
                 cudaMemcpyHostToDevice));
         }
@@ -236,7 +237,7 @@ struct PrunerHarness
             std::fill_n(rope.begin() + static_cast<int64_t>(r) * kRotaryDim, kRotaryDim, float(r));
         }
         io.mropeActiveCosSin
-            = rt::Tensor({1, kCapacity, kRotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "rope");
+            = rt::Tensor({1, kCapacity, kRotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "rope");
         CUDA_CHECK(cudaMemcpy(
             io.mropeActiveCosSin.rawPointer(), rope.data(), rope.size() * sizeof(float), cudaMemcpyHostToDevice));
     }
@@ -326,7 +327,7 @@ struct BatchPrunerHarness
             }
         }
         io.inputsEmbeds
-            = rt::Tensor({batch, maxLen, kHidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "embeds");
+            = rt::Tensor({batch, maxLen, kHidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "embeds");
         CUDA_CHECK(cudaMemcpy(
             io.inputsEmbeds.rawPointer(), hostHalf.data(), hostHalf.size() * sizeof(half), cudaMemcpyHostToDevice));
 
@@ -344,7 +345,7 @@ struct BatchPrunerHarness
                 }
             }
             io.deepstackEmbeds.emplace_back(
-                rt::Coords{batch, maxLen, kHidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "deepstack");
+                rt::Coords{batch, maxLen, kHidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "deepstack");
             CUDA_CHECK(cudaMemcpy(io.deepstackEmbeds.back().rawPointer(), marker.data(), marker.size() * sizeof(half),
                 cudaMemcpyHostToDevice));
         }
@@ -360,7 +361,7 @@ struct BatchPrunerHarness
             }
         }
         io.mropeActiveCosSin
-            = rt::Tensor({batch, kCapacity, kRotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "rope");
+            = rt::Tensor({batch, kCapacity, kRotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "rope");
         CUDA_CHECK(cudaMemcpy(
             io.mropeActiveCosSin.rawPointer(), rope.data(), rope.size() * sizeof(float), cudaMemcpyHostToDevice));
     }
@@ -425,10 +426,11 @@ TEST(DartGatherKernels, RowGatherMatchesCPU)
     }
     std::vector<int32_t> indices = {5, 0, 36, 12, 12, 7};
 
-    rt::Tensor srcDev({kRows * kRowBytes}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "src");
+    rt::Tensor srcDev({kRows * kRowBytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "src");
     rt::Tensor dstDev(
-        {static_cast<int64_t>(indices.size()) * kRowBytes}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "dst");
-    rt::Tensor idxDev({static_cast<int64_t>(indices.size())}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "idx");
+        {static_cast<int64_t>(indices.size()) * kRowBytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "dst");
+    rt::Tensor idxDev(
+        {static_cast<int64_t>(indices.size())}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "idx");
     CUDA_CHECK(cudaMemcpy(srcDev.rawPointer(), src.data(), src.size(), cudaMemcpyHostToDevice));
     CUDA_CHECK(
         cudaMemcpy(idxDev.rawPointer(), indices.data(), indices.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
@@ -704,7 +706,7 @@ static rt::Tensor makeMarkerFeatures(int32_t rows, int32_t hidden)
     {
         host[static_cast<int64_t>(r) * hidden] = __float2half(float(r));
     }
-    rt::Tensor t({rows, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "features");
+    rt::Tensor t({rows, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "features");
     CUDA_CHECK(cudaMemcpy(t.rawPointer(), host.data(), host.size() * sizeof(half), cudaMemcpyHostToDevice));
     return t;
 }

@@ -39,7 +39,6 @@
 #include "kernels/mamba/ssdVarlenMetadata.h"
 
 using namespace trt_edgellm;
-using namespace nvinfer1;
 
 namespace
 {
@@ -282,6 +281,14 @@ TEST(SsdCuteDslCapability, SupportedConfigurationsMatchCompiledKernels)
     EXPECT_FALSE(CuteDslSSDRunner::canImplement(80, 128, 100));
     EXPECT_EQ(CuteDslSSDRunner::getWorkspaceSize(1, 128, 96, 80, 128, 8), 0);
 #endif
+}
+
+TEST(SsdCuteDslCapability, TokenBudgetWorkspaceCoversLegalBatchesWithoutMultiplyingTheBudget)
+{
+    // Given a total physical-token budget and a batch upper bound,
+    // when workspace is sized, then it covers every legal padded matrix without treating the budget as per-request.
+    EXPECT_EQ(CuteDslSSDRunner::getWorkspaceSizeForTokenBudget(8, 8192, 128, 64, 128, 8), 633077788U);
+    EXPECT_EQ(CuteDslSSDRunner::getWorkspaceSizeForTokenBudget(3, 257, 128, 64, 128, 8), 27131916U);
 }
 
 TEST_P(SsdCuteDslTest, CorrectnessVsSerialReference)
@@ -640,7 +647,7 @@ char const* guardedSsdInputName(GuardedSsdInput guardedInput)
 
 bool supportsBlackwellPersistentSsd(int32_t smVersion)
 {
-    return smVersion == 100 || smVersion == 101 || smVersion == 110;
+    return smVersion == 100 || smVersion == 101 || smVersion == 103 || smVersion == 110;
 }
 
 rt::Tensor makeGpuTensor(int64_t elements, DataType dataType, std::string const& name)
@@ -930,7 +937,7 @@ int runSsdTmaBoundsCase(GuardedSsdInput guardedInput)
         int32_t const smVersion = getSMVersion();
         if (!supportsBlackwellPersistentSsd(smVersion))
         {
-            std::cerr << "Blackwell persistent SSD requires SM100, SM101, or SM110\n";
+            std::cerr << "Blackwell persistent SSD requires SM100, SM101, SM103, or SM110\n";
             return 1;
         }
         if (!CuteDslSSDRunner::canImplement(dim, dstate, smVersion))
@@ -1134,7 +1141,7 @@ TEST_P(SsdCuteDslBlackwellTmaBounds, FinalPartialChunkDoesNotReadPastTensor)
     int32_t const smVersion = getSMVersion();
     if (!supportsBlackwellPersistentSsd(smVersion))
     {
-        GTEST_SKIP() << "Blackwell persistent SSD requires SM100, SM101, or SM110";
+        GTEST_SKIP() << "Blackwell persistent SSD requires SM100, SM101, SM103, or SM110";
     }
     if (!CuteDslSSDRunner::canImplement(dim, dstate, smVersion))
     {
@@ -1259,7 +1266,7 @@ TEST(SsdCuteDslBlackwellD80Bounds, ExactBuffersDoNotOverflow)
     int32_t const smVersion = getSMVersion();
     if (!CuteDslSSDRunner::canImplement(80, 128, smVersion))
     {
-        GTEST_SKIP() << "D80 kernel requires SM100, SM101, or SM110";
+        GTEST_SKIP() << "D80 kernel requires SM100, SM101, SM103, or SM110";
     }
 
     CUDA_DRIVER_CHECK(cuInit(0));

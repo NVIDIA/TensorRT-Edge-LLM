@@ -42,6 +42,13 @@ enum class BlockDraftTreePolicy : int32_t
     kDDTree,
 };
 
+//! Post-draft correction applied to the block proposals before verification.
+enum class BlockDraftCorrectionHead : int32_t
+{
+    kNone,
+    kDomino,
+};
+
 struct CachedBlockDraftRuntimeConfig
 {
     SpecDecodeMode userMode{SpecDecodeMode::kNONE};
@@ -49,12 +56,16 @@ struct CachedBlockDraftRuntimeConfig
     BlockDraftTreePolicy treePolicy{BlockDraftTreePolicy::kLinear};
     int32_t blockSize{0};
     int32_t proposalLen{0};
-    int32_t verifySize{0};
+    int32_t verifyTokenCount{0};
     int32_t candidateTopK{1};
     int32_t maskTokenId{0};
     int32_t draftHiddenSize{0};
     int32_t baseOutputHiddenDim{0};
     int32_t draftVocabSize{0};
+    BlockDraftCorrectionHead correctionHead{BlockDraftCorrectionHead::kNone};
+    int32_t dominoGruHiddenDim{0};
+    int32_t dominoProjDim{0};
+    int32_t dominoPoolSize{0};
 };
 
 char const* proposalAttentionPolicyName(ProposalAttentionPolicy policy) noexcept;
@@ -68,8 +79,8 @@ CachedBlockDraftRuntimeConfig makeCachedBlockDraftRuntimeConfig(DeploymentConfig
 //! decoder is created, so the runtime reads one consolidated value.
 int32_t runtimeBlockSize(DeploymentConfig const& deployment);
 
-//! DFlash/JetSpec uses a linear-tree proposal when draftingTopK == 1 and a branching
-//! DDTree proposal when draftingTopK > 1.
+//! DFlash/JetSpec uses a linear-tree proposal when draftTopK == 1 and a branching
+//! DDTree proposal when draftTopK > 1.
 bool shouldUseDDTree(DeploymentConfig const& deployment);
 
 } // namespace dflash_utils

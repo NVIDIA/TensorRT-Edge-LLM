@@ -336,5 +336,64 @@ void batchedPreprocessImage(void const* const plane0, void const* const plane1, 
     Interpolation const interp, float const mean0, float const mean1, float const mean2, float const scale0,
     float const scale1, float const scale2, cudaStream_t stream);
 
+//! How the content digest reaches one plane's rows.
+enum class DigestAccess : unsigned int
+{
+    kPITCH_LINEAR = 0, //!< From `bytes`, at offsetBytes + t * frameStrideBytes + r * pitchBytes.
+    kTEXTURE_LUMA,     //!< From `texture`, one uint8 per texel: byte i of row r is texel (i, r).
+    kTEXTURE_CHROMA,   //!< From `texture`, uchar2 texels: byte i of row r is component i % 2 of texel (i / 2, r).
+};
+
+//! One plane of a frame stack as the content digest reads it. Exactly one of `bytes` and `texture`
+//! carries the pixels, as `access` says; the byte offsets are unused for a sampled plane. `rows` counts
+//! one frame's rows, and bytes past `validRowBytes` are padding that stays out of the digest.
+struct ImageDigestPlane
+{
+    unsigned char const* bytes;
+    cudaTextureObject_t texture;
+    DigestAccess access;
+    int64_t offsetBytes;
+    int64_t pitchBytes;
+    int64_t frameStrideBytes;
+    int32_t validRowBytes;
+    int32_t rows;
+};
+
+//! One row's 128-bit digest component, high half first.
+struct ImageRowDigest
+{
+    uint64_t hi;
+    uint64_t lo;
+};
+
+//! Hash each row of a frame stack on its own into a 128-bit component, in (frame, plane, row) order. One
+//! warp computes a component: each lane runs 128-bit FNV-1a over its own stride of the row's valid
+//! bytes, then the 32 lane digests combine through a butterfly reduction over log2(32) shuffle rounds
+//! and lane 0's value is the component. Lane count is fixed, not derived from the launch configuration,
+//! so a component still only depends on (row, bytes) and rows never combine with each other.
+//!
+//! `planes` has `numPlanes` entries, 1 or 2; `rowDigests` is device-writable (VRAM or a UVA-mapped
+//! pinned host buffer both work) and holds `frames * sum of ImageDigestPlane::rows` entries.
+//! \throws std::runtime_error if numPlanes is not 1 or 2, a geometry field is non-positive, a plane
+//!         carries no pixels for its access mode, a pitch-linear plane's pitch is below its valid row
+//!         width, or the rows overflow 32-bit indexing.
+void hashImageRows(ImageDigestPlane const* const planes, int32_t const numPlanes, int32_t const frames,
+    ImageRowDigest* const rowDigests, cudaStream_t stream);
+
+//! The most components combineImageRowDigests folds a row range down to. A caller passes
+//! `min(kImageDigestGroups, rowCount)`, so this bounds the host read-back after combining, not rowCount.
+constexpr int32_t kImageDigestGroups = 64;
+
+//! Fold `rowDigests[0, rowCount)` down to `rowDigests[0, groupCount)` in place: row r joins group
+//! `r % groupCount`, one warp folds a group (lane l takes the group's rows l, l + 32, ... in ascending
+//! order, then the lanes combine through the same butterfly reduction as hashImageRows), and a group
+//! writes its result to its own index (row `g < groupCount` belongs to group g, so nothing else reads
+//! that slot after group g's write). A caller drains `stream` and reads back only the first `groupCount`
+//! components instead of all `rowCount`.
+//! \throws std::runtime_error if `rowDigests` is null, `rowCount` is not positive, or `groupCount` is
+//!         not in `(0, rowCount]`.
+void combineImageRowDigests(
+    ImageRowDigest* const rowDigests, int32_t const rowCount, int32_t const groupCount, cudaStream_t stream);
+
 } // namespace kernel
 } // namespace trt_edgellm

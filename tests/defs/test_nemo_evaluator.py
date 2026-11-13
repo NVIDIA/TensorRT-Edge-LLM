@@ -14,6 +14,7 @@
 # limitations under the License.
 """NeMo Evaluator integration tests."""
 
+import json
 import logging
 import os
 import sys
@@ -24,11 +25,7 @@ import pytest
 from conftest import EnvironmentConfig, RemoteConfig
 from pytest_helpers import run_command, timer_context
 
-from scripts import run_nemo_eval
-
-from .config import ModelType, TaskType, TestConfig
-
-_DEFAULT_CONFIG = "tests/nemo_eval/cases.yml"
+from .config import TaskType, TestConfig, infer_checkpoint_export_model_type
 
 
 def _write_nemo_eval_log(output: str, case_id: str,
@@ -76,12 +73,6 @@ def _default_server_python(env_config: EnvironmentConfig) -> str:
     return sys.executable
 
 
-def _resolve_repo_path(path: str, env_config: EnvironmentConfig) -> str:
-    if os.path.isabs(path):
-        return path
-    return os.path.join(env_config.llm_sdk_dir, path)
-
-
 def test_nemo_eval(test_param: str, remote_config: Optional[RemoteConfig],
                    test_logger: logging.Logger, env_config: EnvironmentConfig,
                    capfd) -> None:
@@ -89,43 +80,59 @@ def test_nemo_eval(test_param: str, remote_config: Optional[RemoteConfig],
     if remote_config is not None:
         pytest.skip("NeMo Evaluator CI smoke is local x86-only for now")
 
-    case_id = test_param
-    case_config_path = _resolve_repo_path(_DEFAULT_CONFIG, env_config)
-    try:
-        case_config = run_nemo_eval._load_case_config(case_config_path,
-                                                      case_id)
-    except (RuntimeError, ValueError) as exc:
-        pytest.fail(str(exc))
-    model_param = case_config.get("model_param")
-    if not isinstance(model_param, str) or not model_param:
-        pytest.fail(f"NeMo Evaluator case {case_id} must set model_param")
-
-    config = TestConfig.from_param_string(model_param, ModelType.LLM,
+    inference = getattr(test_param, "inference", None)
+    if not inference or inference.get("scenario") != "nemo_evaluator":
+        pytest.fail("NeMo Evaluator requires a model-owned YAML case")
+    case_id = str(test_param)
+    model_type = infer_checkpoint_export_model_type(test_param)
+    config = TestConfig.from_param_string(test_param, model_type,
                                           TaskType.CHECKPOINT_BUILD,
                                           env_config)
     model_dir = config.get_torch_model_dir()
     output_dir = os.path.join(env_config.test_log_dir, "nemo-results", case_id)
     cache_dir = os.path.join(env_config.engine_dir, "server-cache")
-    evaluator_config = case_config.get("evaluator", {})
-    if not isinstance(evaluator_config, dict):
-        pytest.fail(
-            f"NeMo Evaluator case {case_id} evaluator must be a mapping")
-    eval_type = evaluator_config.get("eval_type", "mmlu")
+    evaluator_config = inference["evaluator"]
+    score_config = inference["score"]
+    eval_type = evaluator_config["eval_type"]
 
     cmd = [
         _default_server_python(env_config),
         "scripts/run_nemo_eval.py",
-        "--config",
-        case_config_path,
-        "--case",
-        case_id,
         "--model",
         model_dir,
         "--cache-dir",
         cache_dir,
         "--output-dir",
         output_dir,
+        "--max-input-len",
+        str(config.max_input_len),
+        "--max-batch-size",
+        str(config.max_batch_size),
+        "--max-kv-cache-capacity",
+        str(config.max_kv_cache_capacity),
+        "--eval-type",
+        eval_type,
     ]
+    if "model_id" in evaluator_config:
+        cmd.extend(["--model-id", evaluator_config["model_id"]])
+
+    overrides = {
+        f"config.params.{key}": value
+        for key, value in evaluator_config.get("params", {}).items()
+    }
+    overrides.update(evaluator_config.get("overrides", {}))
+    if overrides:
+        cmd.extend([
+            "--extra-overrides",
+            ",".join(f"{key}={json.dumps(value)}"
+                     for key, value in overrides.items()),
+        ])
+    cmd.extend([
+        "--score-key",
+        str(score_config["key"]),
+        "--min-score",
+        str(score_config["min"]),
+    ])
 
     env_vars = {
         "PYTHONPATH":
@@ -136,7 +143,7 @@ def test_nemo_eval(test_param: str, remote_config: Optional[RemoteConfig],
         env_vars["LD_LIBRARY_PATH"] = (
             f"{trt_lib}:{os.environ.get('LD_LIBRARY_PATH', '')}")
 
-    timeout = 7200
+    timeout = inference.get("timeout_seconds", 7200)
     with timer_context(f"NeMo Evaluator {eval_type} for {case_id}",
                        test_logger):
         result = run_command(cmd=cmd,

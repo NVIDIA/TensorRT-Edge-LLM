@@ -621,11 +621,11 @@ void moeTopkSoftmax(rt::Tensor const& gatingOutput, rt::Tensor& topkWeights, rt:
 
     // Validate data types
     auto const dtype = gatingOutput.getDataType();
-    check::check(
-        dtype == nvinfer1::DataType::kFLOAT || dtype == nvinfer1::DataType::kHALF || dtype == nvinfer1::DataType::kBF16,
+    check::check(dtype == trt_edgellm::DataType::kFLOAT || dtype == trt_edgellm::DataType::kHALF
+            || dtype == trt_edgellm::DataType::kBF16,
         "gatingOutput must be float32, float16, or bfloat16");
-    check::check(topkWeights.getDataType() == nvinfer1::DataType::kFLOAT, "topkWeights must be float32");
-    check::check(topkIndices.getDataType() == nvinfer1::DataType::kINT32, "topkIndices must be int32");
+    check::check(topkWeights.getDataType() == trt_edgellm::DataType::kFLOAT, "topkWeights must be float32");
+    check::check(topkIndices.getDataType() == trt_edgellm::DataType::kINT32, "topkIndices must be int32");
 
     // Validate device types
     check::check(gatingOutput.getDeviceType() == rt::DeviceType::kGPU, "gatingOutput must be on GPU");
@@ -640,7 +640,7 @@ void moeTopkSoftmax(rt::Tensor const& gatingOutput, rt::Tensor& topkWeights, rt:
         auto const biasShape = biasTensor.getShape();
         check::check(biasShape.getNumDims() == 1, "correctionBias must be 1D tensor [numExperts]");
         check::check(biasShape[0] == numExperts, "correctionBias size must match numExperts");
-        check::check(biasTensor.getDataType() == nvinfer1::DataType::kFLOAT, "correctionBias must be float32");
+        check::check(biasTensor.getDataType() == trt_edgellm::DataType::kFLOAT, "correctionBias must be float32");
         check::check(biasTensor.getDeviceType() == rt::DeviceType::kGPU, "correctionBias must be on GPU");
         biasPtr = biasTensor.dataPointer<float>();
     }
@@ -657,18 +657,18 @@ void moeTopkSoftmax(rt::Tensor const& gatingOutput, rt::Tensor& topkWeights, rt:
     float* softmaxWorkspace = (requiredWorkspace > 0) ? static_cast<float*>(workspace) : nullptr;
 
     // Dispatch based on input data type
-    if (dtype == nvinfer1::DataType::kFLOAT)
+    if (dtype == trt_edgellm::DataType::kFLOAT)
     {
         topkGatingSoftmaxKernelLauncher<float>(gatingOutput.dataPointer<float>(), topkWeightsPtr, topkIndicesPtr,
             softmaxWorkspace, numTokens, numExperts, topk, renormalize, moeSoftcapping, biasPtr, stream);
     }
-    else if (dtype == nvinfer1::DataType::kHALF)
+    else if (dtype == trt_edgellm::DataType::kHALF)
     {
         topkGatingSoftmaxKernelLauncher<__half>(reinterpret_cast<__half const*>(gatingOutput.dataPointer<half>()),
             topkWeightsPtr, topkIndicesPtr, softmaxWorkspace, numTokens, numExperts, topk, renormalize, moeSoftcapping,
             biasPtr, stream);
     }
-    else if (dtype == nvinfer1::DataType::kBF16)
+    else if (dtype == trt_edgellm::DataType::kBF16)
     {
         topkGatingSoftmaxKernelLauncher<__nv_bfloat16>(
             reinterpret_cast<__nv_bfloat16 const*>(gatingOutput.dataPointer<__nv_bfloat16>()), topkWeightsPtr,

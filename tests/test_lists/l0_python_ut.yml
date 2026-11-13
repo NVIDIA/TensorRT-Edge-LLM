@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
 # L0 Python Unit Tests - Low-level component tests
 #
 # These tests verify individual components and plugins at a low level.
@@ -5,10 +8,10 @@
 #   - TensorRT >= 10.15
 #   - CUDA-capable GPU
 #   - A CUDA build of torch (plugin tests drive device memory via torch)
-#   - Built plugin library (build/libNvInfer_edgellm_plugin.so) for the plugin tests
+#   - Built plugin library (build/lib/libNvInfer_edgellm_plugin.so) for the plugin tests
 
 tests:
-  - tests/defs/test_common.py::test_build_project_with_pybind
+  - tests/defs/test_common.py::test_build_project_with_nanobind
 
   # Package import and introspection contracts
   - tests/python-unittests/test_package_api.py
@@ -23,15 +26,59 @@ tests:
 
   # Benchmark tools
   - tests/python-unittests/test_online_benchmark.py
+  - tests/python-unittests/test_server_stress_harness.py
+  - tests/python-unittests/test_runtime_bench_commands.py
+  - tests/python-unittests/test_calibrate_skip_softmax_config.py
+
+  # Stage graphs agree with the runners that load them
+  - tests/python-unittests/test_multistage_config.py
+
+  # multistage_inference parity checks of direct-builder model cases
+  - tests/python-unittests/test_multistage_parity.py
 
   # ONNX-less builder checkpoint contracts
   - tests/python-unittests/test_direct_builder_checkpoint_contract.py
+  - tests/python-unittests/test_direct_builder_trt_native_moe.py
+  - tests/python-unittests/test_nvfp4_weight_dtype_fixup.py
+  - tests/python-unittests/test_weightless_builder.py
+  - tests/python-unittests/test_weightless_pipeline.py
   - tests/python-unittests/test_direct_builder_skip_softmax.py
+  - tests/python-unittests/test_compact_build_report.py
+  - tests/python-unittests/test_pi05_direct_builder.py
+  - tests/python-unittests/test_gr00t_direct_builder.py
+  - tests/python-unittests/test_vla_multi_device_pipeline.py::test_cosmos3_policy_case_runs_every_phase_in_its_own_job
+  - tests/python-unittests/test_vla_multi_device_pipeline.py::test_cosmos3_policy_rejects_engine_settings_it_does_not_build_with
+  - tests/python-unittests/test_vla_multi_device_pipeline.py::test_cosmos3_policy_parity_uses_engines_built_with_case_batch_size
+  - tests/python-unittests/test_checkpoint_resolver.py::test_nested_indexed_checkpoint_requires_every_weight_file
+  - tests/python-unittests/test_cosmos3_policy_export.py
+  - tests/python-unittests/test_cosmos3_policy_contract.py::test_prepare_root_attaches_checkpoint_component_configs
+  - tests/python-unittests/test_cosmos3_policy_contract.py::test_gen_contract_names_the_resolved_domain
   - tests/python-unittests/test_checkpoint_loader_shard.py
+  - tests/python-unittests/test_experimental_ragged_builder_contract.py::test_dspark_sample_without_anchor_uses_resolved_physical_capacity
 
   - tests/python-unittests/test_chat_template_extraction.py::test_direct_process_chat_template_preserves_trim_contract
   - tests/python-unittests/test_export_kv_page_table.py::test_tp_runtime_config_preserves_global_gdn_metadata
-  - tests/python-unittests/test_export_kv_page_table.py::test_nvfp4_tp_gemm_allreduce_target_export
+  - tests/python-unittests/test_export_kv_page_table.py::test_runtime_config_widens_qsa_layer_kv_pool
+  - tests/python-unittests/test_export_kv_page_table.py::test_nvfp4_tp_gemm_allreduce_policy
+  - tests/python-unittests/test_export_kv_page_table.py::test_qualified_sm12x_nvfp4_tp_uses_cutedsl_gemm_allreduce
+  - tests/python-unittests/test_export_kv_page_table.py::test_gemma4_fp8_kv_uses_bounded_swa_and_keeps_spec_exclusions
+  - tests/python-unittests/test_export_kv_page_table.py::test_gemma4_fp8_swa_export_markers_and_shared_scale_attrs
+  - tests/python-unittests/test_export_kv_page_table.py::test_nvfp4_fp8_kv_qkv_fusion_preserves_export_scales
+  - tests/python-unittests/test_l1_fp8_kv_export_producer.py::test_gemma4_fp8_kv_l1_quantizes_then_exports_generated_checkpoint
+
+  - tests/python-unittests/test_alpamayo_direct_paged_kv.py
+  - tests/python-unittests/test_vla_multi_device_pipeline.py
+  - tests/python-unittests/test_action_export.py
+  - tests/python-unittests/test_action_attention_plugin_contract.py
+  - tests/python-unittests/test_action_two_pool_attention.py
+
+  # DFlash speculative-decoding checkpoint contracts
+  - tests/python-unittests/test_lilicorr_contract.py
+  - tests/python-unittests/test_lilicorr_config.py
+  - tests/python-unittests/test_lilicorr_head.py
+  - tests/python-unittests/test_lilicorr_draft_export.py
+  - tests/python-unittests/test_lilicorr_loading.py
+  - tests/python-unittests/test_dflash2_onnx_frontend.py
 
   # AttentionPlugin tests (custom plugin vs PyTorch reference)
   - tests/python-unittests/test_attention_plugin.py::test_cutedsl_lazy_module_failure_propagates_before_attention_mutation
@@ -45,14 +92,12 @@ tests:
   - tests/python-unittests/test_attention_plugin.py::test_prefill_head512_vision_cutedsl
   - tests/python-unittests/test_attention_plugin.py::test_prefill_head512_vision_scaled
   - tests/python-unittests/test_attention_plugin.py::test_vision_block_prefill_then_decode
-  - tests/python-unittests/test_attention_plugin.py::test_head512_vision_rejections
+  - tests/python-unittests/test_attention_plugin.py::test_head512_tree_vision_rejected
   - tests/python-unittests/test_attention_plugin.py::test_head512_sliding_vision_accepted_off_blackwell
-  - tests/python-unittests/test_attention_plugin.py::test_head512_vision_prefill_route_rejections
-  - tests/python-unittests/test_attention_plugin.py::test_head512_shared_fp8_prefill_rejected
   - tests/python-unittests/test_attention_plugin.py::test_fp8_kv_cache_rejected_on_unsupported_sm
   - tests/python-unittests/test_attention_plugin.py::test_fp8_kv_cache_decode
   - tests/python-unittests/test_attention_plugin.py::test_fp8_kv_cache_prefill
-  - tests/python-unittests/test_attention_plugin.py::test_fp8_shared_kv_prefill_rejected
+  - tests/python-unittests/test_attention_plugin.py::test_fp8_shared_kv_prefill_reads_donor_cache
   - tests/python-unittests/test_attention_plugin.py::test_fp8_kv_cache_prefill_head512
   - tests/python-unittests/test_attention_plugin.py::test_normal_prefill
   - tests/python-unittests/test_attention_plugin.py::test_fp8_kv_cache_normal_prefill
@@ -96,11 +141,20 @@ tests:
   - tests/python-unittests/test_sliding_window_attention_plugin.py::test_bounded_swa_decode_scrambled_page_table
   - tests/python-unittests/test_sliding_window_attention_plugin.py::test_bounded_swa_long_normal_prefill_with_sparse_page_table
   - tests/python-unittests/test_sliding_window_attention_plugin.py::test_bounded_swa_shared_kv_long_chunk_uses_current_donor_kv
+  - tests/python-unittests/test_sliding_window_attention_plugin.py::test_fp8_swa_prefill_then_chunked_prefill
   - tests/python-unittests/test_sliding_window_attention_plugin.py::test_swa_capable_full_cache_decode_scrambled_page_table
   - tests/python-unittests/test_attention_plugin.py::test_head512_vision_chunked_prefill_rejected
   - tests/python-unittests/test_attention_plugin.py::test_head512_shared_vision_prefill_reads_donor_cache
+  # IFB compact ragged execution (phase 8)
+  - tests/python-unittests/test_attention_plugin.py::test_compact_bounded_swa_cache_with_unmapped_pages
+  - tests/python-unittests/test_attention_plugin.py::test_compact_phase_at_profile_bound_of_small_token_budget
+  - tests/python-unittests/test_attention_plugin.py::test_compact_phase_matches_separate_prefill_and_decode
+  - tests/python-unittests/test_attention_plugin.py::test_compact_phase_reads_lengths_from_offsets_and_sequence_lengths
+  - tests/python-unittests/test_attention_plugin.py::test_compact_phase_rejected_for_unsupported_layer
+  - tests/python-unittests/test_attention_plugin.py::test_compact_phase_supports_layer_variants
+  - tests/python-unittests/test_attention_plugin.py::test_build_reports_whether_the_layer_reserved_the_compact_workspace
 
-  # QsaAttentionPlugin (Qwen Sparse Attention prefill + decode) tests
+  # QsaAttentionPlugin (Qwen Sparse Attention prefill + chunk + decode) tests
   # (test_reference_* are CPU-only torch reference self-tests)
   - tests/python-unittests/test_qsa_attention_plugin.py::test_reference_dense_equivalence
   - tests/python-unittests/test_qsa_attention_plugin.py::test_reference_index_list_invariants
@@ -113,14 +167,23 @@ tests:
   - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_ragged_batch
   - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_pool_tail_state
   - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_nan_tail_poisoning
-  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_s_gt1_rejected
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_texec_ne_n_rejected
   - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_graph_capture_smoke
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_unsupported_phases_rejected
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_prefill_padded_rows_and_block_rope_rows
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_draft_proposal_matches_target_verify
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_tree_verify_chain_matches_chunk
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_tree_verify_paths_match_chain_verify
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_chunk_prefill_matches_reference_and_resumes_decode
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_chunk_prefill_cuda_graph
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_prefill_matches_zero_past_chunk
 
   # Mamba selective-state-update (update_ssm_state) plugin tests
   - tests/python-unittests/test_mamba_plugin.py::test_decode
   - tests/python-unittests/test_mamba_plugin.py::test_prefill_singlestep
   - tests/python-unittests/test_mamba_plugin.py::test_ragged_prefill_singlestep
   - tests/python-unittests/test_mamba_plugin.py::test_prefill_ssd
+  - tests/python-unittests/test_mamba_plugin.py::test_prefill_ssd_indexed_cold_and_restored
   - tests/python-unittests/test_mamba_plugin.py::test_ragged_prefill_ssd
   - tests/python-unittests/test_mamba_plugin.py::test_ssd_dim_sweep
   - tests/python-unittests/test_mamba_plugin.py::test_ssd_group_sweep
@@ -129,6 +192,10 @@ tests:
   - tests/python-unittests/test_mamba_plugin.py::test_prefill_decode_handoff
   - tests/python-unittests/test_mamba_plugin.py::test_ragged_prefill_batch_sizes
   - tests/python-unittests/test_mamba_plugin.py::test_batch_invariance
+  # IFB compact ragged execution (phase 8)
+  - tests/python-unittests/test_mamba_plugin.py::test_compact_phase_matches_separate_prefill_and_decode
+  - tests/python-unittests/test_mamba_plugin.py::test_compact_phase_rejected_for_unsupported_layer
+  - tests/python-unittests/test_mamba_plugin.py::test_build_reports_whether_the_layer_reserved_the_compact_workspace
 
   # Causal conv1d plugin tests
   - tests/python-unittests/test_causal_conv1d_plugin.py::test_prefill
@@ -136,6 +203,11 @@ tests:
   - tests/python-unittests/test_causal_conv1d_plugin.py::test_decode
   - tests/python-unittests/test_causal_conv1d_plugin.py::test_ragged_prefill_batch_sizes
   - tests/python-unittests/test_causal_conv1d_plugin.py::test_batch_invariance
+  # IFB compact ragged execution (phase 8)
+  - tests/python-unittests/test_causal_conv1d_plugin.py::test_compact_phase_matches_separate_prefill_and_decode
+  - tests/python-unittests/test_causal_conv1d_plugin.py::test_compact_phase_rejected_for_unsupported_layer
+  - tests/python-unittests/test_causal_conv1d_plugin.py::test_compact_prefill_skips_out_of_range_state_indices
+  - tests/python-unittests/test_causal_conv1d_plugin.py::test_build_reports_whether_the_layer_reserved_the_compact_workspace
 
   # Gated delta net (GDN) plugin tests
   - tests/python-unittests/test_gated_delta_net_plugin.py::test_decode
@@ -144,6 +216,14 @@ tests:
   - tests/python-unittests/test_gated_delta_net_plugin.py::test_ragged_prefill_batch_sizes
   - tests/python-unittests/test_gated_delta_net_plugin.py::test_batch_invariance
   - tests/python-unittests/test_gated_delta_net_plugin.py::test_prefill_decode_handoff
+  # IFB compact ragged execution (phase 8)
+  - tests/python-unittests/test_gated_delta_net_plugin.py::test_compact_phase_matches_separate_prefill_and_decode
+  - tests/python-unittests/test_gated_delta_net_plugin.py::test_compact_phase_rejected_for_unsupported_layer
+  - tests/python-unittests/test_gated_delta_net_plugin.py::test_build_reports_whether_the_layer_reserved_the_compact_workspace
+  - tests/python-unittests/test_gated_delta_net_plugin.py::test_value_heads_not_a_multiple_of_qk_heads_fail_to_build
+
+  # SwiGLU dual GEMM plugin tests (Blackwell datacenter / Thor)
+  - tests/python-unittests/test_dual_gemm_plugin.py
 
   # Marlin MoE plugin tests
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_qwen_softmax_swiglu_token_count_boundary_dynamic_engine
@@ -190,6 +270,11 @@ tests:
   - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_parse_quant_keeps_excluded_fp16_lm_head
   - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_parse_quant_does_not_invent_lm_head_override
   - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_repack_nvfp4_a16_gated_moe_shapes
+  # EAGLE-3 draft: NVFP4-A16 Q/K/V packing and quantizer RoPE theta
+  - tests/python-unittests/test_spec_draft_ragged_export.py::test_eagle3_draft_packs_qkv_by_projection_kind
+  - tests/python-unittests/test_eagle3_draft_quantization.py
+  # Speculative draft export: pre-quantized checkpoint and ONNX precision checks
+  - tests/python-unittests/test_spec_draft_precision.py
 
   # FP16 MoE plugin tests (softmax + sigmoid-group-topk routing)
   - tests/python-unittests/test_fp16_moe_plugin.py::test_fp16_moe_decode_and_prefill_dynamic_engine
@@ -209,11 +294,23 @@ tests:
   - tests/python-unittests/test_nemotron_h_ragged_export.py::test_nemotron_h_mtp_draft_exports_token_major_attention
   - tests/python-unittests/test_qwen35_ragged_export.py::test_omni_next_moe_mtp_base_runs_token_major_wrapper
 
+  # TRT-native MoE export contracts (GPU-free: the sigmoid group-top-k
+  # routing reference and the W4A4 TRT_MoE mode-2 ONNX graphs)
+  - tests/python-unittests/test_nemotron_h_trt_native_routing.py
+  - tests/python-unittests/test_trt_native_moe_w4a4.py
+
   # Token-major and legacy QKV concat plugin contracts
   - tests/python-unittests/test_qkv_concat_plugin.py
 
   # Dense NVFP4 TP2 export contract shared by Qwen and other dense models
   - tests/python-unittests/test_quantize_activations.py::test_tp2_dense_nvfp4_token_matrix_exports_rank2_gemm
+
+  # EAGLE-4 drafters and Qwen3.5 EAGLE bases
+  - tests/python-unittests/test_eagle4_draft.py
+  - tests/python-unittests/test_eagle_hidden_layers.py::test_qwen35_eagle_base_feeds_layer_outputs
+
+  # AWQ smoothing stays off an FP8 / NVFP4 lm_head
+  - tests/python-unittests/test_quantize_lm_head_smoothing.py
 
   # LayerNorm plugin tests
   - tests/python-unittests/test_layernorm_plugin.py
@@ -227,6 +324,15 @@ tests:
   - tests/python-unittests/test_vit_attention_plugin.py::test_window_partition
   - tests/python-unittests/test_vit_attention_plugin.py::test_head_sweep
   - tests/python-unittests/test_vit_attention_plugin.py::test_batch_invariance
+
+  # Qwen3-Omni audio tower attention: plugin path vs dense mask
+  - tests/python-unittests/test_qwen3_omni_audio_attention_plugin.py::test_plugin_matches_dense_mask
+  - tests/python-unittests/test_qwen3_omni_audio_attention_plugin.py::test_plugin_attends_only_inside_its_window
+  - tests/python-unittests/test_qwen3_omni_audio_attention_plugin.py::test_plugin_call_carries_the_head_geometry
+  - tests/python-unittests/test_qwen3_omni_audio_attention_plugin.py::test_export_uses_ragged_descriptors_by_default
+  - tests/python-unittests/test_qwen3_omni_audio_attention_plugin.py::test_export_keeps_dense_mask_when_opted_out
+  - tests/python-unittests/test_qwen3_omni_audio_ragged_export.py::test_forward_override_passes_the_window_partition_to_every_layer
+  - tests/python-unittests/test_qwen3_omni_audio_ragged_export.py::test_exported_graph_runs_every_layer_on_the_plugin
 
   # Gemma4 audio attention plugin tests
   - tests/python-unittests/test_gemma4_audio_attention_plugin.py::test_prefill
@@ -248,8 +354,13 @@ tests:
   - tests/python-unittests/test_experimental_server_logit_bias.py
   - tests/python-unittests/test_experimental_server_guided_decoding.py
 
+  # IFB trace correctness checker (tests/ifb)
+  - tests/python-unittests/test_ifb_correctness.py
+  # Engine-stats, admission and trigger-lag checks of the IFB trace driver
+  - tests/python-unittests/test_ifb_trace_expectations.py
+
   # Audio preprocessing (C++ mel FE vs HF transformers; skips without the
-  # pybind runtime / transformers / soundfile)
+  # nanobind runtime / transformers / soundfile)
   - tests/python-unittests/test_preprocess_audio.py::test_mel_accuracy_whisper
   - tests/python-unittests/test_preprocess_audio.py::test_mel_accuracy_parakeet
   - tests/python-unittests/test_preprocess_audio.py::test_load_audio_buffer_from_bytes_smoke
@@ -322,7 +433,7 @@ tests:
   - tests/python-unittests/test_preprocess_video.py::test_error_messages_never_echo_data_urls
   - tests/python-unittests/test_preprocess_video.py::test_underreported_frame_count_samples_reported_range
   - tests/python-unittests/test_preprocess_video.py::test_overreported_frame_count_rejects_explicit_nframes
-  - tests/python-unittests/test_preprocess_video.py::test_pybind_video_rejects_non_finite_time_values
+  - tests/python-unittests/test_preprocess_video.py::test_nanobind_video_rejects_non_finite_time_values
   - tests/python-unittests/test_preprocess_video.py::test_qwen3d_infeasible_profile_raises
   - tests/python-unittests/test_preprocess_video.py::test_qwen3_still_image_uses_3d_exact_shape
   - tests/python-unittests/test_preprocess_video.py::test_cu_capacity_from_builder_recording
@@ -331,13 +442,22 @@ tests:
 
   # Context-reuse pipeline configuration tests
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_build_and_inference_commands_share_engine
-  - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_snapshot_budgets_require_enable_token
+  - tests/python-unittests/test_pipeline_context_reuse.py::test_model_manifest_keeps_context_reuse_out_of_build_parameters
+  - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_max_snapshots_require_enable_token
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_profile_requires_positive_reused_tokens
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_fixture_has_strict_prefix_seed
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_cold_and_hit_outputs_are_token_identical
   - tests/python-unittests/test_pipeline_context_reuse.py::test_spec_prefill_evict_fixture_and_survivor_equivalence
 
-  # pi0.5 action comparator tests
-  - tests/python-unittests/test_pi05_action_comparator.py::test_a_bad_second_entry_is_not_diluted_by_a_good_first
-  - tests/python-unittests/test_pi05_action_comparator.py::test_a_single_entry_passes
-  - tests/python-unittests/test_pi05_action_comparator.py::test_every_entry_must_clear_the_ceiling
+  # In-flight-batching model-case routing and the compact_engine_tests and
+  # ifb_trace L0 gates
+  - tests/python-unittests/test_pipeline_in_flight_batching.py
+
+  # media_ipc_server answer checks
+  - tests/python-unittests/test_pipeline_media_ipc_server.py
+
+  # shared action comparator tests (pi0.5, GR00T)
+  - tests/python-unittests/test_action_comparator.py::test_a_bad_second_entry_is_not_diluted_by_a_good_first
+  - tests/python-unittests/test_action_comparator.py::test_a_single_entry_passes
+  - tests/python-unittests/test_action_comparator.py::test_a_flat_cli_chunk_is_reshaped_to_the_reference
+  - tests/python-unittests/test_action_comparator.py::test_every_entry_must_clear_the_ceiling

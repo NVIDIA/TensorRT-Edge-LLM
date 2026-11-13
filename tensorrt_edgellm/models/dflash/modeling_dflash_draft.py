@@ -54,7 +54,7 @@ from ..gemma4.modeling_gemma4_text import (Gemma4MLP, Gemma4RMSNorm,
                                            _rotary_dim_from_rope_config,
                                            _uses_attention_k_eq_v)
 # yapf: enable
-from ..linear import FP16Linear, is_int4_linear, make_linear
+from ..linear import FP16Linear, make_linear, requires_qkv_concat
 from ..ops import (KV_PAGE_SIZE, attention_plugin,
                    dflash_target_kv_cache_update, qkv_concat)
 
@@ -142,11 +142,14 @@ class DFlashCachedAttention(nn.Module):
                                         if self.attention_type
                                         == "sliding_attention" else -1)
         else:
+            self.attention_type = _attention_type_for_layer(config, layer_idx)
             self.attention_k_eq_v = False
             self.num_heads = config.num_attention_heads
             self.num_kv_heads = config.num_key_value_heads
             self.head_dim = config.head_dim
-            self.sliding_window_size = config.sliding_window_size
+            self.sliding_window_size = (config.sliding_window_size
+                                        if self.attention_type
+                                        == "sliding_attention" else -1)
         self.attention_scale = config.attention_scaling
         self.hidden_size = config.hidden_size
 
@@ -175,13 +178,27 @@ class DFlashCachedAttention(nn.Module):
         qkv_projections = [self.q_proj, self.k_proj]
         if not self.attention_k_eq_v:
             qkv_projections.append(self.v_proj)
-        self._uses_int4_qkv = any(
-            is_int4_linear(proj) for proj in qkv_projections)
+        self._uses_qkv_concat = requires_qkv_concat(*qkv_projections)
         norm_cls = Gemma4RMSNorm if self.is_gemma4 else RMSNorm
         self.q_norm = norm_cls(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = norm_cls(self.head_dim, eps=config.rms_norm_eps)
         self.v_norm = (Gemma4ValueRMSNorm(self.head_dim, config.rms_norm_eps)
                        if self.is_gemma4 and config.has_value_norm else None)
+
+        # The plugin takes sinks as an ONNX constant, so the export pass copies
+        # the loaded buffer into this list before tracing.
+        self._attention_sinks_list: list = []
+        if config.attention_sink_bias:
+            self.register_buffer("attention_sink_bias",
+                                 torch.zeros(self.num_heads,
+                                             dtype=torch.float32),
+                                 persistent=True)
+
+    def _capture_attention_sink_list(self) -> None:
+        sink = getattr(self, "attention_sink_bias", None)
+        if sink is not None:
+            self._attention_sinks_list = sink.detach().to(
+                torch.float32).cpu().flatten().tolist()
 
     def _project_output(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if self.fp32_output and isinstance(
@@ -251,7 +268,7 @@ class DFlashCachedAttention(nn.Module):
         # --- AttentionPlugin: proposal attention over full context ---
         # (packed QKV: dflash applies q/k_norm explicitly above, so pack here)
         attn_4d, present_kv = attention_plugin(
-            (qkv_concat(q, k_self, v_self) if self._uses_int4_qkv else
+            (qkv_concat(q, k_self, v_self) if self._uses_qkv_concat else
              torch.cat([q, k_self, v_self], dim=-1)),
             updated_kv,
             context_lengths,
@@ -267,7 +284,7 @@ class DFlashCachedAttention(nn.Module):
             attention_scale=self.attention_scale,
             enable_context_mask_selector=False,
             enable_vision_block_attention=False,
-            skip_softmax_scale_factor=0.0,
+            skip_softmax_prefill_input=0,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
             qkv_scales=[1.0, 1.0, 1.0])
@@ -279,7 +296,12 @@ class DFlashCachedAttention(nn.Module):
         return attn_output, present_kv
 
     def _ragged_attention_kwargs(self) -> dict:
-        return {}
+        if not self._attention_sinks_list:
+            return {}
+        return {
+            "attention_sinks": self._attention_sinks_list,
+            "enable_attention_sink": 1,
+        }
 
     def forward_ragged(self, hidden_states: torch.Tensor,
                        h_delta: torch.Tensor, past_key_value: torch.Tensor,
@@ -327,7 +349,7 @@ class DFlashCachedAttention(nn.Module):
                                self.head_dim))
         v_self = v_self.reshape(physical_tokens,
                                 self.num_kv_heads * self.head_dim)
-        qkv = (qkv_concat(q, k_self, v_self) if self._uses_int4_qkv else
+        qkv = (qkv_concat(q, k_self, v_self) if self._uses_qkv_concat else
                torch.cat([q, k_self, v_self], dim=-1))
         attn_output, present_kv = attention_plugin(
             qkv,
@@ -345,7 +367,7 @@ class DFlashCachedAttention(nn.Module):
             attention_scale=self.attention_scale,
             enable_context_mask_selector=False,
             enable_vision_block_attention=False,
-            skip_softmax_scale_factor=0.0,
+            skip_softmax_prefill_input=0,
             attention_mask=packed_attention_mask,
             attention_pos_id=attention_position_ids,
             qkv_scales=[1.0, 1.0, 1.0],
@@ -405,6 +427,8 @@ class DFlashCachedDecoderLayer(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         residual = hidden_states
         normed = self.input_layernorm(hidden_states)
+        if self.overflow_guard:
+            normed = normed.to(h_delta.dtype)
 
         attn_output, present_kv = self.self_attn(
             normed, h_delta, past_key_value, rope_cos_sin, kvcache_start_index,
@@ -432,7 +456,9 @@ class DFlashCachedDecoderLayer(nn.Module):
                 hidden_states = hidden_states + mlp_output
             else:
                 hidden_states = residual + attn_output
-                hidden_states = hidden_states + self.mlp(
+
+                residual = hidden_states
+                hidden_states = residual + self.mlp(
                     self.post_attention_layernorm(hidden_states))
 
         return hidden_states, present_kv
@@ -564,11 +590,14 @@ class DFlashDraftModel(nn.Module):
             for i in range(config.num_hidden_layers)
         ])
         self.norm = norm_cls(hidden_size, config.rms_norm_eps)
+        output_vocab_size = config.reduced_vocab_size or config.vocab_size
         self.lm_head = make_linear(config,
                                    hidden_size,
-                                   config.vocab_size,
+                                   output_vocab_size,
                                    bias=False,
                                    module_name="lm_head")
+        self.register_buffer("draft_vocab_map",
+                             torch.zeros(output_vocab_size, dtype=torch.int64))
 
     def forward(
         self,
@@ -620,7 +649,7 @@ class DFlashDraftModel(nn.Module):
         if self.config.dflash_shift_label:
             hidden_states = torch.cat(
                 [hidden_states[:, :1], hidden_states[:, :-1]], dim=1)
-        hidden_states = self.norm(hidden_states)
+        hidden_states = self.norm(hidden_states).to(inputs_embeds.dtype)
         logits = self.lm_head(hidden_states).to(torch.float32)
         final_logit_softcapping = getattr(self.config,
                                           "final_logit_softcapping", None)
@@ -630,9 +659,15 @@ class DFlashDraftModel(nn.Module):
 
         return logits, present_key_values
 
-    def forward_ragged(self, inputs_embeds: torch.Tensor,
-                       target_hidden_concat: torch.Tensor,
-                       past_key_values: Tuple[torch.Tensor, ...], **metadata):
+    def _run_ragged_backbone(self, inputs_embeds: torch.Tensor,
+                             target_hidden_concat: torch.Tensor,
+                             past_key_values: Tuple[torch.Tensor,
+                                                    ...], **metadata):
+        """Target-hidden projection plus the decoder stack on token-major inputs.
+
+        Returns the pre-norm hidden states ``[tokens, H]`` and the per-layer
+        present KV tuple; heads (DFlash V1, Domino) consume them differently.
+        """
         if self.fc_native_precision:
             h_delta_acc = self.fc(target_hidden_concat.to(torch.float16))
         else:
@@ -648,6 +683,19 @@ class DFlashDraftModel(nn.Module):
                 hidden_states, h_delta, past_key_values[layer_idx],
                 metadata["rope_rotary_cos_sin"], **metadata)
             present.append(present_kv)
+        return hidden_states, tuple(present)
+
+    def _softcap_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        cap = getattr(self.config, "final_logit_softcapping", None)
+        if cap is None:
+            return logits
+        return torch.tanh(logits / cap) * cap
+
+    def forward_ragged(self, inputs_embeds: torch.Tensor,
+                       target_hidden_concat: torch.Tensor,
+                       past_key_values: Tuple[torch.Tensor, ...], **metadata):
+        hidden_states, present = self._run_ragged_backbone(
+            inputs_embeds, target_hidden_concat, past_key_values, **metadata)
         if self.config.dflash_shift_label:
             # Row i of each block then predicts token i, matching the runtime
             # contract; the shifted-in row lands on the ignored anchor row 0.
@@ -655,10 +703,7 @@ class DFlashDraftModel(nn.Module):
                                       dim=0)
         logits = self.lm_head(
             self.norm(hidden_states).to(inputs_embeds.dtype)).to(torch.float32)
-        cap = getattr(self.config, "final_logit_softcapping", None)
-        if cap is not None:
-            logits = torch.tanh(logits / cap) * cap
-        return logits, tuple(present)
+        return self._softcap_logits(logits), present
 
     # ------------------------------------------------------------------
     # ONNX export

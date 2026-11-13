@@ -19,6 +19,7 @@
 #include "common/stringUtils.h"
 #include "embeddingKernels.h"
 #include "kernels/common/vectorizedTypes.cuh"
+#include <cmath>
 #include <cub/block/block_scan.cuh>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -56,12 +57,13 @@ struct Fp8EmbeddingLoader
     float const* scales{nullptr};
     int64_t blockSize{0};
     int64_t nGroups{0};
+    int64_t rowBlockSize{1};
 
     __device__ __forceinline__ void load(int32_t tokenId, int64_t hiddenSize, uint32_t offset, DVec<half>& out) const
     {
         // Determine which scale group this offset belongs to
         int64_t const group = static_cast<int64_t>(offset) / blockSize;
-        float const scale = scales[static_cast<int64_t>(tokenId) * nGroups + group];
+        float const scale = scales[(static_cast<int64_t>(tokenId) / rowBlockSize) * nGroups + group];
 
         // Load FP8 values and dequantize to FP16
         DVec<__nv_fp8_e4m3> in;
@@ -70,6 +72,41 @@ struct Fp8EmbeddingLoader
         for (uint32_t i = 0; i < vecSize; ++i)
         {
             out[i] = __float2half(static_cast<float>(in[i]) * scale);
+        }
+    }
+};
+
+__device__ __forceinline__ float decodeE2m1(uint8_t nibble)
+{
+    uint32_t const magnitude = nibble & 0x7U;
+    float value = magnitude == 0U ? 0.0F : magnitude == 1U ? 0.5F : __uint_as_float(0x3F000000U + (magnitude << 22U));
+    return (nibble & 0x8U) != 0U ? -value : value;
+}
+
+//! \brief Packed NVFP4 loader. Only the requested rows are decoded; no dense FP16 table is created.
+struct Nvfp4EmbeddingLoader
+{
+    static constexpr uint32_t vecSize = DVec<half>::vec_size;
+    uint8_t const* table{nullptr};
+    __nv_fp8_e4m3 const* scales{nullptr};
+    int64_t packedRowSize{0};
+    int64_t groupSize{0};
+    int64_t nGroups{0};
+    float scalarScale{1.0F};
+
+    __device__ __forceinline__ void load(int32_t tokenId, int64_t, uint32_t offset, DVec<half>& out) const
+    {
+        int64_t const rowOffset = static_cast<int64_t>(tokenId) * packedRowSize;
+        int64_t const scaleOffset = static_cast<int64_t>(tokenId) * nGroups + static_cast<int64_t>(offset) / groupSize;
+        float const scale = static_cast<float>(scales[scaleOffset]) * scalarScale;
+
+#pragma unroll
+        for (uint32_t i = 0; i < vecSize / 2; ++i)
+        {
+            uint8_t const packed = table[rowOffset + offset / 2 + i];
+            // The provider contract stores the even element in the low nibble and the odd element in the high.
+            out[2 * i] = __float2half(decodeE2m1(packed & 0xFU) * scale);
+            out[2 * i + 1] = __float2half(decodeE2m1(packed >> 4U) * scale);
         }
     }
 };
@@ -104,8 +141,7 @@ __global__ void assembleDeepstackEmbeddingKernel(int32_t const* inputIds, half c
     // feature row is selected via multimodalIndices.
     bool const isImageToken = (imageTokenId > 0 && tokenId == imageTokenId);
 
-    // Calculate base indices for this warp's work
-    uint32_t const baseOutputIdx = warpId * hiddenSize;
+    int64_t const baseOutputIdx = pos * hiddenSize;
 
     // Each thread processes vecSize elements, loop until we cover the entire hidden state
     for (uint32_t offset = laneId * vecSize; offset < hiddenSize; offset += warpSize * vecSize)
@@ -117,11 +153,12 @@ __global__ void assembleDeepstackEmbeddingKernel(int32_t const* inputIds, half c
             // Select the deepstack feature row for this image position.
             int32_t const deepstackIdx = multimodalIndices[pos];
 
-            // Validate that deepstackIdx is within bounds
+            // -1 marks a placeholder-id token with no feature row, e.g. a compact-step decode row that
+            // sampled the image token id; it gets a zero row.
             if (deepstackIdx >= 0 && deepstackIdx < numImageTokens)
             {
                 // Load embedding data from deepstack features
-                uint32_t const embeddingOffset = deepstackIdx * hiddenSize + offset;
+                int64_t const embeddingOffset = static_cast<int64_t>(deepstackIdx) * hiddenSize + offset;
                 embeddingVec.load(deepstackFeatures + embeddingOffset);
             }
             else
@@ -145,7 +182,7 @@ __global__ void assembleDeepstackEmbeddingKernel(int32_t const* inputIds, half c
         }
 
         // Store to output
-        uint32_t const outputIdx = baseOutputIdx + offset;
+        int64_t const outputIdx = baseOutputIdx + offset;
         embeddingVec.store(output + outputIdx);
     }
 }
@@ -202,7 +239,8 @@ __global__ void embeddingLookupKernelImpl(int32_t const* inputIds, TLoader loade
         isValidTextToken = (tokenId >= 0 && tokenId < vocabSize);
     }
 
-    uint32_t const baseOutputIdx = warpId * hiddenSize;
+    // Row offsets are 64-bit: per-slot multimodal reservations can hold more than 2^32 elements.
+    int64_t const baseOutputIdx = static_cast<int64_t>(warpId) * hiddenSize;
 
     // Each thread processes vecSize elements, loop until we cover the entire hidden state
     for (uint32_t offset = laneId * vecSize; offset < hiddenSize; offset += warpSize * vecSize)
@@ -217,13 +255,13 @@ __global__ void embeddingLookupKernelImpl(int32_t const* inputIds, TLoader loade
         else if (isValidImageToken)
         {
             // Load from FP16 imageEmbeds directly
-            uint32_t const embeddingOffset = multimodalIdx * hiddenSize + offset;
+            int64_t const embeddingOffset = static_cast<int64_t>(multimodalIdx) * hiddenSize + offset;
             embeddingVec.load(imageEmbeds + embeddingOffset);
         }
         else if (isValidAudioToken)
         {
             // Load from FP16 audioEmbeds directly
-            uint32_t const embeddingOffset = multimodalIdx * hiddenSize + offset;
+            int64_t const embeddingOffset = static_cast<int64_t>(multimodalIdx) * hiddenSize + offset;
             embeddingVec.load(audioEmbeds + embeddingOffset);
         }
         else
@@ -237,7 +275,7 @@ __global__ void embeddingLookupKernelImpl(int32_t const* inputIds, TLoader loade
         }
 
         // Store to output
-        uint32_t const outputIdx = baseOutputIdx + offset;
+        int64_t const outputIdx = baseOutputIdx + offset;
         embeddingVec.store(output + outputIdx);
     }
 }
@@ -266,67 +304,6 @@ void launchEmbeddingLookupKernel(int32_t const* inputIds, TLoader const& loader,
 }
 
 } // namespace
-
-template <typename T>
-__global__ void gemma4PleGatherKernel(int32_t const* inputIds, T const* pleTable, T* outputBuffer,
-    int64_t layerOutputCapacity, int64_t batchSize, int64_t seqLen, int32_t vocabSize, int32_t numLayers,
-    int32_t pleHiddenSize, int32_t imageTokenId, int32_t audioTokenId, int32_t padTokenId)
-{
-    int64_t const seqIdx = blockIdx.x;
-    int64_t const batchIdx = blockIdx.y;
-    int32_t const layerIdx = blockIdx.z;
-
-    if (batchIdx >= batchSize || seqIdx >= seqLen || layerIdx >= numLayers)
-    {
-        return;
-    }
-
-    int64_t const tokenOffset = batchIdx * seqLen + seqIdx;
-    int32_t tokenId = inputIds[tokenOffset];
-    // Media placeholders take the PAD row, matching the HF reference.
-    if ((imageTokenId >= 0 && tokenId == imageTokenId) || (audioTokenId >= 0 && tokenId == audioTokenId))
-    {
-        tokenId = padTokenId;
-    }
-    bool const zeroFill = tokenId < 0 || tokenId >= vocabSize;
-
-    int64_t const outputOffset = static_cast<int64_t>(layerIdx) * layerOutputCapacity + tokenOffset * pleHiddenSize;
-    int64_t const tableOffset = (static_cast<int64_t>(tokenId) * numLayers + layerIdx) * pleHiddenSize;
-
-    constexpr uint32_t kVecSize = DVec<T>::vec_size;
-    for (int32_t hiddenIdx = threadIdx.x * kVecSize; hiddenIdx < pleHiddenSize; hiddenIdx += blockDim.x * kVecSize)
-    {
-        DVec<T> valueVec;
-        if (zeroFill)
-        {
-#pragma unroll
-            for (uint32_t i = 0; i < kVecSize; ++i)
-            {
-                valueVec[i] = T{};
-            }
-        }
-        else
-        {
-            valueVec.load(pleTable + tableOffset + hiddenIdx);
-        }
-        valueVec.store(outputBuffer + outputOffset + hiddenIdx);
-    }
-}
-
-template <typename T>
-void launchGemma4PleGather(int32_t const* inputIds, T const* pleTable, T* outputBuffer, int64_t layerOutputCapacity,
-    int64_t batchSize, int64_t seqLen, int32_t vocabSize, int32_t numLayers, int32_t pleHiddenSize,
-    int32_t imageTokenId, int32_t audioTokenId, int32_t padTokenId, cudaStream_t stream)
-{
-    constexpr uint32_t kVecSize = DVec<T>::vec_size;
-    check::check(pleHiddenSize % kVecSize == 0,
-        format::fmtstr("pleHiddenSize must be a multiple of %d for vectorized access", kVecSize));
-
-    dim3 const grid(seqLen, batchSize, numLayers);
-    dim3 const block(256);
-    gemma4PleGatherKernel<<<grid, block, 0, stream>>>(inputIds, pleTable, outputBuffer, layerOutputCapacity, batchSize,
-        seqLen, vocabSize, numLayers, pleHiddenSize, imageTokenId, audioTokenId, padTokenId);
-}
 
 constexpr int32_t kMetadataScanThreads{256};
 
@@ -470,8 +447,8 @@ void generateMultimodalIndices(rt::Tensor const& inputIds, rt::Tensor& multimoda
     check::check(inputShape.getNumDims() == 2, "inputIds must be 2D tensor [batchSize, seqLen]");
     check::check(multimodalIndices.getShape().volume() == inputShape.volume(),
         "multimodalIndices must have the same element count as inputIds");
-    check::check(inputIds.getDataType() == nvinfer1::DataType::kINT32, "inputIds must be INT32");
-    check::check(multimodalIndices.getDataType() == nvinfer1::DataType::kINT32, "multimodalIndices must be INT32");
+    check::check(inputIds.getDataType() == trt_edgellm::DataType::kINT32, "inputIds must be INT32");
+    check::check(multimodalIndices.getDataType() == trt_edgellm::DataType::kINT32, "multimodalIndices must be INT32");
 
     int32_t const batchSize = static_cast<int32_t>(inputShape[0]);
     int64_t const seqLen = inputShape[1];
@@ -536,9 +513,9 @@ void generateVisionBlockIds(
     auto const shape = inputIds.getShape();
     check::check(shape.getNumDims() == 2, "inputIds must be 2D tensor");
     check::check(inputIds.getDeviceType() == rt::DeviceType::kGPU, "inputIds must be a GPU tensor");
-    check::check(inputIds.getDataType() == nvinfer1::DataType::kINT32, "inputIds must have INT32 dtype");
+    check::check(inputIds.getDataType() == trt_edgellm::DataType::kINT32, "inputIds must have INT32 dtype");
     check::check(visionBlockIds.getDeviceType() == rt::DeviceType::kGPU
-            && visionBlockIds.getDataType() == nvinfer1::DataType::kINT32
+            && visionBlockIds.getDataType() == trt_edgellm::DataType::kINT32
             && visionBlockIds.getShape().volume() == shape.volume(),
         "visionBlockIds must be an equally-sized GPU INT32 tensor");
     check::check(imageTokenId >= 0, "imageTokenId must be non-negative");
@@ -572,9 +549,9 @@ void assembleDeepstackEmbedding(rt::Tensor const& inputIds, rt::Tensor const& de
     check::check(outputShape[2] == hiddenSize, "Output hidden size mismatch");
 
     // Validate data types
-    check::check(inputIds.getDataType() == nvinfer1::DataType::kINT32, "inputIds must be INT32");
-    check::check(deepstackFeatures.getDataType() == nvinfer1::DataType::kHALF, "deepstackFeatures must be FP16");
-    check::check(deepstackEmbeds.getDataType() == nvinfer1::DataType::kHALF, "deepstackEmbeds must be FP16");
+    check::check(inputIds.getDataType() == trt_edgellm::DataType::kINT32, "inputIds must be INT32");
+    check::check(deepstackFeatures.getDataType() == trt_edgellm::DataType::kHALF, "deepstackFeatures must be FP16");
+    check::check(deepstackEmbeds.getDataType() == trt_edgellm::DataType::kHALF, "deepstackEmbeds must be FP16");
 
     // Get device pointers
     int32_t const* inputIdsPtr = inputIds.dataPointer<int32_t>();
@@ -601,25 +578,41 @@ void assembleDeepstackEmbedding(rt::Tensor const& inputIds, rt::Tensor const& de
         outputPtr, batchSize, seqLen, imageTokenId, hiddenSize, numImageTokens, multimodalIndicesPtr);
 }
 
-void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTable, rt::OptionalInputTensor scales,
-    rt::Tensor& output, cudaStream_t stream, rt::OptionalInputTensor multimodalIndices,
+static void embeddingLookupImpl(rt::Tensor const& inputIds, rt::Tensor const& embeddingTable,
+    rt::OptionalInputTensor scales, rt::Tensor& output, cudaStream_t stream, rt::OptionalInputTensor multimodalIndices,
     std::optional<int32_t> imageTokenId, rt::OptionalInputTensor imageEmbeds, std::optional<int32_t> audioTokenId,
-    rt::OptionalInputTensor audioEmbeds)
+    rt::OptionalInputTensor audioEmbeds, EmbeddingTableDescriptor const* descriptor)
 {
     // Validate input shapes
     auto const inputShape = inputIds.getShape();
     auto const embeddingShape = embeddingTable.getShape();
     auto const outputShape = output.getShape();
 
-    check::check(inputShape.getNumDims() == 2, "inputIds must be 2D tensor [batchSize, seqLen]");
+    check::check(inputShape.getNumDims() == 1 || inputShape.getNumDims() == 2,
+        "inputIds must have shape [physicalTokens] or [batchSize, seqLen]");
     check::check(embeddingShape.getNumDims() == 2, "embeddingTable must be 2D tensor [vocabSize, hiddenSize]");
     check::check(outputShape.getNumDims() == 2 || outputShape.getNumDims() == 3,
         "output must be token-major [physicalTokens, hiddenSize] or [batchSize, seqLen, hiddenSize]");
 
-    int64_t const batchSize = inputShape[0];
-    int64_t const seqLen = inputShape[1];
-    int32_t const vocabSize = static_cast<int32_t>(embeddingShape[0]);
-    int64_t const hiddenSize = embeddingShape[1];
+    bool const flat = inputShape.getNumDims() == 1;
+    int64_t const batchSize = flat ? 1 : inputShape[0];
+    int64_t const seqLen = flat ? inputShape[0] : inputShape[1];
+
+    if (descriptor != nullptr)
+    {
+        check::check(descriptor->logicalShape.getNumDims() == 2,
+            "embedding descriptor logicalShape must be [vocabSize, hiddenSize]");
+        check::check(descriptor->packedShape == embeddingShape,
+            "embedding descriptor packedShape must match the embedding table shape");
+        check::check(descriptor->packedDataType == embeddingTable.getDataType(),
+            "embedding descriptor packedDataType must match the embedding table datatype");
+    }
+
+    auto const& logicalShape = descriptor == nullptr ? embeddingShape : descriptor->logicalShape;
+    int32_t const vocabSize = static_cast<int32_t>(logicalShape[0]);
+    int64_t const hiddenSize = logicalShape[1];
+    check::check(
+        logicalShape[0] == embeddingShape[0], "embedding descriptor logical and packed vocab dimensions must match");
 
     // Validate output shape
     if (outputShape.getNumDims() == 2)
@@ -635,8 +628,8 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
     }
 
     // Validate common data types for required inputs
-    check::check(inputIds.getDataType() == nvinfer1::DataType::kINT32, "inputIds must be INT32");
-    check::check(output.getDataType() == nvinfer1::DataType::kHALF, "output must be FP16");
+    check::check(inputIds.getDataType() == trt_edgellm::DataType::kINT32, "inputIds must be INT32");
+    check::check(output.getDataType() == trt_edgellm::DataType::kHALF, "output must be FP16");
 
     // Handle optional image parameters
     bool const hasImage = imageTokenId.has_value() && imageEmbeds.has_value();
@@ -645,7 +638,7 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
         auto const imageShape = imageEmbeds->get().getShape();
         check::check(imageShape.getNumDims() == 2, "imageEmbeds must be 2D tensor [imageTokenLen, hiddenSize]");
         check::check(imageShape[1] == hiddenSize, "Hidden size mismatch between embeddingTable and imageEmbeds");
-        check::check(imageEmbeds->get().getDataType() == nvinfer1::DataType::kHALF, "imageEmbeds must be FP16");
+        check::check(imageEmbeds->get().getDataType() == trt_edgellm::DataType::kHALF, "imageEmbeds must be FP16");
     }
 
     // Handle optional audio parameters
@@ -655,7 +648,7 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
         auto const audioShape = audioEmbeds->get().getShape();
         check::check(audioShape.getNumDims() == 2, "audioEmbeds must be 2D tensor [audioTokenLen, hiddenSize]");
         check::check(audioShape[1] == hiddenSize, "Hidden size mismatch between embeddingTable and audioEmbeds");
-        check::check(audioEmbeds->get().getDataType() == nvinfer1::DataType::kHALF, "audioEmbeds must be FP16");
+        check::check(audioEmbeds->get().getDataType() == trt_edgellm::DataType::kHALF, "audioEmbeds must be FP16");
     }
 
     // Validate that imageTokenId and audioTokenId are different when both are present
@@ -676,7 +669,7 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
         check::check(multimodalIndicesShape[0] == batchSize, "multimodalIndices batch size mismatch");
         check::check(multimodalIndicesShape[1] == seqLen, "multimodalIndices sequence length mismatch");
         check::check(
-            multimodalIndices->get().getDataType() == nvinfer1::DataType::kINT32, "multimodalIndices must be INT32");
+            multimodalIndices->get().getDataType() == trt_edgellm::DataType::kINT32, "multimodalIndices must be INT32");
     }
 
     // Extract values for kernel - use safe defaults when modalities are absent
@@ -693,24 +686,71 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
     int32_t const* multimodalIndicesPtr = hasMultimodal ? multimodalIndices->get().dataPointer<int32_t>() : nullptr;
     half* outputPtr = output.dataPointer<half>();
 
-    // Dispatch based on embedding table datatype
-    bool const isFP8Embedding = (embeddingTable.getDataType() == nvinfer1::DataType::kFP8);
-    if (isFP8Embedding)
+    EmbeddingTableFormat const format = descriptor != nullptr         ? descriptor->format
+        : embeddingTable.getDataType() == trt_edgellm::DataType::kFP8 ? EmbeddingTableFormat::kFP8
+                                                                      : EmbeddingTableFormat::kFP16;
+
+    if (format == EmbeddingTableFormat::kNVFP4)
+    {
+#if SUPPORTS_FP8
+        check::check(descriptor != nullptr, "packed NVFP4 embedding tables require an explicit descriptor");
+        check::check(embeddingTable.getDataType() == trt_edgellm::DataType::kUINT8,
+            "packed NVFP4 embedding storage must use an unsigned byte tensor");
+        check::check(hiddenSize > 0 && hiddenSize % 2 == 0, "NVFP4 logical hidden size must be positive and even");
+        check::check(
+            embeddingShape[1] == hiddenSize / 2, "NVFP4 packed table width must be half the logical hidden size");
+        check::check(descriptor->groupSize > 0 && hiddenSize % descriptor->groupSize == 0,
+            "NVFP4 logical hidden size must be divisible by groupSize");
+        check::check(descriptor->groupSize % Nvfp4EmbeddingLoader::vecSize == 0,
+            "NVFP4 groupSize must be a multiple of the vector width");
+        check::check(scales.has_value(), "NVFP4 block scales are required");
+        check::check(std::isfinite(descriptor->multiplierGlobalScale), "NVFP4 multiplier global scale must be finite");
+        check::check(std::isfinite(descriptor->modelOutputScale), "NVFP4 model output scale must be finite");
+        check::check(std::isfinite(descriptor->multiplierGlobalScale * descriptor->modelOutputScale),
+            "NVFP4 combined scalar scale must be finite");
+
+        auto const& scalesTensor = scales->get();
+        int64_t const nGroups = hiddenSize / descriptor->groupSize;
+        rt::Coords const expectedScaleShape{vocabSize, nGroups};
+        check::check(descriptor->scaleShape == expectedScaleShape,
+            "NVFP4 descriptor scaleShape must be [vocabSize, hiddenSize / groupSize]");
+        check::check(
+            scalesTensor.getShape() == expectedScaleShape, "NVFP4 block scale shape must match the descriptor");
+        check::check(descriptor->scaleDataType == trt_edgellm::DataType::kFP8
+                && scalesTensor.getDataType() == trt_edgellm::DataType::kFP8,
+            "NVFP4 block scales must use FP8 E4M3");
+
+        Nvfp4EmbeddingLoader loader{embeddingTable.dataPointer<uint8_t>(), scalesTensor.dataPointer<__nv_fp8_e4m3>(),
+            embeddingShape[1], descriptor->groupSize, nGroups,
+            descriptor->multiplierGlobalScale * descriptor->modelOutputScale};
+        launchEmbeddingLookupKernel(inputIdsPtr, loader, multimodalIndicesPtr, imageTokenIdValue, imageEmbedsPtr,
+            imageTokenLen, audioTokenIdValue, audioEmbedsPtr, audioTokenLen, outputPtr, batchSize, seqLen, vocabSize,
+            hiddenSize, stream);
+#else
+        check::check(
+            false, "NVFP4 embedding lookup is unavailable: build does not support FP8 block scales (SUPPORTS_FP8=0)");
+#endif
+    }
+    else if (format == EmbeddingTableFormat::kFP8)
     {
 #if SUPPORTS_FP8
         constexpr uint32_t vecSize = DVec<__nv_fp8_e4m3>::vec_size;
+        check::check(embeddingTable.getDataType() == trt_edgellm::DataType::kFP8,
+            "FP8 embedding table descriptor requires FP8 storage");
         check::check(scales.has_value(), "scales must be provided for FP8 embedding table");
         auto const& scalesTensor = scales.value().get();
         auto const scaleShape = scalesTensor.getShape();
 
-        check::check(scaleShape.getNumDims() == 2, "scales must be 2D tensor [vocabSize, hiddenSize / blockSize]");
-        check::check(scaleShape[0] == vocabSize, "Scale vocab size must match embeddingTable vocab size");
+        check::check(scaleShape.getNumDims() == 2, "scales must be a 2D tensor");
+        check::check(scaleShape[0] > 0 && vocabSize % scaleShape[0] == 0,
+            "Scale rows must evenly divide embeddingTable vocab size");
         check::check(scaleShape[1] > 0, "Scale second dimension must be positive");
         check::check(hiddenSize % scaleShape[1] == 0, "hiddenSize must be divisible by number of scale groups");
-        check::check(scalesTensor.getDataType() == nvinfer1::DataType::kFLOAT, "scales must be FP32");
+        check::check(scalesTensor.getDataType() == trt_edgellm::DataType::kFLOAT, "scales must be FP32");
 
         int64_t const nGroups = scaleShape[1];
         int64_t const blockSize = hiddenSize / nGroups;
+        int64_t const rowBlockSize = vocabSize / scaleShape[0];
         check::check(hiddenSize % vecSize == 0,
             format::fmtstr("hiddenSize must be a multiple of %d for efficient vectorized access", vecSize));
         check::check(blockSize % vecSize == 0,
@@ -719,7 +759,7 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
         __nv_fp8_e4m3 const* tablePtr = embeddingTable.dataPointer<__nv_fp8_e4m3>();
         float const* scalePtr = scalesTensor.dataPointer<float>();
 
-        Fp8EmbeddingLoader loader{tablePtr, scalePtr, blockSize, nGroups};
+        Fp8EmbeddingLoader loader{tablePtr, scalePtr, blockSize, nGroups, rowBlockSize};
         launchEmbeddingLookupKernel(inputIdsPtr, loader, multimodalIndicesPtr, imageTokenIdValue, imageEmbedsPtr,
             imageTokenLen, audioTokenIdValue, audioEmbedsPtr, audioTokenLen, outputPtr, batchSize, seqLen, vocabSize,
             hiddenSize, stream);
@@ -730,7 +770,10 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
     }
     else
     {
-        check::check(embeddingTable.getDataType() == nvinfer1::DataType::kHALF, "embeddingTable must be FP16 or FP8");
+        check::check(format == EmbeddingTableFormat::kFP16, "unsupported embedding table format");
+        check::check(embeddingTable.getDataType() == trt_edgellm::DataType::kHALF,
+            "FP16 embedding table descriptor requires FP16 storage");
+        check::check(!scales.has_value(), "FP16 embedding tables must not provide block scales");
         half const* embeddingTablePtr = embeddingTable.dataPointer<half>();
 
         Fp16EmbeddingLoader loader{embeddingTablePtr};
@@ -740,51 +783,29 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
     }
 }
 
-void gemma4PleGather(rt::Tensor const& inputIds, rt::Tensor const& pleTable, rt::Tensor& outputBuffer,
-    int32_t numLayers, int32_t pleHiddenSize, int32_t imageTokenId, int32_t audioTokenId, int32_t padTokenId,
-    cudaStream_t stream)
+void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTable, rt::OptionalInputTensor scales,
+    rt::Tensor& output, cudaStream_t stream, rt::OptionalInputTensor multimodalIndices,
+    std::optional<int32_t> imageTokenId, rt::OptionalInputTensor imageEmbeds, std::optional<int32_t> audioTokenId,
+    rt::OptionalInputTensor audioEmbeds)
 {
-    auto const inputShape = inputIds.getShape();
-    auto const tableShape = pleTable.getShape();
-    auto const outputShape = outputBuffer.getShape();
+    embeddingLookupImpl(inputIds, embeddingTable, scales, output, stream, multimodalIndices, imageTokenId, imageEmbeds,
+        audioTokenId, audioEmbeds, nullptr);
+}
 
-    check::check(inputShape.getNumDims() == 2, "inputIds must be 2D tensor [batchSize, seqLen]");
-    check::check(tableShape.getNumDims() == 2, "pleTable must be 2D tensor [vocabSize, numLayers * pleHiddenSize]");
-    check::check(outputShape.getNumDims() == 4,
-        "outputBuffer must be 4D tensor [numLayers, maxBatchSize, maxSeqLen, pleHiddenSize]");
-    check::check(inputIds.getDataType() == nvinfer1::DataType::kINT32, "inputIds must be INT32");
-    check::check(outputBuffer.getDataType() == pleTable.getDataType(), "outputBuffer dtype must match pleTable dtype");
-    check::check(numLayers > 0, "numLayers must be positive");
-    check::check(pleHiddenSize > 0, "pleHiddenSize must be positive");
-    check::check(outputShape[0] == numLayers, "outputBuffer first dimension must match numLayers");
-    check::check(outputShape[3] == pleHiddenSize, "outputBuffer hidden dimension must match pleHiddenSize");
-    check::check(tableShape[1] == static_cast<int64_t>(numLayers) * pleHiddenSize,
-        "pleTable second dimension must match numLayers * pleHiddenSize");
-    check::check(tableShape[0] <= std::numeric_limits<int32_t>::max(), "pleTable vocab dimension exceeds int32 range");
-    check::check(
-        pleTable.getDataType() == nvinfer1::DataType::kHALF || pleTable.getDataType() == nvinfer1::DataType::kBF16,
-        "pleTable must be FP16 or BF16");
-
-    int64_t const batchSize = inputShape[0];
-    int64_t const seqLen = inputShape[1];
-    check::check(batchSize <= outputShape[1], "inputIds batch size exceeds outputBuffer capacity");
-    check::check(seqLen <= outputShape[2], "inputIds sequence length exceeds outputBuffer capacity");
-
-    int64_t const layerOutputCapacity = outputShape[1] * outputShape[2] * pleHiddenSize;
-    int32_t const vocabSize = static_cast<int32_t>(tableShape[0]);
-    int32_t const* inputIdsPtr = inputIds.dataPointer<int32_t>();
-
-    if (pleTable.getDataType() == nvinfer1::DataType::kHALF)
+void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTable, rt::OptionalInputTensor scales,
+    EmbeddingTableDescriptor const& descriptor, rt::Tensor& output, cudaStream_t stream,
+    rt::OptionalInputTensor multimodalIndices, std::optional<int32_t> imageTokenId, rt::OptionalInputTensor imageEmbeds,
+    std::optional<int32_t> audioTokenId, rt::OptionalInputTensor audioEmbeds)
+{
+    if (descriptor.format == EmbeddingTableFormat::kNVFP4)
     {
-        launchGemma4PleGather(inputIdsPtr, pleTable.dataPointer<half>(), outputBuffer.dataPointer<half>(),
-            layerOutputCapacity, batchSize, seqLen, vocabSize, numLayers, pleHiddenSize, imageTokenId, audioTokenId,
-            padTokenId, stream);
+        embeddingLookupImpl(inputIds, embeddingTable, scales, output, stream, multimodalIndices, imageTokenId,
+            imageEmbeds, audioTokenId, audioEmbeds, &descriptor);
     }
     else
     {
-        launchGemma4PleGather(inputIdsPtr, pleTable.dataPointer<__nv_bfloat16>(),
-            outputBuffer.dataPointer<__nv_bfloat16>(), layerOutputCapacity, batchSize, seqLen, vocabSize, numLayers,
-            pleHiddenSize, imageTokenId, audioTokenId, padTokenId, stream);
+        embeddingLookup(inputIds, embeddingTable, scales, output, stream, multimodalIndices, imageTokenId, imageEmbeds,
+            audioTokenId, audioEmbeds);
     }
 }
 

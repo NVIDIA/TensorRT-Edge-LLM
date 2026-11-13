@@ -70,12 +70,23 @@ from gdn_prefill_blackwell_helpers import (
     make_smem_layout_b_kind,
     make_smem_layout_epi_kind,
 )
+from gdn_prefill_blackwell_ragged import GatedDeltaNetChunkedKernel
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from cutedsl_utils import aot_placeholders  # isort: skip
 
 # CuTe DSL 4.7 O3 spills heavily for this kernel on SM110.
 _GDN_COMPILE_OPTIONS = "--opt-level 2"
+_BLACKWELL_VARLEN_MAX_SM_COUNT = 256
+
+
+def _get_blackwell_varlen_sm_count():
+    num_sm = cutlass.utils.HardwareInfo().get_device_multiprocessor_count()
+    if num_sm <= 0 or num_sm > _BLACKWELL_VARLEN_MAX_SM_COUNT:
+        raise ValueError(
+            "Packed GDN requires the launch GPU SM count to be in [1, {}], got {}."
+            .format(_BLACKWELL_VARLEN_MAX_SM_COUNT, num_sm))
+    return num_sm
 
 
 def make_thread_cooperative_group(size: Int32):
@@ -4878,6 +4889,166 @@ def run_gdn_prefill_blackwell(
         state_tmp.copyto(h0_source)
 
 
+def run_gdn_prefill_blackwell_varlen(
+    q,
+    k,
+    v,
+    a,
+    b,
+    A_log,
+    dt_bias,
+    h0_in,
+    h0_out,
+    o,
+    cu_seqlens,
+    stream,
+):
+    """Run packed-ragged Blackwell GDN prefill.
+
+    Token tensors are physically packed: q/k use ``[total_tokens, H, D]``,
+    v/o use ``[total_tokens, HV, D]``, and a/b use ``[total_tokens, HV]``.
+    ``cu_seqlens`` has shape ``[N + 1]``; it starts at zero, is nondecreasing,
+    and ends at ``total_tokens``. Equal adjacent offsets represent empty rows.
+    H0 tensors remain batch-dense.
+    Q and K are normalized in place, matching the existing Blackwell path.
+    """
+    tensors = {
+        "q": q,
+        "k": k,
+        "v": v,
+        "a": a,
+        "b": b,
+        "A_log": A_log,
+        "dt_bias": dt_bias,
+        "h0_in": h0_in,
+        "h0_out": h0_out,
+        "o": o,
+        "cu_seqlens": cu_seqlens,
+    }
+    for name, tensor in tensors.items():
+        if not isinstance(tensor, cp.ndarray):
+            raise TypeError("Packed GDN {} must be a CuPy array.".format(name))
+
+    expected_dtypes = {
+        "q": cp.float16,
+        "k": cp.float16,
+        "v": cp.float16,
+        "a": cp.float16,
+        "b": cp.float16,
+        "A_log": cp.float32,
+        "dt_bias": cp.float16,
+        "h0_in": cp.float32,
+        "h0_out": cp.float32,
+        "o": cp.float16,
+        "cu_seqlens": cp.int32,
+    }
+    for name, dtype in expected_dtypes.items():
+        if tensors[name].dtype != dtype:
+            raise ValueError(
+                "Packed GDN {} must have dtype {}, got {}.".format(
+                    name, cp.dtype(dtype), tensors[name].dtype))
+
+    if q.ndim != 3:
+        raise ValueError("Packed GDN q must have shape [total_tokens, num_q_heads, 128].")
+    total_tokens = q.shape[0]
+    if total_tokens <= 0:
+        raise ValueError("Packed GDN requires at least one token.")
+    _, h, k_dim = q.shape
+    if h <= 0:
+        raise ValueError("Packed GDN requires a positive num_q_heads.")
+    if k_dim != 128:
+        raise ValueError("Packed GDN requires key dimension 128.")
+    if k.shape != q.shape:
+        raise ValueError("Packed GDN k must have the same shape as q.")
+    if v.ndim != 3 or v.shape[0] != total_tokens or v.shape[2] != 128:
+        raise ValueError("Packed GDN v must have shape [total_tokens, num_v_heads, 128].")
+    _, hv, v_dim = v.shape
+    if hv < h or hv % h != 0:
+        raise ValueError("Packed GDN requires num_v_heads to be a positive multiple of num_q_heads.")
+    if a.shape != (total_tokens, hv) or b.shape != (total_tokens, hv):
+        raise ValueError("Packed GDN a and b must have shape [total_tokens, num_v_heads].")
+    if A_log.shape != (hv,) or dt_bias.shape != (hv,):
+        raise ValueError("Packed GDN A_log and dt_bias must have shape [num_v_heads].")
+    if o.shape != v.shape:
+        raise ValueError("Packed GDN o must have the same shape as v.")
+    if h0_in.ndim != 4 or h0_in.shape[0] <= 0:
+        raise ValueError("Packed GDN requires a positive batch size.")
+    expected_state_shape = (h0_in.shape[0], hv, k_dim, v_dim)
+    if h0_in.shape != expected_state_shape or h0_out.shape != expected_state_shape:
+        raise ValueError("Packed GDN h0 tensors must have shape [batch_size, num_v_heads, 128, 128].")
+    if cu_seqlens.shape != (h0_in.shape[0] + 1,):
+        raise ValueError("Packed GDN cu_seqlens must have shape [batch_size + 1].")
+
+    device_id = q.device.id
+    for name, tensor in tensors.items():
+        if tensor.device.id != device_id:
+            raise ValueError("Packed GDN tensors must be on the same CUDA device as q.")
+        if not tensor.flags.c_contiguous:
+            raise ValueError("Packed GDN {} must be C-contiguous.".format(name))
+        alignment = 4 if name == "cu_seqlens" else 16
+        if tensor.data.ptr % alignment != 0:
+            raise ValueError(
+                "Packed GDN {} pointer must be {}-byte aligned.".format(name, alignment))
+
+    tensor_items = tuple(tensors.items())
+    for index, (lhs_name, lhs) in enumerate(tensor_items):
+        lhs_begin = lhs.data.ptr
+        lhs_end = lhs_begin + lhs.nbytes
+        for rhs_name, rhs in tensor_items[index + 1:]:
+            rhs_begin = rhs.data.ptr
+            rhs_end = rhs_begin + rhs.nbytes
+            if lhs_begin < rhs_end and rhs_begin < lhs_end:
+                raise ValueError(
+                    "Packed GDN tensors {} and {} must not overlap.".format(lhs_name, rhs_name))
+
+    stream_ptr = int(stream)
+    with cp.cuda.Device(device_id):
+        external_stream = cp.cuda.ExternalStream(stream_ptr)
+        cu_seqlens_host = cp.asnumpy(cu_seqlens, stream=external_stream)
+        if cu_seqlens_host[0] != 0:
+            raise ValueError("Packed GDN cu_seqlens must start at zero.")
+        if np.any(cu_seqlens_host[1:] < cu_seqlens_host[:-1]):
+            raise ValueError("Packed GDN cu_seqlens must be nondecreasing.")
+        if cu_seqlens_host[-1] != total_tokens:
+            raise ValueError(
+                "Packed GDN cu_seqlens must end at total_tokens ({}), got {}.".format(
+                    total_tokens, int(cu_seqlens_host[-1])))
+
+        num_sm = _get_blackwell_varlen_sm_count()
+
+        with external_stream:
+            _l2_normalize_qk_inplace(q, k)
+            compiled, workspace_size = _compile_prefill_bw_varlen(
+                h0_in.shape[0], h, hv, k_dim, v_dim, total_tokens, stream)
+            workspace_key = (device_id, stream_ptr, workspace_size)
+            workspace = _blackwell_varlen_workspaces.get(workspace_key)
+            if workspace is None:
+                workspace = cp.empty(workspace_size, dtype=cp.int8)
+                _blackwell_varlen_workspaces[workspace_key] = workspace
+            t = _to_cute_tensors_bw_varlen({
+                "q": q,
+                "k": k,
+                "v": v,
+                "a": a,
+                "b": b,
+                "A_log": A_log,
+                "dt_bias": dt_bias,
+                "h0_in": h0_in,
+                "h0_out": h0_out,
+                "o": o,
+                "cu_seqlens": cu_seqlens,
+            }, workspace)
+            sm_count = cutlass.Int32(num_sm)
+            compiled(
+                t["q"], t["k"], t["v"], t["a"], t["b"],
+                t["A_log"], t["dt_bias"], t["o"], t["cu_seqlens"],
+                t["h0_in"], t["h0_out"], None, float(k_dim) ** -0.5,
+                t["tensormap_workspace"],
+                sm_count,
+                stream,
+            )
+
+
 # ===========================================================================
 # NumPy Reference (same as gdn_prefill.py for cross-validation)
 # ===========================================================================
@@ -5082,6 +5253,180 @@ def run_test_prefill_blackwell(
     return us
 
 
+DEFAULT_VARLEN_TEST_CASES = (
+    (257, 129, 7),
+    (1024, 513, 255, 31),
+    (2048, 1537, 1025, 511, 127),
+)
+
+
+def run_test_prefill_blackwell_varlen(
+    h,
+    hv,
+    k,
+    v,
+    length_sets=None,
+    seed=20260903,
+    tolerance=0.3,
+    warmup=3,
+    iterations=100,
+):
+    """Numerically validate and benchmark packed GDN prefill across ragged sequence lengths.
+
+    Each case compares the physically packed kernel output and batch-dense final
+    state with the dense NumPy reference. The default suite covers short tails,
+    multi-chunk rows, and a 2K context with uneven batch lengths.
+
+    Args:
+        h: Number of query/key heads.
+        hv: Number of value heads.
+        k: Key head dimension. Must be 128.
+        v: Value head dimension. Must be 128.
+        length_sets: Iterable of per-row sequence-length tuples, or None for
+            the default ragged coverage suite.
+        seed: Seed for deterministic random inputs.
+        tolerance: Absolute output tolerance against the NumPy reference.
+        warmup: Number of warmup runs before timing each case.
+        iterations: Number of measured runs for each case.
+    """
+    if k != 128 or v != 128:
+        raise ValueError("Blackwell kernel only supports head_dim=128.")
+
+    cases = DEFAULT_VARLEN_TEST_CASES if length_sets is None else tuple(length_sets)
+    rng = np.random.default_rng(seed)
+    test_stream = cp.cuda.Stream(non_blocking=True)
+    stream = cuda.CUstream(test_stream.ptr)
+    for lengths in cases:
+        lengths_np = np.asarray(lengths, dtype=np.int32)
+        if lengths_np.ndim != 1 or lengths_np.size == 0 or np.any(lengths_np <= 0):
+            raise ValueError("Each packed-ragged test case must contain positive sequence lengths.")
+
+        batch_size = int(lengths_np.size)
+        max_seq_len = int(lengths_np.max())
+        total_tokens = int(lengths_np.sum())
+        q_f32 = (rng.standard_normal((batch_size, max_seq_len, h, k)).astype(np.float32) * 0.1)
+        k_f32 = (rng.standard_normal((batch_size, max_seq_len, h, k)).astype(np.float32) * 0.1)
+        v_f32 = (rng.standard_normal((batch_size, max_seq_len, hv, v)).astype(np.float32) * 0.1)
+        a_f32 = (rng.standard_normal((batch_size, max_seq_len, hv)).astype(np.float32) * 0.1)
+        b_f32 = (rng.standard_normal((batch_size, max_seq_len, hv)).astype(np.float32) * 0.1)
+        A_log_f32 = rng.standard_normal(hv).astype(np.float32) * 0.1
+        dt_bias_f32 = rng.standard_normal(hv).astype(np.float32) * 0.1
+        h0_f32 = (rng.standard_normal((batch_size, hv, k, v)).astype(np.float32) * 0.01)
+
+        o_ref, h0_ref = _run_numpy_prefill_reference(
+            q_f32, k_f32, v_f32, a_f32, b_f32, A_log_f32, dt_bias_f32,
+            h0_f32, batch_size, h, hv, k, v, max_seq_len, k**-0.5,
+            lengths_np, use_qk_l2norm=True)
+        packed_o_ref = np.concatenate(
+            [o_ref[row, :length] for row, length in enumerate(lengths_np)], axis=0)
+        packed_q = np.concatenate(
+            [q_f32[row, :length] for row, length in enumerate(lengths_np)], axis=0)
+        packed_k = np.concatenate(
+            [k_f32[row, :length] for row, length in enumerate(lengths_np)], axis=0)
+        packed_v = np.concatenate(
+            [v_f32[row, :length] for row, length in enumerate(lengths_np)], axis=0)
+        packed_a = np.concatenate(
+            [a_f32[row, :length] for row, length in enumerate(lengths_np)], axis=0)
+        packed_b = np.concatenate(
+            [b_f32[row, :length] for row, length in enumerate(lengths_np)], axis=0)
+        cu_seqlens = np.concatenate(([0], np.cumsum(lengths_np))).astype(np.int32)
+
+        q_cp = cp.asarray(packed_q, dtype=cp.float16)
+        k_cp = cp.asarray(packed_k, dtype=cp.float16)
+        v_cp = cp.asarray(packed_v, dtype=cp.float16)
+        a_cp = cp.asarray(packed_a, dtype=cp.float16)
+        b_cp = cp.asarray(packed_b, dtype=cp.float16)
+        A_log_cp = cp.asarray(A_log_f32)
+        dt_bias_cp = cp.asarray(dt_bias_f32, dtype=cp.float16)
+        h0_in_cp = cp.asarray(np.swapaxes(h0_f32, -2, -1))
+        h0_out_cp = cp.empty_like(h0_in_cp)
+        o_cp = cp.empty((total_tokens, hv, v), dtype=cp.float16)
+        cu_seqlens_cp = cp.asarray(cu_seqlens)
+
+        invalid_offsets = []
+        nonzero_start = cu_seqlens.copy()
+        nonzero_start[0] = 1
+        invalid_offsets.append(("start at zero", cp.asarray(nonzero_start)))
+        negative_offset = cu_seqlens.copy()
+        negative_offset[1] = -1
+        invalid_offsets.append(("nondecreasing", cp.asarray(negative_offset)))
+        if cu_seqlens.size > 2:
+            decreasing_offsets = cu_seqlens.copy()
+            decreasing_offsets[2] = decreasing_offsets[1] - 1
+            invalid_offsets.append(("nondecreasing", cp.asarray(decreasing_offsets)))
+        truncated_offsets = cu_seqlens.copy()
+        truncated_offsets[-1] -= 1
+        invalid_offsets.append(("end at total_tokens", cp.asarray(truncated_offsets)))
+        oversized_offsets = cu_seqlens.copy()
+        oversized_offsets[-1] += 1
+        invalid_offsets.append(("end at total_tokens", cp.asarray(oversized_offsets)))
+
+        cp.cuda.get_current_stream().synchronize()
+        for expected_error, invalid_cu_seqlens in invalid_offsets:
+            try:
+                run_gdn_prefill_blackwell_varlen(
+                    q_cp, k_cp, v_cp, a_cp, b_cp, A_log_cp, dt_bias_cp,
+                    h0_in_cp, h0_out_cp, o_cp, invalid_cu_seqlens, stream)
+            except ValueError as error:
+                if expected_error not in str(error):
+                    raise AssertionError(
+                        "Unexpected cu_seqlens validation error: {}".format(error)) from error
+            else:
+                raise AssertionError(
+                    "Invalid cu_seqlens was accepted: {}".format(
+                        cp.asnumpy(invalid_cu_seqlens).tolist()))
+
+        if cp.cuda.runtime.getDeviceCount() > 1:
+            alternate_device = (q_cp.device.id + 1) % cp.cuda.runtime.getDeviceCount()
+            with cp.cuda.Device(alternate_device):
+                run_gdn_prefill_blackwell_varlen(
+                    q_cp, k_cp, v_cp, a_cp, b_cp, A_log_cp, dt_bias_cp, h0_in_cp,
+                    h0_out_cp, o_cp, cu_seqlens_cp, stream)
+            matching_workspaces = [
+                workspace for key, workspace in _blackwell_varlen_workspaces.items()
+                if key[0] == q_cp.device.id and key[1] == int(stream)
+            ]
+            if not matching_workspaces or any(
+                    workspace.device.id != q_cp.device.id for workspace in matching_workspaces):
+                raise AssertionError("Packed GDN workspace was allocated on the wrong CUDA device.")
+        else:
+            run_gdn_prefill_blackwell_varlen(
+                q_cp, k_cp, v_cp, a_cp, b_cp, A_log_cp, dt_bias_cp, h0_in_cp,
+                h0_out_cp, o_cp, cu_seqlens_cp, stream)
+        test_stream.synchronize()
+
+        o_kernel = cp.asnumpy(o_cp).astype(np.float32)
+        h0_kernel = cp.asnumpy(h0_out_cp).astype(np.float32)
+        np.testing.assert_allclose(o_kernel, packed_o_ref, atol=tolerance, rtol=1e-2)
+        np.testing.assert_allclose(
+            h0_kernel, h0_ref, atol=1e-3, rtol=5e-2)
+        print("[gdn_prefill_blackwell_varlen] PASS lengths=%s total_tokens=%d" %
+              (lengths_np.tolist(), total_tokens))
+
+        q_bench = cp.asarray(packed_q, dtype=cp.float16)
+        k_bench = cp.asarray(packed_k, dtype=cp.float16)
+        h0_in_bench = cp.asarray(np.swapaxes(h0_f32, -2, -1))
+        h0_out_bench = cp.empty_like(h0_in_bench)
+        o_bench = cp.empty_like(o_cp)
+        cp.cuda.get_current_stream().synchronize()
+        for _ in range(warmup):
+            run_gdn_prefill_blackwell_varlen(
+                q_bench, k_bench, v_cp, a_cp, b_cp, A_log_cp, dt_bias_cp,
+                h0_in_bench, h0_out_bench, o_bench, cu_seqlens_cp, stream)
+        test_stream.synchronize()
+
+        t0 = time.perf_counter()
+        for _ in range(iterations):
+            run_gdn_prefill_blackwell_varlen(
+                q_bench, k_bench, v_cp, a_cp, b_cp, A_log_cp, dt_bias_cp,
+                h0_in_bench, h0_out_bench, o_bench, cu_seqlens_cp, stream)
+        test_stream.synchronize()
+        us = (time.perf_counter() - t0) * 1e6 / iterations
+        print("[gdn_prefill_blackwell_varlen] Latency: %.4f us "
+              "(lengths=%s total_tokens=%d h=%d hv=%d k=%d v=%d)" %
+              (us, lengths_np.tolist(), total_tokens, h, hv, k, v))
+
+
 # ===========================================================================
 # AOT Export
 # ===========================================================================
@@ -5166,6 +5511,8 @@ def _get_jit_blackwell():
 
 
 _compiled_blackwell = {}
+_compiled_blackwell_varlen = {}
+_blackwell_varlen_workspaces = {}
 
 
 def _make_placeholder_tensors_bw(n, h, hv, k, v, seq_len):
@@ -5204,6 +5551,19 @@ def _mark_3d_dynamic(tensor):
             .mark_compact_shape_dynamic(mode=0, stride_order=so)
             .mark_compact_shape_dynamic(mode=1, stride_order=so)
             .mark_compact_shape_dynamic(mode=2, stride_order=so))
+
+
+def _mark_2d_dynamic(tensor):
+    so = (0, 1)
+    return (from_dlpack(tensor, assumed_align=16)
+            .mark_layout_dynamic(leading_dim=1)
+            .mark_compact_shape_dynamic(mode=0, stride_order=so)
+            .mark_compact_shape_dynamic(mode=1, stride_order=so))
+
+
+def _mark_1d_dynamic(tensor):
+    return from_dlpack(tensor, assumed_align=16).mark_compact_shape_dynamic(
+        mode=0, stride_order=(0,))
 
 
 def _mark_h0_dynamic(tensor):
@@ -5287,6 +5647,94 @@ def _make_aot_cute_tensors_bw(n, h, hv, k, v, seq_len):
     }
 
 
+def _make_placeholder_tensors_bw_varlen(n, h, hv, k, v, total_tokens):
+    dt = cp.float16
+    return {
+        "q": cp.zeros((total_tokens, h, k), dtype=dt),
+        "k": cp.zeros((total_tokens, h, k), dtype=dt),
+        "v": cp.zeros((total_tokens, hv, v), dtype=dt),
+        "a": cp.zeros((total_tokens, hv), dtype=dt),
+        "b": cp.zeros((total_tokens, hv), dtype=dt),
+        "A_log": cp.zeros((hv,), dtype=cp.float32),
+        "dt_bias": cp.zeros((hv,), dtype=dt),
+        "h0_in": cp.zeros((n, hv, k, v), dtype=cp.float32),
+        "h0_out": cp.zeros((n, hv, k, v), dtype=cp.float32),
+        "o": cp.zeros((total_tokens, hv, v), dtype=dt),
+        "cu_seqlens": cp.asarray([0, total_tokens], dtype=cp.int32),
+    }
+
+
+def _to_cute_tensors_bw_varlen(ph, tensormap_workspace):
+    def mark_state_dynamic(tensor):
+        return from_dlpack(tensor, assumed_align=16).mark_layout_dynamic()
+
+    return {
+        "q": _mark_3d_dynamic(ph["q"]),
+        "k": _mark_3d_dynamic(ph["k"]),
+        "v": _mark_3d_dynamic(ph["v"]),
+        "a": _mark_2d_dynamic(ph["a"]),
+        "b": _mark_2d_dynamic(ph["b"]),
+        "A_log": _mark_1d_dynamic(ph["A_log"]),
+        "dt_bias": _mark_1d_dynamic(ph["dt_bias"]),
+        "o": _mark_3d_dynamic(ph["o"]),
+        "cu_seqlens": (from_dlpack(ph["cu_seqlens"], assumed_align=4)
+                        .mark_layout_dynamic()),
+        "h0_in": mark_state_dynamic(ph["h0_in"]),
+        "h0_out": mark_state_dynamic(ph["h0_out"]),
+        "tensormap_workspace": from_dlpack(tensormap_workspace, assumed_align=16),
+    }
+
+
+def _make_aot_cute_tensors_bw_varlen(n, h, hv, k, v, total_tokens, workspace_size):
+    def compact(dtype, shape):
+        return aot_placeholders.make_compact_tensor(
+            dtype,
+            shape,
+            stride_order=tuple(reversed(range(len(shape)))),
+            assumed_align=16,
+        )
+
+    def dynamic_3d(dtype, shape):
+        return (
+            compact(dtype, shape)
+            .mark_layout_dynamic(leading_dim=2)
+            .mark_compact_shape_dynamic(mode=0, stride_order=(0, 1, 2))
+            .mark_compact_shape_dynamic(mode=1, stride_order=(0, 1, 2))
+            .mark_compact_shape_dynamic(mode=2, stride_order=(0, 1, 2))
+        )
+
+    def dynamic_2d(dtype, shape):
+        return (
+            compact(dtype, shape)
+            .mark_layout_dynamic(leading_dim=1)
+            .mark_compact_shape_dynamic(mode=0, stride_order=(0, 1))
+            .mark_compact_shape_dynamic(mode=1, stride_order=(0, 1))
+        )
+
+    def dynamic_1d(dtype, shape):
+        return compact(dtype, shape).mark_layout_dynamic(leading_dim=0)
+
+    def dynamic_state():
+        return compact(cutlass.Float32, (n, hv, k, v)).mark_layout_dynamic(
+            leading_dim=3
+        )
+
+    return {
+        "q": dynamic_3d(cutlass.Float16, (total_tokens, h, k)),
+        "k": dynamic_3d(cutlass.Float16, (total_tokens, h, k)),
+        "v": dynamic_3d(cutlass.Float16, (total_tokens, hv, v)),
+        "a": dynamic_2d(cutlass.Float16, (total_tokens, hv)),
+        "b": dynamic_2d(cutlass.Float16, (total_tokens, hv)),
+        "A_log": dynamic_1d(cutlass.Float32, (hv,)),
+        "dt_bias": dynamic_1d(cutlass.Float16, (hv,)),
+        "o": dynamic_3d(cutlass.Float16, (total_tokens, hv, v)),
+        "cu_seqlens": dynamic_1d(cutlass.Int32, (n + 1,)),
+        "h0_in": dynamic_state(),
+        "h0_out": dynamic_state(),
+        "tensormap_workspace": compact(cutlass.Int8, (workspace_size,)),
+    }
+
+
 def _compile_prefill_bw(n, h, hv, k, v, seq_len, stream, gpu_arch="", export_only=False):
     if "_" in _compiled_blackwell:
         return _compiled_blackwell["_"]
@@ -5320,6 +5768,58 @@ def _compile_prefill_bw(n, h, hv, k, v, seq_len, stream, gpu_arch="", export_onl
     return compiled
 
 
+def _compile_prefill_bw_varlen(
+    n, h, hv, k, v, total_tokens, stream, gpu_arch="", export_only=False
+):
+    if h <= 0 or hv < h or hv % h != 0:
+        raise ValueError("Packed GDN requires num_v_heads to be a positive multiple of num_q_heads.")
+    cache_key = (k, v, gpu_arch)
+    if cache_key in _compiled_blackwell_varlen:
+        return _compiled_blackwell_varlen[cache_key]
+
+    kernel = GatedDeltaNetChunkedKernel(
+        is_GQA=False,
+        store_final_state=True,
+    )
+    workspace_size = kernel.get_workspace_size(_BLACKWELL_VARLEN_MAX_SM_COUNT)
+    if export_only:
+        t = _make_aot_cute_tensors_bw_varlen(
+            n, h, hv, k, v, total_tokens, workspace_size
+        )
+        num_sm = aot_placeholders.runtime_int32()
+    else:
+        ph = _make_placeholder_tensors_bw_varlen(n, h, hv, k, v, total_tokens)
+        workspace = cp.empty(workspace_size, dtype=cp.int8)
+        t = _to_cute_tensors_bw_varlen(ph, workspace)
+        num_sm = cutlass.Int32(_get_blackwell_varlen_sm_count())
+    compile_opts = "--opt-level 3"
+    if gpu_arch:
+        compile_opts += " --gpu-arch " + gpu_arch
+    compiled = cute.compile(
+        kernel,
+        t["q"],
+        t["k"],
+        t["v"],
+        t["a"],
+        t["b"],
+        t["A_log"],
+        t["dt_bias"],
+        t["o"],
+        t["cu_seqlens"],
+        t["h0_in"],
+        t["h0_out"],
+        None,
+        float(k) ** -0.5,
+        t["tensormap_workspace"],
+        num_sm,
+        stream,
+        options=compile_opts,
+    )
+    result = (compiled, workspace_size)
+    _compiled_blackwell_varlen[cache_key] = result
+    return result
+
+
 def export_gdn_prefill_blackwell(n, h, hv, k, v, seq_len,
                                   output_dir, file_name, function_prefix, gpu_arch=""):
     """AOT compile and export the Blackwell GDN prefill kernel."""
@@ -5346,6 +5846,33 @@ def export_gdn_prefill_blackwell(n, h, hv, k, v, seq_len,
     return compiled
 
 
+def export_gdn_prefill_blackwell_varlen(n, h, hv, k, v, total_tokens,
+                                         output_dir, file_name, function_prefix, gpu_arch=""):
+    """AOT compile and export the packed-ragged Blackwell GDN prefill kernel."""
+    if total_tokens < 128 or total_tokens % 128 != 0:
+        raise ValueError("Blackwell packed kernel requires total_tokens >= 128 and multiple of 128.")
+    if k != 128 or v != 128:
+        raise ValueError("Blackwell kernel requires k == v == 128.")
+
+    stream = aot_placeholders.make_stream()
+    print("[gdn_prefill_blackwell_varlen] AOT compile gpu_arch=%r" % (gpu_arch or "auto"))
+    t0 = time.time()
+    compiled, _ = _compile_prefill_bw_varlen(
+        n, h, hv, k, v, total_tokens, stream, gpu_arch=gpu_arch, export_only=True
+    )
+    print("[gdn_prefill_blackwell_varlen] Compilation time: %.4fs" % (time.time() - t0))
+
+    os.makedirs(output_dir, exist_ok=True)
+    compiled.export_to_c(
+        file_path=output_dir,
+        file_name=file_name,
+        function_prefix=function_prefix,
+    )
+    print("[gdn_prefill_blackwell_varlen] Exported to %s/%s.h and %s.o" %
+          (output_dir, file_name, file_name))
+    return compiled
+
+
 # ===========================================================================
 # Entry point
 # ===========================================================================
@@ -5356,6 +5883,10 @@ def _parse_args(argv=None):
     )
     p.add_argument("--export_only", action="store_true",
                    help="AOT export mode: compile and export the Blackwell GDN prefill kernel.")
+    p.add_argument("--varlen", action="store_true",
+                   help="Use the physically packed ragged input layout with cu_seqlens.")
+    p.add_argument("--varlen_lengths", action="append", default=[],
+                   help="Comma-separated packed lengths for one test case; repeat for multiple cases.")
     p.add_argument("--output_dir", type=str, default=".",
                    help="Output directory for AOT export artifacts.")
     p.add_argument("--file_name", type=str, default="gdn_prefill_blackwell",
@@ -5383,13 +5914,16 @@ def main():
     np.random.seed(42)
 
     if args.export_only:
-        export_gdn_prefill_blackwell(
+        export_fn = (export_gdn_prefill_blackwell_varlen
+                     if args.varlen else export_gdn_prefill_blackwell)
+        export_fn(
             n=AOT_PLACEHOLDER_N,
             h=AOT_PLACEHOLDER_H,
             hv=AOT_PLACEHOLDER_HV,
             k=AOT_PLACEHOLDER_K,
             v=AOT_PLACEHOLDER_V,
-            seq_len=AOT_PLACEHOLDER_SEQLEN,
+            **({"total_tokens": AOT_PLACEHOLDER_SEQLEN}
+               if args.varlen else {"seq_len": AOT_PLACEHOLDER_SEQLEN}),
             output_dir=args.output_dir,
             file_name=args.file_name,
             function_prefix=args.function_prefix,
@@ -5401,16 +5935,31 @@ def main():
         raise RuntimeError("No GPU found.")
     cp.random.seed(42)
 
-    run_test_prefill_blackwell(
-        n=args.n, h=args.h, hv=args.hv, k=args.k, v=args.v,
-        seq_len=args.seq_len,
-        skip_ref_check=args.skip_ref_check,
-        tolerance=args.tolerance,
-        warmup=args.warmup,
-        iterations=args.iterations,
-        gpu_arch=args.gpu_arch,
-        context_lengths_preset=args.context_lengths_preset,
-    )
+    if args.varlen:
+        length_sets = []
+        for lengths in args.varlen_lengths:
+            length_sets.append(tuple(int(length) for length in lengths.split(",") if length))
+        run_test_prefill_blackwell_varlen(
+            h=args.h,
+            hv=args.hv,
+            k=args.k,
+            v=args.v,
+            length_sets=length_sets or None,
+            tolerance=args.tolerance,
+            warmup=args.warmup,
+            iterations=args.iterations,
+        )
+    else:
+        run_test_prefill_blackwell(
+            n=args.n, h=args.h, hv=args.hv, k=args.k, v=args.v,
+            seq_len=args.seq_len,
+            skip_ref_check=args.skip_ref_check,
+            tolerance=args.tolerance,
+            warmup=args.warmup,
+            iterations=args.iterations,
+            gpu_arch=args.gpu_arch,
+            context_lengths_preset=args.context_lengths_preset,
+        )
 
 
 if __name__ == "__main__":
