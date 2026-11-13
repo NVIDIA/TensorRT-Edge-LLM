@@ -1,0 +1,11 @@
+Greedy Argmax Kernel
+====================
+
+.. doxygenstruct:: trt_edgellm::safety::ArgmaxPair
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::safety::launchGreedyArgmax
+   :project: TensorRT Edge-LLM
+

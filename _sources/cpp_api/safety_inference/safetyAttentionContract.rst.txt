@@ -1,0 +1,23 @@
+Safety Attention Contract
+=========================
+
+.. doxygenstruct:: trt_edgellm::safety::AttentionParameters
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::safety::parseAttentionFields
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::validateAttentionDescriptors
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::supportsAttentionFormat
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::validateAttentionBuildDescriptors
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::supportsAttentionTensor
+   :project: TensorRT Edge-LLM
+

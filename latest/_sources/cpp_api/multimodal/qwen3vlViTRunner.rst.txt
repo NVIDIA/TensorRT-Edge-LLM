@@ -6,3 +6,6 @@ Qwen3vl ViT Runner
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::rt::qwen3vl::tokenizeExpandedPrompt
+   :project: TensorRT Edge-LLM
+

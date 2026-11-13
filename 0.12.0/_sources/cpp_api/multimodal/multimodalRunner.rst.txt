@@ -1,0 +1,8 @@
+Multimodal Runner
+=================
+
+.. doxygenclass:: trt_edgellm::rt::MultimodalRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

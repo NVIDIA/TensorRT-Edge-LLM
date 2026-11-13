@@ -2,7 +2,7 @@
 
 `LLMInferenceRuntime::handleRequest()` used to be reachable only by building a
 TensorRT engine and running `llm_inference`. This guide shows how to drive it
-from `./build/unittests/unitTestRuntime` instead, and how to write the same kind of test for
+from `./build/bin/unitTests/unitTestRuntime` instead, and how to write the same kind of test for
 another component.
 
 The worked examples live in `unittests/cpp/runtime/llmInferenceRuntimeAssemblyTests.cpp`.
@@ -232,7 +232,7 @@ the headers.
 
 | Constraint | Symptom when violated |
 |---|---|
-| `head_dim` must be 64, 128, 256 or 512 for MTP — it reuses `eagleBaseCommitKVCacheAndAssembleHiddenState` | throws at the first verification round |
+| `head_dim` must be 64, 128, 256 or 512 for MTP — it reuses `commitSpecTargetKV / gatherSpecTargetHiddenStates` | throws at the first verification round |
 | Unmanaged speculative decoding reserves a fixed 100 tokens of KV before admitting generation | request rejected with no forward at all |
 | `ExternalWeightManager` runs load → validate → register, each once | `registerTensorMapEntries called before weight validation` |
 | `ChatTemplate::load` requires provider Jinja or an explicit model-native renderer | runtime initialization fails |
@@ -247,7 +247,7 @@ for it. To see the `LOG_DEBUG` trace the runtime already emits, raise the level
 for the call under inspection:
 
 ```cpp
-gLogger.setLevel(nvinfer1::ILogger::Severity::kVERBOSE);
+gLogger.setLevel(trt_edgellm::logger::Severity::kVERBOSE);
 ```
 
 Reading that trace is usually faster than adding a temporary `printf`, and it
@@ -260,7 +260,7 @@ costs nothing to remove afterwards.
 ```bash
 cmake .. -DTRT_PACKAGE_DIR=$TRT_PACKAGE_DIR -DBUILD_UNIT_TESTS=ON && ninja unitTestRuntime
 export LD_LIBRARY_PATH=$TRT_PACKAGE_DIR/lib:$LD_LIBRARY_PATH
-./build/unittests/unitTestRuntime --gtest_filter="RuntimeAssemblyTest.*:MtpAssemblyTest.*"
+./build/bin/unitTests/unitTestRuntime --gtest_filter="RuntimeAssemblyTest.*:MtpAssemblyTest.*"
 ```
 
 `BUILD_UNIT_TESTS=ON` enables gmock. Note that it is set with `FORCE`: a build

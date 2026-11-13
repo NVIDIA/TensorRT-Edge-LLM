@@ -1,0 +1,8 @@
+Cute Dsl GEMM Runner
+====================
+
+.. doxygenclass:: trt_edgellm::CuteDslGemmRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

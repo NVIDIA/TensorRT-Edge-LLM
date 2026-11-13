@@ -1,0 +1,8 @@
+XQA Launch Config
+=================
+
+.. doxygenstruct:: trt_edgellm::XQALaunchAttributes
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

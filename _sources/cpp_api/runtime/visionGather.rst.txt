@@ -1,0 +1,6 @@
+Vision Gather
+=============
+
+.. doxygenfunction:: trt_edgellm::rt::gatherVisionTensor
+   :project: TensorRT Edge-LLM
+

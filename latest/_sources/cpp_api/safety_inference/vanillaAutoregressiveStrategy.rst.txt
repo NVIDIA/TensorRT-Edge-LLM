@@ -1,0 +1,8 @@
+Vanilla Autoregressive Strategy
+===============================
+
+.. doxygenclass:: trt_edgellm::safety::VanillaAutoregressiveStrategy
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

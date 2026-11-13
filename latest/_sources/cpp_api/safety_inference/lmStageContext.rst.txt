@@ -1,0 +1,28 @@
+Lm Stage Context
+================
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyModelLocalResourceView
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyModelLocalResourceRequirement
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::LMStagePlan
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::LMStageProfileView
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::LMStageContext
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

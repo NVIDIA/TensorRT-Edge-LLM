@@ -1,0 +1,8 @@
+Vanilla Decoder
+===============
+
+.. doxygenclass:: trt_edgellm::rt::VanillaDecoder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

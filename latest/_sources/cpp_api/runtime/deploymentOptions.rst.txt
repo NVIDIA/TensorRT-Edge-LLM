@@ -1,0 +1,8 @@
+Deployment Options
+==================
+
+.. doxygenstruct:: trt_edgellm::rt::DeploymentOptions
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

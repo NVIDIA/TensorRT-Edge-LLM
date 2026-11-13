@@ -1,0 +1,6 @@
+Data Type
+=========
+
+.. doxygenfile:: common/dataType.h
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,16 @@
+Safety Plugin Loader
+====================
+
+.. doxygenclass:: trt_edgellm::safety::builder::SafetyPluginRegistration
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::builder::SafetyPluginDescriptor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::safety::builder::loadSafetyPlugins
+   :project: TensorRT Edge-LLM
+

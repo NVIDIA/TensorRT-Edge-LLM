@@ -10,6 +10,8 @@ API documentation for the multimodal module.
    audioUtils
    cloneEncoderRunner
    code2WavRunner
+   code2WavStage
+   codePredictor
    cosmos3EdgeViTRunner
    gemma4AudioRunner
    gemma4UnifiedAudioRunner
@@ -17,6 +19,8 @@ API documentation for the multimodal module.
    gemma4ViTRunner
    imageUtils
    internViTRunner
+   minimaxH3Engine
+   minimaxH3Stages
    modelTypes
    multimodalRunner
    museGlimmerViTRunner
@@ -27,3 +31,6 @@ API documentation for the multimodal module.
    qwen3omniViTRunner
    qwen3vlViTRunner
    qwenViTRunner
+   talkerRunner
+   talkerRunnerKeys
+   talkerTokenIds

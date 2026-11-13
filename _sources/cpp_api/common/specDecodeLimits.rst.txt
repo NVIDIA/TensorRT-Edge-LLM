@@ -1,0 +1,6 @@
+Spec Decode Limits
+==================
+
+.. doxygenfile:: common/specDecodeLimits.h
+   :project: TensorRT Edge-LLM
+

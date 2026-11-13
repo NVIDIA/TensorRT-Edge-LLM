@@ -1,0 +1,6 @@
+Qwen3 Omni Tts Runtime
+======================
+
+.. doxygenfile:: runtime/qwen3OmniTTSRuntime.h
+   :project: TensorRT Edge-LLM
+

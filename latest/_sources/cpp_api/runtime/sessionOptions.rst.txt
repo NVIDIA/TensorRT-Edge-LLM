@@ -1,0 +1,8 @@
+Session Options
+===============
+
+.. doxygenstruct:: trt_edgellm::rt::SessionOptions
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

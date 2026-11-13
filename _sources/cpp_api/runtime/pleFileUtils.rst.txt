@@ -1,0 +1,15 @@
+Ple File Utils
+==============
+
+.. doxygenfunction:: trt_edgellm::rt::openPleFile
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::closePleFile
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::readPleFileAt
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::pleSystemPageSize
+   :project: TensorRT Edge-LLM
+

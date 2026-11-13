@@ -1,0 +1,8 @@
+TRT Interop
+===========
+
+.. doxygenclass:: trt_edgellm::TrtLogger
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

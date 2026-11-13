@@ -1,0 +1,6 @@
+Inference Phase
+===============
+
+.. doxygenfile:: runtime/config/inferencePhase.h
+   :project: TensorRT Edge-LLM
+

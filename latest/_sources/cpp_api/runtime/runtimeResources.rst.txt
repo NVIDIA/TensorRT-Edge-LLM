@@ -1,0 +1,8 @@
+Runtime Resources
+=================
+
+.. doxygenstruct:: trt_edgellm::rt::RuntimeResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

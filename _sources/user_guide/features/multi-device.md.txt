@@ -29,6 +29,7 @@ Multi-device inference is not supported on Windows.
 | Qwen3-32B |
 | Qwen3.5-27B |
 | Qwen3-VL-8B |
+| Alpamayo-R1-10B |
 
 ## Tensor Parallel Inference
 
@@ -122,7 +123,7 @@ artifacts, and every rank writes its own engine:
 ```bash
 export ONNX_DIR="$ONNX_ROOT/llm"
 export ENGINE_DIR=/path/to/engines/model-tp2
-export LLM_BUILD=./build/examples/llm/llm_build
+export LLM_BUILD=./build/bin/llm_build
 
 mkdir -p "$ENGINE_DIR"
 
@@ -166,7 +167,7 @@ and output directory:
 ```bash
 export CHECKPOINT=/path/to/checkpoint
 export ENGINE_DIR=/path/to/engines/model-tp2
-export PLUGIN_PATH=/path/to/build/libNvInfer_edgellm_plugin.so
+export PLUGIN_PATH=/path/to/build/lib/libNvInfer_edgellm_plugin.so
 
 mkdir -p "$ENGINE_DIR"
 
@@ -200,7 +201,7 @@ Use the same request JSON accepted by single-device `llm_inference` and add
 `--tp-size=2`:
 
 ```bash
-export LLM_INFERENCE=./build/examples/llm/llm_inference
+export LLM_INFERENCE=./build/bin/llm_inference
 
 "$LLM_INFERENCE" \
   --engine-dir="$ENGINE_DIR" \
@@ -223,6 +224,43 @@ initialization:
   --output-file=/path/to/output.json \
   --tp-size=2
 ```
+
+### Alpamayo VLA
+
+For Alpamayo-R1-10B, TP=2 partitions only the LLM backbone. Add `--tp-size 2`
+to the export command in the [Alpamayo guide](../examples/vla/alpamayo.md), then
+build the two LLM rank engines as described above. Build the visual and action
+engines once; they remain unsharded.
+
+To use NVFP4 for the LLM backbone and LM head with an FP8 KV cache, prepare a
+quantized checkpoint before export:
+
+```bash
+trtedge quantize llm \
+  --model_dir /path/to/Alpamayo-R1-10B \
+  --output_dir /path/to/Alpamayo-R1-10B-nvfp4-fp8kv \
+  --quantization nvfp4 \
+  --lm_head_quantization nvfp4 \
+  --kv_cache_quantization fp8
+```
+
+This keeps the visual encoder and action expert in FP16. Pass the quantized
+checkpoint directory to `trtedge export` and add `--tp-size 2`.
+
+Run the complete VLA pipeline with `action_inference` instead of
+`llm_inference`:
+
+```bash
+./build/bin/action_inference \
+  --engineDir=/path/to/engines/alpamayo/llm \
+  --multimodalEngineDir=/path/to/engines/alpamayo \
+  --inputFile=/path/to/input_action.json \
+  --outputFile=/path/to/output_action.json \
+  --tpSize=2
+```
+
+For a multi-host launch, use this executable and its arguments in the MPI
+command below.
 
 ### Run On Dual DGX Spark
 

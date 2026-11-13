@@ -1,0 +1,18 @@
+TRT Resource Manager
+====================
+
+.. doxygenclass:: trt_edgellm::safety::TRTResourceManager
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyProfileResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyIOAliasGroup
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

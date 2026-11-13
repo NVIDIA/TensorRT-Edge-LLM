@@ -1,0 +1,13 @@
+Declared Resource Manager
+=========================
+
+.. doxygenclass:: trt_edgellm::safety::DeclaredResourceAllocator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::safety::DeclaredResourceManager
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

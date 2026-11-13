@@ -6,11 +6,6 @@ Qsa Indexer Jit Compiler
    :members:
    :undoc-members:
 
-.. doxygenstruct:: trt_edgellm::QsaIndexerJitKernel
-   :project: TensorRT Edge-LLM
-   :members:
-   :undoc-members:
-
 .. doxygenfunction:: trt_edgellm::canCompileQsaIndexerJitKernel
    :project: TensorRT Edge-LLM
 

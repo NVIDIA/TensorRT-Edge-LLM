@@ -1,0 +1,6 @@
+Rope Cache
+==========
+
+.. doxygenfile:: runtime/state/ropeCache.h
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,13 @@
+Safety Rope Kernel
+==================
+
+.. doxygenstruct:: trt_edgellm::safety::rope_detail::HalfVector
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::rope_detail::FloatVector
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

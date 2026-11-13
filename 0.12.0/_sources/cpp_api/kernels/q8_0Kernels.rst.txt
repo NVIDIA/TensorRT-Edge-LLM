@@ -1,0 +1,6 @@
+Q8 0 Kernels
+============
+
+.. doxygenfile:: kernels/q8_0/q8_0Kernels.cuh
+   :project: TensorRT Edge-LLM
+

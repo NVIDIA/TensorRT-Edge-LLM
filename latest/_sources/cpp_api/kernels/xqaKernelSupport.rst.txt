@@ -1,0 +1,6 @@
+XQA Kernel Support
+==================
+
+.. doxygenfunction:: trt_edgellm::canCompileXQAKernel
+   :project: TensorRT Edge-LLM
+

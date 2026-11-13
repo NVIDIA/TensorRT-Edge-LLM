@@ -1,0 +1,33 @@
+Audio Fbank Kernels
+===================
+
+.. doxygenfunction:: trt_edgellm::kernel::pcmToFramesAndWindow
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::stftR2C400FusedMagsq
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::melLinearGemmFp16TC
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::log10MaxReduce
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::logMelNormalizeAndCastF16
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::pcmPreemphFramesAndWindow
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::stftR2C512FusedMagsq
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::melLinearGemmFp16inFp32out
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::melStatsLnPerFeature
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::melNormalizeZScoreTimeFirst
+   :project: TensorRT Edge-LLM
+

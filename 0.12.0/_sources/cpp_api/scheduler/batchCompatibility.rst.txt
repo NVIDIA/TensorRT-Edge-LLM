@@ -1,0 +1,8 @@
+Batch Compatibility
+===================
+
+.. doxygenclass:: trt_edgellm::rt::scheduler::BatchCompatibility
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

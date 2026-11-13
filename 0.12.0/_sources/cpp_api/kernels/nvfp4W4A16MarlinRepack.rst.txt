@@ -1,0 +1,9 @@
+Nvfp4 W4 A16 Marlin Repack
+==========================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchNvfp4W4A16MarlinRepackSourceBatch
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchNvfp4W4A16ScaleRepack
+   :project: TensorRT Edge-LLM
+

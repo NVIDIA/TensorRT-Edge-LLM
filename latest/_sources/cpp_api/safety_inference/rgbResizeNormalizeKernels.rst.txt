@@ -1,0 +1,11 @@
+Rgb Resize Normalize Kernels
+============================
+
+.. doxygenstruct:: trt_edgellm::safety::RgbNormalization
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::safety::launchResizeNormalizeRgb8
+   :project: TensorRT Edge-LLM
+

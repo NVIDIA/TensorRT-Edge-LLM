@@ -1,0 +1,6 @@
+Nvtx Wrapper
+============
+
+.. doxygenfile:: profiling/nvtx_wrapper.h
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,47 @@
+Minimax H3 Stages
+=================
+
+.. doxygenclass:: trt_edgellm::rt::minimax_h3::TextEncoderStage
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::minimax_h3::DenoiserStage
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::minimax_h3::AudioDecoderStage
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::minimax_h3::VideoDecoderStage
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::minimax_h3::createAudioDecoderStage
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::minimax_h3::audioDecoderDeclaration
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::minimax_h3::createDenoiserStage
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::minimax_h3::denoiserDeclaration
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::minimax_h3::createTextEncoderStage
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::minimax_h3::createVideoDecoderStage
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::minimax_h3::textEncoderDeclaration
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::minimax_h3::videoDecoderDeclaration
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,14 @@
+Ngram Row Ids
+=============
+
+.. doxygenstruct:: trt_edgellm::rt::NGramRowIdParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::ngramRemainder
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::computeNgramRowIds
+   :project: TensorRT Edge-LLM
+

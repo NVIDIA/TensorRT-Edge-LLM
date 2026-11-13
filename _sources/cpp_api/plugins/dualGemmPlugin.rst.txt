@@ -1,0 +1,13 @@
+Dual GEMM Plugin
+================
+
+.. doxygenclass:: trt_edgellm::plugins::DualGemmPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::DualGemmPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

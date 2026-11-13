@@ -1,0 +1,8 @@
+Ragged Plugin Metadata
+======================
+
+.. doxygenstruct:: trt_edgellm::plugins::RaggedPluginMetadata
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

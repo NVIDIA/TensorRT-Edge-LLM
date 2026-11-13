@@ -1,0 +1,6 @@
+Iq2 Xxs Repack
+==============
+
+.. doxygenfunction:: trt_edgellm::kernel::launchIq2XxsMoeRepackSourceBatch
+   :project: TensorRT Edge-LLM
+

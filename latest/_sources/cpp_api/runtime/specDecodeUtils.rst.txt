@@ -1,0 +1,45 @@
+Spec Decode Utils
+=================
+
+.. doxygenstruct:: trt_edgellm::rt::SpecVerifyInputs
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SpecAcceptResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::GreedyAcceptInputs
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::DenseProbabilityAcceptInputs
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SparseProbabilityAcceptInputs
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::DenseTargetSparseDraftAcceptInputs
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::spec_decode::accept
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::spec_decode::commitAcceptedTargetPath
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::spec_decode::validateSpecVerifyInputs
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::spec_decode::prepareTargetVerifyInputs
+   :project: TensorRT Edge-LLM
+

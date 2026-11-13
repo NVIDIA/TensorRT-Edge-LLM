@@ -1,0 +1,44 @@
+Stage
+=====
+
+.. doxygenclass:: trt_edgellm::rt::multiStage::PortBindings
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::multiStage::AbandonToken
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::multiStage::IStage
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::PortValue
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::RequestSlot
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::StageExecContext
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::StageInitContext
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::toString
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::jsonInput
+   :project: TensorRT Edge-LLM
+

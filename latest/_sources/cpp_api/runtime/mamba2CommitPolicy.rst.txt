@@ -1,0 +1,8 @@
+Mamba2 Commit Policy
+====================
+
+.. doxygenclass:: trt_edgellm::rt::Mamba2CommitPolicy
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

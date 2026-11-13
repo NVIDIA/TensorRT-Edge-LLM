@@ -1,0 +1,8 @@
+Safety Tensor View
+==================
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyTensorView
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

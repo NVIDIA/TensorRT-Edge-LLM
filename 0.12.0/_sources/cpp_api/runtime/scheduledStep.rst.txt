@@ -1,0 +1,33 @@
+Scheduled Step
+==============
+
+.. doxygenstruct:: trt_edgellm::rt::ResidentRef
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SequenceIdentity
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::HostTokenRange
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ScheduledSequence
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ScheduledSequenceDescriptor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ScheduledStep
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

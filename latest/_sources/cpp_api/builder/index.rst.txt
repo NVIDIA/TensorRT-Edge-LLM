@@ -9,5 +9,14 @@ API documentation for the builder module.
    actionBuilder
    audioBuilder
    builderUtils
+   internVLConfig
    llmBuilder
+   remoteAutoTuningUtils
+   safetyBuilderConfig
+   safetyEngineSerialization
+   safetyLLMBuilder
+   safetyLLMShapeUtils
+   safetyPluginLoader
+   safetyVisualBuilder
+   safetyVisualShapeUtils
    visualBuilder

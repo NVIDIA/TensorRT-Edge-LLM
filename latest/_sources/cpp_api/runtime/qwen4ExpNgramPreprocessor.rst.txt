@@ -1,0 +1,6 @@
+Qwen4 Exp Ngram Preprocessor
+============================
+
+.. doxygenfunction:: trt_edgellm::rt::advanceHistory
+   :project: TensorRT Edge-LLM
+

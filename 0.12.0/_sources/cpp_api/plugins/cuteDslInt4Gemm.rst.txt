@@ -1,0 +1,6 @@
+Cute Dsl Int4 GEMM
+==================
+
+.. doxygenfile:: plugins/int4GroupwiseGemmPluginV2/cuteDslInt4Gemm.h
+   :project: TensorRT Edge-LLM
+

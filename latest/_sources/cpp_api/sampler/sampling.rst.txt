@@ -1,7 +1,17 @@
 Sampling
 ========
 
+.. doxygenstruct:: trt_edgellm::RowSamplingParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::SamplingParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::SamplingRow
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:
@@ -15,6 +25,9 @@ Sampling
 .. doxygenfunction:: trt_edgellm::getSelectAllTopKWorkspaceSize
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::getRowSamplingWorkspaceSize
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::applyLogitBias
    :project: TensorRT Edge-LLM
 
@@ -25,6 +38,12 @@ Sampling
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::topKtopPSamplingFromLogits
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::makeSamplingRow
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::sampleRows
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::topPProbabilitiesFromLogits
@@ -49,6 +68,15 @@ Sampling
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::mapReducedVocabToFullVocab
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::operator==
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::operator!=
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::makeRowSamplingParams
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::shouldUseNonGreedySampling

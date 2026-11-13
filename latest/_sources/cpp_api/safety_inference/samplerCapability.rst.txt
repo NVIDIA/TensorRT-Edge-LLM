@@ -1,0 +1,8 @@
+Sampler Capability
+==================
+
+.. doxygenclass:: trt_edgellm::safety::SamplerCapability
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

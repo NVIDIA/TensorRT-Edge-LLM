@@ -1,0 +1,6 @@
+Rope Cache
+==========
+
+.. doxygenfile:: safety_inference/embedding/ropeCache.h
+   :project: TensorRT Edge-LLM
+

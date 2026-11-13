@@ -1,0 +1,36 @@
+Diffusion Gemma Sampling
+========================
+
+.. doxygenstruct:: trt_edgellm::DiffusionRandomParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::DiffusionCanvasInitParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::DiffusionCanvasUpdateParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::sampleDiffusionTokensFromLogits
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::sampleDiffusionTokensAndComputeEntropy
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::selectDiffusionArgmaxFromLogits
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::initializeDiffusionCanvas
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::diffusionSampleAndUpdateCanvas
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::compactDiffusionCanvas
+   :project: TensorRT Edge-LLM
+

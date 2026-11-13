@@ -46,19 +46,19 @@ Speculation is off by default. Enable it by passing a verify window:
 
 ```bash
 # Qwen3-Omni
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
     --engine-dir $ENG/thinker \
     --multimodal-engine-dir $ENG/multimodal \
     --enable-audio-output \
     --talker-engine-dir $ENG/talker \
-    --code2wav-engine-dir $ENG/multimodal/code2wav \
+    --code2wav-engine-dir $ENG/code2wav \
     --input-file $WORKSPACE_DIR/input.json \
     --output-file $WORKSPACE_DIR/output.json \
     --output-audio-dir $WORKSPACE_DIR/audio \
     --cp-spec-verify-size 3
 
 # Standalone Qwen3-TTS
-./build/examples/omni/qwen3_tts_inference \
+./build/bin/qwen3_tts_inference \
     --talker-engine-dir $ENG/talker \
     --code2wav-engine-dir $ENG/code2wav \
     --tokenizer-dir $ENG/talker \

@@ -1,0 +1,8 @@
+Embedding Preprocessor
+======================
+
+.. doxygenclass:: trt_edgellm::rt::EmbeddingPreprocessor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,6 @@
+Force Acceptance Kernels
+========================
+
+.. doxygenfile:: kernels/speculative/forceAcceptanceKernels.h
+   :project: TensorRT Edge-LLM
+

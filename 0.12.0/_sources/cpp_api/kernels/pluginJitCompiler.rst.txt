@@ -1,0 +1,9 @@
+Plugin Jit Compiler
+===================
+
+.. doxygenfunction:: trt_edgellm::getPluginJitNvrtcMajorVersion
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::compilePluginJitKernel
+   :project: TensorRT Edge-LLM
+

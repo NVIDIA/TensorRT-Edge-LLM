@@ -6,6 +6,11 @@ Engine Executor
    :members:
    :undoc-members:
 
+.. doxygenclass:: trt_edgellm::rt::EngineExecutor::ScopedContextChunkRouting
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::rt::EngineExecutor::BindingSnapshot
    :project: TensorRT Edge-LLM
    :members:

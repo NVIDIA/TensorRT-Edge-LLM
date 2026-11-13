@@ -1,0 +1,28 @@
+Swa KV Cache State
+==================
+
+.. doxygenclass:: trt_edgellm::rt::SwaWindowStateView
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SwaCacheConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SwaPageBinding
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SwaWindowState
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SwaKVCacheState
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

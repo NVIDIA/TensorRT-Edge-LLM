@@ -6,3 +6,8 @@ Cute Dsl Fmhav2 Runner
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::CuteDslFMHAV2Runner::PagedRaggedParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

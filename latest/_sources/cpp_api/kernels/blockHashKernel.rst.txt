@@ -1,6 +1,0 @@
-Block Hash Kernel
-=================
-
-.. doxygenfunction:: trt_edgellm::rt::launchFnv1aHashChunksKernel
-   :project: TensorRT Edge-LLM
-

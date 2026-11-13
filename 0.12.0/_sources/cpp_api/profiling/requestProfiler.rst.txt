@@ -1,0 +1,8 @@
+Request Profiler
+================
+
+.. doxygenclass:: trt_edgellm::metrics::LLMRequestProfiler
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

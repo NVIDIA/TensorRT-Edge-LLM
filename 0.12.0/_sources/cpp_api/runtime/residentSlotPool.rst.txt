@@ -1,0 +1,8 @@
+Resident Slot Pool
+==================
+
+.. doxygenclass:: trt_edgellm::rt::ResidentSlotPool
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

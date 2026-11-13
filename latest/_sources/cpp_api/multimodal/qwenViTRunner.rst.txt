@@ -21,6 +21,11 @@ Qwen ViT Runner
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::VisionDpPlan
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::rt::QwenViTConfig
    :project: TensorRT Edge-LLM
    :members:

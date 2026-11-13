@@ -1,0 +1,14 @@
+Compact Capability
+==================
+
+.. doxygenstruct:: trt_edgellm::rt::CompactLayerGap
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::compactLayerGaps
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::compactExecutionGap
+   :project: TensorRT Edge-LLM
+

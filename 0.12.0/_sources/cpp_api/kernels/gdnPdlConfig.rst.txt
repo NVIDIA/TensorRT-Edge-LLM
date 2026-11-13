@@ -1,0 +1,6 @@
+Gdn Pdl Config
+==============
+
+.. doxygenfile:: kernels/gdnKernels/gdnPdlConfig.h
+   :project: TensorRT Edge-LLM
+

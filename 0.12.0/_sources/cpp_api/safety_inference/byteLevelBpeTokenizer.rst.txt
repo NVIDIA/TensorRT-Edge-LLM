@@ -1,0 +1,13 @@
+Byte Level Bpe Tokenizer
+========================
+
+.. doxygenclass:: trt_edgellm::safety::ByteLevelBpeTokenizer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::ByteLevelBpeTokenSpec
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

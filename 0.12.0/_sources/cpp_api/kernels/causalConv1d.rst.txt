@@ -1,0 +1,36 @@
+Causal Conv1d
+=============
+
+.. doxygenfunction:: mamba_ssm::invokeCausalConv1d
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCausalConv1dPacked
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::canImplementPackedVarlen
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeGatherConvStateHistory
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCapturePackedConvState
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCaptureConvState
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCausalConv1dDecode
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCausalConv1dDecodeMTP
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::canUseCausalConv1dDecodeChainParallel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCausalConv1dDecodeChainParallel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCausalConv1dDecodeDDTree
+   :project: TensorRT Edge-LLM
+

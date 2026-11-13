@@ -1,0 +1,33 @@
+Safety Generation Types
+=======================
+
+.. doxygenstruct:: trt_edgellm::safety::Message
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::Message::MessageContent
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::ImageData
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::LLMGenerationRequest
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::LLMGenerationRequest::Request
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::LLMGenerationResponse
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

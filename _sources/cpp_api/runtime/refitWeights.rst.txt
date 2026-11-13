@@ -1,0 +1,22 @@
+Refit Weights
+=============
+
+.. doxygenstruct:: trt_edgellm::rt::RefitWeightSet
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::EngineRefitOptions
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::validateWeightlessConfig
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::refitEngineIfNeeded
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::refitEngine
+   :project: TensorRT Edge-LLM
+

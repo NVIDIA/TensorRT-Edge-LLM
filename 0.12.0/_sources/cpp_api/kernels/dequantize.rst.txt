@@ -1,0 +1,6 @@
+Dequantize
+==========
+
+.. doxygenfile:: kernels/int4GroupwiseGemmKernels/dequantize.cuh
+   :project: TensorRT Edge-LLM
+

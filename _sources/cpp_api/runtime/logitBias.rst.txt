@@ -15,6 +15,9 @@ Logit Bias
 .. doxygenfunction:: trt_edgellm::rt::hasLogitBias
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::rt::normalizeLogitBias
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::prepareLogitBias
    :project: TensorRT Edge-LLM
 
@@ -22,5 +25,8 @@ Logit Bias
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::applyLogitBiasRepeatedRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::applyLogitBiasForRows
    :project: TensorRT Edge-LLM
 

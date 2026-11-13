@@ -1,0 +1,49 @@
+Stage Config
+============
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::PortSpec
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::InputSpec
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::SourceRef
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::StageConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::MultiStageConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::toString
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::parseStageKind
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::parsePortKind
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::parseTransport
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::parseOnMissing
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::parseSourceRef
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::validate
+   :project: TensorRT Edge-LLM
+

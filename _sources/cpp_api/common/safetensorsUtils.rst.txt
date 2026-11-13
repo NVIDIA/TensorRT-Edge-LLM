@@ -11,6 +11,9 @@ Safetensors Utils
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::rt::safetensors::dataTypeToString
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::safetensors::dataTypeFromString
    :project: TensorRT Edge-LLM
 

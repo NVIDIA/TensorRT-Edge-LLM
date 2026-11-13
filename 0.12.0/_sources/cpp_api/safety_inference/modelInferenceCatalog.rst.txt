@@ -1,0 +1,21 @@
+Model Inference Catalog
+=======================
+
+.. doxygenstruct:: trt_edgellm::safety::LMStageDefinition
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::ExecutorDefinition
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::ModelInferenceDefinition
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::safety::findModelInferenceDefinition
+   :project: TensorRT Edge-LLM
+

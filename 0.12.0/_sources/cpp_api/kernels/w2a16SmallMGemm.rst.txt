@@ -1,0 +1,6 @@
+W2a16 Small M GEMM
+==================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchW2A16SmallMGemm
+   :project: TensorRT Edge-LLM
+

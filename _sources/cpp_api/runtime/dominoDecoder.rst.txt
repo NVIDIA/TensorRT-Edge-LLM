@@ -1,0 +1,8 @@
+Domino Decoder
+==============
+
+.. doxygenclass:: trt_edgellm::rt::DominoDecoder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

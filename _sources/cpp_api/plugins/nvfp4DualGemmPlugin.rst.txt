@@ -1,0 +1,13 @@
+Nvfp4 Dual GEMM Plugin
+======================
+
+.. doxygenclass:: trt_edgellm::plugins::Nvfp4DualGemmPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::Nvfp4DualGemmPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

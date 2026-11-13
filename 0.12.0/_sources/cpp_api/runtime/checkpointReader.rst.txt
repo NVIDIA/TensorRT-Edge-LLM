@@ -1,0 +1,23 @@
+Checkpoint Reader
+=================
+
+.. doxygenclass:: trt_edgellm::rt::CheckpointReader
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::CheckpointReader::TensorLocation
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::CheckpointReader::View
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::CheckpointReader::Shard::Registration
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -14,15 +14,27 @@ Plugin Utils
 .. doxygenfunction:: trt_edgellm::plugins::applyThorSMRenumberWAR
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::plugins::alignTensorSize
+.. doxygenfunction:: trt_edgellm::plugins::layerNameField
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::plugins::toFieldType
+.. doxygenfunction:: trt_edgellm::plugins::describePluginLayer
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::reportCompactWorkspace
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::alignTensorSize
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::plugins::accumulateWorkspaceSize
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::plugins::assignTensorFromWorkspace
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::resolvePluginLayerName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::toFieldType
    :project: TensorRT Edge-LLM
 

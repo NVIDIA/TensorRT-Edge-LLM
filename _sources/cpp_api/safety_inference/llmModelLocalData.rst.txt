@@ -1,0 +1,28 @@
+LLM Model Local Data
+====================
+
+.. doxygenclass:: trt_edgellm::safety::llm::ModelLocalDataFactory
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::llm::ModelResourceSpec
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::llm::StageResourceSpec
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::llm::StageResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::llm::ModelLocalData
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

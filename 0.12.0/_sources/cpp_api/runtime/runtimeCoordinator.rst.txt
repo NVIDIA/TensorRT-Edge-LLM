@@ -1,0 +1,13 @@
+Runtime Coordinator
+===================
+
+.. doxygenclass:: trt_edgellm::rt::RuntimeCoordinator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::RuntimeCoordinator::Config
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

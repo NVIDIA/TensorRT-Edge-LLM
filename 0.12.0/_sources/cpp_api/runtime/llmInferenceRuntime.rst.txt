@@ -1,0 +1,8 @@
+LLM Inference Runtime
+=====================
+
+.. doxygenclass:: trt_edgellm::rt::LLMInferenceRuntime
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

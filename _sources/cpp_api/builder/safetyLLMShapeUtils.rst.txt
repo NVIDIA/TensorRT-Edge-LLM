@@ -1,0 +1,6 @@
+Safety LLM Shape Utils
+======================
+
+.. doxygenfunction:: trt_edgellm::safety::builder::getSafetyLLMInputShape
+   :project: TensorRT Edge-LLM
+

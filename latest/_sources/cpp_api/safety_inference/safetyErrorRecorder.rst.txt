@@ -1,0 +1,13 @@
+Safety Error Recorder
+=====================
+
+.. doxygenclass:: trt_edgellm::safety::SafetyErrorRecorder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::RecordedDliError
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

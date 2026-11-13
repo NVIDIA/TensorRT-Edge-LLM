@@ -1,0 +1,14 @@
+Code2 Wav Stage
+===============
+
+.. doxygenclass:: trt_edgellm::rt::qwen3_omni::Code2WavStage
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::qwen3_omni::createCode2WavStage
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::qwen3_omni::code2WavDeclaration
+   :project: TensorRT Edge-LLM
+

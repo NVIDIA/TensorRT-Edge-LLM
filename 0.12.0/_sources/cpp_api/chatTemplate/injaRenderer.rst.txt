@@ -1,0 +1,8 @@
+Inja Renderer
+=============
+
+.. doxygenclass:: trt_edgellm::chat_template::InjaRenderer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

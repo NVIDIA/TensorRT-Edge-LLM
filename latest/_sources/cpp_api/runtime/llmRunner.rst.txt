@@ -1,0 +1,14 @@
+LLM Runner
+==========
+
+.. doxygenclass:: trt_edgellm::rt::LlmRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::createLlmRunner
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::llmRunnerDeclaration
+   :project: TensorRT Edge-LLM
+

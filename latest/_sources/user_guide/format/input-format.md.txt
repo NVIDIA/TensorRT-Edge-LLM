@@ -78,15 +78,10 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 - **`sampling_seed`** (optional): Overrides the global stable sampling seed for
   this request.
 - **`lora_name`** (optional): LoRA adapter name from `available_lora_weights`
-- **`save_system_prompt_kv_cache`** (optional): Legacy compatibility field for
-  exact system-prompt caching. New deployments should use KV cache reuse.
-  Bounded Gemma4 SWA storage does not preserve the complete contiguous history
-  required by this legacy snapshot API, so the request continues without
-  saving a snapshot.
 - **`disable_spec_decode`** (optional, default: false): Disable EAGLE speculative decoding for this request even if draft engine is loaded
 - **`logit_bias`** (optional): Request-specific sparse logit-bias map. When set, it overrides the top-level `logit_bias` default for this request.
 - **`num_logprobs`** (optional): Overrides the top-level `num_logprobs` default for this request. Applied batch-uniformly (like `disable_spec_decode`): the batch computes at the maximum value requested by any request in it.
-- **`guided_decoding`** (optional): Constrain the output to a schema, pattern, or grammar. Exactly one mode may be set. Like `logit_bias`, a top-level `guided_decoding` applies to every request unless a request overrides it. See [Guided Decoding](../features/guided-decoding.md).
+- **`guided_decoding`** (optional): Constrain the output to a schema, pattern, or grammar. Exactly one mode may be set. Add `"jump_forward": true` to append grammar-forced tokens without forward passes (default: false). Like `logit_bias`, a top-level `guided_decoding` applies to every request unless a request overrides it. See [Guided Decoding](../features/guided-decoding.md).
 - **`stop`** (optional): String or array of strings that halt generation when produced in the output. The stop string itself is excluded from the returned text. Each request in a batch may declare its own list independently. Defaults to no stop strings.
 
 ### Message Fields
@@ -96,9 +91,9 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 **Content Array Format:**
 - Text: `{"type": "text", "text": "..."}`
 - Image: `{"type": "image", "image": "/path/to/image.jpg"}`. Optional `"do_resize"` (default `true`): set to `false` when the image is already resized to the model's target size — the vision runner then consumes it as-is instead of resizing internally (see [Pre-resized image input](#pre-resized-image-input-do_resize-false)).
-- Audio: `{"type": "audio", "audio": "/path/to/clip.wav"}` (raw `.wav` / `.mp3` / `.flac` decoded in C++ via vendored miniaudio + in-tree mel extractor. Feature-extractor family — `whisper` / `parakeet` — is auto-derived from the engine's `audio/config.json`, mirroring HF / vLLM where FE is pinned by the model. The HTTP server in `experimental.server` accepts the same audio formats via `input_audio` / `audio_url` and routes through the same C++ mel path.)
+- Audio: `{"type": "audio", "audio": "/path/to/clip.wav"}` (raw `.wav` / `.mp3` / `.flac` decoded in C++ via vendored miniaudio + in-tree mel extractor. Feature-extractor family — `whisper` / `parakeet` — is auto-derived from the engine's `audio/config.json`, mirroring HF / vLLM where FE is pinned by the model. The HTTP server in `tensorrt_edgellm.server` accepts the same audio formats via `input_audio` / `audio_url` and routes through the same C++ mel path.)
 - The C++ `llm_inference` CLI does not accept video content. The
-  [OpenAI-compatible server](../examples/experimental-server.md#image-video-and-audio-input)
+  [OpenAI-compatible server](../examples/server.md#image-video-and-audio-input)
   accepts `video`, `video_url`, or an explicit frame list for supported Qwen
   and InternVL model families and Nemotron Omni. Nemotron Omni accepts exactly
   one video and no images per request. The Cosmos3 policy runtime has a
@@ -307,9 +302,9 @@ bias; the runtime ignores that entry and logs a warning.
 
 `json_schema` and `structural_tag` accept an inline object, `choice` an inline array, and every mode also accepts an escaped JSON string.
 
-**Speculative decoding limitation:** guided requests are rejected while speculative decoding is active. Set `disable_spec_decode: true` to use vanilla decoding for that batch.
+Guided decoding works with speculative decoding; only block-diffusion engines reject it.
 
-See [Guided Decoding](../features/guided-decoding.md) for all six modes, schema support, and build instructions.
+See [Guided Decoding](../features/guided-decoding.md) for all six modes, jump-forward, schema support, and build instructions.
 
 ### Top-N Log-Probabilities
 

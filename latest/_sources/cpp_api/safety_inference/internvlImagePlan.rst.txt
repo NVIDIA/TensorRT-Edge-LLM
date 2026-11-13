@@ -1,0 +1,13 @@
+Internvl Image Plan
+===================
+
+.. doxygenstruct:: trt_edgellm::safety::InternVLTilePlan
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::TileGridCandidate
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

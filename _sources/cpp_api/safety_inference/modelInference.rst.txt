@@ -1,0 +1,21 @@
+Model Inference
+===============
+
+.. doxygenclass:: trt_edgellm::safety::ModelInferenceRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::safety::ModelInference
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::ModelInferenceResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::safety::createModelInference
+   :project: TensorRT Edge-LLM
+

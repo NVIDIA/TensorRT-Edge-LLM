@@ -1,0 +1,6 @@
+Kernel
+======
+
+.. doxygenfunction:: MARLIN_NAMESPACE_NAME::Marlin
+   :project: TensorRT Edge-LLM
+

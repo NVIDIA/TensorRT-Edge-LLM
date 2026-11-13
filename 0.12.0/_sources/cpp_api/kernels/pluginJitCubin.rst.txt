@@ -1,0 +1,6 @@
+Plugin Jit Cubin
+================
+
+.. doxygenfile:: kernels/PluginJitKernels/pluginJitCubin.h
+   :project: TensorRT Edge-LLM
+

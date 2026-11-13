@@ -9,11 +9,14 @@ API documentation for the common module.
    allReducePath
    bindingNames
    checkMacros
+   counterRng
    cudaMacros
    cudaUtils
+   dataType
    executionPhase
    fileUtils
    hashUtils
+   identityHash
    inputLimits
    logger
    mathUtils
@@ -22,9 +25,12 @@ API documentation for the common module.
    parallelArtifactNames
    ropeUtils
    safetensorsUtils
+   skipSoftmaxScaleTable
    specDecodeConfigUtils
+   specDecodeLimits
    stringUtils
    tensor
+   trtInterop
    trtUtils
    utf8
    version

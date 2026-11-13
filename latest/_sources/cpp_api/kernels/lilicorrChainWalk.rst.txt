@@ -1,0 +1,6 @@
+Lilicorr Chain Walk
+===================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchLiLiCorrChainWalk
+   :project: TensorRT Edge-LLM
+

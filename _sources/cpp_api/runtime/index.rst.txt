@@ -16,6 +16,8 @@ API documentation for the runtime module.
    checkpointReader
    checkpointWeightAssemble
    collectiveGroup
+   compactCapability
+   compactMediaReservation
    contextCacheConfig
    contextCacheCoordinator
    contextCacheDeployment
@@ -30,8 +32,11 @@ API documentation for the runtime module.
    decodingStrategy
    deepstackBinding
    deploymentConfig
+   deploymentOptions
+   deviceFailure
    dflashDecodeUtils
    dflashDecoder
+   dominoDecoder
    dsparkDecoder
    eagleDecoder
    embeddingPreprocessor
@@ -39,24 +44,27 @@ API documentation for the runtime module.
    engineExecutor
    evictionPlanner
    externalWeightManager
+   gdnConvCommitPolicy
    gemma4EmbeddingPreprocessor
    gemma4MTPDecoder
-   generationBoundary
    guidedDecoder
    hybridCacheManager
    hybridSnapshotStorage
    imageUtils
    inferenceDims
    inferencePhase
+   jumpForward
    kvCacheManager
    kvPageTable
    layerDebugger
    llmEngineConfig
    llmInferenceRuntime
    llmRankRuntime
+   llmRunner
    llmRuntimeUtils
    logitBias
    loraManager
+   mamba2CommitPolicy
    mambaCacheManager
    managedKVCacheRequest
    melSpectrogram
@@ -65,31 +73,57 @@ API documentation for the runtime module.
    multiDevicePluginCommRegistry
    multiDevicePluginResourceFactory
    multiDevicePluginResources
+   multiStageRuntime
    ncclCollectiveBackend
+   ngramRowIds
    parallelConfig
    pipelineIO
+   pleCache
+   pleFileUtils
+   pleIoBudget
+   pleReadExecutor
+   pleReadPlan
+   pleRowStore
+   pleRuntimeConfig
+   pleTable
    qwen3OmniTTSRuntime
+   qwen4ExpNgramPreprocessor
    raggedBatchBuilder
+   recurrentCommitPolicy
+   recurrentCommitPolicyFactory
+   recurrentStateManager
+   recurrentStateTypes
+   refitWeights
    registryBuilder
    requestStableRng
    residentSlotPool
    resourcePools
    reusePlan
    ropeCache
+   route
    rtxRuntimeCache
+   runtimeBenchmarkOptions
    runtimeCoordinator
-   runtimeStepper
+   runtimeResources
+   runtimeSession
    scheduledStep
+   sessionOptions
    sharedResources
    specCommonStateTracker
+   specDecodeUtils
+   specPleStaging
    specReuseContract
    specStatePlan
+   stage
+   stageConfig
+   stageRegistry
    stepPreparer
    streaming
-   systemPromptKVCache
+   swaKVCacheState
    tensorMap
    tensorParallelNcclResources
    tensorParallelPluginResources
    tensorRegistry
    vanillaDecoder
+   visionGather
    visualTokenPruner

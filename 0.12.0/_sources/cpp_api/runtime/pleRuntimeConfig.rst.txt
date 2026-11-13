@@ -1,0 +1,8 @@
+Ple Runtime Config
+==================
+
+.. doxygenstruct:: trt_edgellm::rt::PleRuntimeConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

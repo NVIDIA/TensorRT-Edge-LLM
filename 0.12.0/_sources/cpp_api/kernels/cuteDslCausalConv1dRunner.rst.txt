@@ -1,0 +1,6 @@
+Cute Dsl Causal Conv1d Runner
+=============================
+
+.. doxygenfile:: kernels/mamba/cuteDslCausalConv1dRunner.h
+   :project: TensorRT Edge-LLM
+

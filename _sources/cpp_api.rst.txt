@@ -15,6 +15,7 @@ This section provides documentation for the TensorRT Edge-LLM C++ API.
    cpp_api/plugins/index
    cpp_api/profiling/index
    cpp_api/runtime/index
+   cpp_api/safety_inference/index
    cpp_api/sampler/index
    cpp_api/scheduler/index
    cpp_api/tokenizer/index

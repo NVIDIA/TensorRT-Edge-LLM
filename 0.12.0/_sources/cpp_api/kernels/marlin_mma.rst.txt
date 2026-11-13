@@ -1,0 +1,6 @@
+Marlin Mma
+==========
+
+.. doxygenfile:: kernels/moe/moe_marlin/marlin/marlin_mma.h
+   :project: TensorRT Edge-LLM
+

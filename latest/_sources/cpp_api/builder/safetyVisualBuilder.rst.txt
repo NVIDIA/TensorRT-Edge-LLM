@@ -1,0 +1,8 @@
+Safety Visual Builder
+=====================
+
+.. doxygenclass:: trt_edgellm::safety::builder::SafetyVisualBuilder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

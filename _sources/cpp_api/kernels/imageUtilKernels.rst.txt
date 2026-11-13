@@ -16,6 +16,16 @@ Image Util Kernels
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::kernel::ImageDigestPlane
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::ImageRowDigest
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenfunction:: trt_edgellm::kernel::transposeToPatchGemma4ViT
    :project: TensorRT Edge-LLM
 
@@ -56,6 +66,12 @@ Image Util Kernels
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::evsScoresNemotronViT
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::hashImageRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::combineImageRowDigests
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::batchedPreprocessImage

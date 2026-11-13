@@ -1,0 +1,8 @@
+Cosmos3 Edge ViT Runner
+=======================
+
+.. doxygenclass:: trt_edgellm::rt::Cosmos3EdgeViTRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

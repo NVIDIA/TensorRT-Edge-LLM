@@ -1,0 +1,32 @@
+Visual Token Pruner
+===================
+
+.. doxygenclass:: trt_edgellm::rt::VisualTokenPruner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::VisualPrunerConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ImageSpan
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::PruneRequest
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::registerVisualPruner
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::createVisualTokenPruner
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::registeredVisualPrunerNames
+   :project: TensorRT Edge-LLM
+

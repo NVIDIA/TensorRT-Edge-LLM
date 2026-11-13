@@ -1,0 +1,18 @@
+Model Inference Types
+=====================
+
+.. doxygenstruct:: trt_edgellm::safety::LMStageOutputs
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::TokenIdView
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::TokenIdBuffer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

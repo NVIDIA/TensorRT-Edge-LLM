@@ -1,0 +1,52 @@
+Compact Phase Support
+=====================
+
+.. doxygenstruct:: trt_edgellm::CompactPhaseSupport
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::AttentionLayerTraits
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::isCtmOnlySM
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::thorRenumberedSm
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::ctmDecodeDisabledByEnv
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::cuteDslArtifactCarriesSm
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::decodesOnCtmOnly
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::canUseCtmDecode
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::canUseXqaDecode
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::selectCompactPrefillKernel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::attentionCompactSupport
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::attentionLayerShape
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::causalConv1dCompactSupport
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::gatedDeltaNetCompactSupport
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::mamba2SsdCompactSupport
+   :project: TensorRT Edge-LLM
+

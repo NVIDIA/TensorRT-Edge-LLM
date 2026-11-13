@@ -1,0 +1,8 @@
+Gemma4 Embedding Preprocessor
+=============================
+
+.. doxygenclass:: trt_edgellm::rt::Gemma4EmbeddingPreprocessor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

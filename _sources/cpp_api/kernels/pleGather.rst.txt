@@ -1,0 +1,9 @@
+Ple Gather
+==========
+
+.. doxygenfunction:: trt_edgellm::kernel::launchPleGather
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGemmaPleResidentMap
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,8 @@
+Internvl3 Vanilla Inference
+===========================
+
+.. doxygenclass:: trt_edgellm::safety::InternVL3VanillaInference
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

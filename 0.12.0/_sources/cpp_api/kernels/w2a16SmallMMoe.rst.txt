@@ -1,0 +1,14 @@
+W2a16 Small M Moe
+=================
+
+.. doxygenstruct:: trt_edgellm::kernel::W2A16SmallMMoeParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::kernel::w2a16SmallMMoeWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchW2A16SmallMMoe
+   :project: TensorRT Edge-LLM
+

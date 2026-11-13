@@ -1,0 +1,8 @@
+Token Encoder
+=============
+
+.. doxygenclass:: trt_edgellm::tokenizer::TokenEncoder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

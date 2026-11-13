@@ -1,0 +1,33 @@
+Block Index
+===========
+
+.. doxygenclass:: trt_edgellm::rt::BaseBlockIndex
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::SpecPagedStateIndex
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::SpecStateIndex
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::BaseLookupResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::BaseInsertResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SpecPagedStateMatch
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

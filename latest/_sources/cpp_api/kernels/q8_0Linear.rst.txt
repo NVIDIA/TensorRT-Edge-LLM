@@ -1,0 +1,6 @@
+Q8 0 Linear
+===========
+
+.. doxygenfile:: kernels/q8_0/q8_0Linear.h
+   :project: TensorRT Edge-LLM
+

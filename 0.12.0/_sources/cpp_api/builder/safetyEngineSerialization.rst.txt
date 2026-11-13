@@ -1,0 +1,9 @@
+Safety Engine Serialization
+===========================
+
+.. doxygenfunction:: trt_edgellm::safety::builder::saveSafetyEngineArtifacts
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::builder::buildAndSerializeSafetyEngine
+   :project: TensorRT Edge-LLM
+

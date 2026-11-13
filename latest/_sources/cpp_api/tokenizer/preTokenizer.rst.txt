@@ -11,6 +11,11 @@ Pre Tokenizer
    :members:
    :undoc-members:
 
+.. doxygenclass:: trt_edgellm::tokenizer::Metaspace
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenclass:: trt_edgellm::tokenizer::Sequence
    :project: TensorRT Edge-LLM
    :members:

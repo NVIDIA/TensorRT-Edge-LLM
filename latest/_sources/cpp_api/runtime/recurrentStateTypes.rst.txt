@@ -1,0 +1,11 @@
+Recurrent State Types
+=====================
+
+.. doxygenstruct:: trt_edgellm::rt::StateSpec
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::stateKindName
+   :project: TensorRT Edge-LLM
+

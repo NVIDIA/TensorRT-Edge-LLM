@@ -1,0 +1,25 @@
+Domino Rollout Kernels
+======================
+
+.. doxygenstruct:: trt_edgellm::kernel::DominoStepLayout
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::DominoCorrectScratch
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::kernel::dominoGruUpdate
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dominoCorrectStep
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dominoSelectFirstProposal
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dominoRemapPoolSlots
+   :project: TensorRT Edge-LLM
+

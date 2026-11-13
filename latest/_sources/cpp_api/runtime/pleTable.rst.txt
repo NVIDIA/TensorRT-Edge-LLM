@@ -1,0 +1,18 @@
+Ple Table
+=========
+
+.. doxygenclass:: trt_edgellm::rt::PleTable
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::PleTable::Sample
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::PleTable::ShardSource
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

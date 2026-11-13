@@ -1,0 +1,8 @@
+Multimodal Preprocessor Capability
+==================================
+
+.. doxygenclass:: trt_edgellm::safety::MultimodalPreprocessorCapability
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

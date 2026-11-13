@@ -7,7 +7,7 @@ Dspark Kernels
 .. doxygenfunction:: trt_edgellm::kernel::dsparkBuildVerifyTokens
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::kernel::dsparkGreedyAccept
+.. doxygenfunction:: trt_edgellm::kernel::dsparkSelectTargetTokens
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::dsparkFillProposalLengths
@@ -44,6 +44,15 @@ Dspark Kernels
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::dsparkMarkovGreedyFusedStepFp8
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkDequantizeW2
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkRepackW2Tcgen5
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkMarkovGreedyStepTcgen5
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::dsparkFinalizeGreedyDraftTokens

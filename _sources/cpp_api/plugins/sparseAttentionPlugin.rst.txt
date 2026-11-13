@@ -1,0 +1,13 @@
+Sparse Attention Plugin
+=======================
+
+.. doxygenclass:: trt_edgellm::plugins::SparseAttentionPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::SparseAttentionPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

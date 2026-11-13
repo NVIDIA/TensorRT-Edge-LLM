@@ -1,0 +1,6 @@
+Request Stable Rng
+==================
+
+.. doxygenfile:: runtime/decoding/requestStableRng.h
+   :project: TensorRT Edge-LLM
+

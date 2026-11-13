@@ -1,0 +1,13 @@
+Cute Dsl Dual GEMM Runner
+=========================
+
+.. doxygenclass:: trt_edgellm::kernels::CuteDslDualGemmRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernels::DualGemmBlackwellParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

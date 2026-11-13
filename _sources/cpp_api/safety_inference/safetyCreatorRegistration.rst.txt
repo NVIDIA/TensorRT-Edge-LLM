@@ -1,0 +1,6 @@
+Safety Creator Registration
+===========================
+
+.. doxygenfile:: safety_inference/plugins/safetyCreatorRegistration.h
+   :project: TensorRT Edge-LLM
+

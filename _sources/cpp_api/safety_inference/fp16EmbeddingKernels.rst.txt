@@ -1,0 +1,6 @@
+Fp16 Embedding Kernels
+======================
+
+.. doxygenfile:: safety_inference/embedding/fp16EmbeddingKernels.cuh
+   :project: TensorRT Edge-LLM
+

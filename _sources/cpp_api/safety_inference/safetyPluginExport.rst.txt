@@ -1,0 +1,6 @@
+Safety Plugin Export
+====================
+
+.. doxygenfile:: safety_inference/plugins/safetyPluginExport.h
+   :project: TensorRT Edge-LLM
+

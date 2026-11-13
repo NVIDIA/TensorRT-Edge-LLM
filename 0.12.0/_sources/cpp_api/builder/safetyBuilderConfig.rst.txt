@@ -1,0 +1,23 @@
+Safety Builder Config
+=====================
+
+.. doxygenstruct:: trt_edgellm::safety::builder::SafetyLLMStaticShapeProfile
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::builder::SafetyLLMBuilderConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::builder::SafetyVisualStaticShapeProfile
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::builder::SafetyVisualBuilderConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,6 @@
+Build Layout
+============
+
+.. doxygenfunction:: trt_edgellm::kernel::buildLayoutGpu
+   :project: TensorRT Edge-LLM
+

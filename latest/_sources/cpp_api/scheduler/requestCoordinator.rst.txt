@@ -11,3 +11,13 @@ Request Coordinator
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::scheduler::RequestCoordinator::Progress
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::scheduler::RequestCoordinator::Released
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

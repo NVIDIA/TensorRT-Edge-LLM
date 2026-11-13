@@ -1,0 +1,45 @@
+Plugins Module
+==============
+
+API documentation for the plugins module.
+
+.. toctree::
+   :maxdepth: 1
+
+   allReducePlugin
+   attentionPlugin
+   causalConv1dPlugin
+   cuteDslInt4Gemm
+   cuteDslInt4Gemv
+   dflash2GroupedDynamicConvPlugin
+   dflashTargetKVCacheUpdatePlugin
+   dualGemmPlugin
+   fp16MoePlugin
+   fusedNvfp4GemmAllReducePlugin
+   gatedDeltaNetPlugin
+   gemma4AudioAttentionPlugin
+   int4GroupwiseGemmPlugin
+   int4GroupwiseGemmPluginV2
+   int4MoePlugin
+   layerNormPlugin
+   lowRankCandidateHeadPlugin
+   mambaPlugin
+   nvfp4A16BlackwellDispatchPolicy
+   nvfp4A16BlackwellGemmPlugin
+   nvfp4A16BlackwellMoePlugin
+   nvfp4A16GemmPlugin
+   nvfp4A16MoePlugin
+   nvfp4DualGemmPlugin
+   nvfp4MoePlugin
+   nvfp4MoePluginGeforce
+   pleGatherPlugin
+   pluginUtils
+   q8_0LinearPlugin
+   qkvConcatPlugin
+   qsaAttentionPlugin
+   raggedPluginMetadata
+   rmsNormPlugin
+   sparseAttentionPlugin
+   vitAttentionPlugin
+   w2a16GemmPlugin
+   w2a16MoePlugin

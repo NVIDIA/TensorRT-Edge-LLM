@@ -278,7 +278,7 @@ covers the transforms as well as the engine maths.
 
 ### What the thresholds mean
 
-`compare_pi05_actions.py` gates all three configurations at its defaults, `0.99999` cosine and
+`experimental_models/scripts/compare_actions.py` gates all three configurations at its defaults, `0.99999` cosine and
 `5e-3` max-abs. All three cleared them on the validated build, each scored on an observation from
 its own embodiment; the paragraph below is why a rebuild can land the other side of the ceiling.
 

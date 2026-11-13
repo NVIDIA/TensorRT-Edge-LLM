@@ -1,0 +1,8 @@
+Minimax H3 Engine
+=================
+
+.. doxygenclass:: trt_edgellm::rt::minimax_h3::MiniMaxH3Engine
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,6 @@
+Fnv1a Hash Kernel
+=================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchFnv1aHashChunksKernel
+   :project: TensorRT Edge-LLM
+

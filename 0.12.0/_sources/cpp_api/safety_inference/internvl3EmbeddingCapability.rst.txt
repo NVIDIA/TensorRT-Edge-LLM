@@ -1,0 +1,8 @@
+Internvl3 Embedding Capability
+==============================
+
+.. doxygenclass:: trt_edgellm::safety::InternVL3EmbeddingCapability
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

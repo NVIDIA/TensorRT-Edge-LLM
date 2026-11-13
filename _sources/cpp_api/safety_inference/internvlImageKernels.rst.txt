@@ -1,0 +1,6 @@
+Internvl Image Kernels
+======================
+
+.. doxygenfile:: safety_inference/image_preprocess/models/internvl3/internvlImageKernels.cuh
+   :project: TensorRT Edge-LLM
+

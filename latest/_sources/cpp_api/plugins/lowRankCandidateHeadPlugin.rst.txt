@@ -1,0 +1,13 @@
+Low Rank Candidate Head Plugin
+==============================
+
+.. doxygenclass:: trt_edgellm::plugins::LowRankCandidateHeadPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::LowRankCandidateHeadPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

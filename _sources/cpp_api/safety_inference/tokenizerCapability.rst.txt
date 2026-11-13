@@ -1,0 +1,18 @@
+Tokenizer Capability
+====================
+
+.. doxygenclass:: trt_edgellm::safety::TokenizerCapability
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::TokenizationResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::ExpandedTokenResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

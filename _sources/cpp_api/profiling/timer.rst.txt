@@ -11,12 +11,27 @@ Timer
    :members:
    :undoc-members:
 
+.. doxygenclass:: trt_edgellm::timer::TimerProxy
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::timer::TimerPair
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:
 
 .. doxygenstruct:: trt_edgellm::timer::StageTimingData
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::timer::TimingSample
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::timer::AcceptanceSample
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:

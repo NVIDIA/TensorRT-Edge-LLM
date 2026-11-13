@@ -1,0 +1,8 @@
+Gdn Conv Commit Policy
+======================
+
+.. doxygenclass:: trt_edgellm::rt::GdnConvCommitPolicy
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

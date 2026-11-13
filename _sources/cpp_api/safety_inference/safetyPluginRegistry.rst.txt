@@ -1,0 +1,9 @@
+Safety Plugin Registry
+======================
+
+.. doxygenfunction:: trt_edgellm::safety::processRegistrationRecorder
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::registerSafetyPlugins
+   :project: TensorRT Edge-LLM
+

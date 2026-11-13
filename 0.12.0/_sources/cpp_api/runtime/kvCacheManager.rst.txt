@@ -1,0 +1,18 @@
+KV Cache Manager
+================
+
+.. doxygenclass:: trt_edgellm::rt::KVCacheManager
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::KVLayerConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::KVLayerStorageMetadata
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

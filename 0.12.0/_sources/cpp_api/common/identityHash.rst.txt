@@ -1,0 +1,21 @@
+Identity Hash
+=============
+
+.. doxygenstruct:: trt_edgellm::rt::Hash128
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::FnvValue
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: std::hash< trt_edgellm::rt::Hash128 >
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::hashOpaqueIdentity
+   :project: TensorRT Edge-LLM
+

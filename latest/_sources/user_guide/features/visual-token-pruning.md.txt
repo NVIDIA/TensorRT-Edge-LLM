@@ -34,7 +34,7 @@ so existing engines work as-is.
 ## Usage
 
 ```bash
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
   --engine-dir engines/qwen3-vl-4b/llm \
   --multimodal-engine-dir engines/qwen3-vl-4b/visual \
   --input-file tests/test_cases/vlm_basic.json \
@@ -119,7 +119,7 @@ the host. Total selector overhead is ~1–2 ms per prefill and is included in al
 Pruning is applied only when all of the following hold (it silently no-ops otherwise):
 
 - mRoPE VLM engine (Qwen2.5-VL / Qwen3-VL family) with visual input present
-- Fresh KV cache (not combined with system-prompt cache reuse). Batched prefill is supported:
+- Fresh KV cache (not combined with KV cache reuse). Batched prefill is supported:
   each request in the batch is pruned independently (per-slot selection, then one repack of the
   batch buffers to the new padded length)
 - Not combined with the Omni Talker or the VLA action runner. Speculative decoding is

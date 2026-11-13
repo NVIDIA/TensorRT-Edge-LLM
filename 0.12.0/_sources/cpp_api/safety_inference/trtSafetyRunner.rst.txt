@@ -1,0 +1,13 @@
+TRT Safety Runner
+=================
+
+.. doxygenclass:: trt_edgellm::safety::TRTSafetyRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyRuntimeInitSpec
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

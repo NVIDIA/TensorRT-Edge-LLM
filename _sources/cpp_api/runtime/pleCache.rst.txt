@@ -1,0 +1,23 @@
+Ple Cache
+=========
+
+.. doxygenclass:: trt_edgellm::rt::PleCache
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::PleCache::RequestLease
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::PleCache::BatchReservation
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::PleCache::Miss
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

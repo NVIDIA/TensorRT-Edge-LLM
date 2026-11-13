@@ -1,0 +1,13 @@
+Recurrent Commit Policy
+=======================
+
+.. doxygenclass:: trt_edgellm::rt::RecurrentCommitPolicy
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::RecurrentCommitPolicy::Config
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

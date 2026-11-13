@@ -1,0 +1,9 @@
+Recurrent Commit Policy Factory
+===============================
+
+.. doxygenfunction:: trt_edgellm::rt::makeRecurrentCommitPolicy
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::declareRecurrentSpecVerifyBindings
+   :project: TensorRT Edge-LLM
+

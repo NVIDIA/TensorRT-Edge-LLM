@@ -1,0 +1,8 @@
+Unicode Data
+============
+
+.. doxygenstruct:: trt_edgellm::tokenizer::rangeNfd
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

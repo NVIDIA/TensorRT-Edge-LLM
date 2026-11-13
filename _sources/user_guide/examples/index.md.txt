@@ -30,8 +30,10 @@ serving, engine building, ONNX export, and model preparation.
 ## Text Output
 
 - [Interactive Text Chat](interactive-chat.md): local streaming conversations with `trtedge chat`
+- [Text generation](../getting_started/quick-start-guide.md): one shared workflow
+  for dense LLM, MoE, VLM, and Omni text output; Phi-4 Multimodal adds the
+  model-specific [vision-LoRA merge](phi4.md)
 - [Python runtime](python-runtime.md): build a text engine and run inference from local model files
-- [Phi-4 Multimodal](phi4.md): merge the vision LoRA adapter before quantization and export
 - [Speculative Decoding](speculative-decoding.md): MTP, EAGLE3, DFlash, DSpark,
   and JetSpec acceleration
 - [ASR](asr.md): audio to transcript text with Qwen3-ASR
@@ -42,12 +44,16 @@ serving, engine building, ONNX export, and model preparation.
 - [Qwen3-TTS](tts.md): text, style, language, or reference speech to 24 kHz speech
 - [Qwen3-Omni](omni.md): text, images, or audio to text and optional 24 kHz speech
 
+## Video Output
+
+- [MiniMax-H3](minimax-h3.md): text to video with stereo audio from the FP16 checkpoint
+
 ## Action Output
 
 - [Vision-Language-Action](vla/index.md): Alpamayo trajectory generation, and
   Cosmos3 and pi0.5 policy action generation
 
-## Serving and Evaluation
+## Use with other software
 
-- [Experimental Python API and Server](experimental-server.md): Python and OpenAI-compatible interfaces
-- [NeMo Evaluator](nemo-evaluator.md): evaluate a local OpenAI-compatible server
+- [Integration](integration/index.md): AIPerf, NeMo Evaluator, VLMEvalKit, Claude Code, OpenClaw, and Codex
+- [Python API and Server](server.md): Python and OpenAI-compatible interfaces

@@ -1,0 +1,13 @@
+Tensor Registry
+===============
+
+.. doxygenclass:: trt_edgellm::rt::TensorRegistry
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::TensorSpec
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,14 @@
+Talker Runner
+=============
+
+.. doxygenclass:: trt_edgellm::rt::qwen3_omni::TalkerRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::qwen3_omni::createTalkerRunner
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::qwen3_omni::talkerRunnerDeclaration
+   :project: TensorRT Edge-LLM
+

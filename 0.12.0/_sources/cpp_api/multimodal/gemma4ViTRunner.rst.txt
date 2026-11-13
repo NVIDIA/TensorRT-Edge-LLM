@@ -1,0 +1,13 @@
+Gemma4 ViT Runner
+=================
+
+.. doxygenclass:: trt_edgellm::rt::Gemma4ViTRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::Gemma4ViTConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

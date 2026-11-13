@@ -1,0 +1,6 @@
+Lifecycle State
+===============
+
+.. doxygenfile:: safety_inference/runtime/lifecycleState.h
+   :project: TensorRT Edge-LLM
+

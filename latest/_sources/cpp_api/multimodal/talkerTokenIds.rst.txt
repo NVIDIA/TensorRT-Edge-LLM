@@ -1,0 +1,11 @@
+Talker Token Ids
+================
+
+.. doxygenstruct:: trt_edgellm::rt::qwen3_omni::TalkerTokenIds
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::qwen3_omni::resolveTalkerTokenIds
+   :project: TensorRT Edge-LLM
+

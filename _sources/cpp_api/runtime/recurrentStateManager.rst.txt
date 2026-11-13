@@ -1,0 +1,8 @@
+Recurrent State Manager
+=======================
+
+.. doxygenclass:: trt_edgellm::rt::RecurrentStateManager
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

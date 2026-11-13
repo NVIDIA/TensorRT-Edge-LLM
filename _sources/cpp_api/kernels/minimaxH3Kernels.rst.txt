@@ -1,0 +1,14 @@
+Minimax H3 Kernels
+==================
+
+.. doxygenstruct:: trt_edgellm::kernel::minimax_h3::FlowLatents
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::kernel::minimax_h3::randomNormal
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::minimax_h3::emitRgbFrames
+   :project: TensorRT Edge-LLM
+

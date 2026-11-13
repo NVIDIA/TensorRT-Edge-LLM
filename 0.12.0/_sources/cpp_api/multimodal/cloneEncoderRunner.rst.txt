@@ -1,0 +1,8 @@
+Clone Encoder Runner
+====================
+
+.. doxygenclass:: trt_edgellm::rt::CloneEncoderRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

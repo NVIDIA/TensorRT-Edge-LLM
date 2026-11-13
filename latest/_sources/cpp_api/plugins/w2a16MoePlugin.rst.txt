@@ -1,0 +1,13 @@
+W2a16 Moe Plugin
+================
+
+.. doxygenclass:: trt_edgellm::plugins::W2A16MoePlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::W2A16MoePluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

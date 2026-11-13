@@ -1,0 +1,6 @@
+Fp16 Embedding
+==============
+
+.. doxygenfunction:: trt_edgellm::safety::launchFp16EmbeddingLookup
+   :project: TensorRT Edge-LLM
+

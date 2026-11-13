@@ -1,0 +1,13 @@
+Ctm Decode Attention Runner
+===========================
+
+.. doxygenclass:: trt_edgellm::CtmDecodeAttentionRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::CtmDecodeParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

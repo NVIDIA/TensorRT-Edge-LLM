@@ -1,0 +1,18 @@
+Compact Media Reservation
+=========================
+
+.. doxygenclass:: trt_edgellm::rt::CompactMediaReservation
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::CompactMediaReservation::Shape
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::CompactMediaReservation::Sources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

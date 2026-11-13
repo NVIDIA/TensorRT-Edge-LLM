@@ -1,0 +1,8 @@
+Safety Status
+=============
+
+.. doxygenclass:: trt_edgellm::safety::SafetyStatus
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

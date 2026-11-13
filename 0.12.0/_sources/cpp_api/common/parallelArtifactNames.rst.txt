@@ -1,0 +1,17 @@
+Parallel Artifact Names
+=======================
+
+.. doxygenstruct:: trt_edgellm::parallel_artifacts::RankArtifactContext
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::parallel_artifacts::onnxFileName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::parallel_artifacts::configFileName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::parallel_artifacts::engineFileName
+   :project: TensorRT Edge-LLM
+

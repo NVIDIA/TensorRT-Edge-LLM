@@ -13,7 +13,7 @@ for checkpoint IDs.
 
 TensorRT Edge-LLM officially supports NVIDIA Jetson Thor, NVIDIA DRIVE Thor,
 NVIDIA DGX Spark (GB10), and NVIDIA Jetson Orin release targets. Jetson Orin
-supports FP16, INT8, and INT4 runtime precisions only.
+supports FP16, INT8, and INT4 model precisions; FP8 KV cache uses FP16 attention.
 
 ### Supported Model Families
 
@@ -66,14 +66,28 @@ quantized checkpoint.
 
 ## Runtime Capabilities
 
-- Paged attention, FP8 KV cache, LoRA, streaming, and [KV Cache Reuse](user_guide/features/kv-cache-reuse.md)
+- Paged attention, FP8 KV cache, LoRA, streaming, [KV Cache Reuse](user_guide/features/kv-cache-reuse.md), and [Skip-Softmax Attention](user_guide/features/skip-softmax.md) for long-context prefill
 - EAGLE3, MTP, DFlash, and DSpark speculative decoding on supported models
 - Image and audio encoders, speech generation, ASR, and action generation
 - Model-specific runtimes for pipelines whose I/O contract is not LLM-shaped
-- Experimental Python API and OpenAI-compatible server over the C++ runtime,
+- Python API and OpenAI-compatible server over the C++ runtime,
   with opt-in [In-Flight Batching](user_guide/features/in-flight-batching.md)
 
 Feature availability depends on the model and deployment.
+
+## Use it with other software
+
+The OpenAI-compatible server is the endpoint for existing benchmark, evaluation,
+and coding tools. A model ID is enough: the checkpoint downloads into the
+normal Hugging Face cache, and the compiled engine is reused from the default
+Edge-LLM cache.
+
+- [AIPerf](user_guide/examples/integration/aiperf.md) measures streaming latency and throughput.
+- [NeMo Evaluator](user_guide/examples/integration/nemo-evaluator.md) runs chat evaluations such as MMLU.
+- [VLMEvalKit](user_guide/examples/integration/vlmevalkit.md) scores image, video, and text benchmarks such as MMStar, OCRBench, and MMMU.
+- [Claude Code](user_guide/examples/integration/claude-code.md), [OpenClaw](user_guide/examples/integration/openclaw.md), and [Codex](user_guide/examples/integration/codex.md) use the local server as their model.
+
+The [integration guide](user_guide/examples/integration/index.md) lists each tool.
 
 ## Start Here
 

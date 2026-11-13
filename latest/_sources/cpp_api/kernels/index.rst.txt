@@ -12,13 +12,16 @@ API documentation for the kernels module.
    attentionScaleUtils
    audioFbankKernels
    batchEvictKernels
-   blockHashKernel
    buildLayout
    causalConv1d
    checkpointSourceBatch
    common
+   compactPhaseSupport
    conversion
    cpSpecKernels
+   ctmDecodeAttentionRunner
+   cuteDslCausalConv1dRunner
+   cuteDslDualGemmRunner
    cuteDslF16MoeRunner
    cuteDslFMHARunner
    cuteDslFMHAV2Runner
@@ -29,12 +32,15 @@ API documentation for the kernels module.
    cuteDslGemmRunner
    cuteDslLayerNormRunner
    cuteDslModuleLoader
+   cuteDslNvfp4DualGemmRunner
    cuteDslNvfp4MoeRunner
    cuteDslNvfp4MoeSm110Runner
    cuteDslQsaSparseRunner
    cuteDslRmsNormRunner
    cuteDslSSDRunner
    cuteDslTensorDescriptors
+   cuteDslW2A16GemmRunner
+   cuteDslW2A16MoeRunner
    dartGatherKernels
    dartSelectorKernels
    ddtreeKernels
@@ -45,11 +51,12 @@ API documentation for the kernels module.
    dflash2CandidateSelector
    dflash2GroupedDynamicConv
    dflashRuntimeKernels
+   dominoRolloutKernels
    dsparkKernels
-   eagleAcceptKernels
-   eagleUtilKernels
    embeddingKernels
    f16MoeSupportKernels
+   fnv1aHashKernel
+   forceAcceptanceKernels
    fp16LayoutConvert
    fp16MoeAssemble
    fp4Quantize
@@ -60,6 +67,7 @@ API documentation for the kernels module.
    gemma4MTPRuntimeKernels
    gptqActivationPermutation
    gptqMarlinRepack
+   groupedLoraGemm
    imageUtilKernels
    initializeCosSinCache
    int4CuteDslRepack
@@ -68,14 +76,18 @@ API documentation for the kernels module.
    int4PluginV1Repack
    int4QkvScaleConcat
    int4SourceAccessors
+   iq2XxsRepack
    kernel
    kernel_selector
    kvCacheUtilsKernels
+   lilicorrChainWalk
+   lowRankCandidateHeadKernels
    marlin
    marlinRepackIndex
    marlin_dtypes
    marlin_mma
    marlin_template
+   minimaxH3Kernels
    moeActivationKernels
    moeAlignSumKernels
    moeMarlin
@@ -104,9 +116,18 @@ API documentation for the kernels module.
    nvfp4_dequant
    nvfp4_scale
    nvfp4_tensor
+   pleGather
+   pleScatter
+   pluginJitBlob
    pluginJitCompileCache
    pluginJitCompiler
+   pluginJitCubin
+   pluginJitDigest
    pluginJitEmbeddedSources
+   pluginJitKey
+   pluginJitModuleRegistry
+   q8_0Kernels
+   q8_0Linear
    qsaIndexerJitCompiler
    qsaIndexerKernels
    qsaIndexerRunner
@@ -114,6 +135,7 @@ API documentation for the kernels module.
    scaleConvert
    selectiveStateUpdate
    slidingWindowUtils
+   speculativeKernels
    speculativeKernelsUtils
    speculativeSampling
    speculativeSamplingKernels
@@ -121,5 +143,9 @@ API documentation for the kernels module.
    talkerMLPKernels
    utilKernels
    vectorizedTypes
+   videoSparseAttentionRunner
+   w2a16SmallMGemm
+   w2a16SmallMMoe
+   xqaKernelSupport
    xqaKernelTypes
    xqaLaunchConfig

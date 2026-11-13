@@ -1,0 +1,27 @@
+Context Cache Request
+=====================
+
+.. doxygenclass:: trt_edgellm::rt::ContextCacheRequest
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::MediaPlaceholderRun
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::MediaPlaceholderCounts
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::mediaPlaceholderRuns
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::countMediaPlaceholders
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::deriveContextCacheReplayTailLength
+   :project: TensorRT Edge-LLM
+

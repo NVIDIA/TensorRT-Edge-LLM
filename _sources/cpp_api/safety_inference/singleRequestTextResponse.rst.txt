@@ -1,0 +1,8 @@
+Single Request Text Response
+============================
+
+.. doxygenclass:: trt_edgellm::safety::SingleRequestTextResponse
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

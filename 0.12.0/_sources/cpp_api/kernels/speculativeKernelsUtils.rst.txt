@@ -1,0 +1,6 @@
+Speculative Kernels Utils
+=========================
+
+.. doxygenfile:: kernels/speculative/speculativeKernelsUtils.h
+   :project: TensorRT Edge-LLM
+

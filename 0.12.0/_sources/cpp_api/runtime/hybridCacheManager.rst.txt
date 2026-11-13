@@ -1,0 +1,13 @@
+Hybrid Cache Manager
+====================
+
+.. doxygenclass:: trt_edgellm::rt::HybridCacheManager
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::HybridCacheManager::KVHeadDimGroupView
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

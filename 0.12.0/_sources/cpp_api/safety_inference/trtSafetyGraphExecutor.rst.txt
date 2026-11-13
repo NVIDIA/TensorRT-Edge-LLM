@@ -1,0 +1,23 @@
+TRT Safety Graph Executor
+=========================
+
+.. doxygenclass:: trt_edgellm::safety::TRTSafetyGraphExecutor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyGraphConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyTensorMetadata
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyProfileMetadata
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

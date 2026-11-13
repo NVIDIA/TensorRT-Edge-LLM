@@ -1,0 +1,23 @@
+Estd Allocator
+==============
+
+.. doxygenclass:: trt_edgellm::estd::ISafeMemAllocator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::estd::ControlledHostAllocGetter
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::estd::allocator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::estd::allocator::rebind
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

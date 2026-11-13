@@ -1,0 +1,13 @@
+Plugin Jit Module Registry
+==========================
+
+.. doxygenclass:: trt_edgellm::PluginJitModuleRegistry
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::PluginJitLoadedModule
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,8 @@
+Device Failure
+==============
+
+.. doxygenclass:: trt_edgellm::rt::DeviceFailureState
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

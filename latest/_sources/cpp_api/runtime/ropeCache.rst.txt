@@ -1,8 +1,6 @@
 Rope Cache
 ==========
 
-.. doxygenclass:: trt_edgellm::rt::RopeCache
+.. doxygenfile:: runtime/state/ropeCache.h
    :project: TensorRT Edge-LLM
-   :members:
-   :undoc-members:
 

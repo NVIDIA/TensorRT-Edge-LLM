@@ -1,0 +1,23 @@
+Low Rank Candidate Head Kernels
+===============================
+
+.. doxygenclass:: trt_edgellm::kernel::LowRankCandidateHeadRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::LowRankCandidateHeadShape
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::LowRankCandidateHeadBucket
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::LowRankCandidateHeadConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

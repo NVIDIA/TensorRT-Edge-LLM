@@ -1,0 +1,20 @@
+Safety Attention Kernels
+========================
+
+.. doxygenstruct:: trt_edgellm::safety::AttentionLaunch
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::safety::attentionWorkspaceBytes
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::prepareAttentionKernels
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::launchSafetyLlmAttention
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::launchSafetyVisualAttention
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,6 @@
+Intern Vl Config
+================
+
+.. doxygenfunction:: trt_edgellm::safety::builder::getInternVLTokensPerBlock
+   :project: TensorRT Edge-LLM
+

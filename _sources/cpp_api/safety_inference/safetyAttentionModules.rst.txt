@@ -1,0 +1,6 @@
+Safety Attention Modules
+========================
+
+.. doxygenfile:: safety_inference/kernels/safetyAttentionModules.h
+   :project: TensorRT Edge-LLM
+

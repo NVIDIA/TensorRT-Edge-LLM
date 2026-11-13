@@ -1,0 +1,14 @@
+Nvfp4 A16 Blackwell Gemv Jit Runner
+===================================
+
+.. doxygenclass:: trt_edgellm::Nvfp4A16BlackwellGemvJitRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::isNvfp4A16BlackwellGemvJitSupported
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::getNvfp4A16BlackwellGemvJitWorkspaceSize
+   :project: TensorRT Edge-LLM
+

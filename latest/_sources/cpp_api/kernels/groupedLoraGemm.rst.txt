@@ -1,0 +1,20 @@
+Grouped Lora GEMM
+=================
+
+.. doxygenstruct:: trt_edgellm::kernel::GroupedLoraGemmParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::kernel::getGroupedLoraGemmRankStride
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::getGroupedLoraGemmWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::initializeGroupedLoraGemmCuteDsl
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGroupedLoraGemm
+   :project: TensorRT Edge-LLM
+

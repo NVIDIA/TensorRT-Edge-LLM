@@ -1,0 +1,13 @@
+Container Storage
+=================
+
+.. doxygenclass:: trt_edgellm::safety::SafetyContainerStorage
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyContainerStorageRequest
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

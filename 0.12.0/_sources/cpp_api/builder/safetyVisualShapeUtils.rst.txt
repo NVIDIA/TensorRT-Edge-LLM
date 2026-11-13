@@ -1,0 +1,6 @@
+Safety Visual Shape Utils
+=========================
+
+.. doxygenfunction:: trt_edgellm::safety::builder::getSafetyVisualTileCount
+   :project: TensorRT Edge-LLM
+

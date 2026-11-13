@@ -1,0 +1,8 @@
+Hybrid Snapshot Storage
+=======================
+
+.. doxygenclass:: trt_edgellm::rt::HybridSnapshotStorage
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

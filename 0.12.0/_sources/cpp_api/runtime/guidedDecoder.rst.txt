@@ -1,0 +1,40 @@
+Guided Decoder
+==============
+
+.. doxygenclass:: trt_edgellm::rt::GuidedDecoder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::Tokenizer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::hasGuidedDecoding
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::reasoningStartMarkers
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::reasoningEndMarkers
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::reasoningClosedInPrompt
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::applyGuidedDecodingMask
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::advanceGuidedDecoding
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::applyGuidedDecodingMaskForDraftTree
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::advanceGuidedDecodingForCommitted
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::validateGuidedDecodingParams
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,12 @@
+Ple Scatter
+===========
+
+.. doxygenfunction:: trt_edgellm::kernel::launchPleScatter
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchPleScatterConvert
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchPleConvert
+   :project: TensorRT Edge-LLM
+

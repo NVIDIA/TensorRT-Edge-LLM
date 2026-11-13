@@ -1,6 +1,11 @@
 Embedding Kernels
 =================
 
+.. doxygenstruct:: trt_edgellm::kernel::EmbeddingTableDescriptor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenfunction:: trt_edgellm::kernel::generateMultimodalIndices
    :project: TensorRT Edge-LLM
 
@@ -11,8 +16,5 @@ Embedding Kernels
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::embeddingLookup
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::gemma4PleGather
    :project: TensorRT Edge-LLM
 

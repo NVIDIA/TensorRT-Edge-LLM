@@ -1,0 +1,18 @@
+Logger
+======
+
+.. doxygenclass:: trt_edgellm::logger::EdgeLLMLogger
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::logger::ScopedFunctionTracer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::logger::SourceLocation
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

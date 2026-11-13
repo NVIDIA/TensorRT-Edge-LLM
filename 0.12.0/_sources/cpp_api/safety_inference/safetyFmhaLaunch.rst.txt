@@ -1,0 +1,23 @@
+Safety FMHA Launch
+==================
+
+.. doxygenstruct:: trt_edgellm::safety::fmha::Artifact
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::fmha::PreparedBindings
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::fmha::ContiguousArguments
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::fmha::VisualArguments
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

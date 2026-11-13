@@ -1,6 +1,11 @@
 Decoder Utils
 =============
 
+.. doxygenstruct:: trt_edgellm::rt::decoder_utils::ForcedPathInfo
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::zeroActiveRegion
    :project: TensorRT Edge-LLM
 
@@ -16,6 +21,18 @@ Decoder Utils
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::prepareSpecPrefillRaggedBindings
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::copyLeadingElements
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::copyHiddenRowsStrided
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::seatAcceptedSpan
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::consumedTokenTail
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::loadDraftEngine
    :project: TensorRT Edge-LLM
 
@@ -25,7 +42,28 @@ Decoder Utils
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::appendSampledTokens
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::appendSampledTokensForRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::samplingUniformForSlot
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::fillSamplingRowsForRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::enqueueSamplingForRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::commitSampledRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::acceptedPositionIsForced
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::appendAcceptedTokens
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::forcedAcceptanceLength
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::clampAcceptLengthsToRemainingGeneration
@@ -43,6 +81,12 @@ Decoder Utils
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::collectLogprobsFromHost
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::collectLogprobsFromHostForRows
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::collectSpecLogprobsFromHost
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::sampleNextTokens
    :project: TensorRT Edge-LLM
 

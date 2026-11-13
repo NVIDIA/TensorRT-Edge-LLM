@@ -1,0 +1,13 @@
+W2a16 GEMM Plugin
+=================
+
+.. doxygenclass:: trt_edgellm::plugins::W2A16GemmPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::W2A16GemmPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

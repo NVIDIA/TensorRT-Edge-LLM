@@ -1,0 +1,13 @@
+Audio Runner
+============
+
+.. doxygenclass:: trt_edgellm::rt::Qwen3OmniAudioRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::AudioConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

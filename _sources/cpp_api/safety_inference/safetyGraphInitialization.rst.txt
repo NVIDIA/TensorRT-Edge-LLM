@@ -1,0 +1,6 @@
+Safety Graph Initialization
+===========================
+
+.. doxygenfunction:: trt_edgellm::safety::createSafetyGraph
+   :project: TensorRT Edge-LLM
+

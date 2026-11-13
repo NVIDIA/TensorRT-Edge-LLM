@@ -1,0 +1,95 @@
+Streaming
+=========
+
+.. doxygenclass:: trt_edgellm::rt::StreamChannel
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::MediaStreamChannel
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::AudioStreamChannel
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::VideoStreamChannel
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::StreamChannelFinalizer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::StreamChunk
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::StopMatchOutcome
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::AudioChunk
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::VideoChunk
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SlotStreamState
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::attachStreamChannel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::detachStreamChannel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::validateStreamingSubmission
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::finishReasonName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::applyStopStringMatch
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::applyCancellationToFinishState
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::applyCancellationToFinishStates
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decodeSlot
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decodePerSlot
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::emitChunk
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::logprobEntriesForStep
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::emitChunks
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::emitTokenCallbackForSlot
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::emitTokenCallbacks
+   :project: TensorRT Edge-LLM
+

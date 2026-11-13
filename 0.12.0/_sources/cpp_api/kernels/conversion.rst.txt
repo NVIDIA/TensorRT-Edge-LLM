@@ -1,0 +1,6 @@
+Conversion
+==========
+
+.. doxygenfile:: kernels/mamba/conversion.cuh
+   :project: TensorRT Edge-LLM
+

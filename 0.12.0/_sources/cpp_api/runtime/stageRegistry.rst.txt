@@ -1,0 +1,24 @@
+Stage Registry
+==============
+
+.. doxygenclass:: trt_edgellm::rt::multiStage::StageRegistry
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::RunnerDecl
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::multiStage::RunnerEntry
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::builtinRunners
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::multiStage::validateRunners
+   :project: TensorRT Edge-LLM
+

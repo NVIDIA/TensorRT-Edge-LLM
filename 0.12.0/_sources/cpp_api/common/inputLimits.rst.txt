@@ -1,0 +1,6 @@
+Input Limits
+============
+
+.. doxygenfile:: common/inputLimits.h
+   :project: TensorRT Edge-LLM
+

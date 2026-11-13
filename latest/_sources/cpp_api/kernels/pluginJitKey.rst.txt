@@ -1,0 +1,13 @@
+Plugin Jit Key
+==============
+
+.. doxygenstruct:: trt_edgellm::PluginJitKeyHasher
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::PluginJitKernel
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

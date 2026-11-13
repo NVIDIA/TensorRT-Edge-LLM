@@ -1,0 +1,6 @@
+Attention Scale Utils
+=====================
+
+.. doxygenfile:: kernels/contextAttentionKernels/attentionScaleUtils.h
+   :project: TensorRT Edge-LLM
+

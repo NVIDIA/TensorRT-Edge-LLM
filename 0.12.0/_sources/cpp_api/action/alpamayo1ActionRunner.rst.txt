@@ -1,0 +1,13 @@
+Alpamayo1 Action Runner
+=======================
+
+.. doxygenclass:: trt_edgellm::rt::Alpamayo1ActionRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ActionConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

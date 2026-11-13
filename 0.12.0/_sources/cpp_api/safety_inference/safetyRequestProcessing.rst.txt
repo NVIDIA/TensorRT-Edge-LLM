@@ -1,0 +1,11 @@
+Safety Request Processing
+=========================
+
+.. doxygenclass:: trt_edgellm::safety::SafetyRequestProcessing
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::safety::createSafetyRequestProcessing
+   :project: TensorRT Edge-LLM
+

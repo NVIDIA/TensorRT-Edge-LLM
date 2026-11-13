@@ -1,0 +1,21 @@
+Code Predictor
+==============
+
+.. doxygenclass:: trt_edgellm::rt::qwen3_omni::CodePredictor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::qwen3_omni::CodePredictor::Binding
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::qwen3_omni::CodePredictor::FramePlan
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::qwen3_omni::prepareRaggedStep
+   :project: TensorRT Edge-LLM
+

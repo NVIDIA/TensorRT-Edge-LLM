@@ -1,0 +1,16 @@
+Runner Resource Resolver
+========================
+
+.. doxygenclass:: trt_edgellm::safety::RunnerResourceResolver
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::ModelLocalDataBinding
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::safety::describeRuntimeTensor
+   :project: TensorRT Edge-LLM
+

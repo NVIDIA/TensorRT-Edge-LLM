@@ -1,0 +1,13 @@
+Processing Capability Coordinator
+=================================
+
+.. doxygenclass:: trt_edgellm::safety::ProcessingCapabilityCoordinator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::ProcessingCapabilitySet
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

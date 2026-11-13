@@ -1,0 +1,6 @@
+Request Stable Rng Kernels
+==========================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchRequestStableSpecUniforms
+   :project: TensorRT Edge-LLM
+

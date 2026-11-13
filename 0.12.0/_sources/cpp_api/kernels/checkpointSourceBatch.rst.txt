@@ -1,0 +1,8 @@
+Checkpoint Source Batch
+=======================
+
+.. doxygenstruct:: trt_edgellm::kernel::CheckpointSourceBatch
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

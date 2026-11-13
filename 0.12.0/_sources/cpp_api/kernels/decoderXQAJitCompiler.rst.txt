@@ -1,0 +1,17 @@
+Decoder XQA Jit Compiler
+========================
+
+.. doxygenstruct:: trt_edgellm::XQAJitKey
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::serializeXQAJitKernels
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::deserializeXQAJitKernels
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::compileXQAKernel
+   :project: TensorRT Edge-LLM
+

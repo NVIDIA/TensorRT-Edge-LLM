@@ -1,0 +1,8 @@
+Qwen3omni ViT Runner
+====================
+
+.. doxygenclass:: trt_edgellm::rt::Qwen3OmniViTRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

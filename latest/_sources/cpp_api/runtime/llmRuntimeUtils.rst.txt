@@ -91,6 +91,9 @@ LLM Runtime Utils
 .. doxygenfunction:: trt_edgellm::rt::initializeRopeCosSinCache
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::rt::uploadYarnInvFreq
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::initializeNopeCosSinCache
    :project: TensorRT Edge-LLM
 
@@ -110,6 +113,9 @@ LLM Runtime Utils
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::generateMultimodalIndices
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::mapMediaIndicesToReservationRows
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::generateVisionBlockIds

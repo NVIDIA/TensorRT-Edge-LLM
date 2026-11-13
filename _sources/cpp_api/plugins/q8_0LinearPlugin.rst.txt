@@ -1,0 +1,6 @@
+Q8 0 Linear Plugin
+==================
+
+.. doxygenfile:: plugins/q8_0LinearPlugin/q8_0LinearPlugin.h
+   :project: TensorRT Edge-LLM
+

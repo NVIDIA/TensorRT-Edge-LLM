@@ -1,0 +1,11 @@
+Tokenizer Utils
+===============
+
+.. doxygenstruct:: trt_edgellm::tokenizer::codepointFlags
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::tokenizer::validateFileSize
+   :project: TensorRT Edge-LLM
+

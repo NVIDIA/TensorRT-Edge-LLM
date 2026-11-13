@@ -1,0 +1,8 @@
+Common
+======
+
+.. doxygenstruct:: mamba_ssm::PackedAligned
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

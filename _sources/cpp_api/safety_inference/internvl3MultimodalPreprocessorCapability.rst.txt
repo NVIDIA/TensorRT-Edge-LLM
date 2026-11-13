@@ -1,0 +1,8 @@
+Internvl3 Multimodal Preprocessor Capability
+============================================
+
+.. doxygenclass:: trt_edgellm::safety::InternVL3MultimodalPreprocessorCapability
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

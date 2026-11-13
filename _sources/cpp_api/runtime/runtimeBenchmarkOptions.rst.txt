@@ -1,0 +1,8 @@
+Runtime Benchmark Options
+=========================
+
+.. doxygenstruct:: trt_edgellm::rt::RuntimeBenchmarkOptions
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

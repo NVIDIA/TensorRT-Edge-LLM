@@ -1,0 +1,9 @@
+Multi Device Plugin Comm Registry
+=================================
+
+.. doxygenfunction:: trt_edgellm::rt::registerNcclCommForAllReducePlugin
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::unregisterNcclCommForAllReducePlugin
+   :project: TensorRT Edge-LLM
+

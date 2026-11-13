@@ -1,0 +1,8 @@
+Dflash Decoder
+==============
+
+.. doxygenclass:: trt_edgellm::rt::DFlashDecoder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

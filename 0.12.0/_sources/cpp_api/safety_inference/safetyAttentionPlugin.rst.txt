@@ -1,0 +1,11 @@
+Safety Attention Plugin
+=======================
+
+.. doxygenclass:: trt_edgellm::safety::SafetyAttentionModuleScope
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::safety::safetyAttentionCreator
+   :project: TensorRT Edge-LLM
+

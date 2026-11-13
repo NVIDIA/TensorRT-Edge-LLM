@@ -1,0 +1,12 @@
+Safety Status Utils
+===================
+
+.. doxygenfunction:: trt_edgellm::safety::fromTrtError
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::fromCudaError
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::safety::fromCudaDriverError
+   :project: TensorRT Edge-LLM
+

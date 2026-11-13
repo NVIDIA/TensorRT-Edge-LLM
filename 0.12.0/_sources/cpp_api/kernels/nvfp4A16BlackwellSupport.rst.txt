@@ -1,0 +1,6 @@
+Nvfp4 A16 Blackwell Support
+===========================
+
+.. doxygenfile:: kernels/nvfp4A16BlackwellSupport.h
+   :project: TensorRT Edge-LLM
+

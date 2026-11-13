@@ -1,0 +1,6 @@
+Cute Dsl Layer Norm Runner
+==========================
+
+.. doxygenfile:: kernels/layerNorm/cuteDslLayerNormRunner.h
+   :project: TensorRT Edge-LLM
+

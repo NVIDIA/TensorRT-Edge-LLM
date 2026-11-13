@@ -11,6 +11,9 @@ TRT Utils
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::loadEdgellmPluginLib
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::captureTRTCudaGraph
    :project: TensorRT Edge-LLM
 

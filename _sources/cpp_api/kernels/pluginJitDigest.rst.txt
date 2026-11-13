@@ -1,0 +1,13 @@
+Plugin Jit Digest
+=================
+
+.. doxygenclass:: trt_edgellm::PluginJitDigestBuilder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::PluginJitDigest
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,13 @@
+Code2 Wav Runner
+================
+
+.. doxygenclass:: trt_edgellm::rt::Code2WavRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::Code2WavConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

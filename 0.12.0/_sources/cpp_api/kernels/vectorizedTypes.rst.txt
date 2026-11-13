@@ -1,0 +1,8 @@
+Vectorized Types
+================
+
+.. doxygenstruct:: trt_edgellm::kernel::DVec
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

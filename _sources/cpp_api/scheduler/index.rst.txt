@@ -14,3 +14,5 @@ API documentation for the scheduler module.
    requestEngine
    requestIdentity
    requestRecord
+   schedulingPolicy
+   stepPlanner

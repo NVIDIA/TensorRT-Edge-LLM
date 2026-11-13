@@ -1,0 +1,21 @@
+Ple Read Plan
+=============
+
+.. doxygenstruct:: trt_edgellm::rt::PleReadSpan
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::PleReadCopy
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::PleReadRange
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::planPleReads
+   :project: TensorRT Edge-LLM
+

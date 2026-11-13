@@ -1,0 +1,8 @@
+Safety Error State
+==================
+
+.. doxygenclass:: trt_edgellm::safety::SafetyErrorState
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

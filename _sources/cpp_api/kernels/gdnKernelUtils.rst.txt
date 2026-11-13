@@ -19,6 +19,12 @@ Gdn Kernel Utils
 .. doxygenfunction:: trt_edgellm::launchGdnStateGather
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::launchGdnStateScatter
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::launchGdnStateIndexedTransposeInPlace
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::launchGdnStateScatterTranspose
    :project: TensorRT Edge-LLM
 

@@ -1,0 +1,8 @@
+Remote Auto Tuning Utils
+========================
+
+.. doxygenclass:: trt_edgellm::safety::builder::ScopedTensorRTCpuOnlyMode
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

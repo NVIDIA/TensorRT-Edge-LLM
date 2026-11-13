@@ -1,0 +1,13 @@
+Qkv Concat Plugin
+=================
+
+.. doxygenclass:: trt_edgellm::plugins::QkvConcatPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::QkvConcatPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

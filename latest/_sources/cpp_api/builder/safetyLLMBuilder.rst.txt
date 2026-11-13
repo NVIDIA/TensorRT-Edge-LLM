@@ -1,0 +1,8 @@
+Safety LLM Builder
+==================
+
+.. doxygenclass:: trt_edgellm::safety::builder::SafetyLLMBuilder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

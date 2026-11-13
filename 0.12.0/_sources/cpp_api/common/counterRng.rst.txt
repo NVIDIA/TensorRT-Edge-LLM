@@ -1,0 +1,6 @@
+Counter Rng
+===========
+
+.. doxygenfile:: common/counterRng.h
+   :project: TensorRT Edge-LLM
+

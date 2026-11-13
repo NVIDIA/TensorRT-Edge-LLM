@@ -1,0 +1,6 @@
+Skip Softmax Scale Table
+========================
+
+.. doxygenfile:: common/skipSoftmaxScaleTable.h
+   :project: TensorRT Edge-LLM
+

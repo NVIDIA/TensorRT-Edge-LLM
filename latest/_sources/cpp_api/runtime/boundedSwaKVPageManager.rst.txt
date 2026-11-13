@@ -11,12 +11,7 @@ Bounded Swa KV Page Manager
    :members:
    :undoc-members:
 
-.. doxygenstruct:: trt_edgellm::rt::SwaPageBinding
-   :project: TensorRT Edge-LLM
-   :members:
-   :undoc-members:
-
-.. doxygenstruct:: trt_edgellm::rt::SwaKVCacheState
+.. doxygenstruct:: trt_edgellm::rt::BoundedSwaKVPageManager::ExternalPageLifecycle
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:

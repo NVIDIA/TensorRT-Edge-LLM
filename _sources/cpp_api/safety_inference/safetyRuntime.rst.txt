@@ -1,0 +1,18 @@
+Safety Runtime
+==============
+
+.. doxygenclass:: trt_edgellm::safety::SafetyRuntime
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyRuntimeArtifactBundle
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::safety::SafetyRuntimeOptions
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

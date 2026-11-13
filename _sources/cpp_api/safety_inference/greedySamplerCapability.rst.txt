@@ -1,0 +1,8 @@
+Greedy Sampler Capability
+=========================
+
+.. doxygenclass:: trt_edgellm::safety::GreedySamplerCapability
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

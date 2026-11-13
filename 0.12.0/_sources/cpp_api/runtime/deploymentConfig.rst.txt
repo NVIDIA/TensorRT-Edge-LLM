@@ -1,0 +1,33 @@
+Deployment Config
+=================
+
+.. doxygenstruct:: trt_edgellm::rt::SpecDecodeDraftingConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SpecDecodeConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::DeploymentConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::dsparkW2BackendName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::parseDSparkW2Backend
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::resolveDSparkW2Backend
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::resolveSpecDecodeDraftingConfig
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::createDeploymentConfig
+   :project: TensorRT Edge-LLM
+
