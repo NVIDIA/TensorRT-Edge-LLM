@@ -383,11 +383,6 @@ __global__ void cpSpecTopKTopPProbsKernel(TLogit const* __restrict__ logits, flo
     sScan[threadIdx.x] = expValue;
     __syncthreads();
     blockInclusiveScan(sScan);
-    if (threadIdx.x == blockDim.x - 1)
-    {
-        sRetainedMass = sScan[threadIdx.x];
-    }
-    __syncthreads();
 
     float const sumExp = sScan[blockDim.x - 1];
     if (!(sumExp > 0.0F) || !isfinite(sumExp))
@@ -402,16 +397,14 @@ __global__ void cpSpecTopKTopPProbsKernel(TLogit const* __restrict__ logits, flo
 
     float const thresholdMass = fmaxf(effectiveTopP * sumExp, 1e-20F);
     float const exclusive = threadIdx.x > 0 ? sScan[threadIdx.x - 1] : 0.0F;
-    if (useTopP)
+    // One writer publishes the full nucleus mass before probability writeback.
+    if ((!useTopP && threadIdx.x == blockDim.x - 1)
+        || (useTopP && static_cast<int32_t>(threadIdx.x) < kept && exclusive < thresholdMass
+            && sScan[threadIdx.x] >= thresholdMass))
     {
-        // The crossing token contributes its full probability to the nucleus.
-        if (static_cast<int32_t>(threadIdx.x) < kept && exclusive < thresholdMass
-            && sScan[threadIdx.x] >= thresholdMass)
-        {
-            sRetainedMass = sScan[threadIdx.x];
-        }
-        __syncthreads();
+        sRetainedMass = sScan[threadIdx.x];
     }
+    __syncthreads();
     if (static_cast<int32_t>(threadIdx.x) < kept && (!useTopP || exclusive < thresholdMass))
     {
         rowProbs[indexOfCandidate(sCandidates[threadIdx.x])] = expValue / fmaxf(sRetainedMass, 1e-20F);

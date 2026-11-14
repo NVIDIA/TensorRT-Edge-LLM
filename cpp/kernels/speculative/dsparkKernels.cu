@@ -532,10 +532,6 @@ __global__ void dsparkLogitsToProbabilitiesKernel(float const* __restrict__ logi
         float const sumExp = dsparkReduceSum(localSum);
         if (threadIdx.x == 0)
         {
-            for (int32_t selected = 0; selected < effectiveTopK; ++selected)
-            {
-                rowProbs[selectedIndices[selected]] = 0.0F;
-            }
             float retainedMass = sumExp;
             int32_t retainedCount = effectiveTopK;
             if (useTopP)
@@ -554,9 +550,9 @@ __global__ void dsparkLogitsToProbabilitiesKernel(float const* __restrict__ logi
                 }
             }
             float const denom = fmaxf(retainedMass, 1e-20F);
-            for (int32_t selected = 0; selected < retainedCount; ++selected)
+            for (int32_t selected = 0; selected < effectiveTopK; ++selected)
             {
-                rowProbs[selectedIndices[selected]] = selectedExp[selected] / denom;
+                rowProbs[selectedIndices[selected]] = selected < retainedCount ? selectedExp[selected] / denom : 0.0F;
             }
         }
         return;
