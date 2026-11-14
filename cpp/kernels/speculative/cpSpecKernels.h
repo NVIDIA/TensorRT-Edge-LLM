@@ -48,8 +48,8 @@ bool cpSpecSupportsVocab(int32_t vocabSize);
  * @brief Temperature + top-k + top-p filtering into dense probability rows.
  *
  * Semantics match dsparkLogitsToProbabilities: the top-k logits are softmaxed,
- * then truncated at the top-p mass and renormalized by that mass. One CTA sorts
- * one row, so cost is independent of top-k.
+ * then the nucleus includes the token that reaches the top-p threshold and is
+ * renormalized by its retained mass. One CTA sorts one row, so cost is independent of top-k.
  */
 void cpSpecTopKTopPProbs(rt::Tensor const& logits, rt::Tensor& probabilities, int32_t rows, int32_t vocabSize,
     float temperature, int32_t topK, float topP, cudaStream_t stream);

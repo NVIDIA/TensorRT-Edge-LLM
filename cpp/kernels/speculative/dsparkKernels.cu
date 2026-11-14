@@ -217,8 +217,8 @@ __device__ void dsparkApplyTopKTopP(float* probs, int32_t vocabSize, int32_t top
         }
 
         float const thresholdMass = fmaxf(topP, 1e-20F) * selectedSum;
-        float remaining = thresholdMass;
-        for (int32_t selected = 0; selected < effectiveTopK && remaining > 1e-20F; ++selected)
+        float retainedMass = 0.0F;
+        for (int32_t selected = 0; selected < effectiveTopK && retainedMass < thresholdMass; ++selected)
         {
             float bestProb = -1.0F;
             int32_t bestIdx = -1;
@@ -235,23 +235,19 @@ __device__ void dsparkApplyTopKTopP(float* probs, int32_t vocabSize, int32_t top
             {
                 break;
             }
-            float const assigned = fminf(bestProb, remaining);
-            probs[bestIdx] = assigned / thresholdMass;
-            remaining -= assigned;
+            probs[bestIdx] = bestProb;
+            retainedMass += bestProb;
         }
         for (int32_t vocabIdx = 0; vocabIdx < vocabSize; ++vocabIdx)
         {
-            if (probs[vocabIdx] < 0.0F)
-            {
-                probs[vocabIdx] = 0.0F;
-            }
+            probs[vocabIdx] = probs[vocabIdx] > 0.0F ? probs[vocabIdx] / retainedMass : 0.0F;
         }
         return;
     }
 
     float const thresholdMass = fmaxf(topP, 1e-20F);
-    float remaining = thresholdMass;
-    while (remaining > 1e-20F)
+    float retainedMass = 0.0F;
+    while (retainedMass < thresholdMass)
     {
         float bestProb = -1.0F;
         int32_t bestIdx = -1;
@@ -268,13 +264,12 @@ __device__ void dsparkApplyTopKTopP(float* probs, int32_t vocabSize, int32_t top
         {
             break;
         }
-        float const assigned = fminf(bestProb, remaining);
-        probs[bestIdx] = -assigned / thresholdMass;
-        remaining -= assigned;
+        probs[bestIdx] = -bestProb;
+        retainedMass += bestProb;
     }
     for (int32_t vocabIdx = 0; vocabIdx < vocabSize; ++vocabIdx)
     {
-        probs[vocabIdx] = probs[vocabIdx] < 0.0F ? -probs[vocabIdx] : 0.0F;
+        probs[vocabIdx] = probs[vocabIdx] < 0.0F ? -probs[vocabIdx] / retainedMass : 0.0F;
     }
 }
 
@@ -537,28 +532,27 @@ __global__ void dsparkLogitsToProbabilitiesKernel(float const* __restrict__ logi
         float const sumExp = dsparkReduceSum(localSum);
         if (threadIdx.x == 0)
         {
-            for (int32_t selected = 0; selected < effectiveTopK; ++selected)
+            float retainedMass = sumExp;
+            int32_t retainedCount = effectiveTopK;
+            if (useTopP)
             {
-                rowProbs[selectedIndices[selected]] = 0.0F;
+                float const thresholdMass = fmaxf(effectiveTopP * sumExp, 1e-20F);
+                retainedMass = 0.0F;
+                retainedCount = 0;
+                for (int32_t selected = 0; selected < effectiveTopK; ++selected)
+                {
+                    retainedMass += selectedExp[selected];
+                    ++retainedCount;
+                    if (retainedMass >= thresholdMass)
+                    {
+                        break;
+                    }
+                }
             }
-            float const denom = useTopP ? fmaxf(effectiveTopP * sumExp, 1e-20F) : fmaxf(sumExp, 1e-20F);
-            float remaining = denom;
+            float const denom = fmaxf(retainedMass, 1e-20F);
             for (int32_t selected = 0; selected < effectiveTopK; ++selected)
             {
-                float assigned = selectedExp[selected];
-                if (useTopP)
-                {
-                    assigned = fminf(assigned, remaining);
-                    remaining -= assigned;
-                }
-                if (assigned > 0.0F)
-                {
-                    rowProbs[selectedIndices[selected]] = assigned / denom;
-                }
-                if (useTopP && remaining <= 1e-20F)
-                {
-                    break;
-                }
+                rowProbs[selectedIndices[selected]] = selected < retainedCount ? selectedExp[selected] / denom : 0.0F;
             }
         }
         return;

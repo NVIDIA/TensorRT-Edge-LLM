@@ -228,7 +228,7 @@ __global__ void cpSpecTopKTopPProbsKernel(TLogit const* __restrict__ logits, flo
     __shared__ int32_t sCandidateEstimate;
     __shared__ int32_t sCandidateCount;
     __shared__ int32_t sSortLen;
-    __shared__ float sSumExp;
+    __shared__ float sRetainedMass;
 
     TLogit const* const rowLogits = logits + static_cast<int64_t>(rowIdx) * vocabSize;
     float* const rowProbs = probabilities + static_cast<int64_t>(rowIdx) * vocabSize;
@@ -383,13 +383,8 @@ __global__ void cpSpecTopKTopPProbsKernel(TLogit const* __restrict__ logits, flo
     sScan[threadIdx.x] = expValue;
     __syncthreads();
     blockInclusiveScan(sScan);
-    if (threadIdx.x == blockDim.x - 1)
-    {
-        sSumExp = sScan[threadIdx.x];
-    }
-    __syncthreads();
 
-    float const sumExp = sSumExp;
+    float const sumExp = sScan[blockDim.x - 1];
     if (!(sumExp > 0.0F) || !isfinite(sumExp))
     {
         float const uniform = 1.0F / static_cast<float>(vocabSize);
@@ -400,17 +395,19 @@ __global__ void cpSpecTopKTopPProbsKernel(TLogit const* __restrict__ logits, flo
         return;
     }
 
-    // Top-p water-filling: each entry takes what is left of the topP * sumExp budget,
-    // which truncates the entry that crosses the nucleus boundary.
-    float const denom = useTopP ? fmaxf(effectiveTopP * sumExp, 1e-20F) : fmaxf(sumExp, 1e-20F);
-    if (static_cast<int32_t>(threadIdx.x) < kept)
+    float const thresholdMass = fmaxf(effectiveTopP * sumExp, 1e-20F);
+    float const exclusive = threadIdx.x > 0 ? sScan[threadIdx.x - 1] : 0.0F;
+    // One writer publishes the full nucleus mass before probability writeback.
+    if ((!useTopP && threadIdx.x == blockDim.x - 1)
+        || (useTopP && static_cast<int32_t>(threadIdx.x) < kept && exclusive < thresholdMass
+            && sScan[threadIdx.x] >= thresholdMass))
     {
-        float const exclusive = sScan[threadIdx.x] - expValue;
-        float const assigned = useTopP ? fmaxf(fminf(expValue, denom - exclusive), 0.0F) : expValue;
-        if (assigned > 0.0F)
-        {
-            rowProbs[indexOfCandidate(sCandidates[threadIdx.x])] = assigned / denom;
-        }
+        sRetainedMass = sScan[threadIdx.x];
+    }
+    __syncthreads();
+    if (static_cast<int32_t>(threadIdx.x) < kept && (!useTopP || exclusive < thresholdMass))
+    {
+        rowProbs[indexOfCandidate(sCandidates[threadIdx.x])] = expValue / fmaxf(sRetainedMass, 1e-20F);
     }
 }
 
