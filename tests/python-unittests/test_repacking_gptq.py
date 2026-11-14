@@ -23,6 +23,7 @@ makes the zero-point offset adjustment a no-op.
 
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,7 +36,8 @@ if _REPO_ROOT not in sys.path:
 try:
     import torch
 
-    from tensorrt_edgellm.checkpoint.repacking import repack_gptq_to_plugin
+    from tensorrt_edgellm.checkpoint.repacking import (
+        _extract_gptq_for_marlin, repack_gptq_to_plugin)
 except ImportError as exc:  # pragma: no cover
     pytest.skip(f"tensorrt_edgellm/torch not importable: {exc}",
                 allow_module_level=True)
@@ -121,3 +123,35 @@ def test_symmetric_num_groups_falls_back_to_gidx():
 
     assert qw_gidx.shape == (out_features // 2, in_features)
     assert torch.equal(qw_gidx, qw_ref)
+
+
+@pytest.mark.parametrize("symmetric", [True, False])
+def test_moe_rejects_nonsequential_group_indices(symmetric):
+    in_features, out_features, group_size = 128, 16, 64
+    qzeros = (torch.empty(2, 0, dtype=torch.int32) if symmetric else
+              _packed_midpoint_qzeros(2, out_features, zero_point_offset=1))
+    projection = SimpleNamespace(
+        qweight=_random_qweight(in_features, out_features),
+        qzeros=qzeros,
+        scales=torch.ones(2, out_features),
+        g_idx=torch.cat((torch.ones(group_size, dtype=torch.int32),
+                         torch.zeros(group_size, dtype=torch.int32))),
+    )
+    with pytest.raises(ValueError, match="act-order GPTQ experts"):
+        _extract_gptq_for_marlin(projection, group_size)
+
+
+@pytest.mark.parametrize("has_g_idx", [True, False])
+def test_moe_accepts_sequential_or_missing_group_indices(has_g_idx):
+    in_features, out_features, group_size = 128, 16, 64
+    projection = SimpleNamespace(
+        qweight=_random_qweight(in_features, out_features),
+        qzeros=torch.empty(2, 0, dtype=torch.int32),
+        scales=torch.ones(2, out_features),
+    )
+    if has_g_idx:
+        projection.g_idx = torch.arange(in_features,
+                                        dtype=torch.int32) // group_size
+    weights, scales = _extract_gptq_for_marlin(projection, group_size)
+    assert weights.shape == (out_features, in_features)
+    assert scales.shape == (out_features, 2)
