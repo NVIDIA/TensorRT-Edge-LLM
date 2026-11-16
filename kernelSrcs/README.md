@@ -100,7 +100,9 @@ cutedsl_x86_64_sm_120_cuda13.tar.gz
 cutedsl_x86_64_sm_120_cuda12.tar.gz
 cutedsl_aarch64_sm_87_cuda13.tar.gz
 cutedsl_aarch64_sm_90_cuda13.tar.gz
+cutedsl_aarch64_sm_100_cuda13.tar.gz
 cutedsl_aarch64_sm_101_cuda12.tar.gz
+cutedsl_aarch64_sm_103_cuda13.tar.gz
 cutedsl_aarch64_sm_110_cuda13.tar.gz
 cutedsl_aarch64_sm_110_sm_120_cuda13.tar.gz
 cutedsl_aarch64_sm_121_cuda12.tar.gz
@@ -245,19 +247,17 @@ a clean full-matrix rebuild so stale archive members cannot be retained.
 
 ## CMake Integration
 
-Enable one or more groups with `ENABLE_CUTE_DSL`:
+Standard TensorRT Edge-LLM builds enable every kernel group:
 
 ```bash
-cmake .. -DENABLE_CUTE_DSL=fmha
-cmake .. -DENABLE_CUTE_DSL=gdn
-cmake .. -DENABLE_CUTE_DSL=gemm
-cmake .. -DENABLE_CUTE_DSL="fmha;gdn;gemm"
+cmake -S . -B build -DENABLE_CUTE_DSL=ALL
 ```
 
-`ENABLE_CUTE_DSL` defaults to `fmha`, the Context/ViT attention kernels. On
-SM100/SM101/SM110 the same family also activates the optimized Blackwell
-kernels when its variants are present. Every selection implicitly includes
-`fmha`, because the attention runner is compiled unconditionally.
+`ENABLE_CUTE_DSL` defaults to `ALL`. This keeps the installed runtime capable
+of loading every model component supported on the target architecture. Narrow
+group selections remain useful for kernel development builds. Every selection
+implicitly includes `fmha`, because the attention runner is compiled
+unconditionally.
 
 `cmake/CuteDsl.cmake` then:
 
@@ -288,7 +288,7 @@ cmake .. -DENABLE_CUTE_DSL=gemm -DCUTE_DSL_ARTIFACT_TAG=sm_110
 cmake .. -DENABLE_CUTE_DSL=gemm -DCUTE_DSL_ARTIFACT_TAG=sm_121
 ```
 
-`EMBEDDED_TARGET=gb10`, `auto-thor`, `jetson-thor`, `igx-thor`, and
+`EMBEDDED_TARGET=gb10`, `gb200`, `gb300`, `auto-thor`, `jetson-thor`, `igx-thor`, and
 `jetson-orin` map to a default artifact tag. `igx-thor` requires CUDA 13 or
 newer and selects `sm_110_sm_120`. Its generated dispatcher selects an
 architecture-qualified kernel entry point from the process's CUDA device and
@@ -315,14 +315,12 @@ tarball in a CI job or Docker build).
 Example cross build + CMake configure for Thor:
 
 ```bash
-python kernelSrcs/build_cutedsl.py --kernels fmha --gpu_arch sm_110 --arch aarch64
+python kernelSrcs/build_cutedsl.py --kernels ALL --gpu_arch sm_110 --arch aarch64
 
-cmake .. \
+cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DTRT_PACKAGE_DIR=/usr \
-    -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
-    -DEMBEDDED_TARGET=auto-thor \
-    -DENABLE_CUTE_DSL=fmha
+    -DEMBEDDED_TARGET=auto-thor
 ```
 
 ## Group-Specific Details

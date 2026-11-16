@@ -150,6 +150,10 @@ mkdir -p $ONNX
 trtedge export $QUANT_ROOT $ONNX
 ```
 
+The audio encoder's attention exports on `ViTAttentionPlugin` over the chunk
+windows. Set `USE_AUDIO_ATTN_PLUGIN=0` on the export command to get the
+dense-mask graph instead.
+
 ### Expected layout
 
 ```
@@ -193,7 +197,7 @@ export VISUAL_ONNX=$ONNX/vision
 
 ```bash
 # 1. Thinker
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
     --onnx-dir $THINKER_ONNX \
     --engine-dir $ENG/thinker \
     --max-batch-size 1 \
@@ -201,7 +205,7 @@ export VISUAL_ONNX=$ONNX/vision
     --max-kv-cache-capacity 2048
 
 # 2. Talker (sidecars live next to the engine; symlink or copy)
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
     --onnx-dir $TALKER_ONNX \
     --engine-dir $ENG/talker \
     --max-batch-size 1 \
@@ -212,7 +216,7 @@ ln -sf $TALKER_ONNX/text_projection.safetensors   $ENG/talker/
 
 # 3. CodePredictor — must sit next to the Talker engine (the runtime
 #    derives its path from --talker-engine-dir as <parent>/code_predictor)
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
     --onnx-dir $CP_ONNX \
     --engine-dir $ENG/code_predictor \
     --max-batch-size 1 \
@@ -220,21 +224,25 @@ ln -sf $TALKER_ONNX/text_projection.safetensors   $ENG/talker/
     --max-kv-cache-capacity 256
 
 # 4. Code2Wav
-./build/examples/multimodal/audio_build \
+./build/bin/audio_build \
     --onnx-dir $CODE2WAV_ONNX \
-    --engine-dir $ENG/code2wav \
+    --engine-dir $ENG \
     --max-code-len 1000
 
 # 5. Audio encoder
-./build/examples/multimodal/audio_build \
+./build/bin/audio_build \
     --onnx-dir $AUDIO_ONNX \
-    --engine-dir $ENG/multimodal/audio
+    --engine-dir $ENG/multimodal
 
 # 6. Visual encoder
-./build/examples/multimodal/visual_build \
+./build/bin/visual_build \
     --onnx-dir $VISUAL_ONNX \
     --engine-dir $ENG/multimodal/visual
 ```
+
+`audio_build` appends `code2wav/` or `audio/` to `--engine-dir`, so these
+commands write the Code2Wav engine to `$ENG/code2wav` and the audio encoder to
+`$ENG/multimodal/audio`.
 
 `--max-batch-size` can be raised to the concurrency budget needed at
 runtime. Place the CodePredictor engine in the same parent directory as
@@ -281,7 +289,7 @@ The runtime detects model_type from the engine config.
 ```
 
 ```bash
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
     --engine-dir           $ENG/thinker \
     --multimodal-engine-dir $ENG/multimodal \
     --input-file           input_text.json \
@@ -299,7 +307,7 @@ The runtime detects model_type from the engine config.
 ### Scenario D: Text/audio/image input → text + speech output
 
 ```bash
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
     --engine-dir              $ENG/thinker \
     --multimodal-engine-dir    $ENG/multimodal \
     --talker-engine-dir        $ENG/talker \
@@ -361,6 +369,59 @@ CLI flag remains for ad-hoc runs and takes precedence for `enable`):
 }
 ```
 
+### Run the engines with `multistage_inference`
+
+`multistage_inference` runs the engines from Part 3 as one stage graph, so one
+`--config` directory replaces the per-engine directory flags. It reads the same
+request files as `llm_inference`.
+
+1. On the machine that holds the engines, write the graph file,
+   `multistage_config.json`, into `$ENG`. This step builds nothing: it reads
+   the checkpoint's configuration from `--model-dir`, which must be a local
+   directory, and looks for each engine where Part 3 writes it.
+
+   ```bash
+   trtedge build --graph-only --model-dir $QUANT_ROOT --engine-dir $ENG
+   ```
+
+   If it does not find the Talker, CodePredictor, and Code2Wav engines there,
+   it writes a text-only graph.
+
+2. Run one request. The reply prints to stdout, and the speech is written to
+   `answer.wav`.
+
+   ```bash
+   ./build/bin/multistage_inference --config $ENG \
+       --prompt "What is the capital of France?" --out-audio answer.wav
+   ```
+
+   To ask by speech, replace `--prompt` with `--audio question.wav`. The binary
+   reads the WAV file itself, so it needs none of the preprocessing in Part 4.
+
+3. Run a request file. The speech for request `<i>`, counting from 0, is
+   written to `./audio_output/audio_req<i>.wav`.
+
+   ```bash
+   ./build/bin/multistage_inference --config $ENG \
+       --input-file input.json --output-file output.json \
+       --output-audio-dir ./audio_output
+   ```
+
+Without `--out-audio` or `--output-audio-dir`, only the Thinker runs. The
+following table lists the flags you are most likely to change;
+`multistage_inference --help` lists the rest.
+
+| Flag | Description |
+|------|-------------|
+| `--voice NAME` | Speaker: `chelsie`, `ethan`, or `aiden`. A request file's `speaker` takes precedence. |
+| `--batch-size N` | Run up to `N` requests from the file as one batch. The engines' `--max-batch-size` caps the batch. |
+| `--whole-utterance` | Vocode each reply in one pass after the Talker finishes it, when the reply fits the Code2Wav engine. By default, audio is vocoded in windows while the Talker runs. |
+| `--cp-spec-verify-size N` | Turn on [CodePredictor speculative decoding](#codepredictor-speculative-decoding). |
+
+Speech starts after the Thinker finishes; there is no Thinker-Talker streaming.
+For batching, the graph file, and other differences from `llm_inference`, see
+[Multi-Stage Graph](../../developer_guide/software-design/multi-stage-graph.md).
+
 ---
 
 ## Notes
@@ -385,12 +446,12 @@ default; add `--cp-spec-verify-size N` (one committed RVQ depth plus `N-1` draft
 range 2-8) to the command above:
 
 ```bash
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
     --engine-dir $ENG/thinker \
     --multimodal-engine-dir $ENG/multimodal \
     --enable-audio-output \
     --talker-engine-dir $ENG/talker \
-    --code2wav-engine-dir $ENG/multimodal/code2wav \
+    --code2wav-engine-dir $ENG/code2wav \
     --input-file $WORKSPACE_DIR/input.json \
     --output-file $WORKSPACE_DIR/output.json \
     --output-audio-dir $WORKSPACE_DIR/audio \

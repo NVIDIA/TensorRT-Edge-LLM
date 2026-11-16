@@ -189,6 +189,27 @@ def test_dflash_draft_export_config_carries_shift_label(tmp_path):
     assert config.dflash_shift_label
 
 
+def test_domino_draft_does_not_get_dflash_row_shift(tmp_path):
+    """Domino applies shift_label in its correction head, so the DFlash row shift stays off."""
+    _write_draft_config(tmp_path,
+                        architectures=["DFlashDraftModel"],
+                        dflash_config={
+                            "projector_type": "domino",
+                            "shift_label": True,
+                            "gru_hidden_dim": 8,
+                            "emb_dim": 8,
+                            "pure_draft_prefix_len": 1,
+                            "block_size": 7,
+                            "mask_token_id": 4,
+                            "target_layer_ids": [1, 2],
+                        })
+
+    config = model_config.make_dflash_draft_config(str(tmp_path),
+                                                   lambda d: d**-0.5)
+
+    assert not config.dflash_shift_label
+
+
 def test_gemma4_calibration_model_matches_checkpoint_tensors():
     """Calibration modules load the Gemma4 draft checkpoint strictly (fc = Nl*H, K=V, no v_proj)."""
     model = dflash_draft.DFlashCalibDraftModel(_gemma4_config())

@@ -161,32 +161,32 @@ Use `tryPop` when you're multiplexing with other polling work, `waitPop` when yo
 
 ## End-to-end demo: `llm_stream`
 
-`examples/llm/llm_stream` is an interactive CLI that reads an `llm_inference`-compatible JSON input file and streams each response live, with hotkey control.
+`build/bin/llm_stream` is an interactive CLI that reads an
+`llm_inference`-compatible JSON input file and streams each response live, with
+hotkey control.
 
 ```bash
 # Build
-cmake .. \
-    -DTRT_PACKAGE_DIR=$TRT_PACKAGE_DIR \
-    -DENABLE_CUTE_DSL=ALL
-make -j$(nproc) llm_stream
+cmake -S . -B build -DTRT_PACKAGE_DIR="$TRT_PACKAGE_DIR"
+cmake --build build --parallel
 
 # Run
 export LD_LIBRARY_PATH=$TRT_PACKAGE_DIR/lib:$LD_LIBRARY_PATH
-export EDGELLM_PLUGIN_PATH=$(pwd)/libNvInfer_edgellm_plugin.so
+export EDGELLM_PLUGIN_PATH=$(pwd)/build/lib/libNvInfer_edgellm_plugin.so
 
-./examples/llm/llm_stream \
+./build/bin/llm_stream \
     --engine-dir /path/to/Qwen3-4B-Engine-bs4 \
     --input-file /path/to/input.json \
     --max-generate-length 128
 
 # VLM mode
-./examples/llm/llm_stream \
+./build/bin/llm_stream \
     --engine-dir /path/to/Qwen3-VL-4B-Engine-bs4 \
     --multimodal-engine-dir /path/to/Qwen3-VL-4B-Visual-Engine \
     --input-file /path/to/vlm_input.json
 
 # Eagle spec-decode
-./examples/llm/llm_stream \
+./build/bin/llm_stream \
     --engine-dir /path/to/Qwen3-4B-Eagle-Engine-bs4 \
     --input-file /path/to/input.json --spec-decode
 ```

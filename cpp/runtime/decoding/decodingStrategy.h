@@ -19,6 +19,8 @@
 
 #include "common/tensor.h"
 #include "runtime/config/deploymentConfig.h"
+#include "runtime/config/runtimeBenchmarkOptions.h"
+#include "runtime/decoding/specPleStaging.h"
 #include "runtime/exec/engineExecutor.h"
 #include "runtime/exec/tensorMap.h"
 #include "runtime/features/deepstackBinding.h"
@@ -26,11 +28,11 @@
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/preprocess/embeddingPreprocessor.h"
 #include "runtime/preprocess/gemma4EmbeddingPreprocessor.h"
+#include "runtime/preprocess/qwen4ExpNgramPreprocessor.h"
 #include "runtime/preprocess/stepPreparer.h"
 #include "runtime/state/decodingInferenceContext.h"
 #include "runtime/state/pipelineIO.h"
 #include "runtime/state/sharedResources.h"
-#include "runtime/state/systemPromptKVCache.h"
 #include "sampler/sampling.h"
 #include "tokenizer/tokenizer.h"
 
@@ -60,13 +62,13 @@ enum class DecodingStrategyKind : int32_t
     kBlockDiffusion,
 };
 
-//! Return whether this request should use the stable Hybrid-MTP endpoint path. Mirrors the reference
-//! decodingStrategy.h::shouldUseHybridMtpEndpointReuse: true iff the selected strategy is MTP, the deployment has a
-//! hybrid base (numLinearAttnLayers > 0), and the context cache will either look up or publish state for the request.
-constexpr bool shouldUseHybridMtpEndpointReuse(DecodingStrategyKind selectedStrategy, bool hybridBase,
+//! Return whether this request should use the hybrid speculative endpoint path. True for any speculative strategy
+//! (except Vanilla and BlockDiffusion) on a hybrid base when context caching is active for this request.
+constexpr bool shouldUseHybridSpecEndpointReuse(DecodingStrategyKind selectedStrategy, bool hybridBase,
     bool contextCacheLookupEnabled, bool contextCachePublicationEnabled) noexcept
 {
-    return selectedStrategy == DecodingStrategyKind::kMTP && hybridBase
+    return hybridBase && selectedStrategy != DecodingStrategyKind::kVanilla
+        && selectedStrategy != DecodingStrategyKind::kBlockDiffusion
         && (contextCacheLookupEnabled || contextCachePublicationEnabled);
 }
 
@@ -81,6 +83,13 @@ struct DecodingStrategyCapabilities
     bool requiresDefaultDecoderCudaGraphs{false};
 };
 
+//! KV headroom a strategy declares for its decode rounds.
+struct DecodingKvHeadroomPolicy
+{
+    DecodingKvHeadroom plain;       //!< every slot, every step
+    DecodingKvHeadroom jumpForward; //!< a slot that runs with jump-forward; equal to plain when rounds are not widened
+};
+
 struct SamplingBuffers
 {
     Tensor& workspace;
@@ -93,8 +102,10 @@ struct SamplingBuffers
     //! engine's output vocabulary. Grammar matchers live in that space (see GuidedDecoder),
     //! so they must be advanced with these rather than the remapped full IDs.
     Tensor& hostOutputSpaceIds;
-    Tensor& uniforms;
-    Tensor& hostUniforms;
+    //! One SamplingRow per active row for the step (parameters and uniform), GPU bytes and the
+    //! pinned host staging it is copied from.
+    Tensor& rows;
+    Tensor& hostRows;
 };
 
 /*!
@@ -134,6 +145,7 @@ struct PreprocessResources
     Tensor& idsInput;
     DeepstackBinding* deepstack;
     Gemma4EmbeddingPreprocessor* gemma4Ple;
+    Qwen4ExpNgramPreprocessor* qwen4ExpNgram;
 };
 
 struct DecodingRuntimeContext
@@ -154,6 +166,14 @@ struct DecodingRuntimeContext
     //! Optional sampled-token synchronization callback. Rank 0 sends; peer ranks receive.
     std::function<bool(void* buffer, int32_t count, cudaStream_t stream)> tokenBroadcast{};
     int32_t parallelRank{-1};
+    RuntimeBenchmarkOptions const* benchmark{};
+    //! PLE inputs of speculative target verify; set up once the base engine is loaded.
+    SpecPleStaging specPleStaging{};
+    //! Tokens one jump may add in the speculative decoder (SpecDecodeConfig::maxJumpTokens); 0 disables its jumps.
+    int32_t maxJumpTokens{0};
+    //! Tokens one jump may add in the vanilla decoder, a speculative deployment's fallback included: what one
+    //! catch-up context-chunk row holds besides the sampled token; 0 disables its jumps.
+    int32_t chunkMaxJumpTokens{0};
 };
 
 class DecodingStrategy
@@ -169,9 +189,11 @@ public:
         return {};
     }
 
-    virtual DecodingKvHeadroom requiredKvHeadroom() const
+    //! KV headroom of the strategy's decode rounds; the default is the vanilla one-token step.
+    virtual DecodingKvHeadroomPolicy kvHeadroom() const
     {
-        return {/*.baseExtraTokens=*/1, /*.draftExtraTokens=*/0};
+        DecodingKvHeadroom const vanilla{/*.baseExtraTokens=*/1, /*.draftExtraTokens=*/0};
+        return {/*.plain=*/vanilla, /*.jumpForward=*/vanilla};
     }
 
     virtual DecodingTokenStateContract tokenStateContract() const noexcept
@@ -188,6 +210,34 @@ public:
         return true;
     }
 
+    //! A blocking request's batch is about to be prefilled: forget the draft progress an earlier request left behind.
+    //! Unlike resetForNewSequences, KV lengths are kept: a context cache may just have restored them.
+    virtual void beginBatch() noexcept {}
+
+    //! A sequence joins a running batch at @p executionRow (its last row). Size the per-row state now, so an eviction
+    //! before seatRow() (a cancelled or failed prefill) still compacts every row.
+    virtual void appendRow(int32_t /*executionRow*/) noexcept {}
+
+    //! Seat a sequence admitted into a running batch: bring its per-row state to a resident's between two decode
+    //! steps, without touching other rows.
+    //!
+    //! Called inside the batch-one projection of the sequence's prefill, after the base model ran: @p context and
+    //! every cache manager the strategy drives present the sequence as row zero, with the first generated token
+    //! appended and the base outputs still in the pipeline buffers. @p executionRow is the sequence's row in the full
+    //! batch, where its per-row state belongs. A speculative strategy runs the draft prefill here, and must override
+    //! this: the default seats only a strategy that carries no per-row state between steps.
+    virtual bool seatRow(DecodingInferenceContext& /*context*/, int32_t /*executionRow*/)
+    {
+        return !isSpeculative();
+    }
+
+    //! Run the draft prefill over a non-final chunk of a sequence being seated (the stable prefix before a Hybrid+spec
+    //! volatile tail), in the same projection as seatRow(). seatRow() follows after the final chunk.
+    virtual bool prefillSeatedChunk(DecodingInferenceContext& /*context*/)
+    {
+        return false;
+    }
+
     //! Greatest per-slot logical prefix whose continuation state is materialized by every model in this strategy.
     //! Physical model-state tails may extend beyond this boundary. This reports decoding progress only;
     //! context-cache policy decides whether that prefix can be published.
@@ -199,15 +249,6 @@ public:
 
     virtual int64_t getRequiredContextMemorySize() const noexcept = 0;
     virtual void setContextMemory(Tensor&) = 0;
-
-    // TODO(follow-up): Expose a prefill entry point on DecodingStrategy and remove
-    // these system-prompt-specific interfaces. The runtime should call a generic
-    // prefill method; system prompt caching becomes an internal optimisation.
-    virtual bool hasSystemPromptKVCache(SystemPromptCacheKey const&) const = 0;
-    virtual void restoreSystemPromptKVCache(SystemPromptCacheKey const&, int32_t residentSlot, cudaStream_t) = 0;
-    virtual bool runSystemPromptPrefill(DecodingInferenceContext&) = 0;
-    virtual void saveSystemPromptKVCache(SystemPromptCacheKey const&, std::string const&,
-        std::vector<tokenizer::Rank> const&, int32_t, cudaStream_t) = 0;
 
     virtual void resetForNewSequences(Tensor&, cudaStream_t) = 0;
     virtual void onBatchEvict(std::vector<int32_t> const&, int32_t, int32_t, Tensor&, cudaStream_t) = 0;

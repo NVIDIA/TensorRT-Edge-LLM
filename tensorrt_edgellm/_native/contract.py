@@ -19,8 +19,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
-SCHEMA_VERSION = 1
-QUALIFIED_PYTHON_ABIS = ("cp310", "cp311", "cp312")
+SCHEMA_VERSION = 2
 MATRIX_VARIANT_FIELDS = frozenset({
     "variant_id",
     "platform_family",
@@ -38,7 +37,6 @@ MATRIX_VARIANT_FIELDS = frozenset({
 })
 RUNTIME_VARIANT_FIELDS = frozenset({
     "variant_id",
-    "python_abi",
     "platform_family",
     "platform_release",
     "platform_probe_source",
@@ -127,8 +125,6 @@ def validate_runtime_variant(value: Mapping[str, Any]) -> Dict[str, Any]:
             not isinstance(item, str) or not item for item in probes):
         raise ValueError(
             f"Runtime variant {row['variant_id']} has invalid probe values.")
-    if row["python_abi"] not in QUALIFIED_PYTHON_ABIS:
-        raise ValueError(f"Unsupported Python ABI {row['python_abi']!r}.")
     if row["cpu_arch"] not in {"x86_64", "aarch64"}:
         raise ValueError(
             f"Runtime variant {row['variant_id']} has an invalid architecture."
@@ -155,7 +151,6 @@ def validate_manifest(value: Mapping[str, Any]) -> Dict[str, Any]:
     identities = set()
     for row in normalized:
         identity = (
-            row["python_abi"],
             row["platform_probe_source"],
             tuple(row["platform_probe_values"]),
             row["cpu_arch"],

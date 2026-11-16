@@ -30,7 +30,14 @@ class SpecCommonStateTracker
 {
 public:
     void initialize(DecodingInferenceContext const& context);
-    void materializePending(int32_t generationRound, int32_t activeBatchSize);
+    //! Allocate room for @p rows rows up front, so appendRow() and compact() within it never allocate.
+    void reserve(int32_t rows);
+    //! A sequence joins a running batch at @p row, its last row: track it from nothing until seatRow().
+    void appendRow(int32_t row);
+    //! The sequence at @p row seated its draft: both models hold its first @p materializedLength positions, and its
+    //! draft takes the next @p pendingLength at the next decode step, like a resident's accepted span.
+    void seatRow(int32_t row, int32_t materializedLength, int32_t pendingLength);
+    void materializePending(int32_t activeBatchSize);
     void recordAccepted(int32_t const* hostAcceptLengths, int32_t activeBatchSize);
     void compact(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch, int32_t newActiveBatch);
     void reset() noexcept;
@@ -44,6 +51,9 @@ public:
 private:
     std::vector<int32_t> mCommonMaterializedStateLengths;
     std::vector<int32_t> mPendingDraftAcceptLengths;
+    //! compact() scratch: the surviving values in their new slots, and which new slots the mapping filled.
+    std::vector<int32_t> mCompactedValues;
+    std::vector<char> mCompactedSlotFilled;
     bool mDraftPrefillOutputsPending{};
 };
 

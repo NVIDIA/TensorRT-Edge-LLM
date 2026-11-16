@@ -15,13 +15,19 @@
 
 import math
 
+import onnx
+import pytest
 import torch
 
-from tensorrt_edgellm.config import LAYER_ATTN, ModelConfig
+from tensorrt_edgellm.checkpoint.repacking import apply_all_repacking
+from tensorrt_edgellm.config import (LAYER_ATTN, QUANT_FP16, QUANT_NVFP4,
+                                     QUANT_NVFP4_A16, ModelConfig, QuantConfig)
 from tensorrt_edgellm.models.eagle3.modeling_eagle3_draft import \
     Eagle3DraftModel
+from tensorrt_edgellm.models.mtp import Qwen3MtpDraftModel
 from tensorrt_edgellm.models.qwen3_5.modeling_qwen3_5_mtp import \
     Qwen3_5MtpDraftModel
+from tensorrt_edgellm.onnx.export import _export_model
 
 
 def _config(model_type: str) -> ModelConfig:
@@ -78,6 +84,42 @@ def test_eagle3_draft_uses_unified_token_major_contract():
         Eagle3DraftModel(_config("qwen3")).onnx_export_spec())
 
 
+@pytest.mark.parametrize(("quant_type", "packing_op"),
+                         [(QUANT_NVFP4_A16, "QkvConcatPlugin"),
+                          (QUANT_NVFP4, "Concat"), (QUANT_FP16, "Concat")],
+                         ids=["nvfp4-a16", "nvfp4", "fp16"])
+def test_eagle3_draft_packs_qkv_by_projection_kind(tmp_path, quant_type,
+                                                   packing_op):
+    """An NVFP4-A16 EAGLE-3 draft packs its Q/K/V GEMM plugin outputs with QkvConcatPlugin, since SM>=100 engines elide a plain Concat of them; FP16 and NVFP4 W4A4 drafts keep the plain Concat."""
+    config = _config("qwen3")
+    config.quant = QuantConfig(quant_type=quant_type, group_size=16)
+    model = Eagle3DraftModel(config)
+    apply_all_repacking(model)
+    output = str(tmp_path / "draft.onnx")
+
+    _export_model(model, output, optimize=False)
+
+    graph = onnx.load(output, load_external_data=False).graph
+    producers = {name: node for node in graph.node for name in node.output}
+    (attention, ) = [
+        node for node in graph.node if node.op_type == "AttentionPlugin"
+    ]
+    packing = producers[attention.input[0]]
+    while packing.op_type == "Reshape":
+        packing = producers[packing.input[0]]
+    assert packing.op_type == packing_op
+
+
 def test_qwen35_mtp_draft_uses_unified_token_major_contract():
     _assert_unified_draft_contract(
         Qwen3_5MtpDraftModel(_config("qwen3_5_text")).onnx_export_spec())
+
+
+def test_dense_qwen3_mtp_draft_uses_unified_token_major_contract():
+    """Given a dense qwen3 MTP draft,
+    When its export spec is built,
+    Then it carries the same token-major contract as the Qwen3.5 draft and
+    traces under torch.export.
+    """
+    _assert_unified_draft_contract(
+        Qwen3MtpDraftModel(_config("qwen3")).onnx_export_spec())

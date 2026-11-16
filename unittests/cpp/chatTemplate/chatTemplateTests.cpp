@@ -59,7 +59,7 @@ TEST(ChatTemplateTest, AppliesProviderJinjaToStructuredConversation)
     user.contentIsArray = true;
     rt::Message assistant{"assistant", {}};
     assistant.contentIsNull = true;
-    assistant.toolCalls.push_back({"call_1", "function", "inspect", R"({"detail":"high"})", false});
+    assistant.toolCalls.push_back({"call_1", "function", "inspect", R"({"detail":"high"})"});
 
     rt::LLMGenerationRequest::Request request;
     request.messages = {std::move(user), std::move(assistant)};
@@ -181,23 +181,25 @@ TEST(ChatTemplateTest, RejectsNullContentWithContentBlocks)
     EXPECT_FALSE(renderer.apply(rt::LLMGenerationRequest::Request{{message}}, formatted, {}));
 }
 
-TEST(ChatTemplateTest, PreservesToolArgumentRepresentation)
+TEST(ChatTemplateTest, RendersToolCallArgumentsAsObject)
 {
+    // Given a provider template that iterates and serializes tool-call arguments
+    // When an assistant tool call carries its arguments as JSON object text
+    // Then the template sees an object: each argument renders, and tojson emits an object rather than a string
     TemporaryTemplate model{{"chat_template.jinja",
         R"JINJA({%- for call in messages[0].tool_calls -%}
-{%- if call.function.arguments is string -%}string={{ call.function.arguments }}
-{%- else if call.function.arguments is mapping -%}object={{ call.function.arguments.city }}
-{%- endif -%}{% if not loop.last %}|{% endif %}{%- endfor -%})JINJA"}};
+{%- for name, value in call.function.arguments|items -%}<{{ name }}={{ value }}>{%- endfor -%}
+{{ call.function.arguments | tojson }}
+{%- endfor -%})JINJA"}};
     rt::Message assistant{"assistant", {}};
     assistant.contentIsNull = true;
-    assistant.toolCalls = {{"call_1", "function", "weather", R"({"city":"Paris"})", true},
-        {"call_2", "function", "weather", R"({"city":"Berlin"})", false}};
+    assistant.toolCalls = {{"call_1", "function", "weather", R"({"city":"Paris","days":3})"}};
 
     chat_template::ChatTemplate renderer;
     ASSERT_TRUE(renderer.load(model.path));
     rt::LLMGenerationRequest::FormattedRequest formatted;
     ASSERT_TRUE(renderer.apply(rt::LLMGenerationRequest::Request{{assistant}}, formatted, {}));
-    EXPECT_EQ(formatted.formattedCompleteRequest, R"(string={"city":"Paris"}|object=Berlin)");
+    EXPECT_EQ(formatted.formattedCompleteRequest, R"(<city=Paris><days=3>{"city": "Paris", "days": 3})");
 }
 
 TEST(ChatTemplateTest, ExposesProviderDateFunctionAsDefined)
@@ -236,7 +238,7 @@ TEST(ChatTemplateTest, AppliesCommonProviderJinjaSyntaxDirectly)
 
     rt::Message assistant{"assistant", {}};
     assistant.contentIsNull = true;
-    assistant.toolCalls.push_back({"call_1", "function", "lookup", R"({"query":"weather"})", false});
+    assistant.toolCalls.push_back({"call_1", "function", "lookup", R"({"query":"weather"})"});
     rt::LLMGenerationRequest::Request request;
     request.messages
         = {rt::Message{"system", {{"text", "system"}}}, rt::Message{"user", {{"text", "hello"}}}, std::move(assistant)};
@@ -406,6 +408,10 @@ TEST(ChatTemplateTest, LeavesEnableThinkingUndefinedForQwen3Omni)
 
 TEST(ChatTemplateTest, OpensMuseGlimmerAnswerChannelWhenThinkingDisabled)
 {
+    // Given a Muse-Glimmer template whose generation prompt ends at the assistant role.
+    // When thinking is disabled, the prompt closes the reasoning channel and opens the answer channel;
+    // when thinking is enabled or no generation prompt is requested, the template output is unchanged.
+    // Then the same holds for a speculative-decoding engine that carries only base_config.json.
     // Generation-prompt tail of the Muse-Glimmer provider template, verbatim.
     constexpr char kTail[] = R"JINJA({%- if add_generation_prompt -%}
     {{- '<|start|>assistant' -}}
@@ -679,7 +685,7 @@ assistant:{%- if enable_thinking -%}<think effort={{ reasoning_effort | default(
     rt::Message call{"assistant", {}};
     call.contentIsNull = true;
     call.hasToolCalls = true;
-    call.toolCalls.push_back({"call_1", "function", "weather", R"({"city":"Paris"})", false});
+    call.toolCalls.push_back({"call_1", "function", "weather", R"({"city":"Paris"})"});
     rt::Message result{"tool", {{"text", "Sunny"}}};
     result.toolCallId = "call_1";
 
@@ -753,6 +759,24 @@ TEST(ChatTemplateTest, AppliesAlpamayoNativeContract)
         "<|traj_history_end|><|im_end|>\n<|im_start|>assistant\n");
 }
 
+TEST(ChatTemplateTest, KeepsAlpamayoAssistantPrefixOpen)
+{
+    TemporaryTemplate model{{"chat_template.model", "alpamayo\n"}};
+    rt::LLMGenerationRequest::Request request;
+    request.messages = {rt::Message{"system", {{"text", "Drive safely"}}},
+        rt::Message{"user", {{"text", "Plan a route"}}}, rt::Message{"assistant", {{"text", "<|cot_start|>"}}}};
+
+    chat_template::ChatTemplate::Options options;
+    options.addGenerationPrompt = false;
+    chat_template::ChatTemplate renderer;
+    ASSERT_TRUE(renderer.load(model.path));
+    rt::LLMGenerationRequest::FormattedRequest formatted;
+    ASSERT_TRUE(renderer.apply(request, formatted, options));
+    EXPECT_EQ(formatted.formattedCompleteRequest,
+        "<|im_start|>system\nDrive safely<|im_end|>\n<|im_start|>user\nPlan a route<|im_end|>\n"
+        "<|im_start|>assistant\n<|cot_start|>");
+}
+
 TEST(ChatTemplateTest, RejectsTrajectoryWithoutRuntimeData)
 {
     TemporaryTemplate model{{"chat_template.model", "alpamayo\n"}};
@@ -782,6 +806,9 @@ TEST(ChatTemplateTest, AppliesPreformattedPromptWithoutLoadedTemplate)
 
 TEST(ChatTemplateTest, PrependsBosToGemmaRawPrompt)
 {
+    // Given a raw (unformatted) prompt with a system and a user message.
+    // When the engine is Gemma4,
+    // Then the BOS token is prepended to the system prompt and the complete request; other models get no BOS.
     chat_template::ChatTemplate::Options options;
     options.applyTemplate = false;
     auto const render = [&](char const* config, std::string const& text) {

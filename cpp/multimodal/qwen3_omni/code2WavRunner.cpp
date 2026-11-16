@@ -23,9 +23,11 @@
 #include "common/logger.h"
 #include "common/mathUtils.h"
 #include "common/safetensorsUtils.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 #include "profiling/metrics.h"
 #include "profiling/timer.h"
+#include "runtime/weight/refitWeights.h"
 
 #include <nlohmann/json.hpp>
 
@@ -63,7 +65,7 @@ Code2WavRunner::Code2WavRunner(std::string const& engineDir, cudaStream_t stream
     bool const configValid = validateAndFillConfig(engineDir);
     ELLM_CHECK(configValid, "Failed to validate and fill config");
 
-    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
     ELLM_CHECK(mRuntime, "Failed to create TensorRT runtime");
 
     std::string const code2wavEnginePath = engineDir + "/code2wav.engine";
@@ -72,6 +74,9 @@ Code2WavRunner::Code2WavRunner(std::string const& engineDir, cudaStream_t stream
     try
     {
         mCode2WavEngine = deserializeCudaEngineFromFile(*mRuntime, code2wavEnginePath);
+        mExternalWeights.load(std::filesystem::path(engineDir), std::filesystem::path(engineDir) / "config.json",
+            stream, resolveCheckpointDir(checkpointDir));
+        refitEngineIfNeeded(*mCode2WavEngine, EngineRefitOptions{mExternalWeights.takeRefitWeights(), stream});
 
         mCode2WavContext = std::unique_ptr<nvinfer1::IExecutionContext>(mCode2WavEngine->createExecutionContext());
         ELLM_CHECK(mCode2WavContext, "Failed to create Code2Wav execution context");
@@ -81,8 +86,6 @@ Code2WavRunner::Code2WavRunner(std::string const& engineDir, cudaStream_t stream
 
         setNonBlockingAuxStreams(mCode2WavContext.get(), mCode2WavEngine.get(), mAuxStreams);
 
-        mExternalWeights.load(std::filesystem::path(engineDir), std::filesystem::path(engineDir) / "config.json",
-            stream, resolveCheckpointDir(checkpointDir));
         mExternalWeights.bindToContext(*mCode2WavEngine, *mCode2WavContext, "code2wav");
 
         CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -188,17 +191,17 @@ bool Code2WavRunner::allocateBuffer()
     // Detect engine's actual waveform output dtype (FP16 for Qwen3-Omni code2wav,
     // FP32 for Qwen3-TTS tokenizer_decoder). Allocating the wrong dtype reinterprets bytes
     // and produces garbled audio.
-    mWaveformDtype = mCode2WavEngine->getTensorDataType(binding_names::kCode2WavWaveform);
+    mWaveformDtype = fromTrt(mCode2WavEngine->getTensorDataType(binding_names::kCode2WavWaveform));
     LOG_INFO("Code2Wav waveform output dtype: %s",
-        mWaveformDtype == nvinfer1::DataType::kHALF        ? "FP16"
-            : mWaveformDtype == nvinfer1::DataType::kFLOAT ? "FP32"
-                                                           : "UNKNOWN");
+        mWaveformDtype == trt_edgellm::DataType::kHALF        ? "FP16"
+            : mWaveformDtype == trt_edgellm::DataType::kFLOAT ? "FP32"
+                                                              : "UNKNOWN");
 
     mInputCodesDevice
-        = rt::Tensor({1, mConfig.numQuantizers, maxSeqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
+        = rt::Tensor({1, mConfig.numQuantizers, maxSeqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
     mOutputWaveform = rt::Tensor({1, 1, maxWaveformLen}, rt::DeviceType::kGPU, mWaveformDtype);
     mInputCodesHost
-        = rt::Tensor({1, mConfig.numQuantizers, maxSeqLen}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64);
+        = rt::Tensor({1, mConfig.numQuantizers, maxSeqLen}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64);
 
     bool setTensorAddressStatus = true;
     setTensorAddressStatus
@@ -219,7 +222,7 @@ bool Code2WavRunner::infer(cudaStream_t stream)
 {
     TIME_STAGE(metrics::StageNames::kCODE2WAV, stream);
 
-    nvinfer1::Dims const codeDims = mInputCodesDevice.getTRTDims();
+    nvinfer1::Dims const codeDims = toTrtDims(mInputCodesDevice);
     if (!mCode2WavContext->setInputShape(binding_names::kCode2WavCodes, codeDims))
     {
         LOG_ERROR("Failed to set input shape");
@@ -435,6 +438,55 @@ bool Code2WavRunner::generateWaveform(
     outputAudio.numChannels = 1;
     outputAudio.hasWaveform = true;
 
+    return true;
+}
+
+int64_t Code2WavRunner::getMaxCodeLength() const
+{
+    nvinfer1::Dims const codesShapeMax
+        = mCode2WavEngine->getProfileShape(binding_names::kCode2WavCodes, 0, nvinfer1::OptProfileSelector::kMAX);
+    return codesShapeMax.d[2];
+}
+
+bool Code2WavRunner::generateWaveformInto(
+    std::vector<std::vector<int32_t>> const& codes, rt::Tensor& hostWaveform, int64_t& numSamples, cudaStream_t stream)
+{
+    numSamples = 0;
+    if (codes.empty() || codes[0].empty())
+    {
+        LOG_ERROR("Empty codes provided");
+        return false;
+    }
+
+    int64_t const seqLen = math::cast<int64_t>(codes[0].size());
+    int64_t const maxCodeLen = getMaxCodeLength();
+    if (seqLen > maxCodeLen)
+    {
+        LOG_ERROR("Code length %ld exceeds the engine's max of %ld", seqLen, maxCodeLen);
+        return false;
+    }
+
+    int64_t const sampleBytes = math::cast<int64_t>(rt::utils::getTypeSize(mWaveformDtype));
+    int64_t const expectedWaveformLen = seqLen * mConfig.upsampleRate;
+    if (hostWaveform.getDeviceType() != rt::DeviceType::kCPU
+        || hostWaveform.getMemoryCapacity() < expectedWaveformLen * sampleBytes)
+    {
+        LOG_ERROR(
+            "Waveform buffer must be pinned host memory of at least %ld bytes", expectedWaveformLen * sampleBytes);
+        return false;
+    }
+
+    if (!prepareCodes(codes, stream) || !infer(stream))
+    {
+        return false;
+    }
+
+    // The engine may report the max-profile length; only seqLen * upsampleRate samples are audio.
+    nvinfer1::Dims const outDims = mCode2WavContext->getTensorShape(binding_names::kCode2WavWaveform);
+    numSamples = std::min(static_cast<int64_t>(outDims.d[outDims.nbDims - 1]), expectedWaveformLen);
+    CUDA_CHECK(cudaMemcpyAsync(hostWaveform.rawPointer(), mOutputWaveform.rawPointer(),
+        math::cast<size_t>(numSamples * sampleBytes), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
     return true;
 }
 

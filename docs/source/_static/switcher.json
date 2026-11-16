@@ -3,6 +3,9 @@
         "preferred": true,
         "version": "latest",
         "url": "https://nvidia.github.io/TensorRT-Edge-LLM/latest/"
+    },
+    {
+        "version": "0.12.0",
+        "url": "https://nvidia.github.io/TensorRT-Edge-LLM/0.12.0/"
     }
 ]
-

@@ -2,7 +2,7 @@
 
 `tensorrt_edgellm` is the ONNX export frontend for TensorRT Edge-LLM. It constructs TensorRT Edge-LLM model implementations directly, loads HuggingFace checkpoint tensors from safetensors files, and emits ONNX plus runtime sidecar artifacts consumed by the existing engine builder and runtime.
 
-This page describes the software design. For commands and workflows, see the [Quick Start Guide](../../user_guide/getting_started/quick-start-guide.md), [Quantization](../../user_guide/features/quantization.md), [LoRA](../../user_guide/features/lora.md), and [Experimental High-Level Python API and Server](../../user_guide/examples/experimental-server.md).
+This page describes the software design. For commands and workflows, see the [Quick Start Guide](../../user_guide/getting_started/quick-start-guide.md), [Quantization](../../user_guide/features/quantization.md), [LoRA](../../user_guide/features/lora.md), and [Python API and Server](../../user_guide/examples/server.md).
 
 ## Design Goals
 
@@ -22,7 +22,7 @@ This page describes the software design. For commands and workflows, see the [Qu
 | Checkpoint loading | `tensorrt_edgellm/checkpoint/loader.py`, `tensorrt_edgellm/checkpoint/repacking.py` | Load safetensors, remap keys when needed, and repack quantized tensors into runtime/export formats. |
 | Vocabulary reduction | `tensorrt_edgellm/vocab_reduction/selection.py`, `tensorrt_edgellm/vocab_reduction/onnx_export.py` | Generate `vocab_map.safetensors` separately from applying an existing map to supported LM-head tensors during ONNX export. |
 | ONNX graph export | `tensorrt_edgellm/onnx/export.py`, `tensorrt_edgellm/onnx/export_encoder.py`, `tensorrt_edgellm/onnx/dynamo_translations.py` | Export text and encoder graphs, register custom ONNX schemas, and translate PyTorch custom ops to TensorRT Edge-LLM ONNX nodes. |
-| Component orchestration | `tensorrt_edgellm/scripts/export.py` | Classify model components and coordinate text, visual, audio, TTS, code2wav, EAGLE, MTP, DFlash, and sidecar exports. |
+| Component orchestration | `tensorrt_edgellm/onnx/cli.py` | Classify model components and coordinate text, visual, audio, TTS, code2wav, EAGLE, MTP, DFlash, and sidecar exports. |
 | Runtime artifacts | `tensorrt_edgellm/checkpoint/checkpoint_utils.py`, `tensorrt_edgellm/chat_template.py` | Write tokenizer/config/chat-template/embedding sidecars expected by the C++ runtime and Python server. |
 
 ## Data Flow
@@ -75,10 +75,23 @@ is the source of truth for platform-specific layouts. Use
 usage.
 
 Set `EDGELLM_NVFP4_GEMM_ALLREDUCE_TARGET=sm12x` when exporting a
-tensor-parallel NVFP4 ONNX model for SM120 or SM121. These targets emit
-TensorRT NVFP4 Q/DQ MatMul followed by `AllReducePlugin` for row-parallel
-projections. The default `sm110` target preserves
-`FusedNvfp4GemmAllReducePlugin` on SM100, SM101, and SM110.
+tensor-parallel NVFP4 ONNX model for SM120 or SM121. Qualified Qwen3-4B,
+Qwen3-8B, Qwen3-14B, Qwen3-32B, Qwen3-VL-8B, and Qwen3.5-27B TP2 exports route
+row-parallel projections through `FusedNvfp4GemmAllReducePlugin`; on Dual
+Spark, it executes a CuTeDSL GEMM followed by NCCL all-reduce. Other model
+sizes and families use TensorRT NVFP4 Q/DQ MatMul followed by
+`AllReducePlugin`. TP1 does not require an all-reduce and uses the normal
+TensorRT NVFP4 GEMM path. The default `sm110` target preserves the existing
+fused path on SM100, SM101, SM103, and SM110.
+Checkpoint-direct builds detect the active CUDA device and apply the same
+model qualification automatically; the environment variable is needed only
+because ONNX export runs on a host that may not match the deployment GPU.
+
+Qualified SM12x fused paths preserve the raw FP8 dynamic-quantization block
+scales. The plugin repacks those scales into the GEMM layout and folds the FP32
+activation global scale into the GEMM scalar, avoiding an FP8-to-FP32
+dequantize-and-repack round trip. SM110 retains its existing combined-FP32
+activation-scale preprocessing and fused GEMM/collective kernels.
 
 For the quantization package design, see [Quantization Package Design](quantization-design.md). For usage from FP16/BF16 source checkpoints, see [Quantization](../../user_guide/features/quantization.md).
 
@@ -99,7 +112,7 @@ This keeps component-specific model code separate while preserving one checkpoin
 
 The exported ONNX graphs use TensorRT Edge-LLM custom-op domains for operations that must lower to C++ runtime plugins or specialized kernels. The graph exporter registers ONNX schemas before export and provides custom dynamo translations so exported graphs match the engine builder's expected node signatures.
 
-Runtime sidecars are written next to exported graphs and include normalized config files, tokenizer/chat-template assets, embedding tables, and optional sidecars such as FP8 embedding data. These artifacts are part of the contract with `llm_build`, `llm_inference`, and `experimental/server`.
+Runtime sidecars are written next to exported graphs and include normalized config files, tokenizer/chat-template assets, embedding tables, and optional sidecars such as FP8 embedding data. These artifacts are part of the contract with `llm_build`, `llm_inference`, and `tensorrt_edgellm/server`.
 
 ## LoRA Integration
 

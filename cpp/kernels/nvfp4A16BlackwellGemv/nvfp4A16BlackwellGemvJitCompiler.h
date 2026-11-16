@@ -17,11 +17,12 @@
 
 #pragma once
 
+#include "kernels/PluginJitKernels/pluginJitKey.h"
 #include "kernels/nvfp4A16BlackwellSupport.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <tuple>
 #include <vector>
 
 namespace trt_edgellm
@@ -36,6 +37,7 @@ enum class Nvfp4A16BlackwellGemvDataType : uint32_t
     kBF16 = 1,
 };
 
+//! Plugin JIT key (see pluginJitKey.h for the contract shared with the blob, digest and registry).
 struct Nvfp4A16BlackwellGemvJitKey
 {
     int32_t sm{nvfp4_a16_blackwell::kTargetSm};
@@ -45,41 +47,38 @@ struct Nvfp4A16BlackwellGemvJitKey
     Nvfp4A16BlackwellGemvDataType dataType{Nvfp4A16BlackwellGemvDataType::kHALF};
     uint32_t sourceAbi{kNVFP4_A16_BLACKWELL_GEMV_SOURCE_ABI};
 
-    auto asTuple() const noexcept
+    static constexpr size_t kNumWords{6};
+
+    //! The fields in blob, digest and hash order.
+    std::array<uint32_t, kNumWords> keyWords() const noexcept
     {
-        return std::tie(sm, layout, n, k, dataType, sourceAbi);
+        return {static_cast<uint32_t>(sm), layout, static_cast<uint32_t>(n), static_cast<uint32_t>(k),
+            static_cast<uint32_t>(dataType), sourceAbi};
+    }
+
+    static Nvfp4A16BlackwellGemvJitKey fromKeyWords(std::array<uint32_t, kNumWords> const& words) noexcept
+    {
+        Nvfp4A16BlackwellGemvJitKey key;
+        key.sm = static_cast<int32_t>(words[0]);
+        key.layout = words[1];
+        key.n = static_cast<int32_t>(words[2]);
+        key.k = static_cast<int32_t>(words[3]);
+        key.dataType = static_cast<Nvfp4A16BlackwellGemvDataType>(words[4]);
+        key.sourceAbi = words[5];
+        return key;
     }
 
     bool operator==(Nvfp4A16BlackwellGemvJitKey const& other) const noexcept
     {
-        return asTuple() == other.asTuple();
+        return keyWords() == other.keyWords();
     }
 };
 
-struct Nvfp4A16BlackwellGemvJitDigest
-{
-    uint64_t lo{};
-    uint64_t hi{};
-
-    bool operator==(Nvfp4A16BlackwellGemvJitDigest const& other) const noexcept
-    {
-        return lo == other.lo && hi == other.hi;
-    }
-};
-
-struct Nvfp4A16BlackwellGemvJitKernel
-{
-    Nvfp4A16BlackwellGemvJitKey key;
-    Nvfp4A16BlackwellGemvJitDigest digest;
-    std::vector<uint8_t> cubin;
-};
+using Nvfp4A16BlackwellGemvJitKernel = PluginJitKernel<Nvfp4A16BlackwellGemvJitKey>;
 
 bool canCompileNvfp4A16BlackwellGemvJitKernel(Nvfp4A16BlackwellGemvJitKey const& key) noexcept;
 
 Nvfp4A16BlackwellGemvJitKernel compileNvfp4A16BlackwellGemvJitKernel(Nvfp4A16BlackwellGemvJitKey const& key);
-
-Nvfp4A16BlackwellGemvJitDigest computeNvfp4A16BlackwellGemvJitDigest(
-    Nvfp4A16BlackwellGemvJitKey const& key, void const* cubinData, size_t cubinSize);
 
 std::vector<uint8_t> serializeNvfp4A16BlackwellGemvJitKernel(Nvfp4A16BlackwellGemvJitKernel const& kernel);
 

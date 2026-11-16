@@ -484,7 +484,7 @@ bool MelExtractor::extract(AudioPCM const& pcm, Tensor& out)
 
     Coords const shape
         = (mConfig.layout == MelLayout::kMelTime) ? Coords({nMel, outFrames}) : Coords({outFrames, nMel});
-    out = Tensor(shape, DeviceType::kCPU, nvinfer1::DataType::kFLOAT);
+    out = Tensor(shape, DeviceType::kCPU, trt_edgellm::DataType::kFLOAT);
     float* outData = out.dataPointer<float>();
     std::fill_n(outData, static_cast<size_t>(nMel) * outFrames, 0.0f);
 

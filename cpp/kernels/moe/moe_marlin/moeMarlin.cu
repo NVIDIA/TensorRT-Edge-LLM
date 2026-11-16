@@ -88,15 +88,16 @@ void moeAwqW4A16MarlinGemm(rt::Tensor const& input, rt::Tensor& output, rt::Tens
     check::check(outputShape[1] == outDim, fmtstr("Output shape[1] %ld != outDim %ld", outputShape[1], outDim));
 
     // Validate data types
-    check::check(input.getDataType() == nvinfer1::DataType::kHALF, "Input must be FP16");
-    check::check(output.getDataType() == nvinfer1::DataType::kHALF, "Output must be FP16");
-    check::check(weights.getDataType() == nvinfer1::DataType::kINT32, "Weights must be INT32 (Marlin packed)");
-    check::check(scales.getDataType() == nvinfer1::DataType::kHALF, "Scales must be FP16");
-    check::check(sortedTokenIds.getDataType() == nvinfer1::DataType::kINT32, "sortedTokenIds must be INT32");
-    check::check(expertIds.getDataType() == nvinfer1::DataType::kINT32, "expertIds must be INT32");
-    check::check(numTokensPostPadded.getDataType() == nvinfer1::DataType::kINT32, "numTokensPostPadded must be INT32");
-    check::check(topkWeights.getDataType() == nvinfer1::DataType::kFLOAT, "topkWeights must be FP32");
-    check::check(workspace.getDataType() == nvinfer1::DataType::kINT32, "workspace must be INT32");
+    check::check(input.getDataType() == trt_edgellm::DataType::kHALF, "Input must be FP16");
+    check::check(output.getDataType() == trt_edgellm::DataType::kHALF, "Output must be FP16");
+    check::check(weights.getDataType() == trt_edgellm::DataType::kINT32, "Weights must be INT32 (Marlin packed)");
+    check::check(scales.getDataType() == trt_edgellm::DataType::kHALF, "Scales must be FP16");
+    check::check(sortedTokenIds.getDataType() == trt_edgellm::DataType::kINT32, "sortedTokenIds must be INT32");
+    check::check(expertIds.getDataType() == trt_edgellm::DataType::kINT32, "expertIds must be INT32");
+    check::check(
+        numTokensPostPadded.getDataType() == trt_edgellm::DataType::kINT32, "numTokensPostPadded must be INT32");
+    check::check(topkWeights.getDataType() == trt_edgellm::DataType::kFLOAT, "topkWeights must be FP32");
+    check::check(workspace.getDataType() == trt_edgellm::DataType::kINT32, "workspace must be INT32");
 
     // Validate moe_block_size
     if (moeBlockSize != 8)
@@ -227,20 +228,21 @@ void moeNvfp4A16MarlinGemm(rt::Tensor const& input, rt::Tensor& output, rt::Tens
     check::check(
         outputShape[1] == outDim, fmtstr("Output width %ld must equal block-scale width %ld", outputShape[1], outDim));
 
-    nvinfer1::DataType const activationType = input.getDataType();
-    check::check(activationType == nvinfer1::DataType::kHALF || activationType == nvinfer1::DataType::kBF16,
+    trt_edgellm::DataType const activationType = input.getDataType();
+    check::check(activationType == trt_edgellm::DataType::kHALF || activationType == trt_edgellm::DataType::kBF16,
         "Input must be FP16 or BF16");
     check::check(output.getDataType() == activationType, "Output type must match input type");
-    check::check(weights.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(weights.getDataType() == trt_edgellm::DataType::kINT32,
         "Weights must be an INT32 view of Marlin-packed E2M1 codes");
-    check::check(
-        blockScales.getDataType() == nvinfer1::DataType::kINT8, "Block scales must be raw E4M3 bytes exposed as INT8");
+    check::check(blockScales.getDataType() == trt_edgellm::DataType::kINT8,
+        "Block scales must be raw E4M3 bytes exposed as INT8");
     check::check(globalScales.getDataType() == activationType, "Global-scale type must match input type");
-    check::check(sortedTokenIds.getDataType() == nvinfer1::DataType::kINT32, "sortedTokenIds must be INT32");
-    check::check(expertIds.getDataType() == nvinfer1::DataType::kINT32, "expertIds must be INT32");
-    check::check(numTokensPostPadded.getDataType() == nvinfer1::DataType::kINT32, "numTokensPostPadded must be INT32");
-    check::check(topkWeights.getDataType() == nvinfer1::DataType::kFLOAT, "topkWeights must be FP32");
-    check::check(workspace.getDataType() == nvinfer1::DataType::kINT32, "workspace must be INT32");
+    check::check(sortedTokenIds.getDataType() == trt_edgellm::DataType::kINT32, "sortedTokenIds must be INT32");
+    check::check(expertIds.getDataType() == trt_edgellm::DataType::kINT32, "expertIds must be INT32");
+    check::check(
+        numTokensPostPadded.getDataType() == trt_edgellm::DataType::kINT32, "numTokensPostPadded must be INT32");
+    check::check(topkWeights.getDataType() == trt_edgellm::DataType::kFLOAT, "topkWeights must be FP32");
+    check::check(workspace.getDataType() == trt_edgellm::DataType::kINT32, "workspace must be INT32");
 
     if (moeBlockSize != 8)
     {
@@ -274,7 +276,7 @@ void moeNvfp4A16MarlinGemm(rt::Tensor const& input, rt::Tensor& output, rt::Tens
     void* cTmp = workspaceBase + locksSize;
     CUDA_CHECK(cudaMemsetAsync(locks, 0, locksSize * sizeof(int32_t), stream));
 
-    trt_edgellm::marlin_dtypes::ScalarType const activationScalarType = activationType == nvinfer1::DataType::kHALF
+    trt_edgellm::marlin_dtypes::ScalarType const activationScalarType = activationType == trt_edgellm::DataType::kHALF
         ? trt_edgellm::marlin_dtypes::kFloat16
         : trt_edgellm::marlin_dtypes::kBFloat16;
 

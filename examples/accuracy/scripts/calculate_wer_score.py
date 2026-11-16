@@ -58,6 +58,15 @@ _ERROR_MESSAGE = "TensorRT Edge LLM cannot handle this request. Fails."
 
 _SPLIT_WORDS = jiwer.ReduceToListOfListOfWords()
 
+# Lead-in that chat models put before the transcript, e.g.
+# ``The transcript of the audio is: "..."`` or ``Here is the transcription:``.
+# Only these phrasings match, so ordinary speech is never cut.
+_TRANSCRIPT_LEAD_IN_RE = re.compile(
+    r"^(?:(?:here\s+is|here's|this\s+is)\s+)?(?:the\s+)?"
+    r"(?:(?:correct|full|audio)\s+)?transcript(?:ion)?"
+    r"(?:\s+of\s+(?:the\s+)?(?:(?:provided|given)\s+)?audio(?:\s+(?:clip|file))?)?"
+    r"(?:\s+is)?\s*:\s*", re.IGNORECASE)
+
 
 def normalize_text(text):
     """
@@ -94,7 +103,11 @@ def calculate_wer(predictions, references):
             "Predictions and references must have the same length")
 
     refs_norm = [normalize_text(r) for r in references]
-    preds_norm = [normalize_text(p) for p in predictions]
+    # Strip the lead-in from predictions only; references are never wrapped.
+    preds_norm = [
+        normalize_text(_TRANSCRIPT_LEAD_IN_RE.sub("", p.strip(), count=1))
+        for p in predictions
+    ]
 
     output = jiwer.process_words(
         refs_norm,

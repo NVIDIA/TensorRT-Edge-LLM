@@ -21,6 +21,10 @@
         {
             "speaker": "dylan",
             "messages": [{"role": "assistant", "content": "今儿天气真不错。"}]
+        },
+        {
+            "language": "english",
+            "messages": [{"role": "assistant", "content": "The weather will stay sunny and warm all week, so we plan to walk along the river every evening after dinner."}]
         }
     ]
 }

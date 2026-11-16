@@ -166,7 +166,14 @@ class DFlash2CandidateSelector(nn.Module):
                                                requires_grad=False)
 
 
-def _make_flat_wrapper(model: nn.Module, num_layers: int) -> nn.Module:
+def _make_flat_wrapper(
+    model: nn.Module, num_layers: int,
+    extra_inputs: Tuple[str, ...] = ()) -> nn.Module:
+    """Wrap ``forward_ragged`` with one positional argument per ONNX input.
+
+    *extra_inputs* follow the DFlash2 inputs and reach ``forward_ragged`` as
+    keyword arguments of the same name.
+    """
     parameters = (
         ["inputs_embeds", "dflash_target_hidden_concat"] +
         [f"past_key_values_{index}" for index in range(num_layers)] + [
@@ -177,7 +184,7 @@ def _make_flat_wrapper(model: nn.Module, num_layers: int) -> nn.Module:
             "dflash_delta_rope_cos_sin", "dflash_delta_positions",
             "dflash_delta_token_to_sequence", "attention_position_ids",
             "packed_attention_mask"
-        ])
+        ] + list(extra_inputs))
     past = "({},)".format(", ".join(f"past_key_values_{index}"
                                     for index in range(num_layers)))
     body = (
@@ -193,8 +200,9 @@ def _make_flat_wrapper(model: nn.Module, num_layers: int) -> nn.Module:
         "        delta_positions=dflash_delta_positions,\n"
         "        delta_token_to_sequence=dflash_delta_token_to_sequence,\n"
         "        attention_position_ids=attention_position_ids,\n"
-        "        packed_attention_mask=packed_attention_mask)\n"
-        "    return tuple(outputs) + tuple(present)\n")
+        "        packed_attention_mask=packed_attention_mask{})\n"
+        "    return tuple(outputs) + tuple(present)\n").format("".join(
+            f", {name}={name}" for name in extra_inputs))
     namespace = {}
     exec("def _forward(self, {}):\n{}".format(", ".join(parameters), body),
          namespace)  # noqa: S102
@@ -218,7 +226,23 @@ class DFlash2DraftModel(DFlashDraftModel):
             DFlash2DecoderLayer(config, index)
             for index in range(config.num_hidden_layers)
         ])
+        self._init_projector(config)
+
+    def _init_projector(self, config) -> None:
         self.candidate_selector = DFlash2CandidateSelector(config)
+
+    def _project_target_hidden(
+            self, target_hidden_concat: torch.Tensor) -> torch.Tensor:
+        """Return the FP32 pre-``hidden_norm`` fc projection of the target-hidden delta."""
+        if self.fc_native_precision:
+            raise NotImplementedError(
+                "DFlash2 has no packed fc path; a native-precision fc must "
+                "override _project_target_hidden")
+        bias = (self.fc.bias.to(torch.float32)
+                if self.fc.bias is not None else None)
+        return torch.nn.functional.linear(
+            target_hidden_concat.to(torch.float32),
+            self.fc.weight.to(torch.float32), bias)
 
     def forward(self, inputs_embeds, target_hidden_concat, rope_cos_sin,
                 context_lengths, kvcache_start_index, kv_page_table,
@@ -249,17 +273,28 @@ class DFlash2DraftModel(DFlashDraftModel):
         unary_logits = self.lm_head(prediction_hidden).to(torch.float32)
         unary_values, candidate_ids = torch.topk(
             unary_logits, self.config.dflash2_selector_top_k, dim=2)
+        unary_values = self._target_logit_transform(unary_values)
         outputs = (candidate_ids.to(torch.int32), unary_values, projected)
         return outputs, present_key_values
 
-    def forward_ragged(self, inputs_embeds, target_hidden_concat,
-                       past_key_values, **metadata):
-        bias = (self.fc.bias.to(torch.float32)
-                if self.fc.bias is not None else None)
-        h_delta = torch.nn.functional.linear(
-            target_hidden_concat.to(torch.float32),
-            self.fc.weight.to(torch.float32), bias)
-        h_delta = self.hidden_norm(h_delta).to(torch.float16)
+    def _target_logit_transform(self, values):
+        """Apply the target's output multiplier and logit softcap after top-k.
+
+        Both maps are monotonic, so the support ids are unchanged.
+        """
+        if self.config.dflash2_output_multiplier != 1.0:
+            values = values * self.config.dflash2_output_multiplier
+        cap = self.config.dflash2_final_logit_softcapping
+        if cap > 0.0:
+            values = torch.tanh(values / cap) * cap
+        return values
+
+    def _ragged_prediction_hidden(self, inputs_embeds, target_hidden_concat,
+                                  past_key_values, **metadata):
+        """Return ``(prediction_hidden [B, block - 1, H], h_delta [D, H], present)``."""
+        h_delta = self.hidden_norm(
+            self._project_target_hidden(target_hidden_concat)).to(
+                torch.float16)
 
         hidden_states = inputs_embeds.to(torch.float32)
         present_key_values = []
@@ -273,13 +308,20 @@ class DFlash2DraftModel(DFlashDraftModel):
         block = hidden_states.shape[0] // batch
         prediction_hidden = self.norm(hidden_states).to(torch.float16).reshape(
             batch, block, self.config.hidden_size)[:, 1:, :]
+        return prediction_hidden, h_delta, tuple(present_key_values)
+
+    def forward_ragged(self, inputs_embeds, target_hidden_concat,
+                       past_key_values, **metadata):
+        prediction_hidden, _, present_key_values = self._ragged_prediction_hidden(
+            inputs_embeds, target_hidden_concat, past_key_values, **metadata)
         projected = self.candidate_selector.hidden_projection(
             prediction_hidden).to(torch.float16)
         unary_logits = self.lm_head(prediction_hidden).to(torch.float32)
         unary_values, candidate_ids = torch.topk(
             unary_logits, self.config.dflash2_selector_top_k, dim=2)
+        unary_values = self._target_logit_transform(unary_values)
         outputs = (candidate_ids.to(torch.int32), unary_values, projected)
-        return outputs, tuple(present_key_values)
+        return outputs, present_key_values
 
     def onnx_export_spec(self) -> OnnxSpec:
         config = self.config

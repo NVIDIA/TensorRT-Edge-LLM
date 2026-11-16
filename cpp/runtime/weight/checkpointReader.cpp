@@ -82,26 +82,38 @@ CheckpointReader::CheckpointReader(std::filesystem::path const& directory)
 {
 }
 
-CheckpointReader::CheckpointReader(
-    std::filesystem::path const& directory, std::vector<TensorLocation> const& explicitTensorLocations)
+CheckpointReader::CheckpointReader(std::filesystem::path const& directory,
+    std::vector<TensorLocation> const& explicitTensorLocations, std::filesystem::path const& singleFile)
 {
     ELLM_CHECK(std::filesystem::is_directory(directory), "Checkpoint directory does not exist: " + directory.string());
 
     std::vector<std::filesystem::path> indices;
     std::vector<std::filesystem::path> shards;
-    for (auto const& entry : std::filesystem::directory_iterator(directory))
+    if (!singleFile.empty())
     {
-        if (!entry.is_regular_file())
+        ELLM_CHECK(
+            std::filesystem::is_regular_file(singleFile), "Checkpoint file does not exist: " + singleFile.string());
+        if (explicitTensorLocations.empty())
         {
-            continue;
+            shards.push_back(singleFile);
         }
-        if (isSafetensorsIndex(entry.path()))
+    }
+    else
+    {
+        for (auto const& entry : std::filesystem::directory_iterator(directory))
         {
-            indices.push_back(entry.path());
-        }
-        else if (entry.path().extension() == ".safetensors")
-        {
-            shards.push_back(entry.path());
+            if (!entry.is_regular_file())
+            {
+                continue;
+            }
+            if (isSafetensorsIndex(entry.path()))
+            {
+                indices.push_back(entry.path());
+            }
+            else if (entry.path().extension() == ".safetensors")
+            {
+                shards.push_back(entry.path());
+            }
         }
     }
     std::sort(indices.begin(), indices.end());
@@ -452,6 +464,16 @@ bool CheckpointReader::findHost(std::string const& name, View& view) const
     view = View{info.dtype, info.shape, reinterpret_cast<uint8_t const*>(shard.file->getByteData()) + offset, nullptr,
         info.bytes};
     return true;
+}
+
+CheckpointReader::TensorLocation CheckpointReader::locate(std::string const& name) const
+{
+    auto const location = mTensorShards.find(name);
+    ELLM_CHECK(location != mTensorShards.end(), "Checkpoint tensor is missing: " + name);
+    Shard const& shard = openShard(location->second);
+    TensorInfo const& info = tensorInfo(name, shard);
+    return {name, location->second, safetensors::dataTypeToString(info.dtype), info.shape,
+        shard.dataOffset + info.offset, info.bytes};
 }
 
 bool CheckpointReader::find(std::string const& name, View& view) const

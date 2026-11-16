@@ -22,6 +22,7 @@
 #include "common/logger.h"
 #include "common/stringUtils.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "kernels/moe/moePerExpertScaleKernels.h"
 #include "kernels/moe/moeSigmoidGroupTopkKernels.h"
 #include "kernels/moe/moeTopkSoftmaxKernels.h"
@@ -56,6 +57,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 // Input indices (11 total) and output index — see the plugin doc in the header for a full
 // description of each tensor's shape and dtype.
@@ -646,7 +648,7 @@ int32_t Nvfp4MoePlugin::configurePlugin(
             "Nvfp4MoePlugin: shape tuple (H=%d, I=%d, E=%d, top_k=%d, sm=%d, "
             "act=%d, io=%d, backend=%d) is not supported by the split "
             "FC1/FC2 CuteDSL runner. Requires -DENABLE_CUTE_DSL=nvfp4_moe, "
-            "sm in {100, 101, 110}, io_dtype=FP16, activation in {swiglu, relu2, geglu}, "
+            "sm in {100, 101, 103, 110}, io_dtype=FP16, activation in {swiglu, relu2, geglu}, "
             "H %% %d == 0, I %% 64 == 0, FC1_N %% %d == 0, E in {128, 256}, 0 < top_k <= %d.",
             mHiddenSize, mMoeInterSize, mNumExperts, mTopK, smVersion, mActivationType, mIoDtype, mBackend, 128,
             kCuteDslLevelTileN, kCuteDslSm110TopK);
@@ -654,7 +656,7 @@ int32_t Nvfp4MoePlugin::configurePlugin(
     }
 #else
     LOG_ERROR(
-        "Nvfp4MoePlugin: no CuTeDSL SM100/101/110 MoE backend is linked -- rebuild "
+        "Nvfp4MoePlugin: no CuTeDSL SM100/101/103/110 MoE backend is linked -- rebuild "
         "with -DENABLE_CUTE_DSL=nvfp4_moe after generating the matching AOT "
         "artifact via kernelSrcs/build_cutedsl.py. For SM12x targets use the "
         "NvFP4MoEPluginGeforce plugin instead.");
@@ -766,7 +768,7 @@ size_t Nvfp4MoePlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inputs, i
             maxTokens, maxRoutedRows, mNumExperts, mTopK, mHiddenSize, mMoeInterSize);
         if (runnerWs == 0)
         {
-            LOG_ERROR("Nvfp4MoePlugin: SM100/101/110 CuTeDSL backend returned zero workspace");
+            LOG_ERROR("Nvfp4MoePlugin: SM100/101/103/110 CuTeDSL backend returned zero workspace");
             return 0;
         }
         total = accumulateWorkspaceSize(
@@ -794,7 +796,7 @@ int32_t Nvfp4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorD
     (void) workspace;
     (void) stream;
     LOG_ERROR(
-        "Nvfp4MoePlugin: no CuTeDSL SM100/101/110 MoE backend is linked; rebuild "
+        "Nvfp4MoePlugin: no CuTeDSL SM100/101/103/110 MoE backend is linked; rebuild "
         "with -DENABLE_CUTE_DSL=nvfp4_moe");
     return -1;
 #else
@@ -853,7 +855,7 @@ int32_t Nvfp4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorD
         moduleParams.activationType = mActivationType;
         if (!CuteDslNvfp4MoeSm110Runner::ensureKernelModules(moduleParams, stream))
         {
-            LOG_ERROR("Nvfp4MoePlugin: failed to load the selected SM100/101/110 CuTe DSL AOT modules");
+            LOG_ERROR("Nvfp4MoePlugin: failed to load the selected SM100/101/103/110 CuTe DSL AOT modules");
             return -1;
         }
 
@@ -871,7 +873,7 @@ int32_t Nvfp4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorD
             numTokens, maxRoutedRows, mNumExperts, mTopK, mHiddenSize, mMoeInterSize);
         if (runnerWs == 0)
         {
-            LOG_ERROR("Nvfp4MoePlugin: SM100/101/110 CuTeDSL backend returned zero workspace at enqueue");
+            LOG_ERROR("Nvfp4MoePlugin: SM100/101/103/110 CuTeDSL backend returned zero workspace at enqueue");
             return -1;
         }
         void* const runnerScratch = assignTensorFromWorkspace(
@@ -880,13 +882,14 @@ int32_t Nvfp4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorD
 
         // ==== Step 1: router softmax + top-k + renormalize ====
         rt::Tensor routerLogitsT(const_cast<void*>(inputs[kIN_ROUTER_LOGITS]),
-            rt::Coords{inputDesc[kIN_ROUTER_LOGITS].dims}, rt::DeviceType::kGPU, DataType::kFLOAT);
-        rt::Tensor topkWeightsT(topkWeightsPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, DataType::kFLOAT);
-        rt::Tensor topkIdsT(topkIdsPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, DataType::kINT32);
+            rt::toCoords(inputDesc[kIN_ROUTER_LOGITS].dims), rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor topkWeightsT(
+            topkWeightsPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor topkIdsT(topkIdsPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         if (mRoutingMode == kROUTING_MODE_SIGMOID_GROUP_TOPK)
         {
             rt::Tensor correctionBiasT(const_cast<void*>(inputs[kIN_E_SCORE_CORRECTION_BIAS]), {mNumExperts},
-                rt::DeviceType::kGPU, DataType::kFLOAT);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
             rt::OptionalInputTensor correctionBiasOpt = correctionBiasT;
             trt_edgellm::kernel::moeSigmoidGroupTopk(routerLogitsT, topkWeightsT, topkIdsT, mTopK, mNGroup, mTopkGroup,
                 mNormTopkProb != 0, mRoutedScalingFactor, stream, correctionBiasOpt);
@@ -895,7 +898,7 @@ int32_t Nvfp4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorD
         {
             // Pre-softmax additive bias (DeepSeek, Qwen3).
             rt::Tensor correctionBiasT(const_cast<void*>(inputs[kIN_E_SCORE_CORRECTION_BIAS]), {mNumExperts},
-                rt::DeviceType::kGPU, DataType::kFLOAT);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
             rt::OptionalInputTensor biasForSoftmax = correctionBiasT;
             trt_edgellm::kernel::moeTopkSoftmax(routerLogitsT, topkWeightsT, topkIdsT, mTopK,
                 softmaxWs > 0 ? softmaxScratch : nullptr, softmaxWs, stream, /*renormalize=*/true, 0.0F,
@@ -942,7 +945,7 @@ int32_t Nvfp4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorD
         int32_t const rc = runner.run(p, runnerScratch, stream);
         if (rc != 0)
         {
-            LOG_ERROR("Nvfp4MoePlugin: SM100/101/110 runner.run() failed with code %d", rc);
+            LOG_ERROR("Nvfp4MoePlugin: SM100/101/103/110 runner.run() failed with code %d", rc);
             return rc;
         }
         return 0;

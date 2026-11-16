@@ -256,7 +256,7 @@ void launchFmhaReferenceImpl(Tensor const& Q, Tensor const& K, Tensor const& V, 
     bool compactLayout, int64_t B, int64_t Sq, int64_t Sk, int64_t Hq, int64_t Hkv, int64_t D, float attentionScale,
     int32_t const* cuSeqlensPtr, cudaStream_t stream)
 {
-    nvinfer1::DataType const dtype = Q.getDataType();
+    trt_edgellm::DataType const dtype = Q.getDataType();
     if (dtype != K.getDataType() || dtype != V.getDataType() || dtype != O.getDataType())
     {
         throw std::runtime_error("launchFmhaReference: Q, K, V, O must have the same data type.");
@@ -264,12 +264,12 @@ void launchFmhaReferenceImpl(Tensor const& Q, Tensor const& K, Tensor const& V, 
 
     switch (dtype)
     {
-    case nvinfer1::DataType::kHALF:
+    case trt_edgellm::DataType::kHALF:
         launchFmhaReferenceTyped<__half, __half>(Q.dataPointer<__half>(), K.dataPointer<__half>(),
             V.dataPointer<__half>(), O.dataPointer<__half>(), B, Sq, Sk, Hq, Hkv, D, causal, compactLayout,
             attentionScale, cuSeqlensPtr, stream);
         break;
-    case nvinfer1::DataType::kBF16:
+    case trt_edgellm::DataType::kBF16:
         launchFmhaReferenceTyped<__nv_bfloat16, __nv_bfloat16>(Q.dataPointer<__nv_bfloat16>(),
             K.dataPointer<__nv_bfloat16>(), V.dataPointer<__nv_bfloat16>(), O.dataPointer<__nv_bfloat16>(), B, Sq, Sk,
             Hq, Hkv, D, causal, compactLayout, attentionScale, cuSeqlensPtr, stream);

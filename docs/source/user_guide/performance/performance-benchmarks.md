@@ -50,7 +50,7 @@ Generate datasets with the scripts under `examples/accuracy/scripts`. MTBench
 and MMLU are text-only LLM datasets. COCO and MMMU are VLM datasets.
 
 ```bash
-python3 -m pip install -r examples/accuracy/requirements.txt
+python3 -m pip install -r examples/accuracy/requirements-datasets.txt
 
 DATASET_DIR=/path/to/datasets
 mkdir -p "${DATASET_DIR}"
@@ -91,14 +91,14 @@ and decoding mode. Use these benchmark-specific build parameters:
 | Vanilla VLM LLM engine | `--max-batch-size <batch>` `--max-input-len 2048` `--max-kv-cache-capacity 2200` |
 | VLM visual engine | `--min-image-tokens 8` `--max-image-tokens 16384` `--max-image-tokens-per-image 2048` |
 | Orin NX / Orin Nano VLM visual engine | `--min-image-tokens 8` `--max-image-tokens 2048` `--max-image-tokens-per-image 2048` |
-| EAGLE3 base engine | Vanilla LLM parameters plus `--spec-base --max-verify-tree-size 60` |
-| EAGLE3 draft engine | Vanilla LLM parameters plus `--spec-draft --max-draft-tree-size 60` |
-| MTP base engine | Vanilla LLM parameters plus `--spec-base --max-verify-tree-size 4` |
-| MTP draft engine | Vanilla LLM parameters plus `--spec-draft --max-draft-tree-size 4` |
-| DFlash base engine | Vanilla LLM parameters plus `--spec-base --max-verify-tree-size 16` |
-| DFlash draft engine | Vanilla LLM parameters plus `--spec-draft --max-draft-tree-size 16` |
-| JetSpec tree base engine | Vanilla LLM parameters plus `--spec-base --max-verify-tree-size 128` |
-| JetSpec draft engine | Vanilla LLM parameters plus `--spec-draft --max-draft-tree-size 128` |
+| EAGLE3 base engine | Vanilla LLM parameters plus `--spec-base --max-spec-verify-tokens 60` |
+| EAGLE3 draft engine | Vanilla LLM parameters plus `--spec-draft --max-spec-draft-tokens 60` |
+| MTP base engine | Vanilla LLM parameters plus `--spec-base --max-spec-verify-tokens 4` |
+| MTP draft engine | Vanilla LLM parameters plus `--spec-draft --max-spec-draft-tokens 4` |
+| DFlash base engine | Vanilla LLM parameters plus `--spec-base --max-spec-verify-tokens 16` |
+| DFlash draft engine | Vanilla LLM parameters plus `--spec-draft --max-spec-draft-tokens 16` |
+| JetSpec tree base engine | Vanilla LLM parameters plus `--spec-base --max-spec-verify-tokens 128` |
+| JetSpec draft engine | Vanilla LLM parameters plus `--spec-draft --max-spec-draft-tokens 128` |
 
 Use the batch size shown in the benchmark row. Thor and Jetson AGX Orin rows may
 use batch `1` or `8`; Jetson Orin NX and Orin Nano rows are generally batch `1`.
@@ -109,10 +109,10 @@ For INT4 runs on Orin, follow the export docs but use externalized INT4 weights:
 For speculative decoding, follow the exact export layouts in
 [Speculative Decoding](../examples/speculative-decoding.md): EAGLE3 uses a base
 and draft export, MTP uses the MTP base and `mtp_draft` export, and DFlash uses
-the paired DFlash base and draft export. JetSpec uses the paired JetSpec
-tree-base and draft export. For DFlash, use the linear DFlash base export for
-`--spec-draft-top-k 1`; use the tree-base export only for DDTree runs. For JetSpec,
-use the tree-base export with `--spec-draft-top-k > 1`.
+the paired DFlash base and draft export. One DFlash base artifact supports both
+linear (`--spec-draft-top-k 1`) and DDTree (`--spec-draft-top-k > 1`) verification,
+within its built draft and verification token capacities. JetSpec uses the paired
+JetSpec base and draft export with `--spec-draft-top-k > 1`.
 
 ### 3. Runtime Benchmark Specs
 
@@ -125,31 +125,126 @@ the profile JSON. Use these common runtime settings:
 | LLM runtime benchmark | `--input-file ${DATASET_DIR}/mtbench/mtbench_dataset.json` |
 | VLM runtime benchmark | `--input-file ${DATASET_DIR}/coco/dataset.json --multimodal-engine-dir <visual_engine_dir>` |
 | All runtime benchmarks | `--batch-size <batch>` `--warmup 10` `--dump-profile --profile-output-file <profile.json>` |
-| EAGLE3 runtime | Common settings plus `--spec-decode --spec-verify-size 60` |
-| MTP runtime | Common settings plus `--spec-decode --spec-draft-top-k 1 --spec-draft-step 3 --spec-verify-size 4` |
-| DFlash linear runtime | Common settings plus `--spec-decode --spec-draft-top-k 1 --spec-draft-step 1 --spec-verify-size 16` |
-| DFlash DDTree runtime | Follow the DFlash guide; use `--spec-draft-top-k > 1` with the tree-base export |
-| JetSpec tree runtime | Common settings plus `--spec-decode --spec-draft-top-k 7 --spec-draft-step 1 --spec-verify-size 128 --jetspec-block-size 16` |
+| EAGLE3 runtime | Common settings plus `--spec-decode --spec-draft-step 6 --spec-verify-tokens 60` |
+| MTP runtime | Common settings plus `--spec-decode --spec-draft-top-k 1 --spec-draft-step 3 --spec-verify-tokens 4` |
+| DFlash linear runtime | Common settings plus `--spec-decode --spec-draft-top-k 1 --spec-proposal-tokens 15 --spec-verify-tokens 16` |
+| DFlash DDTree runtime | Follow the DFlash guide; use `--spec-draft-top-k > 1` with the same fixed-ABI base artifact |
+| JetSpec tree runtime | Common settings plus `--spec-decode --spec-draft-top-k 7 --spec-proposal-tokens 15 --spec-verify-tokens 128` |
 
 For Qwen3.5 DFlash inputs, set `"enable_thinking": true`; for Qwen3 DFlash and
 Qwen3 JetSpec inputs, set `"enable_thinking": false`. These settings match the
 paired HuggingFace generation behavior used for speculative decoding
 validation.
 
-For synthetic component timing, run `llm_bench` on the same engines:
+For repeatable runtime benchmarks, `llm_bench` uses the same deployment options
+and `handleRequest()` path as `llm_inference`. Supply the engine directory and
+checkpoint paths required by that deployment, including `--draftCheckpointDir`
+for an independent draft. Configure speculative decoding with the same
+`--specDecode`, drafting, and verification options as inference.
 
-| Component | `llm_bench` settings |
-|-----------|----------------------|
-| LLM prefill | `--mode prefill --batch-size <batch> --input-len 2048 --warmup 3 --iterations 10 --profile` |
-| LLM decode | `--mode decode --batch-size <batch> --past-kv-len 2048 --warmup 3 --iterations 10 --profile` |
-| Visual encoder | `--mode visual --image-size 1024x2048 --warmup 3 --iterations 10 --profile` |
-| Spec draft prefill | `--mode spec_draft_prefill --batch-size <batch> --input-len 2048 --warmup 3 --iterations 10 --profile` |
-| Spec draft proposal | `--mode spec_draft_proposal --batch-size <batch> --draft-tree-size <draft_tree_size> --past-kv-len 2048 --warmup 3 --iterations 10 --profile` |
-| Spec draft accept | `--mode spec_draft_accept --batch-size <batch> --draft-step <drafting_step> --past-kv-len 2048 --warmup 3 --iterations 10 --profile` |
-| Spec verify | `--mode spec_verify --batch-size <batch> --verify-tree-size <verify_tree_size> --past-kv-len 2048 --warmup 3 --iterations 10 --profile` |
+```bash
+llm_bench --engine-dir <engine-dir> --checkpoint-dir <checkpoint-dir> \
+  --mode fixed_round --input-len 2048 --batch-size 1 \
+  --warmup 3 --iterations 10 --output-dir <new-report-dir>
+llm_bench --engine-dir <engine-dir> --checkpoint-dir <checkpoint-dir> \
+  --mode generate --input-len 2048 --osl 128 --batch-size 1 \
+  --warmup 3 --iterations 10 --output-dir <another-new-report-dir>
+```
 
-Use `draftTreeSize` / `verifyTreeSize` values of `60` for EAGLE3, `4` for MTP,
-`16` for linear DFlash, and `128` for JetSpec tree runs.
+`fixed_round` repeats prefill and exactly one complete decode round; `generate`
+repeats complete requests up to the output-token budget. Both ignore EOS by
+default and disable cross-request reuse, including vision/audio encoder
+embedding caches. Each repeated media request executes its encoder; the bench
+sets `--encoderCacheBudgetBytes` to 0 and rejects explicit nonzero values.
+`llm_inference` retains its normal encoder-cache default.
+`--respectEos` enables natural EOS
+termination, but a fixed-round request that finishes before its decode round
+is rejected as an invalid sample. Use `--inputFile` for actual inference
+request JSON, including media, instead of synthetic token IDs. Synthetic input
+length is an exact token count, not a repeated-text approximation.
+
+For a supported speculative deployment, `--forceAL N` sets the forced acceptance
+length **including one target bonus token**. A complete decode round accepts a
+legal prefix of `N - 1` draft tokens and then emits the target token from the
+verification position after that prefix. The initial token from base prefill is
+separate and does not count toward AL.
+
+| Option | Accepted draft tokens per complete round | Target bonus | Total AL |
+|--------|------------------------------------------|--------------|----------|
+| Omitted | Determined by natural acceptance | Normal decoder behavior | Variable |
+| `--forceAL 1` | 0 | 1 | 1 |
+| `--forceAL 2` | 1 | 1 | 2 |
+| `--forceAL 4` | 3 | 1 | 4 |
+
+`N` must be a positive integer and must fit the deployment's acceptance capacity
+and the actual proposal path. Zero, negative CLI values, and unavailable paths
+are rejected. The C++ control is `forcedAcceptanceLength`; its default `-1`
+disables forcing. To force K accepted draft tokens, set N to K + 1; for example,
+three drafts plus the bonus require `--forceAL 4`.
+
+`fixed_round` derives its output budget from the resolved deployment, including
+any normalization of the verification window. It requires enough output and KV
+capacity for prefill plus one complete round; diffusion uses its full canvas
+without an additional prefill token.
+In `generate`, the final output budget can truncate the accepted prefix before
+the bonus: with `--forceAL 4` and two output slots remaining, the round emits two
+draft tokens and no bonus. `--respectEos` can also stop output early. Reports
+retain these actual counts; the configured AL is not a promise that every round
+emits exactly N tokens after stopping rules.
+
+Base and draft forwards and natural verification still execute. The
+`forceAcceptanceKernels` helpers override the acceptance outputs before the normal
+KV, hidden-state and recurrent-state commit, keeping token IDs, accepted indices
+and lengths consistent. They run only when forcing is enabled and their cost is
+included in the measured runtime stages and request time. They do not implement
+a separate model execution path.
+
+These are controlled workload measurements, not natural acceptance rates or
+model speedup claims. Omit `--forceAL` to measure natural acceptance. The report's
+`forced_acceptance_length` records the requested N (`-1` for natural acceptance);
+in forced mode, per-round `accepted_drafts`, `bonus_tokens` and `output_tokens`
+describe the actual emitted tokens. Draft-token counters exclude the bonus in
+both modes; natural acceptance retains the estimated accounting described below.
+
+The new output directory contains `report.json` (schema version 2) and CSV
+views of requests and invocations. `source_revision` and `source_dirty_at_build`
+identify the source tree when the benchmark executable was last built, including
+incremental builds without a new CMake configure. Runtime timing storage is
+preallocated for ordinary requests; longer-lived profiling can grow the pool
+without an explicit stream or event synchronization. Any such allocation cost
+is part of the instrumented execution. Raw samples distinguish request wall time,
+production stage GPU time, and semantic base/draft forward GPU time recorded by
+the runtime or decoder; do not add these nested times together. Each forward
+covers the caller's `prepare` and `execute` calls; sampling and subsequent cache
+bookkeeping remain in the enclosing stage. Forward samples
+use `forward/base` or `forward/draft`, retain their parent stage and actual
+shapes, and carry a round-local `forward_index`; stage samples use -1.
+`query_tokens` counts physical forward rows, including padding. An empty
+`past_lengths` means no fresh host-side lengths are available, as in GPU-prepared
+speculative steps. Profiling does not add a device readback to obtain them. Both
+sample kinds share the `invocation_gpu_ms` summary. The report does not expose
+engine filenames as independent timing categories. An observed `graph_capture`
+stage marks the request non-steady, preserving its wall time separately.
+Low-level CUDA graph replay and fallback are inspected with `nsys`, not inferred
+from these samples. `iterations` always means full-request repetitions after
+warmup. Request throughput aggregates all batch entries;
+component timings are milliseconds per invocation. Acceptance samples mark
+`provenance_exact`: forced-K accepted, bonus and output counts are exact, while
+natural counts retain the runtime's existing estimate (including its
+final-budget/bonus convention). `proposed_drafts_exact` is false for tree
+topologies built by DDTree (MTP, Gemma4 MTP, DFlash and DSpark trees), whose
+`proposed_drafts` is the verify-tree capacity rather than the valid proposal
+nodes.
+Input/output FNV-1a64 fingerprints are reproducibility diagnostics, not
+cryptographic integrity guarantees. Input-file fingerprints do not cover the
+contents of referenced media files.
+
+Use `--noGpuTiming` for wall-time/NVTX measurements and `nsys` for kernel
+analysis; acceptance samples are still recorded without CUDA-event timing. TensorRT layer profiling (`--profile`, `--extractLayerInfo`) and old
+standalone component modes have been removed. `llm_inference --dumpProfile`
+continues to provide the shared runtime profiling information. Historical
+results below describe their original SDK's component benchmark and must not
+be compared directly with the new request/stage timing boundaries.
 
 ## v0.10.0 Results
 
@@ -1246,7 +1341,7 @@ The v0.8.0 release benchmarks use `llm_bench` for synthetic component timing. Th
 
 ```bash
 # Prefill throughput
-./build/examples/llm/llm_bench \
+./build/bin/llm_bench \
     --engine-dir <llm_engine_dir> \
     --mode prefill \
     --batch-size <batch_size> \
@@ -1256,7 +1351,7 @@ The v0.8.0 release benchmarks use `llm_bench` for synthetic component timing. Th
     --profile
 
 # Decode throughput
-./build/examples/llm/llm_bench \
+./build/bin/llm_bench \
     --engine-dir <llm_engine_dir> \
     --mode decode \
     --batch-size <batch_size> \
@@ -1266,12 +1361,12 @@ The v0.8.0 release benchmarks use `llm_bench` for synthetic component timing. Th
     --profile
 
 # Speculative decoding component timing
-./build/examples/llm/llm_bench --engine-dir <engine_dir> --mode spec_draft_prefill --batch-size <batch_size> --input-len <input_len> --warmup 2 --iterations 10 --profile
-./build/examples/llm/llm_bench --engine-dir <engine_dir> --mode spec_draft_proposal --batch-size <batch_size> --draft-tree-size <draft_tree_size> --past-kv-len <past_kv_len> --warmup 2 --iterations 10 --profile
-./build/examples/llm/llm_bench --engine-dir <engine_dir> --mode spec_verify --batch-size <batch_size> --verify-tree-size <verify_tree_size> --past-kv-len <past_kv_len> --warmup 2 --iterations 10 --profile
+./build/bin/llm_bench --engine-dir <engine_dir> --mode spec_draft_prefill --batch-size <batch_size> --input-len <input_len> --warmup 2 --iterations 10 --profile
+./build/bin/llm_bench --engine-dir <engine_dir> --mode spec_draft_proposal --batch-size <batch_size> --draft-tree-size <draft_tree_size> --past-kv-len <past_kv_len> --warmup 2 --iterations 10 --profile
+./build/bin/llm_bench --engine-dir <engine_dir> --mode spec_verify --batch-size <batch_size> --verify-tree-size <verify_tree_size> --past-kv-len <past_kv_len> --warmup 2 --iterations 10 --profile
 
 # Visual encoder timing
-./build/examples/llm/llm_bench --engine-dir <visual_engine_dir> --mode visual --image-size <height>x<width> --warmup 2 --iterations 10 --profile
+./build/bin/llm_bench --engine-dir <visual_engine_dir> --mode visual --image-size <height>x<width> --warmup 2 --iterations 10 --profile
 ```
 
 ### `llm_bench` Prefill Performance (Jetson AGX Thor Only)

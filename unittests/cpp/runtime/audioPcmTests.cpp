@@ -55,7 +55,7 @@ std::vector<float> makeSignal(int64_t numSamples)
 std::shared_ptr<rt::Tensor> borrowSamples(std::vector<float>& samples)
 {
     return std::make_shared<rt::Tensor>(samples.data(), rt::Coords{static_cast<int64_t>(samples.size())},
-        rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT);
+        rt::DeviceType::kCPU, trt_edgellm::DataType::kFLOAT);
 }
 
 } // anonymous namespace
@@ -97,14 +97,14 @@ TEST(AudioPcmTest, ExtractionLeavesBorrowedSamplesUntouched)
 TEST(AudioPcmTest, WrapPcmRejectsInvalidArguments)
 {
     std::vector<float> samples = makeSignal(16);
-    auto view = [&samples](rt::Coords const& shape, rt::DeviceType device, nvinfer1::DataType type) {
+    auto view = [&samples](rt::Coords const& shape, rt::DeviceType device, trt_edgellm::DataType type) {
         return std::make_shared<rt::Tensor>(samples.data(), shape, device, type);
     };
-    auto owned = [](rt::Coords const& shape, rt::DeviceType device, nvinfer1::DataType type) {
+    auto owned = [](rt::Coords const& shape, rt::DeviceType device, trt_edgellm::DataType type) {
         return std::make_shared<rt::Tensor>(shape, device, type);
     };
     constexpr auto kCpu = rt::DeviceType::kCPU;
-    constexpr auto kFloat = nvinfer1::DataType::kFLOAT;
+    constexpr auto kFloat = trt_edgellm::DataType::kFLOAT;
     constexpr int64_t kTooMany = static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1;
 
     EXPECT_THROW(rt::audioUtils::wrapPcm(nullptr, kSampleRate), std::runtime_error);
@@ -116,7 +116,7 @@ TEST(AudioPcmTest, WrapPcmRejectsInvalidArguments)
     EXPECT_THROW(rt::audioUtils::wrapPcm(view({kTooMany}, kCpu, kFloat), kSampleRate), std::runtime_error);
     EXPECT_THROW(rt::audioUtils::wrapPcm(owned({16}, rt::DeviceType::kGPU, kFloat), kSampleRate), std::runtime_error);
     EXPECT_THROW(
-        rt::audioUtils::wrapPcm(owned({16}, kCpu, nvinfer1::DataType::kHALF), kSampleRate), std::runtime_error);
+        rt::audioUtils::wrapPcm(owned({16}, kCpu, trt_edgellm::DataType::kHALF), kSampleRate), std::runtime_error);
     EXPECT_THROW(
         rt::audioUtils::wrapPcm(std::make_shared<rt::Tensor>(nullptr, rt::Coords{16}, kCpu, kFloat), kSampleRate),
         std::runtime_error);

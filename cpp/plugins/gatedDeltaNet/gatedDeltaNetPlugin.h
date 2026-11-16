@@ -31,7 +31,7 @@ namespace plugins
 //! \brief TensorRT plugin for Gated Delta Net (V3 — IPluginV3).
 //!
 //! Registered as "gated_delta_net". The execution phase selects prefill, decode,
-//! linear speculative verify, or DDTree verify.
+//! or speculative verification; parent/depth inputs describe verification ancestry.
 //! Requires SM80+ and K=V=128.
 //!
 //! \par Dimension notation
@@ -62,10 +62,8 @@ namespace plugins
 //!   [0]  o               [tokens, hv, v]        FP16 output
 //!   [1]  h0_out          [resident_rows, hv, k, v] FP32 aliased resident-state pool
 //!   [2]  intermediate_states [tokens, hv, k, v] FP32 (spec-verify only, optional)
-//!        Per-step recurrent state cache for linear speculative-decoding rollback.
-//!        Present when spec-verify state tracking is enabled.
-//!        DDTree verify keeps h0_source read-only and stores replay data here
-//!        for accepted-state commit.
+//!        Chain and tree verification keep h0_source read-only and store chunk replay
+//!        data plus scratch here for accepted-state commit.
 class GatedDeltaNetPlugin : public nvinfer1::IPluginV3,
                             public nvinfer1::IPluginV3OneCore,
                             public nvinfer1::IPluginV3OneBuildV2,
@@ -76,7 +74,7 @@ public:
     //! \param kDim         Head dimension K (must be 128 for CuTe DSL kernel)
     //! \param vDim         Head dimension V (must be 128 for CuTe DSL kernel)
     GatedDeltaNetPlugin(std::string const& name, int32_t kDim = 128, int32_t vDim = 128,
-        bool useSpecVerifyState = false, bool useDDTree = false, bool useDiffusionState = false);
+        bool useSpecVerifyState = false, bool useDiffusionState = false);
     GatedDeltaNetPlugin(std::string const& name, nvinfer1::PluginFieldCollection const* fc);
 
     GatedDeltaNetPlugin() = delete;
@@ -118,16 +116,32 @@ public:
     void setPluginNamespace(char const* pluginNamespace) noexcept;
 
 private:
+    //! Phase 8 needs a layer without spec-verify or diffusion state and a packed-varlen prefill kernel for
+    //! (mKDim, mVDim) on mSMVersion. Decides both the phase 8 workspace reservation and enqueue acceptance.
+    bool supportsCompactPhase() const noexcept;
+
+    //! This layer's name and shape for error logs (describePluginLayer).
+    std::string describeLayer() const;
+
+    //! Phase 8: varlen prefill on rows [0, T_p) when Np > 0, single-step decode on rows [T_p, T).
+    int32_t enqueueCompact(nvinfer1::PluginTensorDesc const* inputDesc, nvinfer1::PluginTensorDesc const* outputDesc,
+        void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream) noexcept;
+
+    //! Single-step decode of \p numSequences rows starting at token row \p firstRow and sequence \p firstSequence;
+    //! phase 3 passes (0, 0, N), phase 8 passes (T_p, Np, Nd). For a nonzero start the a/b gates, state indices and
+    //! context lengths are copied to \p alignedMetadata (compactDecodeMetadataBytes).
+    int32_t enqueueDecodeRows(void const* const* inputs, void* const* outputs, int32_t firstRow, int32_t firstSequence,
+        int32_t numSequences, int32_t h, int32_t hv, int32_t kDim, int32_t vDim, int32_t statePoolRows,
+        void* alignedMetadata, cudaStream_t stream) const noexcept;
+
     std::string mLayerName;
     std::string mNamespace;
     int32_t mKDim{128};              //!< Head dimension K (kernel supports 128 only)
     int32_t mVDim{128};              //!< Head dimension V (kernel supports 128 only)
     bool mUseSpecVerifyState{false}; //!< Enable spec-verify intermediate_states output
-    bool mUseDDTree{false};          //!< Enable DDTree parent/depth metadata inputs for tree-state execution.
     bool mUseDiffusionState{false};  //!< Enable transactional diffusion denoise/commit phases.
     int32_t mSMVersion{0};           //!< Captured device SM version used for build-time capability checks
     int32_t mUseSpecVerifyStateField{0};
-    int32_t mUseDDTreeField{0};
     int32_t mUseDiffusionStateField{0};
 
     std::vector<nvinfer1::PluginField> mDataToSerialize;

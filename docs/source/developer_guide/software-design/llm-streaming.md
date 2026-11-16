@@ -134,7 +134,7 @@ When `request.streamChannels.empty()`, `slotStreams[i].channel` is null, all fiv
 | `cpp/runtime/llmInferenceRuntime.{h,cpp}` | Wires streaming hooks into `handleRequest` |
 | `cpp/common/utf8.{h,cpp}` | `sanitizeUtf8Streaming`, `sanitizeUtf8Flush`, + shared byte-level primitives |
 | `cpp/tokenizer/tokenizer.{h,cpp}` | `idToPiece`, `emitDelta`, `emitDeltaFlush`; `decode` now sanitizes |
-| `examples/llm/llm_stream.cpp` | Interactive demo (JSON input, live chunk printing, hotkey control) |
+| `examples/cpp/llm_stream.cpp` | Interactive demo (JSON input, live chunk printing, hotkey control) |
 | `unittests/cpp/runtime/streamingTests.cpp` | CPU-only invariant tests |
 | `tests/defs/test_server_pipeline.py` | Engine-backed streaming scenarios |
 

@@ -164,7 +164,9 @@ def test_insert_lora_rejects_when_every_gemm_is_skipped(tmp_path, graph):
     "base_model.model.model.language_model.layers.0.self_attn.q_proj.lora_A.weight",
     "base_model.model.language_model.model.layers.0.self_attn.q_proj.lora_A.weight",
     "base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight",
+    "base_model.model.vlm.model.language_model.layers.0.self_attn.q_proj.lora_A.weight",
 ])
 def test_adapter_names_match_exported_llm_bindings(key):
+    """VLM adapter keys map onto the exported text decoder's LoRA bindings."""
     assert (_process_tensor_name(key) ==
             "model.layers.0.self_attn.q_proj.lora_A.weight")

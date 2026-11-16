@@ -252,13 +252,13 @@ RunResult runCase(CaseData const& data)
     using rt::DeviceType;
     int32_t const numTokens = data.config.numTokens;
     int32_t const numExperts = data.config.numExperts;
-    rt::Tensor hiddenStates({numTokens, kHIDDEN_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor topkIds({numTokens, kTOP_K}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor topkWeights({numTokens, kTOP_K}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor fc1Weights({numExperts, data.fc1Rows, kHIDDEN_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor hiddenStates({numTokens, kHIDDEN_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor topkIds({numTokens, kTOP_K}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor topkWeights({numTokens, kTOP_K}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor fc1Weights({numExperts, data.fc1Rows, kHIDDEN_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor fc2Weights(
-        {numExperts, kHIDDEN_SIZE, data.config.interSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor output({numTokens, kHIDDEN_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        {numExperts, kHIDDEN_SIZE, data.config.interSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor output({numTokens, kHIDDEN_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     CUDA_CHECK(cudaMemcpy(hiddenStates.rawPointer(), data.hiddenStates.data(),
         data.hiddenStates.size() * sizeof(__half), cudaMemcpyHostToDevice));
@@ -274,7 +274,7 @@ RunResult runCase(CaseData const& data)
     size_t const workspaceBytes = CuteDslF16MoeRunner::getWorkspaceSize(
         numTokens * kTOP_K, numExperts, kHIDDEN_SIZE, data.config.interSize, data.config.activationType);
     EXPECT_GT(workspaceBytes, 0U);
-    rt::Tensor workspace({static_cast<int64_t>(workspaceBytes)}, DeviceType::kGPU, nvinfer1::DataType::kINT8);
+    rt::Tensor workspace({static_cast<int64_t>(workspaceBytes)}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     CuteDslF16MoeParams params{};
     params.numTokens = numTokens;
@@ -351,25 +351,27 @@ void validateRoutingCase(int32_t numTokens, int32_t topK, int32_t numExperts)
         expectedOffsets[expert + 1] = expectedOffsets[expert] + expectedCounts[expert];
     }
 
-    rt::Tensor topkIds({numTokens, topK}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor expertCounts({numExperts}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor expertOffsets({numExperts + 1}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor expertWriteOffsets({numExperts}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor sortedToExpanded({routedRows}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor expandedToSorted({routedRows}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor fc1ProblemShapes({numExperts, kSHAPE_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor fc1Strides({numExperts, kSTRIDE_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor fc1Addresses({numExperts, kADDRESS_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT64);
-    rt::Tensor fc2ProblemShapes({numExperts, kSHAPE_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor fc2Strides({numExperts, kSTRIDE_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor fc2Addresses({numExperts, kADDRESS_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT64);
-    rt::Tensor gatheredInput({routedRows, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor fc1Weights({numExperts, kTEST_FC1_N, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor rawFc1({routedRows, kTEST_FC1_N}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor activatedFc1({routedRows, kTEST_INTER_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor topkIds({numTokens, topK}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor expertCounts({numExperts}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor expertOffsets({numExperts + 1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor expertWriteOffsets({numExperts}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor sortedToExpanded({routedRows}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor expandedToSorted({routedRows}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor fc1ProblemShapes(
+        {numExperts, kSHAPE_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor fc1Strides({numExperts, kSTRIDE_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor fc1Addresses({numExperts, kADDRESS_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT64);
+    rt::Tensor fc2ProblemShapes(
+        {numExperts, kSHAPE_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor fc2Strides({numExperts, kSTRIDE_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor fc2Addresses({numExperts, kADDRESS_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT64);
+    rt::Tensor gatheredInput({routedRows, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor fc1Weights({numExperts, kTEST_FC1_N, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor rawFc1({routedRows, kTEST_FC1_N}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor activatedFc1({routedRows, kTEST_INTER_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor fc2Weights(
-        {numExperts, kTEST_HIDDEN_SIZE, kTEST_INTER_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor routedFc2({routedRows, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        {numExperts, kTEST_HIDDEN_SIZE, kTEST_INTER_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor routedFc2({routedRows, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     CUDA_CHECK(cudaMemcpy(
         topkIds.rawPointer(), topkIdsHost.data(), topkIdsHost.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
@@ -459,31 +461,34 @@ TEST(F16MoeCuteDslTest, routingAndDualGemmMetadata)
     std::vector<int32_t> const expectedOffsets{0, 3, 4, 9, 9, 9, 12};
     ASSERT_EQ(topkIdsHost.size(), static_cast<size_t>(kROUTED_ROWS));
 
-    rt::Tensor topkIds({kTEST_NUM_TOKENS, kTEST_TOP_K}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor expertCounts({kTEST_NUM_EXPERTS}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor expertOffsets({kTEST_NUM_EXPERTS + 1}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor expertWriteOffsets({kTEST_NUM_EXPERTS}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor sortedToExpanded({kROUTED_ROWS}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor expandedToSorted({kROUTED_ROWS}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor topkIds({kTEST_NUM_TOKENS, kTEST_TOP_K}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor expertCounts({kTEST_NUM_EXPERTS}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor expertOffsets({kTEST_NUM_EXPERTS + 1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor expertWriteOffsets({kTEST_NUM_EXPERTS}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor sortedToExpanded({kROUTED_ROWS}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor expandedToSorted({kROUTED_ROWS}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
     rt::Tensor fc1ProblemShapes(
-        {kTEST_NUM_EXPERTS, kSHAPE_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor fc1Strides({kTEST_NUM_EXPERTS, kSTRIDE_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        {kTEST_NUM_EXPERTS, kSHAPE_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor fc1Strides(
+        {kTEST_NUM_EXPERTS, kSTRIDE_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     rt::Tensor fc1Addresses(
-        {kTEST_NUM_EXPERTS, kADDRESS_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT64);
+        {kTEST_NUM_EXPERTS, kADDRESS_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT64);
     rt::Tensor fc2ProblemShapes(
-        {kTEST_NUM_EXPERTS, kSHAPE_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor fc2Strides({kTEST_NUM_EXPERTS, kSTRIDE_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        {kTEST_NUM_EXPERTS, kSHAPE_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor fc2Strides(
+        {kTEST_NUM_EXPERTS, kSTRIDE_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     rt::Tensor fc2Addresses(
-        {kTEST_NUM_EXPERTS, kADDRESS_VALUES_PER_EXPERT}, DeviceType::kGPU, nvinfer1::DataType::kINT64);
+        {kTEST_NUM_EXPERTS, kADDRESS_VALUES_PER_EXPERT}, DeviceType::kGPU, trt_edgellm::DataType::kINT64);
 
-    rt::Tensor gatheredInput({kROUTED_ROWS, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor fc1Weights({kTEST_NUM_EXPERTS, kFC1_N, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor rawFc1({kROUTED_ROWS, kFC1_N}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor activatedFc1({kROUTED_ROWS, kTEST_INTER_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor gatheredInput({kROUTED_ROWS, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor fc1Weights(
+        {kTEST_NUM_EXPERTS, kFC1_N, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor rawFc1({kROUTED_ROWS, kFC1_N}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor activatedFc1({kROUTED_ROWS, kTEST_INTER_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::Tensor fc2Weights(
-        {kTEST_NUM_EXPERTS, kTEST_HIDDEN_SIZE, kTEST_INTER_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor routedFc2({kROUTED_ROWS, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        {kTEST_NUM_EXPERTS, kTEST_HIDDEN_SIZE, kTEST_INTER_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor routedFc2({kROUTED_ROWS, kTEST_HIDDEN_SIZE}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     CUDA_CHECK(cudaMemcpy(
         topkIds.rawPointer(), topkIdsHost.data(), topkIdsHost.size() * sizeof(int32_t), cudaMemcpyHostToDevice));

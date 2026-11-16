@@ -19,35 +19,17 @@
 
 #include "common/pagedKvTypes.h"
 #include "common/stringUtils.h"
-#include "kernels/PluginJitKernels/pluginJitCompileCache.h"
 #include "kernels/PluginJitKernels/pluginJitCompiler.h"
 #include "qsaIndexerKernels.h"
 
 #include <stdexcept>
 #include <string>
-#include <type_traits>
 #include <vector>
 
 namespace trt_edgellm
 {
 namespace
 {
-
-struct QsaIndexerJitKeyHasher
-{
-    size_t operator()(QsaIndexerJitKey const& key) const noexcept
-    {
-        auto mix = [](size_t hash, size_t value) noexcept {
-            constexpr size_t kPRIME{0x100000001B3ULL};
-            return (hash ^ value) * kPRIME;
-        };
-
-        using DataTypeValue = std::underlying_type_t<QsaIndexerJitDataType>;
-        size_t hash{0xCBF29CE484222325ULL};
-        hash = mix(hash, static_cast<size_t>(key.sm));
-        return mix(hash, static_cast<size_t>(static_cast<DataTypeValue>(key.dataType)));
-    }
-};
 
 void validateKey(QsaIndexerJitKey const& key)
 {
@@ -122,15 +104,9 @@ bool canCompileQsaIndexerJitKernel(QsaIndexerJitKey const& key) noexcept
 
 QsaIndexerJitKernel compileQsaIndexerJitKernel(QsaIndexerJitKey const& key)
 {
-    static PluginJitCompileCache<QsaIndexerJitKey, QsaIndexerJitKernel, QsaIndexerJitKeyHasher> sCache;
-    return sCache.getOrCompile(key, [&key] {
-        validateKey(key);
-        QsaIndexerJitKernel kernel;
-        kernel.key = key;
-        kernel.cubin = compilePluginJitKernel(
-            PluginJitProgram::kQSA_INDEXER, buildNvrtcOptions(key), "QSA indexer kernels for " + keyToString(key));
-        return kernel;
-    });
+    validateKey(key);
+    return getOrCompilePluginJitKernel(
+        PluginJitProgram::kQSA_INDEXER, key, buildNvrtcOptions(key), "QSA indexer kernels for " + keyToString(key));
 }
 
 } // namespace trt_edgellm

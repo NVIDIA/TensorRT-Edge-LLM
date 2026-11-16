@@ -42,6 +42,7 @@ struct AudioBuilderConfig
     int64_t minTimeSteps{100};         //!< Minimum audio time steps
     int64_t maxTimeSteps{6000};        //!< Maximum audio time steps
     bool useTrtNativeAudioAttn{false}; //!< Use TRT IAttention
+    bool useAudioAttnPlugin{false};    //!< Route audio attention through ViTAttentionPlugin
 
     // Code2Wav profile config (used when building code2wav)
     int64_t minCodeLen{1};    //!< Minimum code sequence length in frames
@@ -147,8 +148,10 @@ private:
 
     //! Set up Qwen3-Omni audio encoder profile.
     //! @param profile Optimization profile to configure
+    //! @param network Parsed network; its inputs select the dense-mask or ragged-attention profile
     //! @return true if setup was successful, false otherwise
-    bool setupQwen3OmniAudioEncoderProfile(nvinfer1::IOptimizationProfile& profile);
+    bool setupQwen3OmniAudioEncoderProfile(
+        nvinfer1::IOptimizationProfile& profile, nvinfer1::INetworkDefinition const& network);
 
     //! Set up Nemotron-Omni Parakeet audio encoder profile.
     //! Configures inputs: input_features [batch, seq_len, mel_bins] + attention_mask [batch, seq_len].
@@ -199,8 +202,11 @@ private:
 
     // Model-specific configuration extracted from config.json (initialized to 0, must be read)
     // Audio encoder config (from audio_config)
-    int32_t mMelBins{0};         //!< Number of Mel-frequency bins
-    int32_t mNWindowDim{0};      //!< Window dimension for feature tensor (n_window * 2)
+    int32_t mMelBins{0};    //!< Number of Mel-frequency bins
+    int32_t mNWindowDim{0}; //!< Window dimension for feature tensor (n_window * 2)
+    //! Audio encoder n_window_infer. The default must track Qwen3OmniAudioRunner's, or the
+    //! profile would size cu_seqlens for a different window partition than the runtime builds.
+    int32_t mNWindowInfer{200};
     int32_t mAudioFeatureDim{0}; //!< Raw PCM samples per frame for Gemma4 Unified
 
     // Code2Wav config (from code2wav_config)

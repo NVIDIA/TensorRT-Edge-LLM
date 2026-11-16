@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+gemma @ git+https://github.com/google-deepmind/gemma.git@0f7e7420e84c6789d96ba465608d2a008ecb443d
+safetensors==0.8.0
+torch==2.14.0

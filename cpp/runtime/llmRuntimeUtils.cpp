@@ -19,21 +19,23 @@
 
 #include "common/checkMacros.h"
 #include "common/logger.h"
+#include "common/mmapReader.h"
 #include "common/safetensorsUtils.h"
 #include "common/stringUtils.h"
 #include "kernels/posEncoding/initializeCosSinCache.h"
 #include "runtime/state/decodingInferenceContext.h"
 #include "runtime/streaming.h"
+#include "sampler/sampling.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
 
-using namespace nvinfer1;
 namespace trt_edgellm
 {
 namespace rt
@@ -278,26 +280,16 @@ bool initializeYarnRopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& co
         return false;
     }
 
-    std::vector<float> invFreq;
-    float mscale = 1.0F;
-    if (!computeYarnInvFreq(config, rotaryDim, invFreq, mscale))
-    {
-        return false;
-    }
-    int64_t const halfDim = rotaryDim / 2;
-
     try
     {
-        rt::Tensor invFreqDevice({halfDim}, DeviceType::kGPU, DataType::kFLOAT, "YarnRope::invFreq");
-        CUDA_CHECK(cudaMemcpyAsync(invFreqDevice.rawPointer(), invFreq.data(),
-            static_cast<size_t>(halfDim) * sizeof(float), cudaMemcpyHostToDevice, stream));
-        kernel::initializeYarnCosSin(cosSinCache.dataPointer<float>(), invFreqDevice.dataPointer<float>(), mscale,
-            static_cast<int32_t>(rotaryDim), static_cast<int32_t>(maxLength), stream);
+        rt::Tensor invFreqDevice = uploadYarnInvFreq(config, rotaryDim, stream);
+        kernel::initializeYarnCosSin(cosSinCache.dataPointer<float>(), invFreqDevice.dataPointer<float>(),
+            config.yarn->mscale, static_cast<int32_t>(rotaryDim), static_cast<int32_t>(maxLength), stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
     }
     catch (std::exception const& e)
     {
-        LOG_ERROR("initializeYarnCosSin kernel launch failed: %s", e.what());
+        LOG_ERROR("YaRN RoPE cache initialization failed: %s", e.what());
         return false;
     }
     return true;
@@ -351,7 +343,7 @@ std::string formatRopeConfig(RopeConfig const& config)
         ss << "LongRopeConfig:" << "  originalMaxPositionEmbeddings: "
            << config.longRope.value().originalMaxPositionEmbeddings;
     }
-    if (config.type == RopeType::kYarn && config.yarn.has_value())
+    if (config.yarn.has_value())
     {
         ss << "  YarnConfig:" << "  factor: " << config.yarn->factor
            << "  originalMaxPositionEmbeddings: " << config.yarn->originalMaxPositionEmbeddings
@@ -394,13 +386,17 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
             ropeTypeIt = ropeScalingIt->find("rope_type");
         }
         auto mropeSectionIt = ropeScalingIt->find("mrope_section");
+        bool isYarn{false};
         if (ropeTypeIt != ropeScalingIt->end())
         {
             std::string const ropeTypeStr = ropeTypeIt->get<std::string>();
-            if (ropeTypeStr == "mrope" || (ropeTypeStr == "default" && mropeSectionIt != ropeScalingIt->end()))
+            isYarn = ropeTypeStr == "yarn";
+            if (ropeTypeStr == "mrope"
+                || ((ropeTypeStr == "default" || isYarn) && mropeSectionIt != ropeScalingIt->end()))
             {
                 // Accept both the legacy HF value ("mrope") and the newer
                 // `Qwen2_5_VLVisionConfig` convention ("default" + mrope_section).
+                // "yarn" + mrope_section (Qwen3.5) is MRoPE over YaRN-scaled frequencies.
                 // Talker uses same config (3D position_ids + interleaved MRoPE) as in PyTorch.
                 ropeConfig.type = RopeType::kMRope;
                 if (mropeSectionIt != ropeScalingIt->end())
@@ -442,7 +438,7 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
             {
                 ropeConfig.type = RopeType::kLongRope;
             }
-            else if (ropeTypeStr == "yarn")
+            else if (isYarn)
             {
                 ropeConfig.type = RopeType::kYarn;
             }
@@ -514,7 +510,7 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
             ropeConfig.llama3 = params;
         }
 
-        if (ropeConfig.type == RopeType::kYarn)
+        if (isYarn)
         {
             YarnParams params{};
 
@@ -703,6 +699,18 @@ bool initializeRopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& config
     return true;
 }
 
+Tensor uploadYarnInvFreq(RopeConfig const& config, int64_t rotaryDim, cudaStream_t stream)
+{
+    std::vector<float> invFreq;
+    float mscale{};
+    check::check(computeYarnInvFreq(config, rotaryDim, invFreq, mscale), "Invalid YaRN RoPE parameters.");
+    Tensor invFreqDevice({rotaryDim / 2}, DeviceType::kGPU, DataType::kFLOAT, "YarnRope::invFreq");
+    // A pageable source is staged before the call returns, so invFreq may go out of scope.
+    CUDA_CHECK(cudaMemcpyAsync(
+        invFreqDevice.rawPointer(), invFreq.data(), invFreq.size() * sizeof(float), cudaMemcpyHostToDevice, stream));
+    return invFreqDevice;
+}
+
 bool initializeNopeCosSinCache(rt::Tensor& cosSinCache, cudaStream_t stream) noexcept
 {
     if (cosSinCache.getShape().getNumDims() != 3 || cosSinCache.getDataType() != DataType::kFLOAT)
@@ -832,7 +840,9 @@ template void compactVector<std::unordered_map<int32_t, float>>(
     std::vector<int32_t> const&, std::vector<std::unordered_map<int32_t, float>>&);
 template void compactVector<SlotStreamState>(std::vector<int32_t> const&, std::vector<SlotStreamState>&);
 template void compactVector<LogprobsSlot>(std::vector<int32_t> const&, std::vector<LogprobsSlot>&);
+template void compactVector<JumpForwardSlotStats>(std::vector<int32_t> const&, std::vector<JumpForwardSlotStats>&);
 template void compactVector<ResidentRef>(std::vector<int32_t> const&, std::vector<ResidentRef>&);
+template void compactVector<RowSamplingParams>(std::vector<int32_t> const&, std::vector<RowSamplingParams>&);
 
 // Build batch mapping from finished states
 // Returns a vector mapping old batch indices to new indices (-1 for evicted batches)
@@ -862,31 +872,77 @@ std::vector<int32_t> buildBatchMapping(std::vector<int8_t> const& finishedStates
 // Embedding Loading Utilities
 //=============================================================================
 
-EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cudaStream_t stream)
+namespace
 {
+
+Tensor* findEmbeddingTensor(std::vector<Tensor>& tensors, std::string_view name)
+{
+    auto const found = std::find_if(
+        tensors.begin(), tensors.end(), [name](Tensor const& tensor) { return tensor.getName() == name; });
+    return found == tensors.end() ? nullptr : &*found;
+}
+
+kernel::EmbeddingTableDescriptor parseNvfp4EmbeddingDescriptor(nlohmann::json const& value)
+{
+    kernel::EmbeddingTableDescriptor descriptor;
+    descriptor.format = kernel::EmbeddingTableFormat::kNVFP4;
+    descriptor.logicalShape = Coords{value.at("logical_shape").get<std::vector<int64_t>>()};
+    descriptor.groupSize = value.at("group_size").get<int64_t>();
+    descriptor.modelOutputScale = value.value("model_output_scale", 1.0F);
+    return descriptor;
+}
+
+} // namespace
+
+EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cudaStream_t stream, bool offload)
+{
+    LOG_INFO("Loading embedding artifact into %s memory", offload ? "pinned host" : "device");
     ELLM_CHECK(std::filesystem::exists(embeddingPath),
         format::fmtstr("Embedding file not found: %s", embeddingPath.string().c_str()));
 
-    std::vector<rt::Tensor> tensors;
-    ELLM_CHECK(safetensors::loadSafetensors(embeddingPath, tensors, stream),
-        format::fmtstr("Failed to load embedding file: %s", embeddingPath.string().c_str()));
-
-    // Find tensors by name
-    rt::Tensor* embeddingPtr = nullptr;
-    rt::Tensor* scalesPtr = nullptr;
-
-    for (auto& tensor : tensors)
+    file_io::MmapReader reader(embeddingPath.string());
+    safetensors::FileMetadata const fileMetadata
+        = safetensors::parseMetadata(reader.getData(), reader.getSize(), embeddingPath.string());
+    auto const descriptorMetadata = fileMetadata.metadata.find(kEmbeddingDescriptorMetadataKey);
+    std::optional<kernel::EmbeddingTableDescriptor> nvfp4Descriptor;
+    if (descriptorMetadata != fileMetadata.metadata.end())
     {
-        if (tensor.getName() == "embedding")
-        {
-            embeddingPtr = &tensor;
-        }
-        else if (tensor.getName() == "embedding_scale")
-        {
-            scalesPtr = &tensor;
-        }
+        nvfp4Descriptor = parseNvfp4EmbeddingDescriptor(nlohmann::json::parse(descriptorMetadata->second));
     }
 
+    std::vector<rt::Tensor> tensors;
+    ELLM_CHECK(
+        safetensors::loadSafetensors(embeddingPath, tensors, stream, offload ? DeviceType::kCPU : DeviceType::kGPU),
+        format::fmtstr("Failed to load embedding file: %s", embeddingPath.string().c_str()));
+
+    rt::Tensor* embeddingPtr = findEmbeddingTensor(tensors, kEmbeddingTensorName);
+    if (nvfp4Descriptor.has_value())
+    {
+        rt::Tensor* blockScalePtr = findEmbeddingTensor(tensors, kNvfp4EmbeddingBlockScaleTensorName);
+        rt::Tensor* multiplierScalePtr = findEmbeddingTensor(tensors, kNvfp4EmbeddingMultiplierScaleTensorName);
+        ELLM_CHECK(embeddingPtr != nullptr && blockScalePtr != nullptr && multiplierScalePtr != nullptr,
+            "NVFP4 embedding requires table, block scale, and multiplier scale tensors");
+
+        nvfp4Descriptor->packedShape = embeddingPtr->getShape();
+        nvfp4Descriptor->packedDataType = embeddingPtr->getDataType();
+        nvfp4Descriptor->scaleShape = blockScalePtr->getShape();
+        nvfp4Descriptor->scaleDataType = blockScalePtr->getDataType();
+        ELLM_CHECK(
+            multiplierScalePtr->getDataType() == DataType::kFLOAT && multiplierScalePtr->getShape().volume() == 1,
+            "NVFP4 embedding multiplier scale must be an FP32 scalar");
+        CUDA_CHECK(cudaMemcpyAsync(&nvfp4Descriptor->multiplierGlobalScale, multiplierScalePtr->rawPointer(),
+            sizeof(float), cudaMemcpyDefault, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        EmbeddingData result;
+        result.table = std::move(*embeddingPtr);
+        result.tableScalingFactor = std::move(*blockScalePtr);
+        result.descriptor = std::move(*nvfp4Descriptor);
+        LOG_INFO("Loaded packed NVFP4 embedding");
+        return result;
+    }
+
+    rt::Tensor* scalesPtr = findEmbeddingTensor(tensors, kFp8EmbeddingScaleTensorName);
     ELLM_CHECK(embeddingPtr != nullptr,
         format::fmtstr("Embedding file missing 'embedding' tensor: %s", embeddingPath.string().c_str()));
 
@@ -898,14 +954,12 @@ EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cud
 
     EmbeddingData result;
 
-    // Detect FP8 vs FP16 by checking dtype
-    if (embeddingPtr->getDataType() == nvinfer1::DataType::kFP8)
+    if (embeddingPtr->getDataType() == trt_edgellm::DataType::kFP8)
     {
-        // FP8 format - requires scales
         ELLM_CHECK(scalesPtr != nullptr,
             format::fmtstr("FP8 embedding requires 'embedding_scale' tensor: %s", embeddingPath.string().c_str()));
 
-        ELLM_CHECK(scalesPtr->getDataType() == nvinfer1::DataType::kFLOAT,
+        ELLM_CHECK(scalesPtr->getDataType() == trt_edgellm::DataType::kFLOAT,
             format::fmtstr("embedding_scale must have FP32 dtype, got %d", static_cast<int>(scalesPtr->getDataType())));
 
         ELLM_CHECK(scalesPtr->getShape().getNumDims() == 2,
@@ -914,13 +968,10 @@ EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cud
         int64_t scaleVocabSize = scalesPtr->getShape()[0];
         int64_t numGroups = scalesPtr->getShape()[1];
 
-        ELLM_CHECK(vocabSize == scaleVocabSize,
-            format::fmtstr("Vocab size mismatch: embedding has %ld, scales has %ld", vocabSize, scaleVocabSize));
+        ELLM_CHECK(scaleVocabSize > 0 && vocabSize % scaleVocabSize == 0,
+            format::fmtstr("Embedding vocab size %ld must be divisible by scale rows %ld", vocabSize, scaleVocabSize));
 
-        ELLM_CHECK(hiddenSize % kFP8EmbeddingBlockSize == 0,
-            format::fmtstr("Hidden size %ld must be divisible by block size %ld", hiddenSize, kFP8EmbeddingBlockSize));
-
-        int64_t expectedNumGroups = hiddenSize / kFP8EmbeddingBlockSize;
+        int64_t expectedNumGroups = scaleVocabSize == 1 && numGroups == 1 ? 1 : hiddenSize / kFP8EmbeddingBlockSize;
         ELLM_CHECK(numGroups == expectedNumGroups,
             format::fmtstr("Scale groups mismatch: expected %ld, got %ld", expectedNumGroups, numGroups));
 
@@ -932,7 +983,6 @@ EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cud
     }
     else
     {
-        // FP16 format
         LOG_INFO("Loaded FP16 embedding: [%ld, %ld]", vocabSize, hiddenSize);
 
         result.table = std::move(*embeddingPtr);
@@ -964,7 +1014,7 @@ rt::Tensor generateMultimodalIndices(
     int64_t const batchSize = shape[0];
     int64_t const seqLen = shape[1];
 
-    rt::Tensor multimodalIndices({batchSize, seqLen}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32);
+    rt::Tensor multimodalIndices({batchSize, seqLen}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32);
 
     int32_t const* inputIdsPtr = inputIds.dataPointer<int32_t>();
     int32_t* indicesPtr = multimodalIndices.dataPointer<int32_t>();
@@ -997,17 +1047,56 @@ rt::Tensor generateMultimodalIndices(
     return multimodalIndices;
 }
 
+void mapMediaIndicesToReservationRows(std::vector<int32_t> const& requestLocalIndices, int32_t sliceBegin,
+    int32_t sliceLength, int32_t slot, int32_t maxMediaRowsPerSlot, int64_t totalReservedRows, int32_t* globalIndices)
+{
+    check::check(sliceBegin >= 0 && sliceLength >= 0
+            && static_cast<int64_t>(sliceBegin) + sliceLength <= static_cast<int64_t>(requestLocalIndices.size()),
+        "media index slice must lie within the request prompt");
+    check::check(slot >= 0 && maxMediaRowsPerSlot > 0, "slot must be non-negative and E_max positive");
+    check::check(sliceLength == 0 || globalIndices != nullptr, "globalIndices must not be null");
+
+    int64_t const slotBase = static_cast<int64_t>(slot) * maxMediaRowsPerSlot;
+    for (int32_t i = 0; i < sliceLength; ++i)
+    {
+        int32_t const local = requestLocalIndices[static_cast<size_t>(sliceBegin) + i];
+        if (local == -1)
+        {
+            globalIndices[i] = -1;
+            continue;
+        }
+        // Messages are formatted only on failure: this runs per media position of every prefill step.
+        if (local < 0 || local >= maxMediaRowsPerSlot)
+        {
+            throw std::runtime_error(format::fmtstr(
+                "request-local media row %d is outside the slot reservation of %d rows", local, maxMediaRowsPerSlot));
+        }
+        int64_t const global = slotBase + local;
+        if (global >= totalReservedRows)
+        {
+            throw std::runtime_error(format::fmtstr("global media row %lld must be below the %lld reserved rows",
+                static_cast<long long>(global), static_cast<long long>(totalReservedRows)));
+        }
+        if (global > std::numeric_limits<int32_t>::max())
+        {
+            throw std::runtime_error(format::fmtstr(
+                "global media row %lld does not fit the INT32 index tensor", static_cast<long long>(global)));
+        }
+        globalIndices[i] = static_cast<int32_t>(global);
+    }
+}
+
 rt::Tensor generateVisionBlockIds(rt::Tensor const& inputIds, int32_t imageTokenId)
 {
     auto const shape = inputIds.getShape();
     check::check(shape.getNumDims() == 2, "inputIds must be 2D tensor");
     check::check(inputIds.getDeviceType() == rt::DeviceType::kCPU, "inputIds must be a host tensor");
-    check::check(inputIds.getDataType() == nvinfer1::DataType::kINT32, "inputIds must have INT32 dtype");
+    check::check(inputIds.getDataType() == trt_edgellm::DataType::kINT32, "inputIds must have INT32 dtype");
     check::check(imageTokenId >= 0, "imageTokenId must be non-negative");
 
     int64_t const batchSize = shape[0];
     int64_t const seqLen = shape[1];
-    rt::Tensor blockIds({batchSize, seqLen}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32);
+    rt::Tensor blockIds({batchSize, seqLen}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32);
     int32_t const* tokens = inputIds.dataPointer<int32_t>();
     int32_t* blocks = blockIds.dataPointer<int32_t>();
 

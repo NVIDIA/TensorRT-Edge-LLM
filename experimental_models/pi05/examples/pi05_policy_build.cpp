@@ -149,7 +149,7 @@ int main(int argc, char** argv)
         printUsage(argv[0]);
         return EXIT_SUCCESS;
     }
-    gLogger.setLevel(args.debug ? nvinfer1::ILogger::Severity::kVERBOSE : nvinfer1::ILogger::Severity::kINFO);
+    gLogger.setLevel(args.debug ? trt_edgellm::logger::Severity::kVERBOSE : trt_edgellm::logger::Severity::kINFO);
 
     // A manifest that parses but carries a wrong field type reaches the JSON accessors
     // as an exception, not a parse error, so it needs a boundary here to be reported.

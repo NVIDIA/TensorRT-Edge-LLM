@@ -24,6 +24,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ...config import ModelConfig
+from .. import ops
 from ..default.modeling_default import OnnxSpec, RMSNorm
 from ..gemma4 import modeling_gemma4_text as gemma4_text
 from ..linear import TPMode, make_linear
@@ -130,8 +131,9 @@ def _make_diffusion_gemma_flat_wrapper(
             "prev_self_conditioning_embeds",
             "self_conditioning_temperature",
         ]
-    param_names += ([f"ple_token_embeds_{i}" for i in range(num_ple_inputs)] +
-                    [f"past_key_values_{i}" for i in range(Na)])
+    param_names += (
+        (["ple_cache_pool", "ple_row_map"] if num_ple_inputs else []) +
+        [f"past_key_values_{i}" for i in range(Na)])
     if use_dual_rope:
         param_names += [
             "rope_rotary_cos_sin_sliding", "rope_rotary_cos_sin_full"
@@ -199,8 +201,15 @@ def _make_diffusion_gemma_flat_wrapper(
             f"{ple_kwarg}{rope_kwargs}{swa_kwargs})\n"
             f"    return (logits,) + tuple(present_key_values)\n")
 
+    if num_ple_inputs:
+        ple_width = model.config.hidden_size_per_layer_input
+        body = (
+            "    rows = ple_pool_lookup(ple_cache_pool, ple_row_map)\n"
+            f"    rows = rows.reshape(ple_row_map.shape[0], {num_ple_inputs}, {ple_width})\n"
+            + "".join(f"    ple_token_embeds_{i} = rows[:, {i}, :]\n"
+                      for i in range(num_ple_inputs)) + body)
     src = "def _forward(self, {}):\n{}".format(", ".join(param_names), body)
-    globs: dict = {}
+    globs: dict = {"ple_pool_lookup": ops.ple_pool_lookup}
     exec(src, globs)  # noqa: S102
 
     class _Wrapper(nn.Module):
@@ -368,12 +377,19 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
                 "self_conditioning_temperature",
             ]
 
-        ple_token_embeds_list: List[torch.Tensor] = [
-            torch.zeros(physical_tokens,
-                        config.hidden_size_per_layer_input,
-                        dtype=dtype16,
-                        device=device) for _ in range(num_ple_inputs)
-        ]
+        ple_inputs = []
+        if num_ple_inputs:
+            ple_inputs = [
+                torch.zeros(min(config.vocab_size_per_layer_input + 1, 64),
+                            num_ple_inputs *
+                            config.hidden_size_per_layer_input,
+                            dtype=dtype16,
+                            device=device),
+                torch.zeros(physical_tokens,
+                            1,
+                            dtype=torch.int32,
+                            device=device),
+            ]
         kv_dtype = (torch.float8_e4m3fn
                     if config.quant.kv_cache_quant == "fp8" else dtype16)
         # Paged KV pool binding: [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim].
@@ -391,10 +407,10 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
                 for layer_idx in range(Na))
         ]
 
-        args = args + (*ple_token_embeds_list, *past_key_values_list)
+        args = args + (*ple_inputs, *past_key_values_list)
         input_names = (
             input_names +
-            [f"ple_token_embeds_{i}" for i in range(num_ple_inputs)] +
+            (["ple_cache_pool", "ple_row_map"] if num_ple_inputs else []) +
             [f"past_key_values_{i}" for i in range(Na)])
 
         if config.use_dual_rope:
@@ -534,8 +550,18 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
                 },
                 {},
             ]
-        for _ in range(num_ple_inputs):
-            all_shapes.append({0: tokens})
+        if num_ple_inputs:
+            all_shapes.extend([
+                {
+                    0:
+                    torch.export.Dim("ple_capacity",
+                                     min=1,
+                                     max=config.vocab_size_per_layer_input + 1)
+                },
+                {
+                    0: tokens
+                },
+            ])
         for layer_idx in range(Na):
             pool_pages = (num_swa_pages if use_swa_kv_cache
                           and gemma4_text._gemma4_uses_swa_pool(

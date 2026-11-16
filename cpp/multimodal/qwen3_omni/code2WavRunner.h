@@ -74,6 +74,25 @@ public:
     bool generateWaveform(
         std::vector<std::vector<int32_t>> const& codes, rt::audioUtils::AudioData& outputAudio, cudaStream_t stream);
 
+    //! \brief Generate audio waveform in one engine pass, into a caller-owned buffer; allocates nothing
+    //! \param[in] codes RVQ codec codes [numQuantizers][seqLen], seqLen <= getMaxCodeLength()
+    //! \param[out] hostWaveform Pinned host buffer with room for seqLen * upsampleRate samples of
+    //!             getWaveformDataType()
+    //! \param[out] numSamples Samples written to hostWaveform
+    //! \param[in] stream CUDA stream for execution; synchronized before return
+    //! \return True if generation succeeded, false otherwise
+    bool generateWaveformInto(std::vector<std::vector<int32_t>> const& codes, rt::Tensor& hostWaveform,
+        int64_t& numSamples, cudaStream_t stream);
+
+    //! \brief Longest code sequence one engine pass accepts (the optimization profile's max)
+    int64_t getMaxCodeLength() const;
+
+    //! \brief Data type of the engine's waveform output
+    trt_edgellm::DataType getWaveformDataType() const
+    {
+        return mWaveformDtype;
+    }
+
     //! \brief Get Code2Wav configuration
     //! \return Reference to Code2Wav config
     Code2WavConfig const& getConfig() const
@@ -126,8 +145,8 @@ private:
     ExternalWeightManager mExternalWeights{};                      //!< Checkpoint-backed engine weights
     rt::Tensor mInputCodesDevice{};                                //!< [1, numQuantizers, seqLen] Input codes on GPU
     rt::Tensor mOutputWaveform{};                                  //!< [1, 1, waveformLen] Output waveform
-    nvinfer1::DataType mWaveformDtype{nvinfer1::DataType::kHALF};  //!< Engine's actual waveform output dtype
-    rt::Tensor mInputCodesHost{};                                  //!< Host buffer for code preparation
+    trt_edgellm::DataType mWaveformDtype{trt_edgellm::DataType::kHALF}; //!< Engine's actual waveform output dtype
+    rt::Tensor mInputCodesHost{};                                       //!< Host buffer for code preparation
 };
 
 } // namespace rt

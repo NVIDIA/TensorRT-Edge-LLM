@@ -21,11 +21,9 @@ import json
 import os
 import random
 
-from experimental.server.parsing.tool_calling import (_GATE_CAP, _OPEN_TOKENS,
-                                                      _JsonScanner,
-                                                      _longest_partial_token,
-                                                      _select_parser,
-                                                      validate_tool_request)
+from tensorrt_edgellm.server.parsing.tool_calling import (
+    _GATE_CAP, _OPEN_TOKENS, _JsonScanner, _longest_partial_token,
+    _select_parser, validate_tool_request)
 
 _TRIALS = int(os.environ.get("TOOL_STREAM_TRIALS", "30"))
 _MAX_HOLD = max(len(token) for token in _OPEN_TOKENS) - 1

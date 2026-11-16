@@ -24,7 +24,7 @@ using namespace trt_edgellm;
 
 TEST(Nvfp4MoePdlConfigTest, EnablesRequestedPdlOnSupportedSms)
 {
-    for (int32_t const sm : {90, 100, 101, 110})
+    for (int32_t const sm : {90, 100, 101, 103, 110})
     {
         EXPECT_TRUE(useNvfp4MoePdl(/*requested=*/true, sm, /*toolchainSupportsPdl=*/true)) << "sm=" << sm;
     }
@@ -32,7 +32,7 @@ TEST(Nvfp4MoePdlConfigTest, EnablesRequestedPdlOnSupportedSms)
 
 TEST(Nvfp4MoePdlConfigTest, PreservesExplicitOffSwitch)
 {
-    for (int32_t const sm : {90, 100, 101, 110})
+    for (int32_t const sm : {90, 100, 101, 103, 110})
     {
         EXPECT_FALSE(useNvfp4MoePdl(/*requested=*/false, sm, /*toolchainSupportsPdl=*/true)) << "sm=" << sm;
     }

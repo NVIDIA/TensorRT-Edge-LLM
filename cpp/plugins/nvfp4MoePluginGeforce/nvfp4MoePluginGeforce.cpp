@@ -22,6 +22,7 @@
 #include "common/logger.h"
 #include "common/stringUtils.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "kernels/moe/moePerExpertScaleKernels.h"
 #include "kernels/moe/moeSigmoidGroupTopkKernels.h"
 #include "kernels/moe/moeTopkSoftmaxKernels.h"
@@ -54,6 +55,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 // Input indices (11 total) and output index — see the plugin doc in the header for a full
 // description of each tensor's shape and dtype.
@@ -884,13 +886,14 @@ int32_t NvFP4MoEPluginGeforce::enqueue(PluginTensorDesc const* inputDesc, Plugin
 
         // ==== Step 1: router softmax + top-k + renormalize ====
         rt::Tensor routerLogitsT(const_cast<void*>(inputs[kIN_ROUTER_LOGITS]),
-            rt::Coords{inputDesc[kIN_ROUTER_LOGITS].dims}, rt::DeviceType::kGPU, DataType::kFLOAT);
-        rt::Tensor topkWeightsT(topkWeightsPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, DataType::kFLOAT);
-        rt::Tensor topkIdsT(topkIdsPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, DataType::kINT32);
+            rt::toCoords(inputDesc[kIN_ROUTER_LOGITS].dims), rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor topkWeightsT(
+            topkWeightsPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor topkIdsT(topkIdsPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         if (mRoutingMode == kROUTING_MODE_SIGMOID_GROUP_TOPK)
         {
             rt::Tensor correctionBiasT(const_cast<void*>(inputs[kIN_E_SCORE_CORRECTION_BIAS]), {mNumExperts},
-                rt::DeviceType::kGPU, DataType::kFLOAT);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
             rt::OptionalInputTensor correctionBiasOpt = correctionBiasT;
             trt_edgellm::kernel::moeSigmoidGroupTopk(routerLogitsT, topkWeightsT, topkIdsT, mTopK, mNGroup, mTopkGroup,
                 mNormTopkProb != 0, mRoutedScalingFactor, stream, correctionBiasOpt);
@@ -899,7 +902,7 @@ int32_t NvFP4MoEPluginGeforce::enqueue(PluginTensorDesc const* inputDesc, Plugin
         {
             // Pre-softmax additive bias (DeepSeek, Qwen3).
             rt::Tensor correctionBiasT(const_cast<void*>(inputs[kIN_E_SCORE_CORRECTION_BIAS]), {mNumExperts},
-                rt::DeviceType::kGPU, DataType::kFLOAT);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
             rt::OptionalInputTensor biasForSoftmax = correctionBiasT;
             trt_edgellm::kernel::moeTopkSoftmax(routerLogitsT, topkWeightsT, topkIdsT, mTopK,
                 softmaxWs > 0 ? softmaxScratch : nullptr, softmaxWs, stream, /*renormalize=*/true, 0.0F,

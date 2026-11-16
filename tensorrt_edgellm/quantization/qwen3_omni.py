@@ -748,7 +748,7 @@ def _calib_full_multimodal(model, calib_dataset,
 
 
 # Release name first; some checkpoints ship the same payload as ``code2wav/``.
-# Duplicated in ``scripts/export.py`` and the builder's
+# Duplicated in ``tensorrt_edgellm.onnx.cli`` and the builder's
 # ``models/qwen3_omni_next/weights.py`` -- quantization runs in its own venv and
 # does not import the exporter.
 _VOCODER_DIR = "codec_decode_online"

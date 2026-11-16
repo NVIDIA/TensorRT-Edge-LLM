@@ -21,6 +21,7 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "kernels/moe/moeMarlinIndicesKernels.h"
 #include "kernels/moe/moe_marlin/moeMarlin.h"
 #include "plugins/utils/pluginUtils.h"
@@ -45,6 +46,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -62,6 +64,8 @@ constexpr char const* kPluginVersion{"1"};
 constexpr int32_t kNvfp4GroupSize{16};
 constexpr int32_t kDecodeBlockSize{8};
 constexpr int32_t kPrefillBlockSize{32};
+constexpr int32_t kTokenMajorActivationRank{2};
+constexpr int32_t kBatchedActivationRank{3};
 // The dense plugin only exercises the decode (8) and prefill (32) Marlin block sizes.
 constexpr int32_t kMaxBlockSize{kPrefillBlockSize};
 
@@ -76,9 +80,14 @@ int32_t getMoeBlockSize(int64_t numTokens)
     return numTokens == 1 ? kDecodeBlockSize : kPrefillBlockSize;
 }
 
+bool isSupportedActivationRank(int32_t rank) noexcept
+{
+    return rank == kTokenMajorActivationRank || rank == kBatchedActivationRank;
+}
+
 int64_t getTokenCount(Dims const& dims) noexcept
 {
-    if (dims.nbDims != 2 && dims.nbDims != 3)
+    if (!isSupportedActivationRank(dims.nbDims))
     {
         return 0;
     }
@@ -327,7 +336,7 @@ int32_t Nvfp4A16GemmPlugin::getOutputShapes(DimsExprs const* inputs, int32_t nbI
     (void) shapeInputs;
     (void) nbShapeInputs;
     int32_t const rank = inputs[kInActivation].nbDims;
-    if (rank != 2 && rank != 3)
+    if (!isSupportedActivationRank(rank))
     {
         return -1;
     }
@@ -346,7 +355,7 @@ bool Nvfp4A16GemmPlugin::validateTensorDesc(int32_t pos, PluginTensorDesc const&
     switch (pos)
     {
     case kInActivation:
-        return desc.type == DataType::kHALF && (desc.dims.nbDims == 2 || desc.dims.nbDims == 3)
+        return desc.type == DataType::kHALF && isSupportedActivationRank(desc.dims.nbDims)
             && desc.dims.d[desc.dims.nbDims - 1] == mGemmK;
     case kInQWeights:
         // INT8 view of Marlin-packed E2M1 codes: [1, K/16, 8*N] (8 int8 == 2 int32 per output column).
@@ -358,7 +367,7 @@ bool Nvfp4A16GemmPlugin::validateTensorDesc(int32_t pos, PluginTensorDesc const&
             && desc.dims.d[1] == mGemmK / kNvfp4GroupSize && desc.dims.d[2] == mGemmN;
     case kInGlobalScale: return desc.type == DataType::kHALF && desc.dims.nbDims == 1 && desc.dims.d[0] == 1;
     case kOutOutput:
-        return desc.type == DataType::kHALF && (desc.dims.nbDims == 2 || desc.dims.nbDims == 3)
+        return desc.type == DataType::kHALF && isSupportedActivationRank(desc.dims.nbDims)
             && desc.dims.d[desc.dims.nbDims - 1] == mGemmN;
     default: return false;
     }
@@ -548,20 +557,22 @@ int32_t Nvfp4A16GemmPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTen
             CUDA_CHECK(cudaGetLastError());
         }
 
-        Tensor activation(
-            const_cast<void*>(inputs[kInActivation]), {numTokens, mGemmK}, DeviceType::kGPU, DataType::kHALF);
+        Tensor activation(const_cast<void*>(inputs[kInActivation]), {numTokens, mGemmK}, DeviceType::kGPU,
+            trt_edgellm::DataType::kHALF);
         Tensor qWeights(const_cast<void*>(inputs[kInQWeights]), {1, mGemmK / kNvfp4GroupSize, 2 * mGemmN},
-            DeviceType::kGPU, DataType::kINT32);
+            DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         Tensor blockScales(const_cast<void*>(inputs[kInBlockScales]), {1, mGemmK / kNvfp4GroupSize, mGemmN},
-            DeviceType::kGPU, DataType::kINT8);
-        Tensor globalScale(const_cast<void*>(inputs[kInGlobalScale]), {1}, DeviceType::kGPU, DataType::kHALF);
-        Tensor output(outputs[0], {numTokens, mGemmN}, DeviceType::kGPU, DataType::kHALF);
+            DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+        Tensor globalScale(
+            const_cast<void*>(inputs[kInGlobalScale]), {1}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        Tensor output(outputs[0], {numTokens, mGemmN}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
-        Tensor sortedTokenIdsTensor(sortedTokenIds, {maxPaddedRows}, DeviceType::kGPU, DataType::kINT32);
-        Tensor expertIdsTensor(expertIds, {maxPaddedBlocks}, DeviceType::kGPU, DataType::kINT32);
-        Tensor numTokensPostPaddedTensor(numTokensPostPadded, {1}, DeviceType::kGPU, DataType::kINT32);
-        Tensor topkWeightsTensor(topkWeights, {maxPaddedRows}, DeviceType::kGPU, DataType::kFLOAT);
-        Tensor marlinWorkspaceTensor(marlinWorkspace, {marlinWorkspaceElements}, DeviceType::kGPU, DataType::kINT32);
+        Tensor sortedTokenIdsTensor(sortedTokenIds, {maxPaddedRows}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor expertIdsTensor(expertIds, {maxPaddedBlocks}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor numTokensPostPaddedTensor(numTokensPostPadded, {1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor topkWeightsTensor(topkWeights, {maxPaddedRows}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        Tensor marlinWorkspaceTensor(
+            marlinWorkspace, {marlinWorkspaceElements}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
         {
             NVTX_SCOPED_RANGE(nvtx_gemm, "Nvfp4A16GemmPlugin::gemm", nvtx_colors::BLUE);

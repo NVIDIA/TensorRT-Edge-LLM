@@ -49,10 +49,9 @@ void validateStateContract(LLMEngineConfig const& config, char const* label)
     if (config.numAttentionLayers > 0)
     {
         // Snapshot byte copies and page-table rebinds preserve both supported KV storage layouts.
-        ELLM_CHECK(config.kvCacheDtype == nvinfer1::DataType::kHALF || config.kvCacheDtype == nvinfer1::DataType::kFP8,
+        ELLM_CHECK(
+            config.kvCacheDtype == trt_edgellm::DataType::kHALF || config.kvCacheDtype == trt_edgellm::DataType::kFP8,
             std::string(label) + " uses a KV dtype outside the supported context-reuse boundary (FP16 or FP8 KV).");
-        // SWA changes the kernel read mask, not physical retention: context reuse requires a full logical allocation
-        // for every attention layer so cached pages remain valid when rebound across requests.
         int64_t const minimumActivePages
             = computeMinimumKvPoolPages(config.maxSupportedBatchSize, config.maxKVCacheCapacity);
         ELLM_CHECK(config.kvPoolPages >= minimumActivePages && config.kvPoolPages <= kMAX_KV_POOL_PAGES,
@@ -101,6 +100,29 @@ ContextCacheModelStateKind classifyBaseState(LLMEngineConfig const& config)
     return ContextCacheModelStateKind::kHybrid;
 }
 
+std::optional<SwaCacheConfig> getSwaCacheConfig(LLMEngineConfig const& config)
+{
+    if (!config.usesBoundedSwaKVCache())
+    {
+        return std::nullopt;
+    }
+    ELLM_CHECK(config.kvCacheDtype == trt_edgellm::DataType::kHALF,
+        "Bounded SWA context reuse currently supports FP16 KV cache only.");
+    std::optional<int32_t> windowSize;
+    for (KVLayerConfig const& layer : config.kvLayerConfigs)
+    {
+        if (!isReducedKvCacheCapacity(layer.kvCacheCapacity, config.maxKVCacheCapacity))
+        {
+            continue;
+        }
+        ELLM_CHECK(!windowSize.has_value() || *windowSize == layer.kvCacheCapacity,
+            "Bounded SWA context reuse supports one engine-wide window size.");
+        windowSize = layer.kvCacheCapacity;
+    }
+    ELLM_CHECK(windowSize.has_value(), "Bounded SWA mode has no reduced-capacity layer.");
+    return SwaCacheConfig{*windowSize, kSWA_REPLACEMENT_PAGES};
+}
+
 void validateSpecDeploymentTuple(DeploymentConfig const& deployment)
 {
     ELLM_CHECK(deployment.base.isSpecDecodeBase && deployment.draft.has_value() && deployment.specConfig.has_value()
@@ -108,8 +130,8 @@ void validateSpecDeploymentTuple(DeploymentConfig const& deployment)
             && !deployment.draft->isSpecDecodeBase,
         "Speculative context-cache deployment requires matching base-role/draft-role engines and configuration.");
     validateStateContract(*deployment.draft, "draft engine");
-    ELLM_CHECK(deployment.specConfig->verifySize > 0 && deployment.specConfig->draftingStep > 0
-            && deployment.specConfig->draftingTopK > 0,
+    ELLM_CHECK(deployment.specConfig->verifyTokenCount > 0 && deployment.specConfig->draftSteps > 0
+            && deployment.specConfig->draftTopK > 0,
         "Speculative context reuse has invalid execution geometry.");
 }
 
@@ -126,7 +148,7 @@ ContextCacheDeploymentProfile validateContextCacheDeployment(DeploymentConfig co
             "DiffusionGemma context reuse supports only a non-speculative prompt prefill deployment.");
         ELLM_CHECK(deployment.base.numAttentionLayers > 0 && deployment.base.numLinearAttnLayers == 0,
             "DiffusionGemma context reuse supports only page-backed attention KV state.");
-        return ContextCacheDeploymentProfile{ContextCacheModelStateKind::kAttentionOnly, std::nullopt};
+        return ContextCacheDeploymentProfile{ContextCacheModelStateKind::kAttentionOnly, std::nullopt, std::nullopt};
     }
 
     if (deployment.base.specDecodeType == SpecDecodeMode::kNONE)
@@ -136,7 +158,11 @@ ContextCacheDeploymentProfile validateContextCacheDeployment(DeploymentConfig co
             "Vanilla context-cache deployment requires an llm-role base and no draft/speculative configuration.");
         ELLM_CHECK(deployment.base.numAttentionLayers > 0 || deployment.base.numLinearAttnLayers > 0,
             "Context-cache deployment has no stateful layers.");
-        return ContextCacheDeploymentProfile{classifyBaseState(deployment.base), std::nullopt};
+        std::optional<SwaCacheConfig> const swaConfig = getSwaCacheConfig(deployment.base);
+        ELLM_CHECK(
+            !swaConfig.has_value() || classifyBaseState(deployment.base) == ContextCacheModelStateKind::kAttentionOnly,
+            "Bounded SWA context reuse supports attention-only vanilla deployments.");
+        return ContextCacheDeploymentProfile{classifyBaseState(deployment.base), std::nullopt, swaConfig};
     }
 
     validateSpecDeploymentTuple(deployment);
@@ -145,15 +171,16 @@ ContextCacheDeploymentProfile validateContextCacheDeployment(DeploymentConfig co
 
     if (deployment.base.numLinearAttnLayers > 0)
     {
-        ELLM_CHECK(deployment.base.specDecodeType == SpecDecodeMode::kMTP && deployment.base.numAttentionLayers > 0,
-            "MTP context reuse requires a hybrid base with both attention and recurrent layers.");
+        ELLM_CHECK(contract->ownsPagedSpecState && deployment.base.numAttentionLayers > 0,
+            "Hybrid speculative context reuse requires a mode with independent draft pages "
+            "and both attention and recurrent layers.");
         ELLM_CHECK(deployment.draft->hasOwnKVCache && !deployment.draft->sharesTargetKV,
-            "MTP context reuse requires a draft engine with its own independent KV cache.");
-        return ContextCacheDeploymentProfile{ContextCacheModelStateKind::kHybrid, *contract};
+            "Hybrid speculative context reuse requires a draft engine with its own independent KV cache.");
+        return ContextCacheDeploymentProfile{ContextCacheModelStateKind::kHybrid, *contract, std::nullopt};
     }
 
-    ELLM_CHECK(
-        deployment.draft->numLinearAttnLayers == 0, "Hybrid speculative context reuse is supported only for MTP.");
+    ELLM_CHECK(deployment.draft->numLinearAttnLayers == 0,
+        "Speculative context reuse requires the draft engine to have no linear attention (recurrent) layers.");
     ELLM_CHECK(deployment.base.specDecodeType != SpecDecodeMode::kMTP,
         "MTP context reuse requires a hybrid base with both attention and recurrent layers.");
     ELLM_CHECK(
@@ -170,7 +197,7 @@ ContextCacheDeploymentProfile validateContextCacheDeployment(DeploymentConfig co
             "Shared-target-KV speculative context reuse requires a read-only assistant with no independent KV cache.");
     }
 
-    return ContextCacheDeploymentProfile{ContextCacheModelStateKind::kAttentionOnly, *contract};
+    return ContextCacheDeploymentProfile{ContextCacheModelStateKind::kAttentionOnly, *contract, std::nullopt};
 }
 
 } // namespace trt_edgellm::rt

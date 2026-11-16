@@ -41,7 +41,7 @@ void speculativeSparseAccept(rt::Tensor const& targetSupportProbabilities, rt::T
     rt::Tensor const& proposalSupportProbabilities, rt::Tensor const& proposalSupportIds,
     rt::Tensor const& proposalTokenIds, rt::Tensor const& proposalLengths, rt::Tensor const& acceptUniforms,
     rt::Tensor& acceptedTokenIds, rt::Tensor& acceptLength, rt::Tensor* acceptedTokenIndices, cudaStream_t stream,
-    rt::Tensor const* maxAcceptLengths)
+    rt::Tensor const* maxAcceptLengths, int32_t forcedAcceptanceLength)
 {
     rt::Coords const targetShape = targetSupportProbabilities.getShape();
     rt::Coords const proposalShape = proposalSupportProbabilities.getShape();
@@ -58,6 +58,8 @@ void speculativeSparseAccept(rt::Tensor const& targetSupportProbabilities, rt::T
     int32_t const proposalStride = static_cast<int32_t>(proposalShape[1]);
     int32_t const proposalSupportSize = static_cast<int32_t>(proposalShape[2]);
     int32_t const verifyProposalLen = verifyLen - 1;
+    check::check(forcedAcceptanceLength == -1 || (forcedAcceptanceLength >= 1 && forcedAcceptanceLength <= verifyLen),
+        "Forced acceptance length must be -1 or in [1, verifyLen]");
     check::check(batchSize > 0 && proposalShape[0] == batchSize && proposalStride > 0 && verifyProposalLen >= 0
             && verifyProposalLen <= proposalStride && targetSupportSize > 0 && targetSupportSize <= kMaxSparseSupport
             && proposalSupportSize > 0 && proposalSupportSize <= kMaxSparseSupport
@@ -70,17 +72,17 @@ void speculativeSparseAccept(rt::Tensor const& targetSupportProbabilities, rt::T
             && (acceptedTokenIndices == nullptr || acceptedTokenIndices->getShape() == acceptedTokenIds.getShape())
             && (maxAcceptLengths == nullptr || maxAcceptLengths->getShape() == acceptLength.getShape()),
         "Sparse speculative sampling tensor shapes do not match");
-    check::check(targetSupportProbabilities.getDataType() == nvinfer1::DataType::kFLOAT
-            && proposalSupportProbabilities.getDataType() == nvinfer1::DataType::kFLOAT
-            && acceptUniforms.getDataType() == nvinfer1::DataType::kFLOAT
-            && targetSupportIds.getDataType() == nvinfer1::DataType::kINT32
-            && proposalSupportIds.getDataType() == nvinfer1::DataType::kINT32
-            && proposalTokenIds.getDataType() == nvinfer1::DataType::kINT32
-            && proposalLengths.getDataType() == nvinfer1::DataType::kINT32
-            && acceptedTokenIds.getDataType() == nvinfer1::DataType::kINT32
-            && acceptLength.getDataType() == nvinfer1::DataType::kINT32
-            && (acceptedTokenIndices == nullptr || acceptedTokenIndices->getDataType() == nvinfer1::DataType::kINT32)
-            && (maxAcceptLengths == nullptr || maxAcceptLengths->getDataType() == nvinfer1::DataType::kINT32),
+    check::check(targetSupportProbabilities.getDataType() == trt_edgellm::DataType::kFLOAT
+            && proposalSupportProbabilities.getDataType() == trt_edgellm::DataType::kFLOAT
+            && acceptUniforms.getDataType() == trt_edgellm::DataType::kFLOAT
+            && targetSupportIds.getDataType() == trt_edgellm::DataType::kINT32
+            && proposalSupportIds.getDataType() == trt_edgellm::DataType::kINT32
+            && proposalTokenIds.getDataType() == trt_edgellm::DataType::kINT32
+            && proposalLengths.getDataType() == trt_edgellm::DataType::kINT32
+            && acceptedTokenIds.getDataType() == trt_edgellm::DataType::kINT32
+            && acceptLength.getDataType() == trt_edgellm::DataType::kINT32
+            && (acceptedTokenIndices == nullptr || acceptedTokenIndices->getDataType() == trt_edgellm::DataType::kINT32)
+            && (maxAcceptLengths == nullptr || maxAcceptLengths->getDataType() == trt_edgellm::DataType::kINT32),
         "Sparse speculative sampling tensor dtypes do not match");
     check::check(isGpuTensor(targetSupportProbabilities) && isGpuTensor(targetSupportIds)
             && isGpuTensor(proposalSupportProbabilities) && isGpuTensor(proposalSupportIds)
@@ -96,13 +98,14 @@ void speculativeSparseAccept(rt::Tensor const& targetSupportProbabilities, rt::T
         acceptLength.dataPointer<int32_t>(),
         acceptedTokenIndices == nullptr ? nullptr : acceptedTokenIndices->dataPointer<int32_t>(), batchSize,
         proposalStride, verifyProposalLen, targetSupportSize, proposalSupportSize, stream,
-        maxAcceptLengths == nullptr ? nullptr : maxAcceptLengths->dataPointer<int32_t>());
+        maxAcceptLengths == nullptr ? nullptr : maxAcceptLengths->dataPointer<int32_t>(), forcedAcceptanceLength);
 }
 
 void speculativeDenseTargetAccept(rt::Tensor const& targetProbabilities, rt::Tensor const& proposalSupportProbabilities,
     rt::Tensor const& proposalSupportIds, rt::Tensor const& proposalTokenIds, rt::Tensor const& proposalLengths,
     rt::Tensor const& acceptUniforms, rt::Tensor& acceptedTokenIds, rt::Tensor& acceptLength,
-    rt::Tensor* acceptedTokenIndices, cudaStream_t stream, rt::Tensor const* maxAcceptLengths)
+    rt::Tensor* acceptedTokenIndices, cudaStream_t stream, rt::Tensor const* maxAcceptLengths,
+    int32_t forcedAcceptanceLength)
 {
     rt::Coords const targetShape = targetProbabilities.getShape();
     rt::Coords const proposalShape = proposalSupportProbabilities.getShape();
@@ -118,6 +121,8 @@ void speculativeDenseTargetAccept(rt::Tensor const& targetProbabilities, rt::Ten
     int32_t const proposalStride = static_cast<int32_t>(proposalShape[1]);
     int32_t const proposalSupportSize = static_cast<int32_t>(proposalShape[2]);
     int32_t const verifyProposalLen = verifyLen - 1;
+    check::check(forcedAcceptanceLength == -1 || (forcedAcceptanceLength >= 1 && forcedAcceptanceLength <= verifyLen),
+        "Forced acceptance length must be -1 or in [1, verifyLen]");
     check::check(proposalShape[0] == batchSize && verifyProposalLen >= 0 && verifyProposalLen <= proposalStride
             && proposalSupportIds.getShape() == proposalShape
             && proposalTokenIds.getShape() == rt::Coords{batchSize, proposalStride}
@@ -128,16 +133,16 @@ void speculativeDenseTargetAccept(rt::Tensor const& targetProbabilities, rt::Ten
             && (acceptedTokenIndices == nullptr || acceptedTokenIndices->getShape() == acceptedTokenIds.getShape())
             && (maxAcceptLengths == nullptr || maxAcceptLengths->getShape() == acceptLength.getShape()),
         "Dense-target speculative sampling tensor shapes do not match");
-    check::check(targetProbabilities.getDataType() == nvinfer1::DataType::kFLOAT
-            && proposalSupportProbabilities.getDataType() == nvinfer1::DataType::kFLOAT
-            && acceptUniforms.getDataType() == nvinfer1::DataType::kFLOAT
-            && proposalSupportIds.getDataType() == nvinfer1::DataType::kINT32
-            && proposalTokenIds.getDataType() == nvinfer1::DataType::kINT32
-            && proposalLengths.getDataType() == nvinfer1::DataType::kINT32
-            && acceptedTokenIds.getDataType() == nvinfer1::DataType::kINT32
-            && acceptLength.getDataType() == nvinfer1::DataType::kINT32
-            && (acceptedTokenIndices == nullptr || acceptedTokenIndices->getDataType() == nvinfer1::DataType::kINT32)
-            && (maxAcceptLengths == nullptr || maxAcceptLengths->getDataType() == nvinfer1::DataType::kINT32),
+    check::check(targetProbabilities.getDataType() == trt_edgellm::DataType::kFLOAT
+            && proposalSupportProbabilities.getDataType() == trt_edgellm::DataType::kFLOAT
+            && acceptUniforms.getDataType() == trt_edgellm::DataType::kFLOAT
+            && proposalSupportIds.getDataType() == trt_edgellm::DataType::kINT32
+            && proposalTokenIds.getDataType() == trt_edgellm::DataType::kINT32
+            && proposalLengths.getDataType() == trt_edgellm::DataType::kINT32
+            && acceptedTokenIds.getDataType() == trt_edgellm::DataType::kINT32
+            && acceptLength.getDataType() == trt_edgellm::DataType::kINT32
+            && (acceptedTokenIndices == nullptr || acceptedTokenIndices->getDataType() == trt_edgellm::DataType::kINT32)
+            && (maxAcceptLengths == nullptr || maxAcceptLengths->getDataType() == trt_edgellm::DataType::kINT32),
         "Dense-target speculative sampling tensor dtypes do not match");
     check::check(isGpuTensor(targetProbabilities) && isGpuTensor(proposalSupportProbabilities)
             && isGpuTensor(proposalSupportIds) && isGpuTensor(proposalTokenIds) && isGpuTensor(proposalLengths)
@@ -152,7 +157,7 @@ void speculativeDenseTargetAccept(rt::Tensor const& targetProbabilities, rt::Ten
         acceptLength.dataPointer<int32_t>(),
         acceptedTokenIndices == nullptr ? nullptr : acceptedTokenIndices->dataPointer<int32_t>(), batchSize,
         proposalStride, verifyProposalLen, vocabSize, proposalSupportSize, stream,
-        maxAcceptLengths == nullptr ? nullptr : maxAcceptLengths->dataPointer<int32_t>());
+        maxAcceptLengths == nullptr ? nullptr : maxAcceptLengths->dataPointer<int32_t>(), forcedAcceptanceLength);
 }
 
 void speculativeNormalizeTopKTopP(
@@ -161,8 +166,8 @@ void speculativeNormalizeTopKTopP(
     rt::Coords const shape = topKValues.getShape();
     check::check(shape.getNumDims() == 2 && shape[0] > 0 && shape[0] <= std::numeric_limits<int32_t>::max()
             && shape[1] > 0 && shape[1] <= kMaxSparseSupport && probabilities.getShape() == shape
-            && topKValues.getDataType() == nvinfer1::DataType::kFLOAT
-            && probabilities.getDataType() == nvinfer1::DataType::kFLOAT && isGpuTensor(topKValues)
+            && topKValues.getDataType() == trt_edgellm::DataType::kFLOAT
+            && probabilities.getDataType() == trt_edgellm::DataType::kFLOAT && isGpuTensor(topKValues)
             && isGpuTensor(probabilities),
         "Sparse top-k/top-p normalization tensor contract does not match");
     detail::launchNormalizeTopKTopP(topKValues.dataPointer<float>(), probabilities.dataPointer<float>(),

@@ -35,13 +35,10 @@ def _restore_activation_precision():
     config.set_default_quantize_activations(True)
 
 
-@pytest.mark.parametrize(("model_type", "expected_quant_type"),
-                         [("qwen3_moe", config.QUANT_NVFP4),
-                          ("nemotron_h", config.QUANT_NVFP4_A16)],
-                         ids=["qwen-generic-nvfp4", "nemotron-h-nvfp4-a16"])
-def test_mixed_precision_w4a16_dispatch_is_model_specific(
-        model_type, expected_quant_type):
-    """Qwen uses its established repacker; Nemotron-H uses Marlin A16."""
+@pytest.mark.parametrize("model_type", ["qwen3_moe", "nemotron_h"])
+def test_mixed_precision_w4a16_executes_as_w4a16(model_type):
+    """Weight-only NVFP4 keeps FP16 activations for every model family."""
+    expected_quant_type = config.QUANT_NVFP4_A16
     dominant, group_size, overrides, group_sizes = config._parse_mixed_precision(
         {
             "layers.0.mlp.experts": {
@@ -89,6 +86,32 @@ def test_mixed_precision_preserves_group_sizes_for_fused_overrides():
     assert group_sizes["layers.0.mlp.gate_proj"] == 16
     assert group_sizes["layers.0.mlp.up_proj"] == 16
     assert group_sizes["lm_head"] == 16
+
+
+def test_grouped_nvfp4_preserves_layer_group_sizes(tmp_path):
+    # Given a grouped NVFP4 checkpoint with a module-specific quantization target.
+    checkpoint_config = {
+        "model_type": "qwen3_moe",
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "config_groups": {
+                "group_0": {
+                    "format": "nvfp4",
+                    "weights": {
+                        "group_size": 16
+                    },
+                    "targets": ["layers.0.mlp.gate_up_proj"],
+                }
+            },
+        },
+    }
+
+    # When the grouped checkpoint configuration is parsed.
+    quant = config._parse_quant(str(tmp_path), checkpoint_config)
+
+    # Then fused targets retain their group size after expansion.
+    assert quant.layer_group_sizes["layers.0.mlp.gate_proj"] == 16
+    assert quant.layer_group_sizes["layers.0.mlp.up_proj"] == 16
 
 
 def test_no_activation_quantization_selects_nvfp4_a16():

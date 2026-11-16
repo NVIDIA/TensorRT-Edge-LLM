@@ -19,14 +19,12 @@
 
 #include "checkMacros.h"
 #include "cudaMacros.h"
-#include "trtUtils.h"
+#include "dataType.h"
 #include <algorithm>
 #include <iomanip>
 #include <memory>
 #include <sstream>
 #include <type_traits>
-
-using namespace nvinfer1;
 
 namespace trt_edgellm
 {

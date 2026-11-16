@@ -18,6 +18,7 @@
 #include "multimodal/gemma4/gemma4UnifiedVisionRunner.h"
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
+#include "common/trtInterop.h"
 #include "kernels/preprocessKernels/imageUtilKernels.h"
 #include "multimodal/common/imageUtils.h"
 #include "profiling/metrics.h"
@@ -36,8 +37,9 @@ namespace trt_edgellm
 namespace rt
 {
 
-Gemma4UnifiedVisionRunner::Gemma4UnifiedVisionRunner(std::string const& engineDir, cudaStream_t stream)
-    : MultimodalRunner(engineDir, stream)
+Gemma4UnifiedVisionRunner::Gemma4UnifiedVisionRunner(
+    std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
+    : MultimodalRunner(engineDir, stream, checkpointDir)
 {
     ELLM_CHECK(validateAndFillConfig(engineDir), "Gemma4UnifiedVisionRunner: invalid configuration or engine");
     ELLM_CHECK(allocateBuffer(stream), "Gemma4UnifiedVisionRunner: failed to allocate buffers");
@@ -106,9 +108,9 @@ bool Gemma4UnifiedVisionRunner::validateAndFillConfig(std::string const& engineD
         LOG_ERROR("Gemma4 Unified visual engine is missing required input/output bindings");
         return false;
     }
-    if (mVisualEngine->getTensorDataType(binding_names::kVisualInput) != nvinfer1::DataType::kHALF
-        || mVisualEngine->getTensorDataType(binding_names::kPixelPositionIds) != nvinfer1::DataType::kINT64
-        || mVisualEngine->getTensorDataType(binding_names::kVisualOutput) != nvinfer1::DataType::kHALF)
+    if (fromTrt(mVisualEngine->getTensorDataType(binding_names::kVisualInput)) != trt_edgellm::DataType::kHALF
+        || fromTrt(mVisualEngine->getTensorDataType(binding_names::kPixelPositionIds)) != trt_edgellm::DataType::kINT64
+        || fromTrt(mVisualEngine->getTensorDataType(binding_names::kVisualOutput)) != trt_edgellm::DataType::kHALF)
     {
         LOG_ERROR("Gemma4 Unified visual engine requires FP16 input/output and INT64 pixel_position_ids");
         return false;
@@ -208,14 +210,14 @@ bool Gemma4UnifiedVisionRunner::validateAndFillConfig(std::string const& engineD
 
 bool Gemma4UnifiedVisionRunner::allocateBuffer([[maybe_unused]] cudaStream_t stream)
 {
-    mVisualInput = rt::Tensor({mConfig.maxPatches, mConfig.inputDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
-        "Gemma4UnifiedVisionRunner::mVisualInput");
-    mPixelPositionIds = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64,
+    mVisualInput = rt::Tensor({mConfig.maxPatches, mConfig.inputDim}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kHALF, "Gemma4UnifiedVisionRunner::mVisualInput");
+    mPixelPositionIds = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64,
         "Gemma4UnifiedVisionRunner::mPixelPositionIds");
-    mPixelPositionIdsHost = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64,
+    mPixelPositionIdsHost = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
         "Gemma4UnifiedVisionRunner::mPixelPositionIdsHost");
     mOutputEmbedding = rt::Tensor({mConfig.maxPatches, mConfig.outputHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Gemma4UnifiedVisionRunner::mOutputEmbedding");
+        trt_edgellm::DataType::kHALF, "Gemma4UnifiedVisionRunner::mOutputEmbedding");
 
     bool status = true;
     status &= mVisualContext->setTensorAddress(binding_names::kVisualInput, mVisualInput.rawPointer());
@@ -232,7 +234,7 @@ bool Gemma4UnifiedVisionRunner::allocateBuffer([[maybe_unused]] cudaStream_t str
     mImageStd = {1.0F, 1.0F, 1.0F};
 
     int64_t const maxSpatialPixels = mConfig.maxPatchesPerImage * mConfig.modelPatchSize * mConfig.modelPatchSize;
-    mRescaledImageDevice = rt::Tensor({maxSpatialPixels * 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
+    mRescaledImageDevice = rt::Tensor({maxSpatialPixels * 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
         "Gemma4UnifiedVisionRunner::mRescaledImageDevice");
     return true;
 }
@@ -443,9 +445,8 @@ bool Gemma4UnifiedVisionRunner::infer(cudaStream_t stream) noexcept
     }
     TIME_STAGE(metrics::StageNames::kVISION_ENCODER, stream);
     bool status = true;
-    status &= mVisualContext->setInputShape(binding_names::kVisualInput, mVisualInput.getShape().getTRTDims());
-    status
-        &= mVisualContext->setInputShape(binding_names::kPixelPositionIds, mPixelPositionIds.getShape().getTRTDims());
+    status &= mVisualContext->setInputShape(binding_names::kVisualInput, toTrtDims(mVisualInput.getShape()));
+    status &= mVisualContext->setInputShape(binding_names::kPixelPositionIds, toTrtDims(mPixelPositionIds.getShape()));
     if (!status)
     {
         LOG_ERROR("Failed to set Gemma4 Unified visual input shapes");

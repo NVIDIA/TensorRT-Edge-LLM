@@ -53,13 +53,13 @@ VisualTokenPruner::VisualTokenPruner(VisualPrunerConfig const& config, LLMEngine
     check::check(mImageTokenId >= 0, "visual-token pruning requires a VLM engine with an image token id");
 
     int32_t const maxInputLen = engineConfig.maxSupportedInputLength;
-    mKeepIdxDevice = Tensor({mMaxBatchSize, mMaxKVCacheCapacity}, DeviceType::kGPU, nvinfer1::DataType::kINT32,
+    mKeepIdxDevice = Tensor({mMaxBatchSize, mMaxKVCacheCapacity}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
         "VisualTokenPruner::keepIdxDevice");
-    mKeepIdxHost = Tensor({mMaxBatchSize, mMaxKVCacheCapacity}, DeviceType::kCPU, nvinfer1::DataType::kINT32,
+    mKeepIdxHost = Tensor({mMaxBatchSize, mMaxKVCacheCapacity}, DeviceType::kCPU, trt_edgellm::DataType::kINT32,
         "VisualTokenPruner::keepIdxHost");
     int64_t const embedPlaneBytes = static_cast<int64_t>(maxInputLen) * mHiddenSize * sizeof(half);
     int64_t const ropePlaneBytes = static_cast<int64_t>(mMaxKVCacheCapacity) * mRotaryDim * sizeof(float);
-    mGatherScratch = Tensor({std::max(embedPlaneBytes, ropePlaneBytes)}, DeviceType::kGPU, nvinfer1::DataType::kINT8,
+    mGatherScratch = Tensor({std::max(embedPlaneBytes, ropePlaneBytes)}, DeviceType::kGPU, trt_edgellm::DataType::kINT8,
         "VisualTokenPruner::gatherScratch");
 
     // Batched-flow vectors are fully preallocated so the prefill hot path never touches the heap.
@@ -82,11 +82,11 @@ void VisualTokenPruner::preallocateAuxiliaryBuffers()
     // Upper bound on raw feature rows: every token of every slot is visual.
     int64_t const maxRows = static_cast<int64_t>(mMaxBatchSize) * mMaxInputLength;
     mFeatureIdxPinned
-        = Tensor({maxRows}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "VisualTokenPruner::featureIdxPinned");
+        = Tensor({maxRows}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "VisualTokenPruner::featureIdxPinned");
     mFeatureIdxDevice
-        = Tensor({maxRows}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "VisualTokenPruner::featureIdxDevice");
+        = Tensor({maxRows}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "VisualTokenPruner::featureIdxDevice");
     mCompactVisualFeatures = Tensor(
-        {maxRows, mHiddenSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF, "VisualTokenPruner::compactFeatures");
+        {maxRows, mHiddenSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF, "VisualTokenPruner::compactFeatures");
 }
 
 int32_t VisualTokenPruner::pruneForPrefill(
@@ -100,7 +100,7 @@ int32_t VisualTokenPruner::pruneForPrefill(
     mDeferCompaction = true;
     mCurrentSlot = 0;
     Tensor const embedsView(
-        io.inputsEmbeds.rawPointer(), {origLen, mHiddenSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        io.inputsEmbeds.rawPointer(), {origLen, mHiddenSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     int32_t prunedLen{origLen};
     try
     {
@@ -172,7 +172,7 @@ int32_t VisualTokenPruner::pruneBatchForPrefill(std::vector<std::vector<int32_t>
             int32_t const len = effectiveLens[i];
             void* slotPtr
                 = static_cast<half*>(io.inputsEmbeds.rawPointer()) + static_cast<int64_t>(i) * maxLen * mHiddenSize;
-            Tensor const slotView(slotPtr, {len, mHiddenSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            Tensor const slotView(slotPtr, {len, mHiddenSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
             int32_t const slotPrunedLen = selectForSlot(hostTokenIds[i], slotView, io, len, stream);
             check::check(slotPrunedLen == len || static_cast<int32_t>(mSlotKeepLists[i].size()) == slotPrunedLen,
                 std::string(name()) + " must publish subset provenance through compactToKeepList");
@@ -542,10 +542,10 @@ void VisualTokenPruner::compactAuxiliaryInputs(std::vector<std::vector<int32_t>>
     // was not called (once per request, not per step).
     if (mFeatureIdxPinned.isEmpty() || mFeatureIdxPinned.getShape().volume() < totalOrig)
     {
-        mFeatureIdxPinned
-            = Tensor({totalOrig}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "VisualTokenPruner::featureIdxPinned");
-        mFeatureIdxDevice
-            = Tensor({totalOrig}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "VisualTokenPruner::featureIdxDevice");
+        mFeatureIdxPinned = Tensor(
+            {totalOrig}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "VisualTokenPruner::featureIdxPinned");
+        mFeatureIdxDevice = Tensor(
+            {totalOrig}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "VisualTokenPruner::featureIdxDevice");
     }
     std::copy(mFeatureKeepHost.begin(), mFeatureKeepHost.end(), mFeatureIdxPinned.dataPointer<int32_t>());
     CUDA_CHECK(cudaMemcpyAsync(mFeatureIdxDevice.rawPointer(), mFeatureIdxPinned.rawPointer(),

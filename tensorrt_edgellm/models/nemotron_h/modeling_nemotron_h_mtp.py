@@ -43,7 +43,8 @@ from ...checkpoint.repacking import repack_fp16_moe_experts
 from ...config import LAYER_ATTN, LAYER_MOE, ModelConfig
 from ..default.modeling_default import OnnxSpec
 from ..linear import make_linear
-from ..ops import KV_PAGE_SIZE, fp16_moe_plugin_sigmoid
+from ..ops import (KV_PAGE_SIZE, fp16_moe_plugin_sigmoid,
+                   is_trt_native_moe_enabled)
 from .modeling_nemotron_h import (NemotronHAttentionMixer, NemotronHTopkRouter,
                                   RMSNorm)
 
@@ -119,6 +120,14 @@ class NemotronHMtpFp16MoE(nn.Module):
 
     def __init__(self, config: ModelConfig, module_prefix: str) -> None:
         super().__init__()
+        if is_trt_native_moe_enabled():
+            # The base model's --trt-native-moe arm (NemotronHMoEMLP) has no
+            # counterpart here yet: the draft always exports the plugin. Fail
+            # rather than silently mix the two arms in one deployment.
+            raise ValueError(
+                "--trt-native-moe has no Nemotron-H MTP draft path: the MTP "
+                "MoE exports through Fp16MoePluginSigmoid only. Drop the flag "
+                "or export without --mtp.")
         self.hidden_size = config.hidden_size
         self.n_routed_experts = config.n_routed_experts
         self.num_experts_per_tok = config.num_experts_per_tok

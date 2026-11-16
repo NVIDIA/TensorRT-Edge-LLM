@@ -17,22 +17,26 @@
 
 #pragma once
 
-#include <NvInferRuntime.h>
+#include "kernels/PluginJitKernels/pluginJitKey.h"
+#include "kernels/decodeAttentionKernels/xqaKernelSupport.h"
 
+#include "common/dataType.h"
+
+#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <tuple>
 #include <vector>
 
 namespace trt_edgellm
 {
 
 //! \brief Key that identifies one NVRTC-compiled XQA decode kernel variant.
+//! Follows the plugin JIT key contract in pluginJitKey.h.
 struct XQAJitKey
 {
     int32_t sm{};
-    nvinfer1::DataType dataType{nvinfer1::DataType::kHALF};
-    nvinfer1::DataType kvDataType{nvinfer1::DataType::kHALF};
+    trt_edgellm::DataType dataType{trt_edgellm::DataType::kHALF};
+    trt_edgellm::DataType kvDataType{trt_edgellm::DataType::kHALF};
     int32_t headSize{};
     int32_t qHeadsPerKv{};
     int32_t tokensPerPage{};
@@ -40,30 +44,39 @@ struct XQAJitKey
     bool specDecode{};
     bool contiguousQuerySwa{};
 
-    auto asTuple() const noexcept
+    static constexpr size_t kNumWords{9};
+
+    //! The fields in blob, digest and hash order.
+    std::array<uint32_t, kNumWords> keyWords() const noexcept
     {
-        return std::tie(sm, dataType, kvDataType, headSize, qHeadsPerKv, tokensPerPage, slidingWindow, specDecode,
-            contiguousQuerySwa);
+        return {static_cast<uint32_t>(sm), static_cast<uint32_t>(dataType), static_cast<uint32_t>(kvDataType),
+            static_cast<uint32_t>(headSize), static_cast<uint32_t>(qHeadsPerKv), static_cast<uint32_t>(tokensPerPage),
+            slidingWindow ? 1U : 0U, specDecode ? 1U : 0U, contiguousQuerySwa ? 1U : 0U};
+    }
+
+    static XQAJitKey fromKeyWords(std::array<uint32_t, kNumWords> const& words) noexcept
+    {
+        XQAJitKey key;
+        key.sm = static_cast<int32_t>(words[0]);
+        key.dataType = static_cast<trt_edgellm::DataType>(words[1]);
+        key.kvDataType = static_cast<trt_edgellm::DataType>(words[2]);
+        key.headSize = static_cast<int32_t>(words[3]);
+        key.qHeadsPerKv = static_cast<int32_t>(words[4]);
+        key.tokensPerPage = static_cast<int32_t>(words[5]);
+        key.slidingWindow = words[6] != 0U;
+        key.specDecode = words[7] != 0U;
+        key.contiguousQuerySwa = words[8] != 0U;
+        return key;
     }
 
     bool operator==(XQAJitKey const& other) const noexcept
     {
-        return asTuple() == other.asTuple();
+        return keyWords() == other.keyWords();
     }
 };
 
-//! \brief Result of compiling an XQA kernel with NVRTC.
-struct XQAJitResult
-{
-    std::vector<uint8_t> cubin;
-};
-
-//! \brief One NVRTC-compiled kernel together with the key it was compiled for.
-struct XQAJitKernel
-{
-    XQAJitKey key;
-    std::vector<uint8_t> cubin;
-};
+//! \brief One NVRTC-compiled kernel together with the key it was compiled for and the digest binding the two.
+using XQAJitKernel = PluginJitKernel<XQAJitKey>;
 
 //! \brief Serialize compiled XQA kernels into a self-describing byte blob.
 //!
@@ -74,7 +87,7 @@ struct XQAJitKernel
 std::vector<uint8_t> serializeXQAJitKernels(std::vector<XQAJitKernel> const& kernels);
 
 //! \brief Inverse of serializeXQAJitKernels.
-//! \throws std::runtime_error if the blob is truncated or carries an unknown format version.
+//! \throws std::runtime_error if the blob is truncated, tampered with, or does not open with the XQA magic word.
 std::vector<XQAJitKernel> deserializeXQAJitKernels(void const* data, size_t size);
 
 //! \brief Return the M tile size used by both NVRTC compilation and host launch metadata.
@@ -94,12 +107,8 @@ inline int32_t getXQAJitMTileSize(XQAJitKey const& key) noexcept
     return key.specDecode ? kSPEC_DECODE_M_TILE_SIZE : kDECODE_M_TILE_SIZE;
 }
 
-//! \brief Check if a given configuration can produce a valid XQA JIT kernel.
-bool canCompileXQAKernel(int32_t numQHeads, int32_t numKVHeads, int32_t headSize, int32_t smVersion,
-    nvinfer1::DataType dataType, nvinfer1::DataType kvDataType) noexcept;
-
 //! \brief Compile one XQA kernel variant with NVRTC.
 //! \throws std::runtime_error if NVRTC support is disabled or compilation fails.
-XQAJitResult compileXQAKernel(XQAJitKey const& key);
+XQAJitKernel compileXQAKernel(XQAJitKey const& key);
 
 } // namespace trt_edgellm

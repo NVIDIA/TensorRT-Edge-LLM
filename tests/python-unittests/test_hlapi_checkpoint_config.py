@@ -85,3 +85,40 @@ def test_hlapi_guided_decoding_does_not_require_onnx(monkeypatch):
         logging.getLogger(__name__),
         _environment(),
     )
+
+
+@pytest.mark.parametrize(("spec_type", "draft_step", "verify_tokens"), [
+    ("mtp", 3, 4),
+    ("dflash", None, 16),
+])
+def test_hlapi_spec_geometry_uses_public_contract(monkeypatch, spec_type,
+                                                  draft_step, verify_tokens):
+    # Given iterative and block speculative configurations.
+    # When CI generates public API invocations, then S is iterative-only and
+    # P remains owned by the block deployment resolver.
+    environment = _environment()
+    config = _TestHLAPI._checkpoint_config(
+        "Qwen2.5-0.5B-Instruct-fp16-mxsl4096-mxbs4-mxil2048-llm_basic",
+        ModelType.LLM,
+        environment,
+    )
+    config.eagle_draft_top_k = 1
+    config.eagle_draft_step = draft_step or 1
+    config.max_spec_verify_tokens = verify_tokens
+    monkeypatch.setattr(
+        _TestHLAPI,
+        "_checkpoint_model_and_spec",
+        staticmethod(lambda *args: ("/checkpoints/model", spec_type, "")),
+    )
+
+    command = _TestHLAPI._server_cli_args(config, environment, None,
+                                          logging.getLogger(__name__))
+    script = _TestHLAPI._llm_init_script(config, environment, None,
+                                         logging.getLogger(__name__))
+
+    assert "--spec-verify-tokens" in command
+    assert ("--spec-draft-step" in command) == (draft_step is not None)
+    assert "--spec-proposal-tokens" not in command
+    assert f"draft_step={draft_step!r}" in script
+    assert "proposal_tokens=None" in script
+    assert f"verify_tokens={verify_tokens!r}" in script

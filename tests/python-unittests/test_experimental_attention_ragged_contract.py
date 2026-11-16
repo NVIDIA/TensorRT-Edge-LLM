@@ -20,11 +20,11 @@ import pytest
 
 pytest.importorskip("tensorrt")
 
-from experimental.builder.ops import BuildContext, BuildOptions
-from experimental.builder.ops import functional as F
-from experimental.builder.ops.ragged import RaggedDecoderInputs
-from experimental.builder.ops.scope import build_scope
-from experimental.builder.ops.transformer import pack_qkv
+from tensorrt_edgellm.builder.ops import BuildContext, BuildOptions
+from tensorrt_edgellm.builder.ops import functional as F
+from tensorrt_edgellm.builder.ops.ragged import RaggedDecoderInputs
+from tensorrt_edgellm.builder.ops.scope import build_scope
+from tensorrt_edgellm.builder.ops.transformer import pack_qkv
 
 
 class _Value:
@@ -159,14 +159,14 @@ def test_attention_uses_exact_unified_optional_and_ragged_input_order():
             context_mask_selector=optional["context_mask_selector"],
             attention_mask=optional["packed_attention_mask"],
             attention_pos_id=optional["attention_position_ids"],
-            skip_softmax_scale_factor=1.5,
+            skip_softmax_prefill_enabled=True,
         )
 
     name, attributes, inputs = net.calls[0]
     assert name == "attention"
     assert attributes["enable_tree_attention"] == 1
     assert "enable_tree_metadata" not in attributes
-    assert attributes["skip_softmax_scale_factor"] == 1.5
+    assert attributes["skip_softmax_prefill_input"] == 1
     assert _names(inputs) == [
         "qkv",
         "past_key_value",
@@ -179,7 +179,7 @@ def test_attention_uses_exact_unified_optional_and_ragged_input_order():
         "context_mask_selector",
         "packed_attention_mask",
         "attention_position_ids",
-        "skip_softmax_scale",
+        "skip_softmax_prefill_scale",
         "query_start_offsets",
         "attention_sequence_lengths",
         "execution_phase_marker",
@@ -187,6 +187,55 @@ def test_attention_uses_exact_unified_optional_and_ragged_input_order():
     ]
     assert output.shape == (-1, 4, 8)
     assert net.reshape_calls == []
+
+
+def test_attention_places_decode_skip_table_after_prefill_skip_table():
+    net = _RecordingNet()
+    with build_scope(_context(net)):
+        F.attention(
+            _Value("qkv"),
+            _Value("past_key_value"),
+            _Value("rope_rotary_cos_sin"),
+            _ragged(),
+            num_q_heads=4,
+            num_kv_heads=2,
+            head_size=8,
+            skip_softmax_prefill_enabled=True,
+            skip_softmax_decode_enabled=True,
+        )
+
+    _, attributes, inputs = net.calls[0]
+    assert attributes["skip_softmax_decode_input"] == 1
+    assert _names(inputs)[6:8] == [
+        "skip_softmax_prefill_scale", "skip_softmax_decode_scale"
+    ]
+    assert _names(inputs)[8:] == [
+        "query_start_offsets",
+        "attention_sequence_lengths",
+        "execution_phase_marker",
+        "context_sequence_count_carrier",
+    ]
+
+
+def test_attention_wires_decode_skip_table_without_prefill_table():
+    net = _RecordingNet()
+    with build_scope(_context(net)):
+        F.attention(
+            _Value("qkv"),
+            _Value("past_key_value"),
+            _Value("rope_rotary_cos_sin"),
+            _ragged(),
+            num_q_heads=4,
+            num_kv_heads=2,
+            head_size=8,
+            skip_softmax_decode_enabled=True,
+        )
+
+    _, attributes, inputs = net.calls[0]
+    assert attributes["skip_softmax_prefill_input"] == 0
+    assert attributes["skip_softmax_decode_input"] == 1
+    assert "skip_softmax_prefill_scale" not in _names(inputs)
+    assert _names(inputs)[6] == "skip_softmax_decode_scale"
 
 
 def test_attention_places_vision_block_input_before_ragged_metadata():

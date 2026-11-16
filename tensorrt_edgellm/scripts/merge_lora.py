@@ -23,7 +23,7 @@ from tensorrt_edgellm.scripts import _dependency_errors
 logger = logging.getLogger(__name__)
 
 
-@_dependency_errors.optional_dependencies("tools")
+@_dependency_errors.optional_dependencies("onnx")
 def main(argv=None, *, prog="tensorrt-edgellm-merge-lora") -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(levelname)s:%(name)s:%(message)s")

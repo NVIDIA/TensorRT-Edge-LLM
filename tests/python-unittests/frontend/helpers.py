@@ -16,9 +16,9 @@
 
 import signal
 
-from experimental import server
 from experimental.frontend import config
-from experimental.server.runtime import engine
+from tensorrt_edgellm import server
+from tensorrt_edgellm.server.runtime import engine
 
 
 def settings(tmp_path, *options):
@@ -38,12 +38,12 @@ class FakeBackend:
         self.text = "answer"
         self.error = None
 
-    def validate(self, _messages):
+    def validate(self, _messages, _tools=None):
         if self.error:
             raise self.error
         return 3
 
-    def stream(self, _messages, on_metrics):
+    def stream(self, _messages, on_metrics, _tools=None):
         self.last_messages = _messages
 
         def iterate():

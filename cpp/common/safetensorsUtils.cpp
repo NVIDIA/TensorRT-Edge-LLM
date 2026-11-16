@@ -34,29 +34,29 @@ namespace rt
 namespace safetensors
 {
 
-namespace
-{
-
-//! @brief Helper function to convert TensorRT data type to safetensors dtype string
-//! @param dataType TensorRT data type
+//! @brief Helper function to convert a data type to safetensors dtype string
+//! @param dataType Data type
 //! @return Safetensors dtype string
 //! @throws std::runtime_error If data type is unsupported
-std::string dataTypeToString(nvinfer1::DataType dataType)
+std::string dataTypeToString(trt_edgellm::DataType dataType)
 {
     switch (dataType)
     {
-    case nvinfer1::DataType::kFLOAT: return "F32";
-    case nvinfer1::DataType::kHALF: return "F16";
-    case nvinfer1::DataType::kBF16: return "BF16";
-    case nvinfer1::DataType::kINT8: return "I8";
-    case nvinfer1::DataType::kUINT8: return "U8";
-    case nvinfer1::DataType::kBOOL: return "BOOL";
-    case nvinfer1::DataType::kINT32: return "I32";
-    case nvinfer1::DataType::kINT64: return "I64";
-    case nvinfer1::DataType::kFP8: return "F8_E4M3";
+    case trt_edgellm::DataType::kFLOAT: return "F32";
+    case trt_edgellm::DataType::kHALF: return "F16";
+    case trt_edgellm::DataType::kBF16: return "BF16";
+    case trt_edgellm::DataType::kINT8: return "I8";
+    case trt_edgellm::DataType::kUINT8: return "U8";
+    case trt_edgellm::DataType::kBOOL: return "BOOL";
+    case trt_edgellm::DataType::kINT32: return "I32";
+    case trt_edgellm::DataType::kINT64: return "I64";
+    case trt_edgellm::DataType::kFP8: return "F8_E4M3";
     default: throw std::runtime_error("Unsupported data type for safetensors serialization");
     }
 }
+
+namespace
+{
 
 size_t nonnegativeSize(nlohmann::json const& value, std::string const& label)
 {
@@ -77,26 +77,26 @@ size_t nonnegativeSize(nlohmann::json const& value, std::string const& label)
 }
 } // namespace
 
-nvinfer1::DataType dataTypeFromString(std::string_view dtype)
+trt_edgellm::DataType dataTypeFromString(std::string_view dtype)
 {
     if (dtype == "F32")
-        return nvinfer1::DataType::kFLOAT;
+        return trt_edgellm::DataType::kFLOAT;
     if (dtype == "F16")
-        return nvinfer1::DataType::kHALF;
+        return trt_edgellm::DataType::kHALF;
     if (dtype == "BF16")
-        return nvinfer1::DataType::kBF16;
+        return trt_edgellm::DataType::kBF16;
     if (dtype == "I8")
-        return nvinfer1::DataType::kINT8;
+        return trt_edgellm::DataType::kINT8;
     if (dtype == "U8")
-        return nvinfer1::DataType::kUINT8;
+        return trt_edgellm::DataType::kUINT8;
     if (dtype == "BOOL")
-        return nvinfer1::DataType::kBOOL;
+        return trt_edgellm::DataType::kBOOL;
     if (dtype == "I32")
-        return nvinfer1::DataType::kINT32;
+        return trt_edgellm::DataType::kINT32;
     if (dtype == "I64")
-        return nvinfer1::DataType::kINT64;
+        return trt_edgellm::DataType::kINT64;
     if (dtype == "F8_E4M3")
-        return nvinfer1::DataType::kFP8;
+        return trt_edgellm::DataType::kFP8;
 
     throw std::runtime_error("Unsupported safetensors data type: " + std::string(dtype));
 }
@@ -122,6 +122,13 @@ FileMetadata parseMetadata(void const* data, size_t bytes, std::string_view sour
     {
         if (name == "__metadata__")
         {
+            ELLM_CHECK(value.is_object(), "Malformed __metadata__ in " + sourceName);
+            for (auto const& [metadataName, metadataValue] : value.items())
+            {
+                ELLM_CHECK(metadataValue.is_string(),
+                    "Safetensors metadata value must be a string for " + metadataName + " in " + sourceName);
+                result.metadata.emplace(metadataName, metadataValue.get<std::string>());
+            }
             continue;
         }
         ELLM_CHECK(value.is_object() && value.contains("dtype") && value["dtype"].is_string() && value.contains("shape")
@@ -167,7 +174,8 @@ FileMetadata parseMetadata(void const* data, size_t bytes, std::string_view sour
     return result;
 }
 
-bool saveSafetensors(std::filesystem::path const& filePath, std::vector<Tensor> const& tensors, cudaStream_t stream)
+bool saveSafetensors(std::filesystem::path const& filePath, std::vector<Tensor> const& tensors, cudaStream_t stream,
+    std::unordered_map<std::string, std::string> const& metadata)
 {
     if (tensors.empty())
     {
@@ -181,6 +189,10 @@ bool saveSafetensors(std::filesystem::path const& filePath, std::vector<Tensor> 
     // Add metadata
     header["__metadata__"]
         = nlohmann::json::object({{"format", "PT"}, {"version", "1.0"}, {"provider", "tensorrt-edge-llm"}});
+    for (auto const& [name, value] : metadata)
+    {
+        header["__metadata__"][name] = value;
+    }
 
     // Calculate data offsets and build header
     size_t currentOffset = 0;
@@ -188,7 +200,7 @@ bool saveSafetensors(std::filesystem::path const& filePath, std::vector<Tensor> 
     for (auto const& tensor : tensors)
     {
         Coords shape = tensor.getShape();
-        nvinfer1::DataType dataType = tensor.getDataType();
+        trt_edgellm::DataType dataType = tensor.getDataType();
         std::string const& name = tensor.getName();
 
         if (name.empty())
@@ -269,7 +281,8 @@ bool saveSafetensors(std::filesystem::path const& filePath, std::vector<Tensor> 
     return true;
 }
 
-bool loadSafetensors(std::filesystem::path const& filePath, std::vector<Tensor>& tensors, cudaStream_t stream)
+bool loadSafetensors(
+    std::filesystem::path const& filePath, std::vector<Tensor>& tensors, cudaStream_t stream, DeviceType device)
 {
     tensors.clear();
 
@@ -295,17 +308,17 @@ bool loadSafetensors(std::filesystem::path const& filePath, std::vector<Tensor>&
         LOG_ERROR("Failed to parse safetensors metadata: %s", e.what());
         return false;
     }
-
     for (TensorMetadata const& entry : metadata.tensors)
     {
         // Create tensor with owned memory
-        Tensor tensor(entry.shape, DeviceType::kGPU, entry.dataType, entry.name);
+        Tensor tensor(entry.shape, device, entry.dataType, entry.name);
         ELLM_CHECK(static_cast<size_t>(tensor.getMemoryCapacity()) == entry.bytes,
             "Safetensors byte count does not match tensor metadata: " + entry.name);
 
         // Copy data from file to GPU
         int8_t const* tensorData = mmapReader->getByteData() + metadata.dataOffset + entry.offset;
-        CUDA_CHECK(cudaMemcpyAsync(tensor.rawPointer(), tensorData, entry.bytes, cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(tensor.rawPointer(), tensorData, entry.bytes,
+            device == DeviceType::kGPU ? cudaMemcpyHostToDevice : cudaMemcpyHostToHost, stream));
 
         tensors.push_back(std::move(tensor));
     }

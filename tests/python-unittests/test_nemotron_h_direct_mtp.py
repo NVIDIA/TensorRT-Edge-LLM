@@ -20,10 +20,12 @@ import pytest
 
 pytest.importorskip("tensorrt")
 
-from experimental.builder.core import contracts, quantization
-from experimental.builder.models import registry
-from experimental.builder.models.nemotron_h import configuration, weights
-from experimental.builder.ops.functional import moe
+from tensorrt_edgellm.builder.core import contracts, quantization
+from tensorrt_edgellm.builder.models import registry
+from tensorrt_edgellm.builder.models.nemotron_h import (configuration,
+                                                        modeling_nemotron_h,
+                                                        weights)
+from tensorrt_edgellm.builder.ops.functional import moe
 
 
 def test_nemotron_h_mtp_uses_family_direct_components():
@@ -63,6 +65,41 @@ def test_nemotron_h_mtp_config_expands_one_predictor_to_two_blocks():
     assert cfg.quant.module_type("lm_head") == "nvfp4"
     assert cfg.quant.module_group_size("lm_head") == 16
     assert cfg.quant.kv_cache_quant == "fp8"
+
+
+def test_nemotron_h_moe_uses_per_expert_nvfp4_a16_precision(monkeypatch):
+    # Given a mixed-precision checkpoint whose expert weights use W4A16 NVFP4,
+    # when the MoE is constructed, then it selects the NVFP4 expert backend.
+    selected = object()
+    module_names = []
+
+    class FakeWeights:
+
+        @staticmethod
+        def module_quant_type(name):
+            module_names.append(name)
+            return quantization.QUANT_NVFP4_A16
+
+    monkeypatch.setattr(modeling_nemotron_h, "GroupedSigmoidRouter",
+                        lambda *args: object())
+    monkeypatch.setattr(modeling_nemotron_h, "NonGatedNvfp4Experts",
+                        lambda *args: selected)
+    monkeypatch.setattr(
+        modeling_nemotron_h, "NonGatedFp16Experts",
+        lambda *args: pytest.fail("selected the FP16 expert backend"))
+    monkeypatch.setattr(modeling_nemotron_h, "NemotronHMLP",
+                        lambda *args: object())
+    ctx = SimpleNamespace(
+        cfg=SimpleNamespace(quant_type=quantization.QUANT_NVFP4_A16,
+                            moe_latent_size=None),
+        weights=FakeWeights(),
+        options=SimpleNamespace(trt_native_moe=False),
+    )
+
+    layer = modeling_nemotron_h.NemotronHMoE(ctx, "backbone.layers.1.mixer")
+
+    assert layer.experts is selected
+    assert module_names == ["backbone.layers.1.mixer.experts.0.up_proj"]
 
 
 class _FakeWeights:
@@ -145,9 +182,12 @@ def test_fp16_moe_emits_nemotron_routing_contract(monkeypatch):
         "fc2_weights": np.zeros((2, 4, 128), np.float16),
     }
     bindings = {"fc1_weights": {}, "fc2_weights": {}}
+    router_logits = SimpleNamespace(ndim=2)
+    hidden_states = SimpleNamespace(ndim=2)
+    correction_bias = SimpleNamespace(ndim=1)
 
-    result = moe.fp16_moe("router",
-                          "hidden",
+    result = moe.fp16_moe(router_logits,
+                          hidden_states,
                           expert_weights,
                           2,
                           1,
@@ -160,10 +200,10 @@ def test_fp16_moe_emits_nemotron_routing_contract(monkeypatch):
                           n_group=2,
                           topk_group=1,
                           routed_scaling_factor=2.5,
-                          e_score_correction_bias="correction")
+                          e_score_correction_bias=correction_bias)
 
     assert result == "output"
-    assert captured["inputs"][-1] == "correction"
+    assert captured["inputs"][-1] is correction_bias
     assert captured["attributes"]["activation_type"] == 4
     assert captured["attributes"]["routing_mode"] == 1
     assert captured["attributes"]["n_group"] == 2

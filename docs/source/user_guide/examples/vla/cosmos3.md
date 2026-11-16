@@ -27,7 +27,7 @@ trtedge export \
 ### 2. Build All Policy Engines
 
 ```bash
-./build/experimental_models/cosmos3/examples/cosmos3_policy_build \
+./build/bin/cosmos3_policy_build \
   --onnx-dir "$ONNX_DIR" \
   --engine-dir "$ENGINE_DIR"
 ```
@@ -39,7 +39,7 @@ Use `--max-batch-size N` when the runtime must accept more than one prompt.
 For one observation image:
 
 ```bash
-./build/experimental_models/cosmos3/examples/cosmos3_policy_inference \
+./build/bin/cosmos3_policy_inference \
   --engine-dir "$ENGINE_DIR" \
   --image observation.png \
   --prompt "Pick up the banana and place it in the bowl." \
@@ -71,13 +71,13 @@ trtedge export \
 ### 2. Build the LLM and Visual Engines
 
 ```bash
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir "$ONNX_DIR/reasoning/llm" \
   --engine-dir "$ENGINE_DIR/reasoning" \
   --max-input-len 2048 \
   --max-kv-cache-capacity 4096
 
-./build/examples/multimodal/visual_build \
+./build/bin/visual_build \
   --onnx-dir "$ONNX_DIR/reasoning/visual" \
   --engine-dir "$ENGINE_DIR/reasoning"
 ```
@@ -88,7 +88,7 @@ For image reasoning, create an input file using the standard
 [image message format](../../format/input-format.md#message-fields), then run:
 
 ```bash
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
   --engine-dir "$ENGINE_DIR/reasoning" \
   --multimodal-engine-dir "$ENGINE_DIR/reasoning" \
   --input-file input.json \

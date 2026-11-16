@@ -51,8 +51,9 @@ namespace plugins
 //!   [10] state_indices [batch]                           INT32
 //!   [11] execution_phase_marker [1..8]                   INT32
 //!   [12] context_sequence_count_carrier [0..batch]       INT32 shape-only context count
-//!   [13] tree_parent_ids [tokens]                         INT32 (DDTree engines only)
-//!   [14] tree_depths [tokens]                            INT32 (DDTree engines only)
+//!   [13] tree_parent_ids [tokens]                         INT32 (verify-capable instances)
+//!   [14] tree_depths [tokens]                            INT32 (verify-capable instances)
+//!   [15] spec_verify_layout [0..2]                      INT32 shape-only layout (verify-capable instances)
 //!
 //! Outputs:
 //!   [0] output     [tokens, nheads, dim]                  FP16
@@ -68,7 +69,7 @@ class MambaPlugin : public nvinfer1::IPluginV3,
 {
 public:
     MambaPlugin(std::string const& name, int32_t dim, int32_t dstate, int32_t nheads, int32_t ngroups,
-        int32_t dtSoftplus, int32_t useSpecVerifyState = 0, int32_t useDDTree = 0, int32_t replayFormatVersion = 0);
+        int32_t dtSoftplus, int32_t useSpecVerifyState = 0);
 
     MambaPlugin() = delete;
     MambaPlugin(MambaPlugin const&) = delete;
@@ -111,6 +112,23 @@ protected:
     int32_t numInputs() const noexcept;
     int32_t numOutputs() const noexcept;
 
+    //! Phase 8 needs a plain (non-spec-verify) layer whose head/state dims have a packed SSD kernel on this GPU.
+    bool supportsCompactPhase(int32_t headDim, int32_t stateDim) const noexcept;
+
+    //! This layer's name and shape for error logs (describePluginLayer).
+    std::string describeLayer() const;
+
+    //! Phase 8: prefill rows [0, T_p) through the selected packed SSD kernel, decode rows [T_p, T) through
+    //! enqueueDecodeRows.
+    int32_t enqueueCompact(nvinfer1::PluginTensorDesc const* inputDesc, nvinfer1::PluginTensorDesc const* outputDesc,
+        void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream) noexcept;
+
+    //! Decode emission of phase 3 and of the phase 8 decode rows: numSequences sequences of rowsPerSequence rows
+    //! starting at token row firstRow and sequence firstSequence.
+    void enqueueDecodeRows(nvinfer1::PluginTensorDesc const* inputDesc, void const* const* inputs, void* const* outputs,
+        int32_t firstRow, int32_t firstSequence, int32_t numSequences, int32_t rowsPerSequence,
+        cudaStream_t stream) const;
+
     std::string mLayerName;
     std::string mNamespace;
 
@@ -122,9 +140,7 @@ protected:
     //! Emit per-token replay factors for accepted-path state reconstruction.
     int32_t mUseSpecVerifyState{};
     //! DDTree verify consumes parent/depth inputs and evaluates each node from its ancestor state.
-    int32_t mUseDDTree{};
     //! Serialized replay format guard; non-spec engines do not consume replay outputs.
-    int32_t mReplayFormatVersion{};
 
     std::vector<nvinfer1::PluginField> mDataToSerialize;
     nvinfer1::PluginFieldCollection mFCToSerialize;

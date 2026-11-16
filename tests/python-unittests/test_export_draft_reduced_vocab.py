@@ -20,8 +20,8 @@ from types import SimpleNamespace
 import pytest
 
 from tensorrt_edgellm import model as model_module
+from tensorrt_edgellm.onnx import cli as export_script
 from tensorrt_edgellm.onnx import export as onnx_export
-from tensorrt_edgellm.scripts import export as export_script
 
 
 def _checkpoint(tmp_path, model_type):
@@ -54,7 +54,7 @@ def test_mtp_tree_rejects_draft_reduced_vocab(monkeypatch, tmp_path, capsys):
         _run_export_main(monkeypatch, checkpoint, tmp_path, "--mtp-tree-base",
                          "--draft-reduced-vocab-dir", "reduced")
 
-    assert "not supported with --mtp-tree-base" in capsys.readouterr().err
+    assert "unrecognized arguments: --mtp-tree-base" in capsys.readouterr().err
 
 
 def test_draft_reduced_vocab_requires_consuming_stage(monkeypatch, tmp_path,
@@ -89,6 +89,16 @@ def test_cosmos_export_cannot_silently_drop_mtp_draft_reduction(
                          "--draft-reduced-vocab-dir", "reduced")
 
     assert "requires a consuming draft stage" in capsys.readouterr().err
+
+
+def test_vanilla_export_does_not_read_removed_tree_flags(
+        monkeypatch, tmp_path):
+    # Given the current CLI without legacy tree flags, when a vanilla export
+    # is parsed, then speculative-mode detection does not read removed fields.
+    checkpoint = _checkpoint(tmp_path, "qwen3")
+
+    _run_export_main(monkeypatch, checkpoint, tmp_path, "--skip-llm",
+                     "--skip-visual", "--skip-audio", "--skip-code2wav")
 
 
 def test_mtp_draft_forwards_reduced_vocab_to_model_loader(

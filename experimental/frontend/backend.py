@@ -17,9 +17,9 @@
 import json
 import pathlib
 
-from experimental import server
-from experimental.server.parsing import reasoning
-from experimental.server.runtime import engine
+from tensorrt_edgellm import server
+from tensorrt_edgellm.server.parsing import reasoning, tool_calling
+from tensorrt_edgellm.server.runtime import engine
 
 
 def _weight_label(quant, dtype):
@@ -64,9 +64,9 @@ class Backend:
                               on_progress=on_progress,
                               **config.runtime)
 
-    def validate(self, messages):
+    def validate(self, messages, tools=None):
         """Reject an oversized turn before changing conversation history."""
-        return self.llm.validate_context(messages, self.sampling)
+        return self.llm.validate_context(messages, self.sampling, tools=tools)
 
     @property
     def context_capacity(self):
@@ -100,15 +100,27 @@ class Backend:
             "speculative mode": speculation,
         }
 
-    def stream(self, messages, on_metrics):
-        """Adapt reasoning deltas using the public cancellable stream wrapper."""
-        parser = reasoning.REASONING_PARSERS.resolve(
-            "auto" if self.sampling.enable_thinking else "none",
-            self.llm.model_dir)
-        splitter = parser.stream() if parser else None
+    def stream(self, messages, on_metrics, tools=None):
+        """Yield content and reasoning deltas, and ToolCall objects when tools are offered."""
+        tool_config = tool_calling.validate_tool_request(messages, tools)
+        parser = tool_calling.stream_assistant_output(
+            tool_config,
+            self.llm.model_dir,
+            reasoning_parser="auto"
+            if self.sampling.enable_thinking else "none",
+            allow_implicit_reasoning=self.sampling.enable_thinking)
         stream = self.llm.generate_stream(messages,
                                           self.sampling,
+                                          tools=tools,
                                           on_metrics=on_metrics)
+
+        def events(chunk):
+            for event in chunk:
+                if event["type"] == "tool_call":
+                    yield event["tool_call"]
+                else:
+                    yield reasoning.ReasoningDelta(event["type"],
+                                                   event["text"])
 
         def iterate():
             try:
@@ -117,12 +129,8 @@ class Backend:
                         raise RuntimeError(
                             "Generation failed in the backend; see the preceding diagnostics."
                         )
-                    if splitter:
-                        yield from splitter.feed(delta.text)
-                    elif delta.text:
-                        yield reasoning.ReasoningDelta("content", delta.text)
-                if splitter:
-                    yield from splitter.flush()
+                    yield from events(parser.feed(delta.text))
+                yield from events(parser.flush())
             finally:
                 stream.close()
 

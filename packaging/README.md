@@ -1,9 +1,9 @@
 # TensorRT Edge-LLM wheel tooling
 
-Public releases contain six wheels: CPython 3.10, 3.11, and 3.12, each for
-`x86_64` and `aarch64`. The filename identifies the Python ABI and CPU
-architecture; each wheel contains every qualified platform, CUDA/TensorRT, and
-GPU-SM payload for that architecture. The installed runtime detects those
+Public releases contain one `cp310-abi3` wheel for each of `x86_64` and
+`aarch64`. Each wheel supports qualified GIL CPython 3.10 through 3.14
+and contains every qualified platform, CUDA/TensorRT, and GPU-SM payload for
+its architecture. The installed runtime detects those
 properties and loads one exact payload. It does not fall back to another SM or
 TensorRT major.
 
@@ -19,12 +19,13 @@ the [installation guide](../docs/source/user_guide/getting_started/installation.
 to prepare CUDA, TensorRT, and a compatible Python environment, then install:
 
 ```bash
-python -m pip install "tensorrt-edgellm[server]"
+python -m pip install --only-binary=tensorrt-edgellm \
+  --extra-index-url https://pypi.nvidia.com "tensorrt-edgellm[runtime]==<version>"
 ```
 
-`[server]` is recommended for high-level inference. See the
-[Optional Python dependencies](../docs/source/user_guide/getting_started/installation.md#optional-python-dependencies)
-for export/tools workflows, or the [Python runtime example](../docs/source/user_guide/examples/python-runtime.md)
+`[runtime]` is recommended for high-level inference. See the
+[extras guide](../docs/source/user_guide/getting_started/installation.md#optional-python-dependencies)
+for export/tools workflows, or the [minimal base example](../docs/source/user_guide/getting_started/installation.md#minimal-installation-advanced)
 for low-level runtime use without extras. Do not install the repository package
 over the published wheel.
 
@@ -42,8 +43,9 @@ Normal package installation does not install these build-only tools.
 
 ### Prerequisites
 
-Clone the repository with submodules and create a build environment using the
-same CPython minor version as the wheel:
+Clone the repository with submodules and create a CPython 3.10 or newer build
+environment. The extension targets the 3.10 stable ABI regardless of the build
+interpreter's minor version:
 
 ```bash
 git clone --recurse-submodules https://github.com/NVIDIA/TensorRT-Edge-LLM.git
@@ -130,6 +132,30 @@ On IGX Thor, the `igx-thor-cu13-sm110-sm120` row is one native payload with
 SM110 and SM120 device images. Select either physical GPU before `--local`;
 both selections resolve to the same build row and resulting payload.
 
+GB200 and GB300 payloads are cross-built on x86_64 with the aarch64 CUDA 13.4
+toolchain and TensorRT 11 SDK; the desktops are used only to install and
+validate the resulting wheel. Generate the wheel-safe CuTe artifacts once, then
+build each payload with the same command and its matching variant:
+
+```bash
+python packaging/wheel_cli.py build-oss-cutedsl \
+    --variant gb200-ubuntu2404-cu13-sm100-trt11 \
+    --variant gb300-ubuntu2404-cu13-sm103-trt11 \
+    --output-dir kernelSrcs/cuteDSLOssPrebuilt
+python packaging/wheel_cli.py build-wheel \
+    --variant gb200-ubuntu2404-cu13-sm100-trt11 \
+    --trt-package-dir /path/to/TensorRT-aarch64 \
+    --target-sysroot /path/to/aarch64-sysroot \
+    --target-python-include-dir /path/to/aarch64-python-headers \
+    --output-dir dist/gb200
+```
+
+Use the GB300 variant and a separate output directory for the other payload.
+In CI, both build on the CPU cross-build runner. `build-wheel --local` on a
+desktop is only a development option, not the release CI path.
+The Spark payload is also CPU cross-built; its device CI job only installs and
+tests the assembled wheel.
+
 #### Install the local wheel
 
 Install into a clean environment on the same target configuration:
@@ -143,8 +169,8 @@ python3 -m venv --system-site-packages .venv-install
 .venv-install/bin/trtedge build --help
 ```
 
-Build and install with the same CPython minor version. The runtime rejects a
-wheel whose platform, CUDA/TensorRT ABI, or GPU architecture does not match.
+The runtime rejects a wheel whose platform, CUDA/TensorRT ABI, or GPU
+architecture does not match.
 
 ### Build for selected GPUs
 
@@ -163,8 +189,8 @@ A selected-target wheel receives a deterministic `subset` build tag and its
 runtime manifest lists only the included variants. It fails with a supported-row
 diagnostic on another target rather than loading an incompatible binary.
 
-For an aarch64 cross build, also pass `--toolchain-file`, `--target-sysroot`,
-and `--target-python-include-dir`. Selected variants must share one build
+For an aarch64 cross build, also pass `--target-sysroot` and
+`--target-python-include-dir`. Selected variants must share one build
 context; build incompatible platform or TensorRT variants separately.
 
 The IGX Thor dual-GPU payload is already represented by one variant, so do not
@@ -215,20 +241,20 @@ environments:
 
 ```bash
 python packaging/wheel_cli.py validate-source --output artifacts/provenance/source.json
-python packaging/wheel_cli.py build-base --output-dir artifacts/base/cp312
+python packaging/wheel_cli.py build-base --output-dir artifacts/base
 python packaging/wheel_cli.py prepare-cutedsl \
     --variant VARIANT --artifact-dir kernelSrcs/cuteDSLPrebuilt
 python packaging/wheel_cli.py build-payload \
-    --variant VARIANT --python-abi cp312 \
+    --variant VARIANT --python-abi cp310 \
     --trt-package-dir /path/to/TensorRT \
-    --output-dir artifacts/payloads/VARIANT-cp312
+    --output-dir artifacts/payloads/VARIANT
 python packaging/wheel_cli.py verify-payload \
-    --stage artifacts/payloads/VARIANT-cp312
+    --stage artifacts/payloads/VARIANT
 python packaging/wheel_cli.py assemble \
-    --base-wheel artifacts/base/cp312/tensorrt_edgellm-*.whl \
+    --base-wheel artifacts/base/tensorrt_edgellm-*.whl \
     --payload-root artifacts/payloads \
-    --cpu-arch x86_64 --python-abi cp312 \
-    --output-dir dist/x86_64/cp312
+    --cpu-arch x86_64 \
+    --output-dir dist/x86_64
 ```
 
 Pass one or more `--variant` options to `assemble` for a subset wheel. Omit the

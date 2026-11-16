@@ -84,6 +84,7 @@ from fp4_common import (
     fabs_f32,
     fmax_f32,
     rcp_approx_ftz,
+    load_global_scale,
     quantize_block_fp4,
     quantize_block_fp4_fast,
     get_ptr_as_int64,
@@ -1562,7 +1563,14 @@ class MoEPrefillKernel:
                 task_slice_count_val = _ld_shared_i32(ctrl_base_addr + Int32(20))
                 task_valid_rows_val = _ld_shared_i32(ctrl_base_addr + Int32(24))
 
-                alpha_value = alpha[task_expert_idx].to(cutlass.Float32)
+                alpha_value = alpha[task_expert_idx].to(
+                    cutlass.Float32
+                ) * load_global_scale(
+                    input_global_scale,
+                    task_expert_idx,
+                    self.input_scales_are_reciprocal,
+                    self.fast_math,
+                )
                 valid_rows = task_valid_rows_val
                 tile_m_base = task_m_tile_idx * Int32(self.tile_shape_mnk[0])
 
@@ -1597,7 +1605,14 @@ class MoEPrefillKernel:
                 mma_tile_n = self.tile_shape_mnk[1] // cute.size(tRS_rGate, mode=[2])
                 epi_buffer = Int32(0)
 
-                down_alpha_value = down_alpha[task_expert_idx].to(cutlass.Float32)
+                down_alpha_value = down_alpha[task_expert_idx].to(
+                    cutlass.Float32
+                ) * load_global_scale(
+                    global_scale,
+                    task_expert_idx,
+                    self.input_scales_are_reciprocal,
+                    self.fast_math,
+                )
                 down_acc = cute.make_rmem_tensor(acc_shape, self.acc_dtype)
 
                 epi_rest_m = self.tile_shape_mnk[0] // self.epi_tile[0]
@@ -1745,6 +1760,12 @@ class MoEPrefillKernel:
                                     tCrB[None, _nt, k_block_idx],
                                     gate_acc[None, _mt, _nt],
                                 )
+                    if cutlass.const_expr(not self.is_gated):
+                        # Non-gated experts have no up pass: drain the FC1
+                        # consumers before the DMA warp refills sB/sSFB with
+                        # the FC2 B_down tiles (phase2_pipeline's barriers
+                        # never see the FC1 consumer releases).
+                        self.pass_sync_barrier.arrive_and_wait()
                     if cutlass.const_expr(self.is_gated):
                         # Gate and up share the A/SFA staging buffers. Drain
                         # gate consumers before the DMA warp starts refilling
@@ -2426,6 +2447,10 @@ class MoEPrefillKernel:
                     # = GEMM2 K-tile since intermediate dim is the reduction dim).
                     # Load ALL FC2 tiles continuously once stage1 no longer needs
                     # the gate staging buffers.
+                    if cutlass.const_expr(not self.is_gated):
+                        # Pair of the MMA-side barrier above: wait until the
+                        # FC1 consumers have released sB/sSFB.
+                        self.pass_sync_barrier.arrive_and_wait()
                     phase2_prod_state.reset_count()
                     for output_tile_idx in range(0, output_tile_cnt, 1, unroll=4):  # type: ignore[call-overload]
                         phase2_pipeline.producer_acquire(phase2_prod_state)

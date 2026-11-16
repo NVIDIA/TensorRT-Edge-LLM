@@ -21,68 +21,24 @@ from types import SimpleNamespace
 
 import pytest
 
-from packaging.requirements import Requirement
-
-try:
-    import tomllib
-except ImportError:  # Python 3.10
-    import tomli as tomllib
-
-from experimental.server.config import (ApiConfig, ContextCacheConfig,
-                                        ServerConfigError, SpeculativeConfig,
-                                        parse_server_config)
-from experimental.server.parsing.reasoning import REASONING_PARSERS
-
-
-def _dependency_names(requirements):
-    return {Requirement(value).name.lower() for value in requirements}
-
-
-def test_server_dependencies_exclude_export_and_native_build_toolchains():
-    project_root = Path(__file__).resolve().parents[2]
-    with open(project_root / "pyproject.toml", "rb") as file:
-        project = tomllib.load(file)["project"]
-
-    base = _dependency_names(project["dependencies"])
-    extras = project["optional-dependencies"]
-    builder = _dependency_names(extras["builder"])
-    server = _dependency_names(extras["server"])
-    server_tools = _dependency_names(extras["server-tools"])
-    export = _dependency_names(extras["export"])
-    tools = _dependency_names(extras["tools"])
-    native_build = _dependency_names(extras["native-build"])
-
-    assert {
-        "cuda-python",
-        "fastapi",
-        "uvicorn",
-        "huggingface-hub",
-        "av",
-        "numpy",
-        "python-multipart",
-    } <= server
-    assert {"cuda-python", "numpy"} <= base
-    assert not builder
-    assert not server & {
-        "torch",
-        "transformers",
-        "jinja2",
-        "onnx",
-        "onnxscript",
-        "onnx-graphsurgeon",
-        "safetensors",
-        "pybind11",
-    }
-    assert server_tools == {"transformers"}
-    assert native_build == {"pybind11"}
-    assert export <= tools
+from tensorrt_edgellm.server.config import (ApiConfig, ContextCacheConfig,
+                                            PleRuntimeConfig,
+                                            ServerConfigError,
+                                            SpeculativeConfig,
+                                            parse_server_config)
+from tensorrt_edgellm.server.parsing.reasoning import REASONING_PARSERS
 
 
 def test_package_import_does_not_load_export_frameworks():
+    # Given only a runtime or direct-builder process, when its public modules
+    # are imported, then PyTorch and ONNX remain unloaded.
     project_root = Path(__file__).resolve().parents[2]
     code = """
 import sys
 import tensorrt_edgellm
+import tensorrt_edgellm.builder.cli
+import tensorrt_edgellm.server
+import tensorrt_edgellm.server.cli
 
 assert tensorrt_edgellm.__version__
 assert "tensorrt_edgellm._export_api" not in sys.modules
@@ -106,13 +62,21 @@ def test_maps_model_cache_and_build_profile(tmp_path):
         "8192",
         "--max-batch-size",
         "4",
+        "--max-spec-verify-tokens",
+        "64",
+        "--max-spec-draft-tokens",
+        "16",
+        "--spec-draft-step",
+        "3",
+        "--spec-proposal-tokens",
+        "7",
+        "--spec-verify-tokens",
+        "8",
         "--enable-context-reuse",
         "--context-cache-max-records",
         "64",
-        "--context-cache-recurrent-snapshot-pool-bytes",
-        "1048576",
-        "--context-cache-partial-kv-snapshot-pool-bytes",
-        "2097152",
+        "--context-cache-max-snapshots",
+        "12",
         "--reasoning-parser",
         "qwen3",
         "--tool-call-parser",
@@ -126,18 +90,22 @@ def test_maps_model_cache_and_build_profile(tmp_path):
     assert config.model.max_input_len == 2048
     assert config.model.max_kv_cache_capacity == 8192
     assert config.model.max_batch_size == 4
+    assert config.model.max_spec_verify_tokens == 64
+    assert config.model.max_spec_draft_tokens == 16
+    assert config.model.draft_step == 3
+    assert config.model.proposal_tokens == 7
+    assert config.model.verify_tokens == 8
     assert config.model.context_cache_config == ContextCacheConfig(
         enabled=True,
         max_records=64,
-        recurrent_snapshot_pool_bytes=1048576,
-        partial_kv_snapshot_pool_bytes=2097152,
+        max_snapshots=12,
     )
     assert config.api.enable_auto_tool_choice
 
 
 def test_context_cache_config_rejects_ignored_or_invalid_options():
     with pytest.raises(ServerConfigError, match="tuning requires"):
-        ContextCacheConfig(recurrent_snapshot_pool_bytes=1)
+        ContextCacheConfig(max_snapshots=1)
     with pytest.raises(ServerConfigError, match="tuning requires"):
         ContextCacheConfig(max_records=1)
     with pytest.raises(ServerConfigError, match="unsupported context-cache"):
@@ -148,17 +116,8 @@ def test_context_cache_config_rejects_ignored_or_invalid_options():
         ContextCacheConfig(enabled=True, max_records=-1)
     with pytest.raises(ServerConfigError, match="signed 32-bit"):
         ContextCacheConfig(enabled=True, max_records=2**31)
-    with pytest.raises(ServerConfigError, match="signed 64-bit"):
-        ContextCacheConfig(enabled=True, recurrent_snapshot_pool_bytes=2**63)
-
-
-def test_allowed_local_media_path_survives_cli_parsing(tmp_path):
-    config = parse_server_config([
-        "Qwen/Qwen3.5-0.8B",
-        "--allowed-local-media-path",
-        str(tmp_path),
-    ])
-    assert config.api.allowed_local_media_path == str(tmp_path)
+    with pytest.raises(ServerConfigError, match="signed 32-bit"):
+        ContextCacheConfig(enabled=True, max_snapshots=2**31)
 
 
 @pytest.mark.parametrize("kwargs,match", [
@@ -175,7 +134,7 @@ def test_api_config_rejects_invalid_admission_values(kwargs, match):
 
 
 def test_cli_forwards_http_configuration(monkeypatch, tmp_path):
-    from experimental.server import cli
+    from tensorrt_edgellm.server import cli
 
     captured = {}
 
@@ -219,9 +178,9 @@ def test_cli_forwards_http_configuration(monkeypatch, tmp_path):
 
 
 def test_llm_serve_forwards_allowed_local_media_path(monkeypatch, tmp_path):
-    from experimental.server.api import app as app_module
-    from experimental.server.runtime import engine_client
-    from experimental.server.runtime.engine import LLM
+    from tensorrt_edgellm.server.api import app as app_module
+    from tensorrt_edgellm.server.runtime import engine_client
+    from tensorrt_edgellm.server.runtime.engine import LLM
 
     captured = {}
     llm = LLM.__new__(LLM)
@@ -251,6 +210,25 @@ def test_paired_speculation_requires_draft_model():
         ])
 
 
+def test_domino_speculation_parses_and_requires_draft_model():
+    """The server accepts method domino with a draft checkpoint and rejects
+    it without one, like the other paired cached-block drafts."""
+    config = parse_server_config([
+        "Qwen/Qwen3-8B",
+        "--speculative-config",
+        '{"method":"domino","model":"Huang2020/Qwen3-8B-Domino-b16"}',
+    ])
+    spec = config.model.speculative_config
+    assert spec.method == "domino"
+    assert spec.draft_model == "Huang2020/Qwen3-8B-Domino-b16"
+    with pytest.raises(ServerConfigError, match="speculative-config.model"):
+        parse_server_config([
+            "Qwen/Qwen3-8B",
+            "--speculative-config",
+            '{"method":"domino"}',
+        ])
+
+
 def test_eagle_build_uses_real_base_and_draft_ids():
     config = parse_server_config([
         "Qwen/Qwen3-1.7B",
@@ -263,6 +241,7 @@ def test_eagle_build_uses_real_base_and_draft_ids():
     assert spec.method == "eagle3"
     assert spec.draft_model == "AngelSlim/Qwen3-1.7B_eagle3"
     assert config.model.draft_step == 3
+    assert config.model.proposal_tokens is None
 
 
 def test_separate_mtp_checkpoint_selects_gemma_builder_contract():
@@ -363,3 +342,87 @@ def test_muse_glimmer_reasoning_parser_splits_atem_channels(tmp_path):
                    if delta.field == "reasoning") == "plan"
     assert "".join(delta.text for delta in deltas
                    if delta.field == "content") == "answer"
+
+
+@pytest.mark.parametrize("settings", [
+    {
+        "residency": "unknown"
+    },
+    {
+        "residency": "cached"
+    },
+    {
+        "residency": "cached",
+        "cache_slots": 1
+    },
+    {
+        "cache_slots": -1
+    },
+    {
+        "cache_slots": True
+    },
+    {
+        "cache_slots": 2**31
+    },
+    {
+        "cache_slots": 2.5
+    },
+    {
+        "file_path": None
+    },
+    {
+        "fill_bytes": 4096
+    },
+])
+def test_ple_config_rejects_invalid_or_ignored_settings(settings):
+    with pytest.raises(ServerConfigError):
+        PleRuntimeConfig.parse(settings)
+
+
+def test_ple_config_supports_mapping_and_typed_python_settings():
+    settings = {
+        "residency": "cached",
+        "cache_slots": 2,
+        "file_path": "/local/weights.safetensors"
+    }
+    config = PleRuntimeConfig.parse(settings)
+    assert config == PleRuntimeConfig(**settings)
+    assert PleRuntimeConfig.parse(config) == config
+    assert PleRuntimeConfig.parse(None) == PleRuntimeConfig()
+    with pytest.raises(ServerConfigError, match="mapping"):
+        PleRuntimeConfig.parse("cached")
+
+
+def test_server_rejects_invalid_ple_capacity():
+    with pytest.raises(ServerConfigError, match="PLE"):
+        parse_server_config(
+            ["model", "--ple-residency", "cached", "--ple-cache-slots", "1"])
+
+
+# yapf: disable
+@pytest.mark.parametrize("argv, match", [
+    ("--scheduling-policy priority", "only apply with --enable-in-flight-batching"),
+    ("--enable-in-flight-batching --preemption pause", "preemption=pause requires schedulingPolicy=priority"),
+    ("--enable-in-flight-batching --max-batch-size 2 --priority-reserved-slots 1",
+     "priorityReservedSlots requires schedulingPolicy=priority"),
+    ("--enable-in-flight-batching --ifb-scheduling-mode prefillFirst --scheduling-policy priority --preemption pause",
+     "preemption=pause requires ifbSchedulingMode=mixed or auto"),
+    ("--enable-in-flight-batching --scheduling-policy priority --max-pause-steps 2",
+     r"maxPauseSteps 2 must be 0 \(no limit\), or positive with preemption=pause"),
+    ("--enable-in-flight-batching --max-batch-size 2 --scheduling-policy priority --priority-reserved-slots 2",
+     r"priorityReservedSlots 2 must be in \[0, maxBatchSize - 1\] = \[0, 1\]"),
+    ("--enable-in-flight-batching --ifb-scheduling-mode prefill_first",
+     "unknown ifbSchedulingMode 'prefill_first'; expected one of auto, mixed, prefillFirst, singleCohort"),
+    ("--min-request-priority 1", "min_request_priority must be an int32 integer <= 0"),
+], ids=["policy_without_ifb", "pause_under_fcfs", "reserved_slots_under_fcfs", "pause_under_prefill_first",
+        "pause_limit_without_pause", "every_slot_reserved", "unknown_mode", "positive_minimum_priority"])
+# yapf: enable
+def test_invalid_ifb_scheduling_combinations_are_refused_while_parsing(
+        argv, match):
+    """A scheduling flag without --enable-in-flight-batching, a priority option under the fcfs policy,
+    --preemption pause with a mode that never mixes, --max-pause-steps without --preemption pause, reserved slots
+    that leave none of --max-batch-size to other requests, an unknown mode name, and a positive
+    --min-request-priority are refused while the configuration is parsed, before the engine is built; the scheduling
+    options with the RequestEngine's own message, naming the requirement."""
+    with pytest.raises(ServerConfigError, match=match):
+        parse_server_config(["Qwen/Qwen3-0.6B", *argv.split()])

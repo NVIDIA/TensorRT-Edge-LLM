@@ -20,10 +20,10 @@ import types
 
 import pytest
 
-from experimental import server
 from experimental.frontend import backend, cli, session, terminal
-from experimental.server.parsing import reasoning
-from experimental.server.runtime import engine
+from tensorrt_edgellm import server
+from tensorrt_edgellm.server.parsing import reasoning
+from tensorrt_edgellm.server.runtime import engine
 
 from . import helpers
 
@@ -96,7 +96,7 @@ def test_native_stream_error_preserves_history_and_allows_recovery(
 
     model.llm = types.SimpleNamespace(model_dir=str(tmp_path),
                                       generate_stream=generate,
-                                      validate_context=lambda *_: 3,
+                                      validate_context=lambda *_, **__: 3,
                                       max_kv_cache_capacity=8192,
                                       close=lambda: None)
     conversation = session.Session(model, [])
@@ -131,7 +131,7 @@ def test_thinking_display_history_and_regeneration(tmp_path, cancel):
     model = helpers.FakeBackend()
     requests = []
 
-    def stream(messages, on_metrics):
+    def stream(messages, on_metrics, _tools=None):
         requests.append(messages)
 
         def iterate():

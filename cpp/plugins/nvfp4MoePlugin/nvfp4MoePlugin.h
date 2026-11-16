@@ -39,7 +39,7 @@ enum class Nvfp4MoeRoutingMode : int32_t
 
 /*!
  * @brief TensorRT plugin: NVFP4 MoE — FP16 activations with on-the-fly NVFP4
- * quant. SM100/SM101/SM110 use the split FC1/FC2 CuTeDSL path.
+ * quant. SM100/SM101/SM103/SM110 use the split FC1/FC2 CuTeDSL path.
  *
  * Weight layout: FC1 is the 64-row up/gate interleave
  * ``[up_chunk(64), gate_chunk(64), up_chunk(64), ...]`` (the layout the split
@@ -47,7 +47,7 @@ enum class Nvfp4MoeRoutingMode : int32_t
  * \c NvFP4MoEPluginGeforce plugin which consumes the plain
  * ``[up_all, gate_all]`` concat layout.
  *
- * @note This plugin is only supported on SM100, SM101, and SM110.
+ * @note This plugin is only supported on SM100, SM101, SM103, and SM110.
  * @note This plugin is only supported on FP16 I/O.
  * @note The split FC1/FC2 path supports swiglu and relu2 with E=128, 0 < top_k <= 8.
  * @note Activations use token-major [T, H] and router logits use [T, E].

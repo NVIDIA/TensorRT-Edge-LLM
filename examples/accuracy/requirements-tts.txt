@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Optional TTS scoring add-on. English speaker scoring uses the PyTorch and
+# TorchAudio versions supplied by the selected NVIDIA framework container.
+librosa==0.11.0
+soundfile==0.14.0
+funasr==1.3.1
+transformers==5.17.0
+zhconv==1.4.3
+zhon==2.1.1

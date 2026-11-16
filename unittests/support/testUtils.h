@@ -18,6 +18,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #if SUPPORTS_FP8
@@ -218,3 +219,17 @@ inline std::vector<half> dequantizeFp8ToHalf(std::vector<__nv_fp8_e4m3> const& s
     return dst;
 }
 #endif // SUPPORTS_FP8
+
+//! True for the SM100 family (SM100/101/103/110), the SMs that kernelSrcs/build_cutedsl.py builds the ctm_decode_tree_*
+//! and gemm_blackwell_small_fp16in_fp32out CuTe DSL variants for. Keep in sync with their `supported_sms`. The
+//! GeForce-class SM120/121 are not in this family.
+//! A multi-SM artifact such as sm_110_sm_120 defines those variants' compile-time macros because of its SM110 kernels,
+//! yet its dispatcher has no kernel for SM120, so tests of these variants must also check the device SM at runtime.
+inline bool hasSm100FamilyCuteDslKernels(int32_t smVersion)
+{
+    constexpr int32_t kSM100{100};
+    constexpr int32_t kSM101{101};
+    constexpr int32_t kSM103{103};
+    constexpr int32_t kSM110{110};
+    return smVersion == kSM100 || smVersion == kSM101 || smVersion == kSM103 || smVersion == kSM110;
+}

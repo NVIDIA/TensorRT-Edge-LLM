@@ -19,6 +19,7 @@
 #include "common/checkMacros.h"
 #include "common/mmapReader.h"
 #include "common/safetensorsUtils.h"
+#include "common/trtInterop.h"
 #include "profiling/metrics.h"
 #include "profiling/timer.h"
 #include <cstdint>
@@ -39,15 +40,18 @@ namespace trt_edgellm
 namespace rt
 {
 
-Gemma4AudioRunner::Gemma4AudioRunner(std::string const& engineDir, cudaStream_t stream)
+Gemma4AudioRunner::Gemma4AudioRunner(
+    std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
     : MultimodalRunner()
 {
-    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
 
     std::string const enginePath = engineDir + "/audio_encoder.engine";
     auto mmapReader = std::make_unique<file_io::MmapReader>(enginePath);
     mAudioEngine = std::unique_ptr<nvinfer1::ICudaEngine>(
         mRuntime->deserializeCudaEngine(mmapReader->getData(), mmapReader->getSize()));
+    ELLM_CHECK(mAudioEngine != nullptr, "Failed to deserialize Gemma4 audio engine");
+    prepareEngineWeights(engineDir, checkpointDir, stream, *mAudioEngine);
 
     mAudioContext = std::unique_ptr<nvinfer1::IExecutionContext>(
         mAudioEngine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
@@ -156,11 +160,11 @@ bool Gemma4AudioRunner::allocateBuffer([[maybe_unused]] cudaStream_t stream)
     bool status{true};
 
     mInputFeatures = rt::Tensor({1, mMaxSeqLen, static_cast<int64_t>(mConfig.melBins)}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Gemma4AudioRunner::mInputFeatures");
+        trt_edgellm::DataType::kHALF, "Gemma4AudioRunner::mInputFeatures");
     status &= mAudioContext->setTensorAddress("input_features", mInputFeatures.rawPointer());
 
     mInputFeaturesMask = rt::Tensor(
-        {1, mMaxSeqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kBOOL, "Gemma4AudioRunner::mInputFeaturesMask");
+        {1, mMaxSeqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kBOOL, "Gemma4AudioRunner::mInputFeaturesMask");
     status &= mAudioContext->setTensorAddress("input_features_mask", mInputFeaturesMask.rawPointer());
 
     // Output embedding buffer — pre-allocate for max possible total rows across all clips.
@@ -169,7 +173,7 @@ bool Gemma4AudioRunner::allocateBuffer([[maybe_unused]] cudaStream_t stream)
     int64_t const maxDownSeqLen = mMaxSeqLen / mConfig.subsamplingFactor;
     int64_t const maxTotalRows = maxDownSeqLen * static_cast<int64_t>(mConfig.maxAudioClipsPerRequest);
     mAudioEmbedding = rt::Tensor({maxTotalRows, static_cast<int64_t>(mConfig.audioFeatureDim)}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Gemma4AudioRunner::mAudioEmbedding");
+        trt_edgellm::DataType::kHALF, "Gemma4AudioRunner::mAudioEmbedding");
 
     if (!status)
     {
@@ -194,7 +198,7 @@ bool Gemma4AudioRunner::resizeEmbeddingForRows(int64_t rows)
         "Consider increasing maxAudioClipsPerRequest (currently %d).",
         rows, mConfig.maxAudioClipsPerRequest);
     mAudioEmbedding = rt::Tensor(
-        {rows, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Gemma4AudioRunner::mAudioEmbedding");
+        {rows, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "Gemma4AudioRunner::mAudioEmbedding");
     return true;
 }
 
@@ -215,7 +219,7 @@ bool Gemma4AudioRunner::loadMelSpectrogramFromFile(
     }
 
     check::check(tensors.size() == 1, "Mel-spectrogram safetensors should contain exactly one tensor");
-    check::check(tensors[0].getDataType() == nvinfer1::DataType::kHALF, "Mel-spectrogram must be FP16");
+    check::check(tensors[0].getDataType() == trt_edgellm::DataType::kHALF, "Mel-spectrogram must be FP16");
 
     melSpectrogram = std::move(tensors[0]);
     return true;
@@ -229,8 +233,6 @@ bool Gemma4AudioRunner::extractMelFromPcm(rt::audio::AudioPCM const& pcm, rt::Te
         LOG_ERROR("Gemma4AudioRunner: empty PCM");
         return false;
     }
-    // The provider's 128-sample PCM padding creates masked mel frames. Only
-    // real frames contribute audio tokens, so extract from the unpadded PCM.
     rt::Tensor hostMel;
     if (!mMelExtractor.extract(pcm, hostMel))
     {
@@ -254,7 +256,7 @@ bool Gemma4AudioRunner::extractMelFromPcm(rt::audio::AudioPCM const& pcm, rt::Te
     }
 
     melGpu = rt::Tensor(
-        {1, timeSteps, melBins}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Gemma4AudioRunner::melFromPcm");
+        {1, timeSteps, melBins}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "Gemma4AudioRunner::melFromPcm");
     CUDA_CHECK(cudaMemcpyAsync(melGpu.rawPointer(), transposedHalf.data(), static_cast<size_t>(numel) * sizeof(__half),
         cudaMemcpyHostToDevice, stream));
 
@@ -295,8 +297,8 @@ bool Gemma4AudioRunner::encodeSingleClip(
         = destRowOffset * static_cast<int64_t>(mConfig.audioFeatureDim) * static_cast<int64_t>(sizeof(__half));
 
     bool status{true};
-    status &= mAudioContext->setInputShape("input_features", mInputFeatures.getShape().getTRTDims());
-    status &= mAudioContext->setInputShape("input_features_mask", mInputFeaturesMask.getShape().getTRTDims());
+    status &= mAudioContext->setInputShape("input_features", toTrtDims(mInputFeatures.getShape()));
+    status &= mAudioContext->setInputShape("input_features_mask", toTrtDims(mInputFeaturesMask.getShape()));
     status &= mAudioContext->setTensorAddress("last_hidden_state", embeddingBase + destByteOffset);
     if (!status)
     {

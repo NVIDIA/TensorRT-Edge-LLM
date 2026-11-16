@@ -8,7 +8,7 @@ does not reuse the LLM inference runtime.
 
 Its maintained Python export stays in the core package
 (`tensorrt_edgellm.models.nemotron3_5_asr`). The checkpoint-direct definitions
-live under `experimental/builder/models/nemotron3_5_asr`, and the C++ inference
+live under `tensorrt_edgellm/builder/models/nemotron3_5_asr`, and the C++ inference
 runtime lives under `experimental_models/nemotron3_5_asr/`. The runtime builds
 only with `-DBUILD_EXPERIMENTAL_MODELS=ON`.
 
@@ -65,7 +65,7 @@ downloads checkpoints or builds engines. It is a source module, not an
 installed console command:
 
 ```bash
-PYTHONPATH="$BUILD_DIR/pybind${PYTHONPATH:+:$PYTHONPATH}" \
+PYTHONPATH="$BUILD_DIR/lib${PYTHONPATH:+:$PYTHONPATH}" \
 python -m experimental.nemotron3_5_asr.server "$ENGINE_DIR" \
     --served-model-name nemotron-3.5-asr-streaming-0.6b
 ```
@@ -86,10 +86,10 @@ Produces `$ONNX_DIR/audio/` (encoder ONNX + `config.json` + tokenizer) and
 (`encoder_config` -> audio encoder; `rnnt_decoder_config` -> static RNN-T step):
 
 ```bash
-export EDGELLM_PLUGIN_PATH="$BUILD_DIR/libNvInfer_edgellm_plugin.so"
-"$BUILD_DIR/examples/multimodal/audio_build" \
+export EDGELLM_PLUGIN_PATH="$BUILD_DIR/lib/libNvInfer_edgellm_plugin.so"
+"$BUILD_DIR/bin/audio_build" \
     --onnx-dir "$ONNX_DIR/audio"        --engine-dir "$ENGINE_DIR" --max-time-steps 8192
-"$BUILD_DIR/examples/multimodal/audio_build" \
+"$BUILD_DIR/bin/audio_build" \
     --onnx-dir "$ONNX_DIR/rnnt_decoder" --engine-dir "$ENGINE_DIR"
 ```
 
@@ -107,7 +107,7 @@ test ! -f "$ONNX_DIR/audio/tokenizer_config.json" || \
 The same isolated module consumes that assembled ONNX bundle:
 
 ```bash
-PYTHONPATH="$BUILD_DIR/pybind${PYTHONPATH:+:$PYTHONPATH}" \
+PYTHONPATH="$BUILD_DIR/lib${PYTHONPATH:+:$PYTHONPATH}" \
 python -m experimental.nemotron3_5_asr.server "$RUN_DIR" \
     --served-model-name nemotron-3.5-asr-streaming-0.6b
 ```
@@ -134,7 +134,7 @@ The C++ executable accepts either the direct component layout or the flat ONNX
 bundle:
 
 ```bash
-"$BUILD_DIR/experimental_models/nemotron3_5_asr/examples/nemotron_asr_inference" \
+"$BUILD_DIR/bin/nemotron_asr_inference" \
     --engine-dir "$ASR_BUNDLE" --audio-file "$AUDIO"  # wav / mp3 / flac, mono
 # --prompt-id <N> overrides the language prompt (default = automatic detection).
 # --benchmark reports the mel / encoder / decode phase breakdown and RTF.

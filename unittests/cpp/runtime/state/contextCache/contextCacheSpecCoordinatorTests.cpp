@@ -31,7 +31,6 @@
 #include <utility>
 #include <vector>
 
-using namespace nvinfer1;
 using namespace trt_edgellm;
 using namespace trt_edgellm::rt;
 
@@ -87,9 +86,9 @@ DeploymentConfig makeEagleDeployment()
     deployment.draft->specDecodeType = SpecDecodeMode::kEAGLE;
     deployment.draft->baseModelHiddenSize = deployment.base.hiddenSize * 2;
     SpecDecodeConfig spec;
-    spec.draftingTopK = 2;
-    spec.draftingStep = 2;
-    spec.verifySize = 4;
+    spec.draftTopK = 2;
+    spec.draftSteps = 2;
+    spec.verifyTokenCount = 4;
     deployment.specConfig = spec;
     return deployment;
 }
@@ -154,9 +153,9 @@ protected:
         auto const& spec = *mDeployment.specConfig;
         if (mDeployment.base.specDecodeType == SpecDecodeMode::kGemma4MTP)
         {
-            return {spec.draftingStep + 1, 0};
+            return {spec.draftSteps + 1, 0};
         }
-        return {spec.verifySize, spec.draftingStep * spec.draftingTopK};
+        return {spec.verifyTokenCount, spec.draftSteps * spec.draftTopK};
     }
 
     ContextCacheCoordinator::AdmissionResult begin(std::vector<int32_t> tokens, bool speculativeRequest = true)
@@ -254,7 +253,7 @@ TEST_F(ContextCacheSpecCoordinatorTests, FirstVerificationPublishesPairAndNextRe
     EXPECT_EQ(mCoordinator->finish(consumer.request), ContextCacheCoordinatorStatus::kOk);
 }
 
-TEST_F(ContextCacheSpecCoordinatorTests, SpeculativeMediaAdmissionBypassesLookupAndPublication)
+TEST_F(ContextCacheSpecCoordinatorTests, SpeculativeMediaAdmissionProceedsThroughNormalLookup)
 {
     constexpr int32_t kInputLength{2 * kTOKENS_PER_PAGE + 1};
     std::vector<int32_t> const tokens = makeTokens(kInputLength);
@@ -266,7 +265,6 @@ TEST_F(ContextCacheSpecCoordinatorTests, SpeculativeMediaAdmissionBypassesLookup
 
     ContextCacheBatchAdmission admission;
     admission.speculativeRequest = true;
-    admission.lookupPolicy = ContextCacheLookupPolicy::kUseCache;
     admission.sequences.push_back(ContextCacheSequenceAdmission{tokens, {}, std::move(mediaHashes), ResidentRef{0, 1}});
 
     ContextCacheMetrics const before = mCoordinator->metrics();
@@ -274,15 +272,61 @@ TEST_F(ContextCacheSpecCoordinatorTests, SpeculativeMediaAdmissionBypassesLookup
     ASSERT_EQ(result.status, ContextCacheCoordinatorStatus::kOk);
     ASSERT_TRUE(result.admission.has_value());
     EXPECT_EQ(result.admission->prefillStarts, std::vector<int32_t>{0});
-    EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, before.lookupBypassSequences + 1U);
+    EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, before.lookupBypassSequences);
 
     freezePrefill(*result.admission, kInputLength);
     completeDecode(*result.admission, {41, 42}, kInputLength + 2, kInputLength, false);
-    EXPECT_EQ(mCoordinator->manager().records().size(), 0U);
+    EXPECT_GE(mCoordinator->manager().records().size(), 1U);
     EXPECT_EQ(mCoordinator->finish(result.admission->request), ContextCacheCoordinatorStatus::kOk);
 }
 
-TEST_F(ContextCacheSpecCoordinatorTests, MediaInOneSpeculativeBatchSlotBypassesEverySlot)
+// Given a non-hybrid speculative deployment where the first request publishes a media-keyed prefix,
+// When a second request shares the same image prefix tokens and media hashes,
+// Then the coordinator matches the published pages and the consumer starts from the matched boundary.
+TEST_F(ContextCacheSpecCoordinatorTests, SpeculativeMediaPrefixHitsPublishedRecord)
+{
+    constexpr int32_t kInputLength{2 * kTOKENS_PER_PAGE};
+    std::vector<int32_t> const tokens = makeTokens(kInputLength);
+    Hash128 const mediaHash{0xABCDU, 0xEF01U};
+
+    auto makeMediaHashes = [&](int32_t length) {
+        std::vector<Hash128> hashes(static_cast<size_t>(length));
+        hashes[kTOKENS_PER_PAGE / 2] = mediaHash;
+        return hashes;
+    };
+
+    ContextCacheBatchAdmission producerAdmission;
+    producerAdmission.speculativeRequest = true;
+    producerAdmission.sequences.push_back(
+        ContextCacheSequenceAdmission{tokens, {}, makeMediaHashes(kInputLength), ResidentRef{0, 1}});
+    ContextCacheCoordinator::BeginRequestResult producerResult
+        = mCoordinator->beginRequest(producerAdmission, specHeadroom(), mStream);
+    ASSERT_EQ(producerResult.status, ContextCacheCoordinatorStatus::kOk);
+    ASSERT_TRUE(producerResult.admission.has_value());
+
+    freezePrefill(*producerResult.admission, kInputLength);
+    completeDecode(*producerResult.admission, {41, 42}, kInputLength + 2, kInputLength, true);
+    ASSERT_GE(mCoordinator->manager().records().size(), 1U);
+    ASSERT_EQ(mCoordinator->finish(producerResult.admission->request), ContextCacheCoordinatorStatus::kOk);
+
+    std::vector<int32_t> continuation = tokens;
+    continuation.push_back(77);
+    ContextCacheBatchAdmission consumerAdmission;
+    consumerAdmission.speculativeRequest = true;
+    consumerAdmission.sequences.push_back(ContextCacheSequenceAdmission{
+        std::move(continuation), {}, makeMediaHashes(kInputLength + 1), ResidentRef{0, 1}});
+
+    ContextCacheMetrics const before = mCoordinator->metrics();
+    ContextCacheCoordinator::BeginRequestResult consumerResult
+        = mCoordinator->beginRequest(consumerAdmission, specHeadroom(), mStream);
+    ASSERT_EQ(consumerResult.status, ContextCacheCoordinatorStatus::kOk);
+    ASSERT_TRUE(consumerResult.admission.has_value());
+    EXPECT_GT(consumerResult.admission->prefillStarts[0], 0);
+    EXPECT_GT(mCoordinator->metrics().matchedTokens, before.matchedTokens);
+    EXPECT_EQ(mCoordinator->finish(consumerResult.admission->request), ContextCacheCoordinatorStatus::kOk);
+}
+
+TEST_F(ContextCacheSpecCoordinatorTests, MediaInOneSpeculativeBatchSlotDoesNotBypass)
 {
     constexpr int32_t kInputLength{kTOKENS_PER_PAGE + 1};
     std::vector<Hash128> mediaHashes(static_cast<size_t>(kInputLength));
@@ -291,7 +335,6 @@ TEST_F(ContextCacheSpecCoordinatorTests, MediaInOneSpeculativeBatchSlotBypassesE
 
     ContextCacheBatchAdmission admission;
     admission.speculativeRequest = true;
-    admission.lookupPolicy = ContextCacheLookupPolicy::kUseCache;
     admission.sequences.push_back(ContextCacheSequenceAdmission{makeTokens(kInputLength), {}, {}, ResidentRef{0, 1}});
     admission.sequences.push_back(
         ContextCacheSequenceAdmission{makeTokens(kInputLength), {}, std::move(mediaHashes), ResidentRef{1, 1}});
@@ -301,7 +344,7 @@ TEST_F(ContextCacheSpecCoordinatorTests, MediaInOneSpeculativeBatchSlotBypassesE
     ASSERT_EQ(result.status, ContextCacheCoordinatorStatus::kOk);
     ASSERT_TRUE(result.admission.has_value());
     EXPECT_EQ(result.admission->prefillStarts, (std::vector<int32_t>{0, 0}));
-    EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, before.lookupBypassSequences + 2U);
+    EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, before.lookupBypassSequences);
     EXPECT_EQ(mCoordinator->finish(result.admission->request), ContextCacheCoordinatorStatus::kOk);
 }
 
@@ -506,6 +549,166 @@ TEST_F(ContextCacheSpecCoordinatorTests, InitialHeadroomAllowsUnequalBaseAndDraf
     EXPECT_EQ(mCoordinator->finish(result.admission->request), ContextCacheCoordinatorStatus::kOk);
 }
 
+// A sequence cancelled at the top of a decode step appends nothing and holds its ledger; its neighbour's EAGLE
+// advance still validates and applies.
+TEST_F(ContextCacheSpecCoordinatorTests, CancelledSequenceHoldsLedger)
+{
+    constexpr int32_t kInputLength{kTOKENS_PER_PAGE};
+    auto request = beginBatch({makeTokens(kInputLength), makeTokens(kInputLength + 1)});
+    ASSERT_EQ(mCoordinator->preparePrefill(request.request), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+    int32_t const lookahead{9001};
+    std::vector<ContextCacheSequenceAdvance> const prefill{ContextCacheSequenceAdvance{&lookahead, 1, kInputLength},
+        ContextCacheSequenceAdvance{&lookahead, 1, kInputLength + 1}};
+    std::vector<int32_t> prefillCommon{kInputLength, kInputLength + 1};
+    ASSERT_EQ(mCoordinator->finalizePrefillPublication(request.request, prefill, &prefillCommon),
+        ContextCacheCoordinatorStatus::kOk);
+
+    ASSERT_EQ(mCoordinator->prepareDecodeStep(request.request, specHeadroom()), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+    std::vector<int32_t> const accepted{41, 42};
+    std::vector<ContextCacheSequenceAdvance> const decode{
+        ContextCacheSequenceAdvance{nullptr, 0, ContextCacheSequenceAdvance::kHoldCommittedStateLength},
+        ContextCacheSequenceAdvance{accepted.data(), 2, kInputLength + 3}};
+    std::vector<int32_t> decodeCommon{kInputLength, kInputLength + 1};
+    EXPECT_EQ(mCoordinator->completeDecodeStep(request.request, decode, {}, &decodeCommon),
+        ContextCacheCoordinatorStatus::kOk);
+    EXPECT_EQ(mCoordinator->finish(request.request), ContextCacheCoordinatorStatus::kOk);
+}
+
+// A sequence admitted into an executing speculative request binds its draft page-table row with its base row. Its
+// seated draft leaves the last prompt position to the next decode step, so its prompt endpoint publishes once a
+// verification has synchronized that step -- or, for a sequence that leaves before it decodes, at the eviction, capped
+// at the prefix the draft holds.
+TEST_F(ContextCacheSpecCoordinatorTests, SeatedSequencePublishes)
+{
+    constexpr int32_t kInputLength{2 * kTOKENS_PER_PAGE};
+    auto session = beginBatch({});
+    ASSERT_EQ(mCoordinator->preparePrefill(session.request), ContextCacheCoordinatorStatus::kOk);
+    auto seat = [&](int32_t index, int32_t residentSlot, std::vector<int32_t> tokens) {
+        int32_t const inputLength = static_cast<int32_t>(tokens.size());
+        ContextCacheSequenceAdmission admission{std::move(tokens), {}, {}, ResidentRef{residentSlot, 1}};
+        ASSERT_EQ(mCoordinator->admitSequence(session.request, admission, specHeadroom()).status,
+            ContextCacheCoordinatorStatus::kOk);
+        ASSERT_EQ(mCoordinator->prepareSequenceAdmission(session.request, index), ContextCacheCoordinatorStatus::kOk);
+        ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+        ASSERT_EQ(mCoordinator->completeSequenceAdmissionDeviceWork(session.request, index),
+            ContextCacheCoordinatorStatus::kOk);
+        int32_t const lookahead{9001};
+        ASSERT_EQ(mCoordinator->finalizeSequenceAdmission(
+                      session.request, index, ContextCacheSequenceAdvance{&lookahead, 1, inputLength}, inputLength - 1),
+            ContextCacheCoordinatorStatus::kOk);
+    };
+
+    // Resident slot 1, whose identity draft row names pages a fresh lease does not start from.
+    seat(0, 1, makeTokens(kInputLength));
+    EXPECT_EQ(mCoordinator->manager().records().size(), 0U);
+    completeDecode(session, {41, 42}, kInputLength + 2, kInputLength, false);
+    ASSERT_EQ(mCoordinator->manager().records().size(), 1U);
+    std::vector<PageId> const published
+        = eaglePagePath(mCoordinator->manager().records().get(mCoordinator->manager().records().lruToMru().back()));
+    ASSERT_EQ(published.size(), 2U);
+    EXPECT_EQ(std::vector<PageId>(mDraftPageTable->hostRow(1), mDraftPageTable->hostRow(1) + 2), published);
+
+    // A second, unrelated sequence one page longer finishes in its context step: the eviction publishes the two full
+    // pages its draft holds, not the third, whose last position the draft never took.
+    std::vector<int32_t> other = makeTokens(kInputLength + kTOKENS_PER_PAGE);
+    std::for_each(other.begin(), other.end(), [](int32_t& token) { token += 1000; });
+    seat(1, 0, std::move(other));
+    // The runtime's seating holds each sequence's row in both cache managers' batches.
+    mBaseCache->setActiveBatchSize(2);
+    mDraftCache->setActiveBatchSize(2);
+    Tensor deviceMapping({kMAX_BATCH}, rt::DeviceType::kGPU, DataType::kINT32, "specCoordinatorMapping");
+    ASSERT_EQ(mCoordinator->beginBatchCompaction(session.request, {0, -1}, 1, deviceMapping),
+        ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->compactBatch(session.request), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->manager().records().size(), 2U);
+    EXPECT_EQ(eaglePagePath(mCoordinator->manager().records().get(mCoordinator->manager().records().lruToMru().back()))
+                  .size(),
+        2U);
+    EXPECT_EQ(mCoordinator->finish(session.request), ContextCacheCoordinatorStatus::kOk);
+}
+
+// A seated sequence that survives another's eviction keeps its frozen endpoint: it publishes its whole prompt at its
+// first decode completion rather than the prefix its draft held at the eviction.
+TEST_F(ContextCacheSpecCoordinatorTests, SurvivorKeepsFrozenEndpoint)
+{
+    constexpr int32_t kInputLength{2 * kTOKENS_PER_PAGE};
+    auto session = beginBatch({});
+    ASSERT_EQ(mCoordinator->preparePrefill(session.request), ContextCacheCoordinatorStatus::kOk);
+    auto seat = [&](int32_t index, int32_t residentSlot, std::vector<int32_t> tokens) {
+        int32_t const inputLength = static_cast<int32_t>(tokens.size());
+        ContextCacheSequenceAdmission admission{std::move(tokens), {}, {}, ResidentRef{residentSlot, 1}};
+        ASSERT_EQ(mCoordinator->admitSequence(session.request, admission, specHeadroom()).status,
+            ContextCacheCoordinatorStatus::kOk);
+        ASSERT_EQ(mCoordinator->prepareSequenceAdmission(session.request, index), ContextCacheCoordinatorStatus::kOk);
+        ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+        ASSERT_EQ(mCoordinator->completeSequenceAdmissionDeviceWork(session.request, index),
+            ContextCacheCoordinatorStatus::kOk);
+        int32_t const lookahead{9001};
+        ASSERT_EQ(mCoordinator->finalizeSequenceAdmission(
+                      session.request, index, ContextCacheSequenceAdvance{&lookahead, 1, inputLength}, inputLength - 1),
+            ContextCacheCoordinatorStatus::kOk);
+    };
+
+    seat(0, 0, makeTokens(kInputLength));
+    std::vector<int32_t> other = makeTokens(kInputLength);
+    std::for_each(other.begin(), other.end(), [](int32_t& token) { token += 1000; });
+    seat(1, 1, std::move(other));
+    mBaseCache->setActiveBatchSize(2);
+    mDraftCache->setActiveBatchSize(2);
+    Tensor deviceMapping({kMAX_BATCH}, rt::DeviceType::kGPU, DataType::kINT32, "specCoordinatorMapping");
+    ASSERT_EQ(mCoordinator->beginBatchCompaction(session.request, {0, -1}, 1, deviceMapping),
+        ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->compactBatch(session.request), ContextCacheCoordinatorStatus::kOk);
+    ASSERT_EQ(mCoordinator->manager().records().size(), 1U) << "only the evicted sequence publishes at the eviction";
+
+    completeDecode(session, {41, 42}, kInputLength + 2, kInputLength, false);
+    ASSERT_EQ(mCoordinator->manager().records().size(), 2U);
+    EXPECT_EQ(eaglePagePath(mCoordinator->manager().records().get(mCoordinator->manager().records().lruToMru().back()))
+                  .size(),
+        2U);
+    EXPECT_EQ(mCoordinator->finish(session.request), ContextCacheCoordinatorStatus::kOk);
+}
+
+// A request handle dropped between a seated sequence's context step and its first decode synchronizes the seated draft
+// prefill before releasing the leases, and publishes nothing.
+TEST_F(ContextCacheSpecCoordinatorTests, AbandonSyncsSeatedDraft)
+{
+    ASSERT_EQ(mCoordinator->shutdown(), ContextCacheCoordinatorStatus::kOk);
+    mCoordinator.reset();
+    int32_t synchronizations{};
+    createCoordinator([&](cudaStream_t stream) {
+        ++synchronizations;
+        return cudaStreamSynchronize(stream);
+    });
+
+    constexpr int32_t kInputLength{2 * kTOKENS_PER_PAGE};
+    int32_t synchronizationsBeforeAbandon{};
+    {
+        auto session = beginBatch({});
+        ASSERT_EQ(mCoordinator->preparePrefill(session.request), ContextCacheCoordinatorStatus::kOk);
+        ContextCacheSequenceAdmission admission{makeTokens(kInputLength), {}, {}, ResidentRef{0, 1}};
+        ASSERT_EQ(mCoordinator->admitSequence(session.request, admission, specHeadroom()).status,
+            ContextCacheCoordinatorStatus::kOk);
+        ASSERT_EQ(mCoordinator->prepareSequenceAdmission(session.request, 0), ContextCacheCoordinatorStatus::kOk);
+        ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+        ASSERT_EQ(
+            mCoordinator->completeSequenceAdmissionDeviceWork(session.request, 0), ContextCacheCoordinatorStatus::kOk);
+        int32_t const lookahead{9001};
+        ASSERT_EQ(mCoordinator->finalizeSequenceAdmission(
+                      session.request, 0, ContextCacheSequenceAdvance{&lookahead, 1, kInputLength}, kInputLength - 1),
+            ContextCacheCoordinatorStatus::kOk);
+        synchronizationsBeforeAbandon = synchronizations;
+    }
+
+    EXPECT_EQ(synchronizations, synchronizationsBeforeAbandon + 1);
+    EXPECT_EQ(mCoordinator->manager().records().size(), 0U);
+    auto next = begin(makeTokens(kInputLength));
+    EXPECT_EQ(next.prefillStarts, std::vector<int32_t>{0});
+    EXPECT_EQ(mCoordinator->finish(next.request), ContextCacheCoordinatorStatus::kOk);
+}
+
 class ContextCacheGemma4MtpCoordinatorTests : public ::testing::Test
 {
 protected:
@@ -520,9 +723,9 @@ protected:
         mDeployment.draft->hasOwnKVCache = false;
         mDeployment.draft->sharesTargetKV = true;
         SpecDecodeConfig spec;
-        spec.draftingTopK = 1;
-        spec.draftingStep = 4;
-        spec.verifySize = 5;
+        spec.draftTopK = 1;
+        spec.draftSteps = 4;
+        spec.verifyTokenCount = 5;
         mDeployment.specConfig = spec;
 
         mBaseCache = std::make_unique<HybridCacheManager>(makeCacheConfig(mDeployment.base), mStream);

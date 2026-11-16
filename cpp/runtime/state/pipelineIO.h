@@ -121,6 +121,7 @@ struct PipelineIO
     std::vector<Tensor> deepstackEmbeds;
     Tensor mropeCosSin;       //!< Resident-slot MRoPE source cache.
     Tensor mropeActiveCosSin; //!< Active-row MRoPE preprocessing scratch.
+    Tensor mropeInvFreq;      //!< YaRN inverse frequencies for text-only MRoPE; empty without YaRN.
     Tensor raggedRopeCosSin;
     Tensor raggedRopeCosSinSliding;
     Tensor raggedRopeCosSinFull;
@@ -156,11 +157,15 @@ struct PipelineIO
     Tensor specDecodePositionIds;
     //! Shape-only execution-phase carrier. Plugins branch on its extent and never read its payload.
     Tensor executionPhaseMarker;
+    //! Shape-only speculative verification layout carrier. Its payload is never initialized or read.
+    Tensor specVerifyLayout;
     //! Shape-only [N_context] INT32 carrier. Its payload is never initialized or read.
     Tensor contextSequenceCountCarrier;
-    //! Shape-only runtime skip-softmax override carrier (data never read); bound
-    //! with shape [S] where S comes from LLMEngineConfig::skipSoftmaxScaleOverride.
-    Tensor skipSoftmaxScale;
+    //! The `skip_softmax_prefill_scale` binding: LLMEngineConfig::skipSoftmaxPrefillScaleTable flattened to INT32
+    //! (seqlen_bin, S) pairs, uploaded once; the step's dims bind its full length or [0] (dense).
+    Tensor skipSoftmaxPrefillScale;
+    //! The `skip_softmax_decode_scale` binding: skipSoftmaxDecodeScaleTable, uploaded once.
+    Tensor skipSoftmaxDecodeScale;
     //! DDTree parent node ids, [physical_tokens] INT32. Runtime-owned
     //! metadata for tree attention and hybrid state plugin bindings.
     Tensor specTreeParentIds;
@@ -204,10 +209,10 @@ private:
 void allocateBasicIO(PipelineIO& io, int32_t maxBatch, int32_t vocabSize);
 
 void allocateDeepstackEmbeds(PipelineIO& io, int32_t numFeatures, int32_t maxBatch, int32_t maxSeq, int32_t hiddenSize,
-    nvinfer1::DataType dtype);
+    trt_edgellm::DataType dtype);
 
 void allocateSpecDecodeHiddenStates(PipelineIO& io, int32_t maxBatch, int32_t maxSeq, int32_t baseHiddenDim,
-    int32_t draftHiddenDim, nvinfer1::DataType dtype, bool allocateDraftHiddenStates);
+    int32_t draftHiddenDim, trt_edgellm::DataType dtype, bool allocateDraftHiddenStates);
 
 void allocateMRope(
     PipelineIO& io, int32_t residentRows, int32_t activeRows, int32_t maxKVCacheCapacity, int32_t rotaryDim);

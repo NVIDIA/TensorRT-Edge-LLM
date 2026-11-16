@@ -13,11 +13,11 @@ and [Checkpoint Exporter Design](../software-design/checkpoint-export.md).
 | Area | Files | What to update |
 |------|-------|----------------|
 | Text model | `tensorrt_edgellm/models/<family>/` | Add a native `torch.nn.Module` implementation when the default decoder is not enough. Keep parameter names aligned with the HuggingFace checkpoint. |
-| Registration | `tensorrt_edgellm/__init__.py` | Register custom text classes with `register_model("<model_type>", ModelClass)`. |
+| Registration | `tensorrt_edgellm/_export_api.py` | Register custom text classes with `register_model("<model_type>", ModelClass, default_attention_scale)`. |
 | Checkpoint parsing | `tensorrt_edgellm/config.py`, `tensorrt_edgellm/checkpoint/` | Add model-specific config fields, tensor remapping, fused-weight splitting, or quantization metadata handling. |
 | Weight loading | `tensorrt_edgellm/checkpoint/loader.py`, `tensorrt_edgellm/checkpoint/repacking.py` | Load safetensors, remap checkpoint keys, and repack quantized tensors into the layout consumed by the exported graph. |
 | Encoder export | `tensorrt_edgellm/onnx/export_encoder.py` | Register visual, audio, or action encoder builders and config extraction rules. |
-| Component orchestration | `tensorrt_edgellm/scripts/export.py` | Add model-type classification for LLM-only, VLM, audio, TTS, Omni, VLA, EAGLE, MTP, or DFlash checkpoints. |
+| Component orchestration | `tensorrt_edgellm/onnx/cli.py` | Add model-type classification for LLM-only, VLM, audio, TTS, Omni, VLA, EAGLE, MTP, or DFlash checkpoints. |
 | Custom ops | `tensorrt_edgellm/models/ops.py`, `tensorrt_edgellm/onnx/dynamo_translations.py`, `tensorrt_edgellm/onnx/onnx_custom_schemas.py` | Add torch stubs, ONNX translations, and schemas for TensorRT Edge-LLM custom ops. |
 | Runtime/plugins | `cpp/plugins/`, `cpp/runtime/`, `cpp/multimodal/`, `cpp/action/` | Add runtime support only when the exported graph or model I/O needs new behavior. |
 
@@ -34,6 +34,7 @@ checkpoints. It does not export ONNX or build TensorRT engines.
 | Quantization recipes | `tensorrt_edgellm/quantization/quantization_configs.py` | Add ModelOpt recipe presets, exclusions, or component-specific overrides. |
 | Model loading and calibration | `tensorrt_edgellm/quantization/quantize.py` | Add model loading fallbacks, calibration data handling, or pre-save checkpoint fixups. |
 | EAGLE draft quantization | `tensorrt_edgellm/quantization/models/eagle3_draft.py` | Update draft-model calibration and checkpoint writing. |
+| EAGLE-4 draft quantization | `tensorrt_edgellm/quantization/models/eagle4_draft.py` | Update EAGLE-4 drafter calibration, FP16 projector and candidate-head handling, and checkpoint writing. |
 | DFlash draft quantization | `tensorrt_edgellm/quantization/models/dflash_draft.py` | Update DFlash draft calibration, target-hidden projector exclusions, and checkpoint writing. |
 | CLI surface | `tensorrt_edgellm/scripts/quantize.py` | Expose a new supported option after the implementation and tests exist. |
 
@@ -46,7 +47,7 @@ loaded as pre-quantized checkpoints; this package does not create GPTQ models.
 1. Check whether the default `CausalLM` implementation can load the checkpoint.
 2. If the architecture needs custom behavior, add a model implementation under
    `tensorrt_edgellm/models/<family>/`.
-3. Register the `model_type` in `tensorrt_edgellm/__init__.py`.
+3. Register the `model_type` in `tensorrt_edgellm/_export_api.py`.
 4. Add any required config promotion, tensor-key remapping, or quantized-weight
    handling in `tensorrt_edgellm/config.py` and `checkpoint/`.
 5. Export with `trtedge export <checkpoint> <output_dir>`
@@ -54,20 +55,20 @@ loaded as pre-quantized checkpoints; this package does not create GPTQ models.
 
 ## Adding A Multimodal Or Action Component
 
-Use `tensorrt_edgellm/scripts/export.py` as the component dispatcher.
+Use `tensorrt_edgellm/onnx/cli.py` as the component dispatcher.
 Each exported component should have a stable subdirectory and a `config.json`
 that the C++ builder can consume.
 
 | Component | Typical output | Builder |
 |-----------|----------------|---------|
-| LLM thinker/base | `llm/` | `examples/llm/llm_build` |
-| Visual encoder | `visual/` | `examples/multimodal/visual_build` |
-| Audio encoder | `audio/` | `examples/multimodal/audio_build` |
-| TTS code predictor | `code_predictor/` | `examples/llm/llm_build` |
-| Omni Code2Wav | `code2wav/` or model-specific audio layout | `examples/multimodal/audio_build` |
-| Alpamayo action expert | `action/` | `examples/multimodal/action_build` |
-| MTP draft | `mtp_draft/` | `examples/llm/llm_build --spec-draft` |
-| DFlash draft | `dflash_draft/` | `examples/llm/llm_build --spec-draft` |
+| LLM thinker/base | `llm/` | `build/bin/llm_build` |
+| Visual encoder | `visual/` | `build/bin/visual_build` |
+| Audio encoder | `audio/` | `build/bin/audio_build` |
+| TTS code predictor | `code_predictor/` | `build/bin/llm_build` |
+| Omni Code2Wav | `code2wav/` or model-specific audio layout | `build/bin/audio_build` |
+| Alpamayo action expert | `action/` | `build/bin/action_build` |
+| MTP draft | `mtp_draft/` | `build/bin/llm_build --spec-draft` |
+| DFlash draft | `dflash_draft/` | `build/bin/llm_build --spec-draft` |
 
 Keep preprocessing and runtime sidecars explicit. For example, Alpamayo adds
 trajectory tokens during runtime artifact writing and requires the action
@@ -92,8 +93,8 @@ Common extension points include:
 
 | Area | Files |
 |------|-------|
-| LLM engine profiles | `cpp/builder/llmBuilder.cpp`, `examples/llm/llm_build.cpp` |
-| Visual/audio/action builders | `cpp/builder/`, `examples/multimodal/` |
+| LLM engine profiles | `cpp/builder/llmBuilder.cpp`, `examples/cpp/llm_build.cpp` |
+| Visual/audio/action builders | `cpp/builder/`, `examples/cpp/` |
 | Multimodal runners | `cpp/multimodal/` |
 | Action runners | `cpp/action/` |
 | Tokenization | `cpp/tokenizer/` |

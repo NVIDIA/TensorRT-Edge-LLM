@@ -28,7 +28,7 @@
 #include <random>
 #include <stdexcept>
 
-using nvinfer1::DataType;
+using trt_edgellm::DataType;
 using nvinfer1::Dims;
 
 namespace trt_edgellm

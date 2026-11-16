@@ -165,7 +165,7 @@ inline float fp8BytesToFloat(uint8_t raw)
 
 inline bool isSupportedSm(int32_t sm)
 {
-    return sm == 100 || sm == 101 || sm == 110;
+    return sm == 100 || sm == 101 || sm == 103 || sm == 110;
 }
 
 inline uint8_t floatToFp8Byte(float value)
@@ -641,25 +641,25 @@ RunResult runCase(CaseData const& c, bool enablePdl = false, ExecutionMode mode 
     (void) sfShapeOuterI;
 
     // Allocate GPU buffers and upload.
-    rt::Tensor hidden({T, H}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor topkIds({T, kTopK}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor topkWeights({T, kTopK}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor fc1Q({E, n1, H / 2}, DeviceType::kGPU, nvinfer1::DataType::kINT8);
-    rt::Tensor fc2Q({E, H, I / 2}, DeviceType::kGPU, nvinfer1::DataType::kINT8);
+    rt::Tensor hidden({T, H}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor topkIds({T, kTopK}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor topkWeights({T, kTopK}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor fc1Q({E, n1, H / 2}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+    rt::Tensor fc2Q({E, H, I / 2}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     auto const fc1ScaleShape = scaleShape(n1, H, E);
     auto const fc2ScaleShape = scaleShape(H, I, E);
     rt::Tensor fc1Scale({fc1ScaleShape.experts, fc1ScaleShape.mOuter, fc1ScaleShape.kOuter, fc1ScaleShape.inner0,
                             fc1ScaleShape.inner1, fc1ScaleShape.inner2},
-        DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        DeviceType::kGPU, trt_edgellm::DataType::kINT8);
     rt::Tensor fc2Scale({fc2ScaleShape.experts, fc2ScaleShape.mOuter, fc2ScaleShape.kOuter, fc2ScaleShape.inner0,
                             fc2ScaleShape.inner1, fc2ScaleShape.inner2},
-        DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
-    rt::Tensor fc1Alpha({E}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor fc2Alpha({E}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor inputScale({E}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor downScale({E}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor fc1Alpha({E}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor fc2Alpha({E}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor inputScale({E}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor downScale({E}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     constexpr int32_t kOutputGuardElements = 16;
     size_t const outputElements = static_cast<size_t>(T) * H;
     size_t const outputPrefixElements = kOutputGuardElements;
@@ -1028,7 +1028,7 @@ void expectSameNonPdlLaunchConfiguration(LaunchConfigSnapshot const& pdlOff, Lau
 
 TEST(CuteDslNvfp4MoeSm110Test, canImplementSupportedSms)
 {
-    for (int32_t const sm : {100, 101, 110})
+    for (int32_t const sm : {100, 101, 103, 110})
     {
         // Supported expert counts {128, 256, 512} must pass on every supported SM.
         for (int32_t const e : {128, 256, 512})
@@ -1073,11 +1073,12 @@ TEST(CuteDslNvfp4MoeSm110Test, smoke)
     int32_t const sm = getSMVersion();
     if (!isSupportedSm(sm))
     {
-        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL runner test requires SM100, SM101, or SM110, got SM=" << sm;
+        GTEST_SKIP()
+            << "SM100/101/103/110 NVFP4 MoE CuTeDSL runner test requires SM100, SM101, SM103, or SM110, got SM=" << sm;
     }
     if (!checkRequirements())
     {
-        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+        GTEST_SKIP() << "SM100/101/103/110 NVFP4 MoE CuTeDSL canImplement returned false";
     }
 
     for (auto const& cfg : defaultCases())
@@ -1105,11 +1106,12 @@ TEST(CuteDslNvfp4MoeSm110Test, accuracy)
     int32_t const sm = getSMVersion();
     if (!isSupportedSm(sm))
     {
-        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL runner test requires SM100, SM101, or SM110, got SM=" << sm;
+        GTEST_SKIP()
+            << "SM100/101/103/110 NVFP4 MoE CuTeDSL runner test requires SM100, SM101, SM103, or SM110, got SM=" << sm;
     }
     if (!checkRequirements())
     {
-        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+        GTEST_SKIP() << "SM100/101/103/110 NVFP4 MoE CuTeDSL canImplement returned false";
     }
 
     // Loose-but-meaningful bands for NVFP4 MoE: cosine >= 0.94 catches sign /
@@ -1146,11 +1148,11 @@ TEST(CuteDslNvfp4MoeSm110Test, pdlMatchesDisabledAndReference)
     int32_t const sm = getSMVersion();
     if (!isSupportedSm(sm))
     {
-        GTEST_SKIP() << "NVFP4 MoE PDL test requires SM100, SM101, or SM110, got SM=" << sm;
+        GTEST_SKIP() << "NVFP4 MoE PDL test requires SM100, SM101, SM103, or SM110, got SM=" << sm;
     }
     if (!checkRequirements())
     {
-        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+        GTEST_SKIP() << "SM100/101/103/110 NVFP4 MoE CuTeDSL canImplement returned false";
     }
 
     for (auto const& cfg : pdlCases())
@@ -1173,11 +1175,11 @@ TEST(CuteDslNvfp4MoeSm110Test, zeroRoutesClearPoisonedOutputAndPreserveGuards)
     int32_t const sm = getSMVersion();
     if (!isSupportedSm(sm))
     {
-        GTEST_SKIP() << "NVFP4 MoE output-clear test requires SM100, SM101, or SM110, got SM=" << sm;
+        GTEST_SKIP() << "NVFP4 MoE output-clear test requires SM100, SM101, SM103, or SM110, got SM=" << sm;
     }
     if (!checkRequirements())
     {
-        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+        GTEST_SKIP() << "SM100/101/103/110 NVFP4 MoE CuTeDSL canImplement returned false";
     }
 
     std::vector<MoeCase> const cases{
@@ -1207,11 +1209,11 @@ TEST(CuteDslNvfp4MoeSm110Test, generatedLaunchConfigurationUsesPdlAndPreservesEx
     int32_t const sm = getSMVersion();
     if (!isSupportedSm(sm))
     {
-        GTEST_SKIP() << "NVFP4 MoE PDL launch-config test requires SM100, SM101, or SM110, got SM=" << sm;
+        GTEST_SKIP() << "NVFP4 MoE PDL launch-config test requires SM100, SM101, SM103, or SM110, got SM=" << sm;
     }
     if (!checkRequirements())
     {
-        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+        GTEST_SKIP() << "SM100/101/103/110 NVFP4 MoE CuTeDSL canImplement returned false";
     }
 
     std::vector<MoeCase> launchCases{
@@ -1271,11 +1273,11 @@ TEST(CuteDslNvfp4MoeSm110Test, DISABLED_pdlNsightProfile)
     int32_t const sm = getSMVersion();
     if (!isSupportedSm(sm))
     {
-        GTEST_SKIP() << "NVFP4 MoE PDL Nsight test requires SM100, SM101, or SM110, got SM=" << sm;
+        GTEST_SKIP() << "NVFP4 MoE PDL Nsight test requires SM100, SM101, SM103, or SM110, got SM=" << sm;
     }
     if (!checkRequirements())
     {
-        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+        GTEST_SKIP() << "SM100/101/103/110 NVFP4 MoE CuTeDSL canImplement returned false";
     }
 
     for (auto const& cfg : pdlCases())
@@ -1297,11 +1299,11 @@ TEST(CuteDslNvfp4MoeSm110Test, pdlCudaGraphReplayMatchesDisabledAndReference)
     int32_t const sm = getSMVersion();
     if (!isSupportedSm(sm))
     {
-        GTEST_SKIP() << "NVFP4 MoE PDL CUDA Graph test requires SM100, SM101, or SM110, got SM=" << sm;
+        GTEST_SKIP() << "NVFP4 MoE PDL CUDA Graph test requires SM100, SM101, SM103, or SM110, got SM=" << sm;
     }
     if (!checkRequirements())
     {
-        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+        GTEST_SKIP() << "SM100/101/103/110 NVFP4 MoE CuTeDSL canImplement returned false";
     }
 
     for (auto const& cfg : pdlCases())

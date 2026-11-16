@@ -17,7 +17,6 @@
 
 #include "common/logger.h"
 #include "testUtils.h"
-#include <NvInferRuntime.h>
 #include <gtest/gtest.h>
 #include <regex>
 #include <sstream>
@@ -31,7 +30,7 @@ protected:
     void SetUp() override
     {
 
-        gLogger.setLevel(nvinfer1::ILogger::Severity::kVERBOSE);
+        gLogger.setLevel(trt_edgellm::logger::Severity::kVERBOSE);
         gLogger.setShowTimestamp(true);
         gLogger.setShowLocation(true);
         gLogger.setShowFunction(true);
@@ -143,7 +142,7 @@ TEST_F(LoggerTest, ConditionalLoggingMacros)
 TEST_F(LoggerTest, LogLevelFiltering)
 {
     // Test VERBOSE level (should show all)
-    gLogger.setLevel(nvinfer1::ILogger::Severity::kVERBOSE);
+    gLogger.setLevel(trt_edgellm::logger::Severity::kVERBOSE);
     clearOutput();
 
     LOG_DEBUG("Debug at VERBOSE level");
@@ -160,7 +159,7 @@ TEST_F(LoggerTest, LogLevelFiltering)
     EXPECT_TRUE(cerrOutput.find("Error at VERBOSE level") != std::string::npos);
 
     // Test INFO level (should hide DEBUG)
-    gLogger.setLevel(nvinfer1::ILogger::Severity::kINFO);
+    gLogger.setLevel(trt_edgellm::logger::Severity::kINFO);
     clearOutput();
 
     LOG_DEBUG("Debug at INFO level");
@@ -177,7 +176,7 @@ TEST_F(LoggerTest, LogLevelFiltering)
     EXPECT_TRUE(cerrOutput.find("Error at INFO level") != std::string::npos);
 
     // Test WARNING level (should hide DEBUG and INFO)
-    gLogger.setLevel(nvinfer1::ILogger::Severity::kWARNING);
+    gLogger.setLevel(trt_edgellm::logger::Severity::kWARNING);
     clearOutput();
 
     LOG_DEBUG("Debug at WARNING level");
@@ -194,7 +193,7 @@ TEST_F(LoggerTest, LogLevelFiltering)
     EXPECT_TRUE(cerrOutput.find("Error at WARNING level") != std::string::npos);
 
     // Test ERROR level (should only show ERROR)
-    gLogger.setLevel(nvinfer1::ILogger::Severity::kERROR);
+    gLogger.setLevel(trt_edgellm::logger::Severity::kERROR);
     clearOutput();
 
     LOG_DEBUG("Debug at ERROR level");
@@ -211,44 +210,22 @@ TEST_F(LoggerTest, LogLevelFiltering)
     EXPECT_TRUE(cerrOutput.find("Error at ERROR level") != std::string::npos);
 }
 
-TEST_F(LoggerTest, TensorRTSeverityLevels)
+// Given the logger
+// When its level is set to each severity in turn
+// Then getLevel reports the level just set
+TEST_F(LoggerTest, SeverityLevelRoundTrip)
 {
-    // Test direct nvinfer1::ILogger::Severity usage
-    gLogger.setLevel(nvinfer1::ILogger::Severity::kVERBOSE);
-    EXPECT_EQ(gLogger.getLevel(), nvinfer1::ILogger::Severity::kVERBOSE);
+    gLogger.setLevel(trt_edgellm::logger::Severity::kVERBOSE);
+    EXPECT_EQ(gLogger.getLevel(), trt_edgellm::logger::Severity::kVERBOSE);
 
-    gLogger.setLevel(nvinfer1::ILogger::Severity::kINFO);
-    EXPECT_EQ(gLogger.getLevel(), nvinfer1::ILogger::Severity::kINFO);
+    gLogger.setLevel(trt_edgellm::logger::Severity::kINFO);
+    EXPECT_EQ(gLogger.getLevel(), trt_edgellm::logger::Severity::kINFO);
 
-    gLogger.setLevel(nvinfer1::ILogger::Severity::kWARNING);
-    EXPECT_EQ(gLogger.getLevel(), nvinfer1::ILogger::Severity::kWARNING);
+    gLogger.setLevel(trt_edgellm::logger::Severity::kWARNING);
+    EXPECT_EQ(gLogger.getLevel(), trt_edgellm::logger::Severity::kWARNING);
 
-    gLogger.setLevel(nvinfer1::ILogger::Severity::kERROR);
-    EXPECT_EQ(gLogger.getLevel(), nvinfer1::ILogger::Severity::kERROR);
-}
-
-TEST_F(LoggerTest, TensorRTLoggerIntegration)
-{
-    // Test TensorRT ILogger interface
-    nvinfer1::ILogger* tensorrtLogger = &gLogger;
-
-    clearOutput();
-    tensorrtLogger->log(nvinfer1::ILogger::Severity::kINFO, "TensorRT info message");
-    tensorrtLogger->log(nvinfer1::ILogger::Severity::kWARNING, "TensorRT warning message");
-    tensorrtLogger->log(nvinfer1::ILogger::Severity::kERROR, "TensorRT error message");
-    tensorrtLogger->log(nvinfer1::ILogger::Severity::kVERBOSE, "TensorRT debug message");
-
-    std::string coutOutput = getCoutOutput();
-    std::string cerrOutput = getCerrOutput();
-
-    // Check that TensorRT messages are properly tagged
-    EXPECT_TRUE(coutOutput.find("[TensorRT]") != std::string::npos);
-    EXPECT_TRUE(coutOutput.find("TensorRT info message") != std::string::npos);
-    EXPECT_TRUE(coutOutput.find("TensorRT debug message") != std::string::npos);
-
-    EXPECT_TRUE(cerrOutput.find("[TensorRT]") != std::string::npos);
-    EXPECT_TRUE(cerrOutput.find("TensorRT warning message") != std::string::npos);
-    EXPECT_TRUE(cerrOutput.find("TensorRT error message") != std::string::npos);
+    gLogger.setLevel(trt_edgellm::logger::Severity::kERROR);
+    EXPECT_EQ(gLogger.getLevel(), trt_edgellm::logger::Severity::kERROR);
 }
 
 TEST_F(LoggerTest, LocationTracking)
@@ -342,8 +319,8 @@ TEST_F(LoggerTest, FunctionTracing)
 TEST_F(LoggerTest, DirectConfiguration)
 {
     // Test direct logger configuration
-    gLogger.setLevel(nvinfer1::ILogger::Severity::kWARNING);
-    EXPECT_EQ(gLogger.getLevel(), nvinfer1::ILogger::Severity::kWARNING);
+    gLogger.setLevel(trt_edgellm::logger::Severity::kWARNING);
+    EXPECT_EQ(gLogger.getLevel(), trt_edgellm::logger::Severity::kWARNING);
 
     // Test that INFO messages don't appear at WARNING level
     LOG_INFO("This should not appear");
@@ -419,21 +396,22 @@ TEST_F(LoggerTest, ScopedFunctionTracerHelper)
     EXPECT_TRUE(output.find("<- Exiting tracedFunction") != std::string::npos);
 }
 
-TEST_F(LoggerTest, TensorRTSeverityValues)
+// Given the Severity enumerators
+// When their numeric values are compared
+// Then a lower value is more severe, and ERROR to VERBOSE are 1 to 4, the values nvinfer1::ILogger::Severity uses
+TEST_F(LoggerTest, SeverityValues)
 {
-    // Test that TensorRT severity values are correctly ordered (lower is more severe)
-    EXPECT_LT(
-        static_cast<int>(nvinfer1::ILogger::Severity::kERROR), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING));
-    EXPECT_LT(
-        static_cast<int>(nvinfer1::ILogger::Severity::kWARNING), static_cast<int>(nvinfer1::ILogger::Severity::kINFO));
-    EXPECT_LT(
-        static_cast<int>(nvinfer1::ILogger::Severity::kINFO), static_cast<int>(nvinfer1::ILogger::Severity::kVERBOSE));
+    EXPECT_LT(static_cast<int>(trt_edgellm::logger::Severity::kERROR),
+        static_cast<int>(trt_edgellm::logger::Severity::kWARNING));
+    EXPECT_LT(static_cast<int>(trt_edgellm::logger::Severity::kWARNING),
+        static_cast<int>(trt_edgellm::logger::Severity::kINFO));
+    EXPECT_LT(static_cast<int>(trt_edgellm::logger::Severity::kINFO),
+        static_cast<int>(trt_edgellm::logger::Severity::kVERBOSE));
 
-    // Verify the actual numeric values match TensorRT specification
-    EXPECT_EQ(static_cast<int>(nvinfer1::ILogger::Severity::kERROR), 1);
-    EXPECT_EQ(static_cast<int>(nvinfer1::ILogger::Severity::kWARNING), 2);
-    EXPECT_EQ(static_cast<int>(nvinfer1::ILogger::Severity::kINFO), 3);
-    EXPECT_EQ(static_cast<int>(nvinfer1::ILogger::Severity::kVERBOSE), 4);
+    EXPECT_EQ(static_cast<int>(trt_edgellm::logger::Severity::kERROR), 1);
+    EXPECT_EQ(static_cast<int>(trt_edgellm::logger::Severity::kWARNING), 2);
+    EXPECT_EQ(static_cast<int>(trt_edgellm::logger::Severity::kINFO), 3);
+    EXPECT_EQ(static_cast<int>(trt_edgellm::logger::Severity::kVERBOSE), 4);
 }
 
 TEST_F(LoggerTest, DirectLoggerMethods)

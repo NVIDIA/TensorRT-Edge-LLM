@@ -16,7 +16,7 @@
 
 The checkpoint exporter is optional. Its PyTorch and ONNX modules are loaded
 only when an export API is requested, so the checkpoint-direct builder and
-server can import the package without installing the legacy export toolchain.
+server can import the package without installing the export toolchain.
 """
 
 from importlib import import_module
@@ -45,7 +45,7 @@ def _load_export_api():
         missing = (exc.name or "").split(".", 1)[0]
         if missing in _dependencies.EXPORT_DEPENDENCIES:
             raise ModuleNotFoundError(
-                f"{exc}. Install TensorRT Edge-LLM with the 'export' extra "
+                f"{exc}. Install TensorRT Edge-LLM with the 'onnx' extra "
                 "to use the PyTorch/ONNX exporter.",
                 name=exc.name) from exc
         raise

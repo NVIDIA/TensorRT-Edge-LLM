@@ -97,6 +97,25 @@ inline int32_t getDeviceMultiProcessorCount()
 }
 
 /*!
+ * @brief Opt-in shared memory per block of the current device in bytes, cached once.
+ *
+ * @return Largest dynamic shared memory a kernel may request with cudaFuncAttributeMaxDynamicSharedMemorySize
+ * @throws std::runtime_error If the current device or the attribute cannot be queried
+ */
+inline int32_t getMaxSharedMemoryPerBlockOptin()
+{
+    // Edge-LLM runs on one target GPU per process. Query its hardware constant once, then reuse it.
+    static int32_t const bytes = []() {
+        int device{-1};
+        CUDA_CHECK(cudaGetDevice(&device));
+        int value = 0;
+        CUDA_CHECK(cudaDeviceGetAttribute(&value, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
+        return value;
+    }();
+    return bytes;
+}
+
+/*!
  * @brief Instantiate a CUDA graph with handling CUDA version.
  *
  * This function wraps cudaGraphInstantiate and abstracts away the API difference

@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,8 +38,9 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 try:
-    from tensorrt_edgellm.checkpoint.checkpoint_utils import \
-        load_checkpoint_config_dicts
+    from tensorrt_edgellm.checkpoint.checkpoint_utils import (
+        _build_alpamayo_tokenizer, load_checkpoint_config_dicts,
+        validate_external_speculative_target)
 except ImportError as exc:  # pragma: no cover
     pytest.skip(f"tensorrt_edgellm not importable: {exc}",
                 allow_module_level=True)
@@ -93,6 +95,53 @@ def _assert_kmrope(rope_scaling):
     assert rope_type in ("default", "mrope"), (
         "rope type must be 'default' (+ mrope_section) or 'mrope' "
         f"for kMRope; got {rope_type!r}")
+
+
+def test_alpamayo_tokenizer_does_not_require_processor_dependencies(
+        monkeypatch, tmp_path):
+    """Build Alpamayo tokenizer artifacts without loading a VLM processor."""
+    calls = []
+
+    class FakeTokenizer:
+
+        def __init__(self):
+            self.added_tokens = []
+
+        def add_tokens(self, tokens, special_tokens=False):
+            self.added_tokens.append((tokens, special_tokens))
+
+        def save_pretrained(self, output_dir):
+            for filename in ("tokenizer.json", "tokenizer_config.json"):
+                with open(os.path.join(output_dir, filename), "w") as output:
+                    output.write("{}")
+
+        def __len__(self):
+            return 42
+
+    tokenizer = FakeTokenizer()
+
+    class FakeAutoTokenizer:
+
+        @staticmethod
+        def from_pretrained(reference, **kwargs):
+            calls.append((reference, kwargs))
+            return tokenizer
+
+    monkeypatch.setitem(sys.modules, "transformers",
+                        SimpleNamespace(AutoTokenizer=FakeAutoTokenizer))
+
+    _build_alpamayo_tokenizer(
+        {
+            "vlm_name_or_path": "base-vlm",
+            "traj_vocab_size": 2,
+            "add_special_tokens": False,
+        }, str(tmp_path))
+
+    assert calls == [("base-vlm", {"trust_remote_code": True})]
+    assert tokenizer.added_tokens[0] == (["<i0>", "<i1>"], False)
+    assert tokenizer.added_tokens[1][1] is True
+    assert (tmp_path / "tokenizer.json").is_file()
+    assert (tmp_path / "tokenizer_config.json").is_file()
 
 
 def test_qwen3_vl_transformers_v5_recovers_rope_from_text_config_rope_parameters(
@@ -194,3 +243,178 @@ def test_non_mrope_model_unaffected():
         assert "mrope_section" not in rs
         # C++ parser: type='default' + no mrope_section -> kDefault (correct)
         assert rs.get("type") == "default"
+
+
+def test_external_speculative_target_accepts_supported_verifier():
+    validate_external_speculative_target({"model_type": "qwen3"})
+
+
+def test_eagle3_provider_layers_are_preserved():
+    with tempfile.TemporaryDirectory() as td:
+        _write_config(
+            td, {
+                "speculators_model_type": "eagle3",
+                "eagle_aux_hidden_state_layer_ids": [2, 18, 33],
+                "transformer_layer_config": {
+                    "model_type": "llama",
+                    "hidden_size": 4096,
+                    "num_hidden_layers": 1,
+                    "num_attention_heads": 32,
+                },
+            })
+        _, llm = load_checkpoint_config_dicts(td)
+
+    assert llm["target_layer_ids"] == [2, 18, 33]
+
+
+@pytest.mark.parametrize("speculator_type", ["dflash", "dspark"])
+def test_speculators_aux_layers_use_edge_layer_output_indices(speculator_type):
+    with tempfile.TemporaryDirectory() as td:
+        _write_config(
+            td, {
+                "speculators_model_type": speculator_type,
+                "aux_hidden_state_layer_ids": [2, 10, 18, 26, 34],
+                "block_size": 8,
+                "transformer_layer_config": {
+                    "model_type": "qwen3",
+                    "hidden_size": 4096,
+                    "num_hidden_layers": 5,
+                    "num_attention_heads": 32,
+                },
+            })
+        _, llm = load_checkpoint_config_dicts(td)
+
+    config_name = f"{speculator_type}_config"
+    assert llm[config_name]["target_layer_ids"] == [1, 9, 17, 25, 33]
+
+
+def test_dspark_promotes_provider_dflash_metadata():
+    with tempfile.TemporaryDirectory() as td:
+        provider_contract = {
+            "target_layer_ids": [4, 16, 28, 40, 52],
+            "mask_token_id": 248077,
+            "projector_type": "dspark",
+        }
+        _write_config(
+            td, {
+                "model_type": "qwen3",
+                "architectures": ["DSparkDraftModel"],
+                "hidden_size": 5120,
+                "num_hidden_layers": 5,
+                "num_attention_heads": 40,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "intermediate_size": 10240,
+                "vocab_size": 248320,
+                "dflash_config": provider_contract,
+            })
+
+        _, llm = load_checkpoint_config_dicts(td)
+
+    assert llm["dspark_config"] == provider_contract
+
+
+def test_external_speculative_target_rejects_nemotron():
+    # Given a Nemotron target with no supported recurrent drafter selected,
+    # when validating external speculation, then the unsupported route is rejected.
+    with pytest.raises(ValueError, match="Nemotron external"):
+        validate_external_speculative_target({"model_type": "nemotron_h"})
+
+
+@pytest.mark.parametrize("mode", ["dflash", "dspark", "dspark_onnx"])
+def test_nemotron_h_supported_external_speculative_modes(mode):
+    """Protect the supported Nemotron-H external-drafter mode contract."""
+    # Given a Nemotron-H target and a supported external drafter producer.
+    config = {"model_type": "nemotron_h"}
+    # When the producer-specific mode is validated, then the supported hybrid
+    # verifier route is accepted.
+    validate_external_speculative_target(config, mode=mode)
+
+
+@pytest.mark.parametrize("mode", ["", "eagle3", "jetspec", "other"])
+def test_nemotron_h_external_speculative_mode_contract(mode):
+    # Given a Nemotron-H target without a supported recurrent drafter mode.
+    config = {"model_type": "nemotron_h"}
+    # When the route is validated, then unsupported producers are rejected.
+    with pytest.raises(ValueError, match="Nemotron external"):
+        validate_external_speculative_target(config, mode=mode)
+
+
+def test_dspark_onnx_does_not_allow_unknown_nemotron_architecture():
+    # Given a Nemotron family without the Nemotron-H DSpark contract.
+    config = {"model_type": "nemotron_unknown"}
+    # When DSpark ONNX is selected, then the unsupported target is rejected.
+    with pytest.raises(ValueError, match="Nemotron external"):
+        validate_external_speculative_target(config, mode="dspark_onnx")
+
+
+def test_dspark_cli_rejects_unknown_nemotron(tmp_path, capsys):
+    from tensorrt_edgellm.onnx import cli as export_script
+
+    # Given an unsupported Nemotron checkpoint and a DSpark CLI request.
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps({"model_type": "nemotron_unknown"}))
+    # When the CLI validates the target, then it rejects the architecture.
+    with pytest.raises(SystemExit):
+        export_script.main(
+            [str(checkpoint),
+             str(tmp_path / "output"), "--dspark-base"])
+    assert "Nemotron external" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("flag", "expected_mode"),
+                         [("--eagle-base", "eagle3"),
+                          ("--dflash-base", "dflash"),
+                          ("--jetspec-base", "jetspec"),
+                          ("--dspark-base", "dspark_onnx")])
+def test_official_export_passes_external_speculative_producer_mode(
+        tmp_path, capsys, monkeypatch, flag, expected_mode):
+    """Protect producer-specific target validation in the official exporter."""
+    from tensorrt_edgellm.onnx import cli as export_script
+
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps({"model_type":
+                                                        "qwen3"}))
+
+    def validate(config, *, mode):
+        assert config["model_type"] == "qwen3"
+        raise ValueError(f"validated mode={mode}")
+
+    monkeypatch.setattr(export_script.checkpoint_utils,
+                        "validate_external_speculative_target", validate)
+
+    # Given an official external-spec export request, when target validation
+    # runs, then the producer is identified explicitly at the API boundary.
+    with pytest.raises(SystemExit):
+        export_script.main([str(checkpoint), str(tmp_path / "output"), flag])
+    assert f"validated mode={expected_mode}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("draft_vocab_size", [None, 64, 128])
+def test_dspark_optional_draft_vocab_size(tmp_path, draft_vocab_size):
+    from tensorrt_edgellm import config as model_config
+
+    # Given a full-vocabulary or explicitly reduced DSpark checkpoint.
+    data = {
+        "model_type": "qwen3",
+        "hidden_size": 32,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 4,
+        "intermediate_size": 64,
+        "vocab_size": 128,
+        "draft_vocab_size": draft_vocab_size,
+        "dspark_config": {
+            "target_layer_ids": [1]
+        }
+    }
+    (tmp_path / "config.json").write_text(json.dumps(data))
+    # When the draft configuration is loaded, then null means full vocabulary.
+    config = model_config.make_dspark_draft_config(
+        str(tmp_path), default_attention_scale=lambda d: d**-0.5)
+    assert config.draft_vocab_size == (128 if draft_vocab_size is None else
+                                       draft_vocab_size)
+    assert config.reduced_vocab_size == (64
+                                         if draft_vocab_size == 64 else None)

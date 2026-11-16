@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-#include "examples/utils/benchRunner.h"
+#include "ddtreeTestSupport.h"
 #include "kernels/speculative/ddtreeKernels.h"
 
 #include <algorithm>
@@ -39,7 +39,7 @@ struct DDTreeCase
 {
     int32_t batchSize;
     int32_t blockSize;
-    int32_t verifySize;
+    int32_t verifyTokenCount;
     int32_t vocabSize;
     std::vector<float> logits;
     std::vector<int32_t> rootTokenIds;
@@ -56,7 +56,6 @@ struct TreeOutputs
     std::vector<int32_t> verifyTokenIds;
     std::vector<int32_t> positionIds;
     std::vector<int32_t> packedMask;
-    std::vector<int8_t> treeMask;
     std::vector<int32_t> contextLengths;
     std::vector<int64_t> selectTokenIndices;
 };
@@ -200,8 +199,8 @@ bool expansionPrecedes(Expansion const& lhs, Expansion const& rhs)
 
 CpuReference buildCpuReference(DDTreeCase const& testCase)
 {
-    int32_t const packedWords = (testCase.verifySize + 31) / 32;
-    size_t const nodeCount = static_cast<size_t>(testCase.batchSize) * testCase.verifySize;
+    int32_t const packedWords = (testCase.verifyTokenCount + 31) / 32;
+    size_t const nodeCount = static_cast<size_t>(testCase.batchSize) * testCase.verifyTokenCount;
     CpuReference reference;
     TreeOutputs& expected = reference.outputs;
     expected.nodeTokenIds.assign(nodeCount, 0);
@@ -212,7 +211,6 @@ CpuReference buildCpuReference(DDTreeCase const& testCase)
     expected.verifyTokenIds.assign(nodeCount, 0);
     expected.positionIds.assign(nodeCount, 0);
     expected.packedMask.assign(nodeCount * packedWords, 0);
-    expected.treeMask.assign(nodeCount * testCase.verifySize, 0);
     expected.contextLengths.resize(testCase.batchSize);
     expected.selectTokenIndices.resize(nodeCount);
 
@@ -224,12 +222,12 @@ CpuReference buildCpuReference(DDTreeCase const& testCase)
             depthCandidates[depth] = selectCandidates(testCase, batch, depth);
         }
 
-        int32_t const treeOffset = batch * testCase.verifySize;
+        int32_t const treeOffset = batch * testCase.verifyTokenCount;
         expected.nodeTokenIds[treeOffset] = testCase.rootTokenIds[batch];
         expected.nodeScores[treeOffset] = 0.0F;
-        std::vector<int32_t> nextCandidateSlot(testCase.verifySize, 0);
+        std::vector<int32_t> nextCandidateSlot(testCase.verifyTokenCount, 0);
         int32_t validCount{1};
-        for (int32_t outputNode = 1; outputNode < testCase.verifySize; ++outputNode)
+        for (int32_t outputNode = 1; outputNode < testCase.verifyTokenCount; ++outputNode)
         {
             std::vector<Expansion> available;
             for (int32_t parent = 0; parent < validCount; ++parent)
@@ -265,9 +263,9 @@ CpuReference buildCpuReference(DDTreeCase const& testCase)
             ++validCount;
         }
         expected.validCounts[batch] = validCount;
-        expected.contextLengths[batch] = testCase.baseLengths[batch] + testCase.verifySize;
+        expected.contextLengths[batch] = testCase.baseLengths[batch] + testCase.verifyTokenCount;
 
-        for (int32_t node = 0; node < testCase.verifySize; ++node)
+        for (int32_t node = 0; node < testCase.verifyTokenCount; ++node)
         {
             int32_t const nodeIndex = treeOffset + node;
             expected.selectTokenIndices[nodeIndex] = nodeIndex;
@@ -280,7 +278,6 @@ CpuReference buildCpuReference(DDTreeCase const& testCase)
             int32_t ancestor = node;
             while (ancestor >= 0)
             {
-                expected.treeMask[(treeOffset + node) * testCase.verifySize + ancestor] = 1;
                 expected.packedMask[(treeOffset + node) * packedWords + ancestor / 32] |= 1U << (ancestor % 32);
                 ancestor = expected.parentIds[treeOffset + ancestor];
             }
@@ -308,8 +305,8 @@ void copyDeviceToHostAsync(std::vector<T>& host, rt::Tensor const& tensor, cudaS
 TreeOutputs runProductionDDTree(DDTreeCase const& testCase)
 {
     DDTreeBuildScratch scratch = allocateDDTreeBuildScratch(
-        testCase.batchSize, testCase.blockSize, testCase.vocabSize, testCase.verifySize, kCandidateTopK);
-    EXPECT_EQ(scratch.selectTokenIndices.getDataType(), nvinfer1::DataType::kINT64);
+        testCase.batchSize, testCase.blockSize, testCase.vocabSize, testCase.verifyTokenCount, kCandidateTopK);
+    EXPECT_EQ(scratch.selectTokenIndices.getDataType(), trt_edgellm::DataType::kINT64);
     CudaStream stream;
     EXPECT_NE(stream.get(), nullptr);
     copyHostToDeviceAsync(scratch.draftLogits, testCase.logits, stream.get());
@@ -319,8 +316,8 @@ TreeOutputs runProductionDDTree(DDTreeCase const& testCase)
     kernel::DDTreeBuildParams const params{
         {scratch.draftLogits, scratch.lastAcceptedTokens, scratch.baseKVCacheLengths},
         {scratch.treeTokenIds, scratch.treeDepths, scratch.treeParentIds, scratch.treeNodeScores, scratch.validCounts,
-            scratch.verifyTokenIds, scratch.specDecodePositionIds, scratch.packedAttentionMask, scratch.verifyTreeMask,
-            scratch.contextLengths, scratch.selectTokenIndices},
+            scratch.verifyTokenIds, scratch.specDecodePositionIds, scratch.packedAttentionMask, scratch.contextLengths,
+            scratch.selectTokenIndices},
         kCandidateTopK, scratch.workspace.rawPointer(), static_cast<size_t>(scratch.workspace.getShape().volume()),
         stream.get()};
     kernel::ddtreeBuild(params);
@@ -334,7 +331,6 @@ TreeOutputs runProductionDDTree(DDTreeCase const& testCase)
     copyDeviceToHostAsync(actual.verifyTokenIds, scratch.verifyTokenIds, stream.get());
     copyDeviceToHostAsync(actual.positionIds, scratch.specDecodePositionIds, stream.get());
     copyDeviceToHostAsync(actual.packedMask, scratch.packedAttentionMask, stream.get());
-    copyDeviceToHostAsync(actual.treeMask, scratch.verifyTreeMask, stream.get());
     copyDeviceToHostAsync(actual.contextLengths, scratch.contextLengths, stream.get());
     copyDeviceToHostAsync(actual.selectTokenIndices, scratch.selectTokenIndices, stream.get());
     CUDA_CHECK(cudaStreamSynchronize(stream.get()));
@@ -342,13 +338,13 @@ TreeOutputs runProductionDDTree(DDTreeCase const& testCase)
 }
 
 void expectScoresEqual(std::vector<float> const& actual, std::vector<float> const& expected,
-    std::vector<int32_t> const& validCounts, int32_t verifySize)
+    std::vector<int32_t> const& validCounts, int32_t verifyTokenCount)
 {
     ASSERT_EQ(actual.size(), expected.size());
     for (size_t index = 0; index < actual.size(); ++index)
     {
-        int32_t const batch = static_cast<int32_t>(index) / verifySize;
-        int32_t const node = static_cast<int32_t>(index) % verifySize;
+        int32_t const batch = static_cast<int32_t>(index) / verifyTokenCount;
+        int32_t const node = static_cast<int32_t>(index) % verifyTokenCount;
         if (node < validCounts[batch])
         {
             EXPECT_NEAR(actual[index], expected[index], 1.0e-5F) << "batch " << batch << ", node " << node;
@@ -369,11 +365,10 @@ void expectOutputsEqual(TreeOutputs const& actual, CpuReference const& reference
     EXPECT_EQ(actual.nodeTokenIds, expected.nodeTokenIds);
     EXPECT_EQ(actual.nodeDepths, expected.nodeDepths);
     EXPECT_EQ(actual.parentIds, expected.parentIds);
-    expectScoresEqual(actual.nodeScores, expected.nodeScores, expected.validCounts, testCase.verifySize);
+    expectScoresEqual(actual.nodeScores, expected.nodeScores, expected.validCounts, testCase.verifyTokenCount);
     EXPECT_EQ(actual.verifyTokenIds, expected.verifyTokenIds);
     EXPECT_EQ(actual.positionIds, expected.positionIds);
     EXPECT_EQ(actual.packedMask, expected.packedMask);
-    EXPECT_EQ(actual.treeMask, expected.treeMask);
     EXPECT_EQ(actual.contextLengths, expected.contextLengths);
     EXPECT_EQ(actual.selectTokenIndices, expected.selectTokenIndices);
     ASSERT_FALSE(reference.competingExpansionMargins.empty());
@@ -405,7 +400,6 @@ TEST(DFlashBenchDDTree, PackedAndUnpackedMasksMatchCpuAncestorReconstruction)
     DDTreeCase const testCase = makePrimaryCase();
     CpuReference const reference = buildCpuReference(testCase);
     TreeOutputs const actual = runProductionDDTree(testCase);
-    EXPECT_EQ(actual.treeMask, reference.outputs.treeMask);
     EXPECT_EQ(actual.packedMask, reference.outputs.packedMask);
 }
 
@@ -423,13 +417,14 @@ TEST(DFlashBenchDDTree, MultiBatchMaskCrossesPackedWordBoundary)
     EXPECT_EQ(reference.outputs.validCounts, (std::vector<int32_t>{40, 40}));
     for (int32_t batch = 0; batch < testCase.batchSize; ++batch)
     {
-        size_t const row31 = static_cast<size_t>(batch * testCase.verifySize + kFirstBoundaryNode) * kPackedWords;
-        size_t const row32 = static_cast<size_t>(batch * testCase.verifySize + kSecondBoundaryNode) * kPackedWords;
+        size_t const row31 = static_cast<size_t>(batch * testCase.verifyTokenCount + kFirstBoundaryNode) * kPackedWords;
+        size_t const row32
+            = static_cast<size_t>(batch * testCase.verifyTokenCount + kSecondBoundaryNode) * kPackedWords;
         EXPECT_EQ((static_cast<uint32_t>(actual.packedMask[row31]) >> 31) & 1U, 1U);
         EXPECT_EQ(static_cast<uint32_t>(actual.packedMask[row32 + 1]) & 1U, 1U);
-        for (int32_t row = 0; row < testCase.verifySize; ++row)
+        for (int32_t row = 0; row < testCase.verifyTokenCount; ++row)
         {
-            size_t const finalWord = static_cast<size_t>(batch * testCase.verifySize + row) * kPackedWords + 1;
+            size_t const finalWord = static_cast<size_t>(batch * testCase.verifyTokenCount + row) * kPackedWords + 1;
             EXPECT_EQ(static_cast<uint32_t>(actual.packedMask[finalWord]) >> kFinalWordUsedBits, 0U)
                 << "batch " << batch << ", row " << row;
         }

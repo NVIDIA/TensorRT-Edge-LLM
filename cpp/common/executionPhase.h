@@ -34,8 +34,26 @@ enum class ExecutionPhase : int32_t
     kSpecTargetVerify = 5,
     kDiffusionDenoise = 6,
     kDiffusionCommit = 7,
-    kMixedPrefillDecode = 8, //!< Reserved contract value; the current backend rejects it
+    //! Compact layout: prefill rows first, then one row per decode sequence, without padding (0 <= Nctx <= N;
+    //! Nctx = 0 is a pure decode step with T_exec = N). Only plugins that declare compact layout support accept it.
+    kMixedPrefillDecode = 8,
 };
+
+enum class SpecVerifyLayout : int32_t
+{
+    kChain,
+    kTree,
+};
+
+constexpr int64_t specVerifyLayoutExtent(SpecVerifyLayout layout) noexcept
+{
+    return layout == SpecVerifyLayout::kChain ? 1 : 2;
+}
+
+constexpr bool isSpecVerifyLayoutExtentValid(ExecutionPhase phase, int64_t extent) noexcept
+{
+    return phase == ExecutionPhase::kSpecTargetVerify ? extent == 1 || extent == 2 : extent == 0;
+}
 
 constexpr bool isExecutionPhaseExtent(int64_t extent) noexcept
 {

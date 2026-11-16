@@ -36,8 +36,8 @@ using namespace trt_edgellm::rt;
 namespace
 {
 
-constexpr std::array<ResourceType, 4> kRESOURCE_TYPES{ResourceType::kBaseKvPage, ResourceType::kDraftKvPage,
-    ResourceType::kRecurrentSnapshot, ResourceType::kPartialKvSnapshot};
+constexpr std::array<ResourceType, 5> kRESOURCE_TYPES{ResourceType::kBaseKvPage, ResourceType::kDraftKvPage,
+    ResourceType::kRecurrentSnapshot, ResourceType::kPartialKvSnapshot, ResourceType::kSwaKvPage};
 constexpr BlockHash kHASH_A{0x1111111111111111ULL, 0xAAAAAAAAAAAAAAAAULL};
 constexpr BlockHash kHASH_B{0x2222222222222222ULL, 0xBBBBBBBBBBBBBBBBULL};
 constexpr BlockHash kHASH_C{0x3333333333333333ULL, 0xCCCCCCCCCCCCCCCCULL};
@@ -52,6 +52,7 @@ struct RecordState
     std::optional<int32_t> recurrentSnapshotSlot;
     std::optional<int32_t> partialKvSnapshotSlot;
     std::optional<int32_t> exactCheckpointLength;
+    std::optional<SwaWindowState> swaWindowState;
     std::vector<ResourceId> resources;
     std::optional<RecordId> exactKeyLookup;
 };
@@ -62,13 +63,13 @@ bool operator==(RecordState const& lhs, RecordState const& rhs)
         && lhs.basePagePath == rhs.basePagePath && lhs.specState == rhs.specState
         && lhs.recurrentSnapshotSlot == rhs.recurrentSnapshotSlot
         && lhs.partialKvSnapshotSlot == rhs.partialKvSnapshotSlot
-        && lhs.exactCheckpointLength == rhs.exactCheckpointLength && lhs.resources == rhs.resources
-        && lhs.exactKeyLookup == rhs.exactKeyLookup;
+        && lhs.exactCheckpointLength == rhs.exactCheckpointLength && lhs.swaWindowState == rhs.swaWindowState
+        && lhs.resources == rhs.resources && lhs.exactKeyLookup == rhs.exactKeyLookup;
 }
 
 struct PlannerState
 {
-    std::array<int32_t, 4> freeCounts{};
+    std::array<int32_t, 5> freeCounts{};
     std::vector<std::tuple<ResourceId, int32_t, int32_t>> referenceCounts;
     std::vector<RecordId> lruToMru;
     size_t recordCount{};
@@ -95,6 +96,7 @@ CacheRecord makeRecord(BlockHash logicalHash, std::vector<ResourceId> const& res
         case ResourceType::kDraftKvPage: specPagePath.push_back(resource.index); break;
         case ResourceType::kRecurrentSnapshot: record.recurrentSnapshotSlot = resource.index; break;
         case ResourceType::kPartialKvSnapshot: record.partialKvSnapshotSlot = resource.index; break;
+        case ResourceType::kSwaKvPage: break;
         }
     }
     size_t const logicalBlockCount = record.basePagePath.size();
@@ -175,7 +177,7 @@ PlannerState captureState(ResourcePools const& pools, CacheRecordStore const& re
         CacheRecord const& record = records.get(id);
         state.recordsInLruOrder.push_back(RecordState{record.id, record.key, record.logicalBlockHashes,
             record.basePagePath, record.specState, record.recurrentSnapshotSlot, record.partialKvSnapshotSlot,
-            record.exactCheckpointLength, record.resources(), records.find(record.key)});
+            record.exactCheckpointLength, record.swaWindowState, record.resources(), records.find(record.key)});
     }
     return state;
 }
@@ -191,6 +193,7 @@ void expectDemand(ResourceDemand const& actual, ResourceDemand const& expected)
     EXPECT_EQ(actual.draftKvPages, expected.draftKvPages);
     EXPECT_EQ(actual.recurrentSnapshotSlots, expected.recurrentSnapshotSlots);
     EXPECT_EQ(actual.partialKvSnapshotSlots, expected.partialKvSnapshotSlots);
+    EXPECT_EQ(actual.swaKvPages, expected.swaKvPages);
 }
 
 } // namespace

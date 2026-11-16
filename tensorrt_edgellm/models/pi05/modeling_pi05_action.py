@@ -43,6 +43,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .component_contracts import DIFFUSION_DENOISE_PHASE as _DENOISE_PHASE
+from .component_contracts import KV_TOKENS_PER_PAGE as _KV_PAGE_SIZE
+from .component_contracts import kv_pages_per_seq as _kv_pages_per_seq
+from .component_contracts import num_adarms_sites as _num_adarms_sites
+from .component_contracts import packed_mask_words as _packed_mask_words
+from .component_contracts import xqa_cache_capacity as _xqa_cache_capacity
 from .modeling_pi05_prefix import Pi05MLP
 
 logger = logging.getLogger(__name__)
@@ -75,16 +81,13 @@ class Pi05ActionConfig:
 
 def num_adarms_sites(cfg: "Pi05ActionConfig") -> int:
     """Two AdaRMS norms per layer plus the final norm."""
-    return 2 * cfg.num_hidden_layers + 1
+    return _num_adarms_sites(cfg.num_hidden_layers)
 
-
-# XQA walks the cache in CTA tiles this wide.
-_XQA_CACHE_TILE = 256
 
 #: ``rt::ExecutionPhase::kDiffusionDenoise`` (cpp/common/executionPhase.h). The
 #: AttentionPlugin reads this as the LENGTH of ``execution_phase_marker``, and with
 #: tree attention on it selects the tree kernel, whose shape a denoise step has.
-DIFFUSION_DENOISE_PHASE = 6
+DIFFUSION_DENOISE_PHASE = _DENOISE_PHASE
 
 
 def xqa_cache_capacity(max_prefix_len: int, action_horizon: int) -> int:
@@ -94,25 +97,25 @@ def xqa_cache_capacity(max_prefix_len: int, action_horizon: int) -> int:
     the plugin appends the action tokens at ``[prefix_len, prefix_len + H)``, so
     both towers must agree on this number.
     """
-    slots = max_prefix_len + action_horizon
-    return -(-slots // _XQA_CACHE_TILE) * _XQA_CACHE_TILE  # whole CTA tiles
+    return _xqa_cache_capacity(max_prefix_len, action_horizon)
 
 
 # Page size of the shared paged-KV pool; must equal ``rt::kTOKENS_PER_PAGE``.
-KV_TOKENS_PER_PAGE = 128
+KV_TOKENS_PER_PAGE = _KV_PAGE_SIZE
 
 
 def kv_pages_per_seq(max_prefix_len: int, action_horizon: int) -> int:
-    """Pages one sequence's cache spans. ``_XQA_CACHE_TILE`` is a multiple of the
-    page size, so a sequence occupies whole pages and an identity page table
-    reproduces the contiguous layout byte for byte."""
-    capacity = xqa_cache_capacity(max_prefix_len, action_horizon)
-    return capacity // KV_TOKENS_PER_PAGE
+    """Pages one sequence's cache spans.
+
+    The XQA cache tile is a multiple of the page size, so each sequence occupies
+    whole pages and an identity page table reproduces the contiguous layout.
+    """
+    return _kv_pages_per_seq(max_prefix_len, action_horizon)
 
 
 def packed_mask_words(action_horizon: int) -> int:
     """INT32 words per query token in the packed spec-decode mask."""
-    return -(-action_horizon // 32)
+    return _packed_mask_words(action_horizon)
 
 
 class AdaRMSNorm(nn.Module):
@@ -258,7 +261,7 @@ class Pi05ActionAttention(nn.Module):
             attention_scale=self.qk_scale,
             enable_context_mask_selector=False,
             enable_vision_block_attention=False,
-            skip_softmax_scale_factor=0.0,
+            skip_softmax_prefill_input=0,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
             qkv_scales=[1.0, 1.0, 1.0],

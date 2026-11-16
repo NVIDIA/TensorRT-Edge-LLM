@@ -19,6 +19,7 @@
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
 #include "common/mathUtils.h"
+#include "common/trtInterop.h"
 #include "kernels/preprocessKernels/imageUtilKernels.h"
 #include "multimodal/common/imageUtils.h"
 #include "profiling/metrics.h"
@@ -37,8 +38,8 @@ namespace trt_edgellm
 namespace rt
 {
 
-Gemma4ViTRunner::Gemma4ViTRunner(std::string const& engineDir, cudaStream_t stream)
-    : MultimodalRunner(engineDir, stream)
+Gemma4ViTRunner::Gemma4ViTRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
+    : MultimodalRunner(engineDir, stream, checkpointDir)
 {
     if (!validateAndFillConfig(engineDir))
     {
@@ -193,30 +194,30 @@ bool Gemma4ViTRunner::allocateBuffer(cudaStream_t stream)
 {
     bool setTensorAddressStatus{true};
 
-    mVitInput = rt::Tensor({mConfig.maxPatches, mConfig.inputDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
+    mVitInput = rt::Tensor({mConfig.maxPatches, mConfig.inputDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
         "Gemma4ViTRunner::mVitInput");
     setTensorAddressStatus &= mVisualContext->setTensorAddress(binding_names::kVisualInput, mVitInput.rawPointer());
 
-    mPixelPositionIds = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64,
+    mPixelPositionIds = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64,
         "Gemma4ViTRunner::mPixelPositionIds");
-    mPixelPositionIdsHost = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64,
+    mPixelPositionIdsHost = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
         "Gemma4ViTRunner::mPixelPositionIdsHost");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kPixelPositionIds, mPixelPositionIds.rawPointer());
 
     mRotaryPosEmb = rt::Tensor({mConfig.maxPatches, mConfig.rotaryPosEmbDim}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "Gemma4ViTRunner::mRotaryPosEmb");
+        trt_edgellm::DataType::kFLOAT, "Gemma4ViTRunner::mRotaryPosEmb");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kRotaryPosEmb, mRotaryPosEmb.rawPointer());
 
     mPoolingWeights = rt::Tensor({mConfig.maxImageTokens, mConfig.maxPatches}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Gemma4ViTRunner::mPoolingWeights");
+        trt_edgellm::DataType::kHALF, "Gemma4ViTRunner::mPoolingWeights");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kPoolingWeights, mPoolingWeights.rawPointer());
 
     mCuSeqlens = rt::Tensor(
-        {mConfig.maxNumImages + 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "Gemma4ViTRunner::mCuSeqlens");
-    mCuSeqlensHost = rt::Tensor({mConfig.maxNumImages + 1}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32,
+        {mConfig.maxNumImages + 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "Gemma4ViTRunner::mCuSeqlens");
+    mCuSeqlensHost = rt::Tensor({mConfig.maxNumImages + 1}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32,
         "Gemma4ViTRunner::mCuSeqlensHost");
     setTensorAddressStatus &= mVisualContext->setTensorAddress(binding_names::kCuSeqlens, mCuSeqlens.rawPointer());
 
@@ -229,7 +230,7 @@ bool Gemma4ViTRunner::allocateBuffer(cudaStream_t stream)
             LOG_ERROR("Config has use_trt_native_vit_attn=true but engine is missing kv_lengths binding");
             return false;
         }
-        mKvLengths = rt::Tensor({mConfig.maxNumImages + 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32,
+        mKvLengths = rt::Tensor({mConfig.maxNumImages + 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32,
             "Gemma4ViTRunner::mKvLengths");
         setTensorAddressStatus &= mVisualContext->setTensorAddress(binding_names::kKvLengths, mKvLengths.rawPointer());
     }
@@ -238,14 +239,14 @@ bool Gemma4ViTRunner::allocateBuffer(cudaStream_t stream)
         = mVisualEngine->getTensorIOMode(binding_names::kMaxSeqLenCarrier) != nvinfer1::TensorIOMode::kNONE;
     if (mHasMaxSeqLenCarrier)
     {
-        mMaxSeqLenCarrier = rt::Tensor({mConfig.maxPatchesPerImage}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32,
-            "Gemma4ViTRunner::mMaxSeqLenCarrier");
+        mMaxSeqLenCarrier = rt::Tensor({mConfig.maxPatchesPerImage}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kINT32, "Gemma4ViTRunner::mMaxSeqLenCarrier");
         setTensorAddressStatus
             &= mVisualContext->setTensorAddress(binding_names::kMaxSeqLenCarrier, mMaxSeqLenCarrier.rawPointer());
     }
 
     mOutputEmbedding = rt::Tensor({mConfig.maxImageTokens, mConfig.outHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Gemma4ViTRunner::mOutputEmbedding");
+        trt_edgellm::DataType::kHALF, "Gemma4ViTRunner::mOutputEmbedding");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kVisualOutput, mOutputEmbedding.rawPointer());
 
@@ -261,7 +262,7 @@ bool Gemma4ViTRunner::allocateBuffer(cudaStream_t stream)
     mImageStd = {mConfig.imageStd[0], mConfig.imageStd[1], mConfig.imageStd[2]};
 
     int64_t const maxImagePixels = mConfig.maxPatchesPerImage * mConfig.patchSize * mConfig.patchSize;
-    mNormalizedImageDevice = rt::Tensor({maxImagePixels * 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
+    mNormalizedImageDevice = rt::Tensor({maxImagePixels * 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
         "Gemma4ViTRunner::mNormalizedImageDevice");
 
     return true;
@@ -590,24 +591,23 @@ bool Gemma4ViTRunner::infer(cudaStream_t stream) noexcept
 
         bool setEngineIOStatus{true};
         setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kVisualInput, mVitInput.getShape().getTRTDims());
-        setEngineIOStatus &= mVisualContext->setInputShape(
-            binding_names::kPixelPositionIds, mPixelPositionIds.getShape().getTRTDims());
+            &= mVisualContext->setInputShape(binding_names::kVisualInput, toTrtDims(mVitInput.getShape()));
         setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kRotaryPosEmb, mRotaryPosEmb.getShape().getTRTDims());
+            &= mVisualContext->setInputShape(binding_names::kPixelPositionIds, toTrtDims(mPixelPositionIds.getShape()));
         setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kCuSeqlens, mCuSeqlens.getShape().getTRTDims());
+            &= mVisualContext->setInputShape(binding_names::kRotaryPosEmb, toTrtDims(mRotaryPosEmb.getShape()));
+        setEngineIOStatus &= mVisualContext->setInputShape(binding_names::kCuSeqlens, toTrtDims(mCuSeqlens.getShape()));
         setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kPoolingWeights, mPoolingWeights.getShape().getTRTDims());
+            &= mVisualContext->setInputShape(binding_names::kPoolingWeights, toTrtDims(mPoolingWeights.getShape()));
         if (mUseTrtNativeVitAttn)
         {
             setEngineIOStatus
-                &= mVisualContext->setInputShape(binding_names::kKvLengths, mKvLengths.getShape().getTRTDims());
+                &= mVisualContext->setInputShape(binding_names::kKvLengths, toTrtDims(mKvLengths.getShape()));
         }
         if (mHasMaxSeqLenCarrier)
         {
             setEngineIOStatus &= mVisualContext->setInputShape(
-                binding_names::kMaxSeqLenCarrier, mMaxSeqLenCarrier.getShape().getTRTDims());
+                binding_names::kMaxSeqLenCarrier, toTrtDims(mMaxSeqLenCarrier.getShape()));
         }
 
         if (!setEngineIOStatus)

@@ -63,7 +63,8 @@ AOT_PLACEHOLDER_V = 128
 AOT_PLACEHOLDER_SEQLEN = 2
 
 
-def _define_prefill_kernel():
+def _define_prefill_kernel(packed_varlen=False):
+    """Use context_lengths as exclusive token offsets in the packed specialization."""
     @cute.kernel
     def gdn_kernel_prefill(
         tiled_copy_load: cute.TiledCopy,
@@ -92,14 +93,25 @@ def _define_prefill_kernel():
         warp_idx = cute.arch.warp_idx()
         warp_idx = cute.arch.make_warp_uniform(warp_idx)
         batch_idx, _, _ = cute.arch.block_idx()
-        H = q.layout.shape[2]
-        HV = v.layout.shape[2]
+        if cutlass.const_expr(packed_varlen):
+            H = q.layout.shape[1]
+            HV = v.layout.shape[1]
+        else:
+            H = q.layout.shape[2]
+            HV = v.layout.shape[2]
         i_n = batch_idx // HV
         i_hv = batch_idx % HV
         i_h = i_hv // (HV // H)
         state_slot = cutlass.Int32(i_n)
         if use_state_indices != 0:
             state_slot = cutlass.Int32(state_indices[i_n])
+
+        token_begin = cutlass.Int32(0)
+        if cutlass.const_expr(packed_varlen):
+            total_tokens = q.layout.shape[0]
+            token_begin = max(0, min(cutlass.Int32(context_lengths[i_n]), total_tokens))
+            token_end = max(token_begin, min(cutlass.Int32(context_lengths[i_n + 1]), total_tokens))
+            seq_len = token_end - token_begin
 
         k_local = in_warp_tid // V_PER_WARP
         v_local = in_warp_tid % V_PER_WARP
@@ -131,18 +143,28 @@ def _define_prefill_kernel():
 
             # ---- Inner loop: t ----
             for t in range(seq_len):
-                row_valid = cutlass.Int32(t) < cutlass.Int32(context_lengths[i_n])
+                row_valid = cutlass.Boolean(True)
+                if cutlass.const_expr(not packed_varlen):
+                    row_valid = cutlass.Int32(t) < cutlass.Int32(context_lengths[i_n])
 
                 # Load q[t] and k[t] into smem.
                 if tidx < TILE_K:
-                    sK[tidx] = cutlass.Float32(k[i_n, t, i_h, tidx])
-                    sQ[tidx] = cutlass.Float32(q[i_n, t, i_h, tidx])
+                    if cutlass.const_expr(packed_varlen):
+                        sK[tidx] = cutlass.Float32(k[token_begin + t, i_h, tidx])
+                        sQ[tidx] = cutlass.Float32(q[token_begin + t, i_h, tidx])
+                    else:
+                        sK[tidx] = cutlass.Float32(k[i_n, t, i_h, tidx])
+                        sQ[tidx] = cutlass.Float32(q[i_n, t, i_h, tidx])
 
                 # Compute gate g and update gate beta (only lane 0 of each warp).
                 r_A_log = cutlass.Float32(A_log[i_hv])
                 r_dt_bias = cutlass.Float32(dt_bias[i_hv])
-                r_a = cutlass.Float32(a[i_n, t, i_hv])
-                r_b = cutlass.Float32(b[i_n, t, i_hv])
+                if cutlass.const_expr(packed_varlen):
+                    r_a = cutlass.Float32(a[token_begin + t, i_hv])
+                    r_b = cutlass.Float32(b[token_begin + t, i_hv])
+                else:
+                    r_a = cutlass.Float32(a[i_n, t, i_hv])
+                    r_b = cutlass.Float32(b[i_n, t, i_hv])
 
                 r_g = 0.0
                 r_beta = 0.0
@@ -218,7 +240,10 @@ def _define_prefill_kernel():
                 # Read v and recurrent update only for valid sequence positions (t < context_lengths[i_n]).
                 v_global = v_global_base + v_idx
                 if row_valid:
-                    r_v = cutlass.Float32(v[i_n, t, i_hv, v_global])
+                    if cutlass.const_expr(packed_varlen):
+                        r_v = cutlass.Float32(v[token_begin + t, i_hv, v_global])
+                    else:
+                        r_v = cutlass.Float32(v[i_n, t, i_hv, v_global])
 
                     # Step 1: compute correction = v - (g * H).T @ k.
                     sum_hk = 0.0
@@ -247,10 +272,14 @@ def _define_prefill_kernel():
                         )
 
                     if k_local == 0:
-                        o[(i_n, t, i_hv, v_global)] = cutlass.Float16(sum_hq)
+                        if cutlass.const_expr(packed_varlen):
+                            o[(token_begin + t, i_hv, v_global)] = cutlass.Float16(sum_hq)
+                        else:
+                            o[(i_n, t, i_hv, v_global)] = cutlass.Float16(sum_hq)
                 else:
                     if k_local == 0:
-                        o[(i_n, t, i_hv, v_global)] = cutlass.Float16(0.0)
+                        if cutlass.const_expr(not packed_varlen):
+                            o[(i_n, t, i_hv, v_global)] = cutlass.Float16(0.0)
 
                 cute.arch.barrier()
             # ---- end t loop ----------------------------------------------------
@@ -270,8 +299,8 @@ def _define_prefill_kernel():
 _jit_function_prefill = None
 
 
-def _create_jit_function_prefill():
-    gdn_prefill_kernel = _define_prefill_kernel()
+def _create_jit_function_prefill(packed_varlen=False):
+    gdn_prefill_kernel = _define_prefill_kernel(packed_varlen)
 
     @cute.jit
     def run_prefill(
@@ -295,9 +324,14 @@ def _create_jit_function_prefill():
         use_qk_l2norm: cutlass.Constexpr[bool],
         stream: cuda.CUstream,
     ):
-        n_batch = q.layout.shape[0]
-        hv_dim = v.layout.shape[2]
-        v_dim = v.layout.shape[3]
+        if cutlass.const_expr(packed_varlen):
+            n_batch = context_lengths.layout.shape[0] - 1
+            hv_dim = v.layout.shape[1]
+            v_dim = v.layout.shape[2]
+        else:
+            n_batch = q.layout.shape[0]
+            hv_dim = v.layout.shape[2]
+            v_dim = v.layout.shape[3]
         num_blocks = n_batch * hv_dim
 
         copy_atom = cute.make_copy_atom(
@@ -454,16 +488,51 @@ def _make_aot_cute_tensors(n, h, hv, k, v, seq_len):
     }
 
 
-def _compile_prefill(n, h, hv, k, v, seq_len, stream, gpu_arch="", export_only=False):
-    if "_" in _compiled_kernels_prefill:
-        return _compiled_kernels_prefill["_"]
+def _make_aot_packed_cute_tensors(n, h, hv, k, v, total_tokens):
+    def dynamic(dtype, shape, assumed_align=16):
+        rank = len(shape)
+        tensor = aot_placeholders.make_compact_tensor(
+            dtype, shape, stride_order=tuple(reversed(range(rank))), assumed_align=assumed_align
+        ).mark_layout_dynamic(leading_dim=rank - 1)
+        for mode in range(rank - 1):
+            tensor = tensor.mark_compact_shape_dynamic(mode=mode, stride_order=tuple(range(rank)))
+        return tensor
 
-    if export_only:
+    state = aot_placeholders.make_compact_tensor(
+        cutlass.Float32, (n, hv, k, v), stride_order=(3, 2, 1, 0), assumed_align=32
+    )
+    return {
+        "q": dynamic(cutlass.Float16, (total_tokens, h, k)),
+        "k": dynamic(cutlass.Float16, (total_tokens, h, k)),
+        "v": dynamic(cutlass.Float16, (total_tokens, hv, v)),
+        "a": dynamic(cutlass.Float16, (total_tokens, hv)),
+        "b": dynamic(cutlass.Float16, (total_tokens, hv)),
+        "A_log": dynamic(cutlass.Float32, (hv,)),
+        "dt_bias": dynamic(cutlass.Float16, (hv,)),
+        "h0_source": _mark_h0_source_dynamic(state),
+        "state_indices": dynamic(cutlass.Int32, (n,)),
+        "context_lengths": dynamic(cutlass.Int32, (n + 1,)),
+        "o": dynamic(cutlass.Float16, (total_tokens, hv, v)),
+    }
+
+
+def _compile_prefill(n, h, hv, k, v, seq_len, stream, gpu_arch="", export_only=False, packed_varlen=False):
+    cache_key = (gpu_arch, packed_varlen)
+    if cache_key in _compiled_kernels_prefill:
+        return _compiled_kernels_prefill[cache_key]
+
+    if packed_varlen:
+        if not export_only:
+            raise ValueError("Packed-varlen prefill uses the AOT export path.")
+        t = _make_aot_packed_cute_tensors(n, h, hv, k, v, seq_len)
+        run_prefill = _create_jit_function_prefill(packed_varlen=True)
+    elif export_only:
         t = _make_aot_cute_tensors(n, h, hv, k, v, seq_len)
+        run_prefill = _get_jit_function_prefill()
     else:
         ph = _make_placeholder_tensors(n, h, hv, k, v, seq_len)
         t = _to_cute_tensors(ph)
-    run_prefill = _get_jit_function_prefill()
+        run_prefill = _get_jit_function_prefill()
     # Only the export path may pin a foreign target arch in the compile
     # options; a native JIT run must compile for the local GPU (see the
     # native-vs-cross note in cutedsl_utils/cutedsl_compile_wrapper.py).
@@ -483,19 +552,19 @@ def _compile_prefill(n, h, hv, k, v, seq_len, stream, gpu_arch="", export_only=F
         stream=stream,
         **(dict(options=compile_opts) if compile_opts else {}),
     )
-    _compiled_kernels_prefill["_"] = compiled
+    _compiled_kernels_prefill[cache_key] = compiled
     return compiled
 
 
 def export_gdn_prefill(n, h, hv, k, v, seq_len,
-                       output_dir, file_name, function_prefix, gpu_arch=""):
+                       output_dir, file_name, function_prefix, gpu_arch="", packed_varlen=False):
     if seq_len < 2:
         raise ValueError("Prefill requires seq_len >= 2.")
     stream = aot_placeholders.make_stream()
     print("[gdn_prefill] AOT compile gpu_arch=%r" % (gpu_arch or "default"))
     t0 = time.time()
     compiled = _compile_prefill(
-        n, h, hv, k, v, seq_len, stream, gpu_arch=gpu_arch, export_only=True
+        n, h, hv, k, v, seq_len, stream, gpu_arch=gpu_arch, export_only=True, packed_varlen=packed_varlen
     )
     print("[gdn_prefill] Compilation time: %.4fs" % (time.time() - t0))
 
@@ -703,8 +772,12 @@ def main():
             file_name=args.file_name,
             function_prefix=args.function_prefix,
             gpu_arch=args.gpu_arch,
+            packed_varlen=args.varlen,
         )
         return
+
+    if args.varlen:
+        raise ValueError("--varlen requires --export_only.")
 
     if cp.cuda.runtime.getDeviceCount() == 0:
         raise RuntimeError("GPU required.")
@@ -727,6 +800,7 @@ def _parse_args(argv=None):
         description="CuTe DSL GDN prefill: AOT export and test (CuPy only, Ampere+)."
     )
     p.add_argument("--export_only", action="store_true")
+    p.add_argument("--varlen", action="store_true", help="Export packed prefill with exclusive token offsets.")
     p.add_argument("--output_dir", type=str, default="./gdn_aot_artifacts")
     p.add_argument("--file_name", type=str, default="gdn_prefill")
     p.add_argument("--function_prefix", type=str, default="gdn_prefill")

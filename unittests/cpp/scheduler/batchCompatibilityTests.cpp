@@ -17,6 +17,8 @@
 
 #include "scheduler/batchCompatibility.h"
 
+#include "sampler/sampling.h"
+
 #include <gtest/gtest.h>
 
 using namespace trt_edgellm::rt;
@@ -56,23 +58,13 @@ TEST(BatchCompatibilityTests, EveryComparedFieldBlocksBatching)
         return BatchCompatibility::firstDifference(baseline(), other);
     };
 
-    // Sampling parameters are applied to the batch as a whole. Batching a mismatch would not fail
-    // loudly -- one request would simply generate with the other's settings.
-    EXPECT_EQ(firstDifference([](auto& r) { r.temperature = 0.1F; }), "temperature");
-    EXPECT_EQ(firstDifference([](auto& r) { r.topP = 0.5F; }), "topP");
-    EXPECT_EQ(firstDifference([](auto& r) { r.topK = 1; }), "topK");
-    // An explicit seed anywhere flips the batch-wide stable-sampling mode; the values themselves
-    // are per-slot and may differ.
-    EXPECT_EQ(firstDifference([](auto& r) { r.samplingSeed = 42; }), "hasExplicitSamplingSeed");
-    EXPECT_EQ(firstDifference([](auto& r) { r.requests.front().samplingSeed = 42; }), "hasExplicitSamplingSeed");
+    // The draft proposal path is chosen once per speculative step.
     EXPECT_EQ(firstDifference([](auto& r) { r.proposalSampling = SpecProposalSampling::kGreedy; }), "proposalSampling");
 
     // Engine-wide settings select code paths and buffer shapes shared by every slot.
     EXPECT_EQ(firstDifference([](auto& r) { r.loraWeightsName = "adapter-b"; }), "loraWeightsName");
     EXPECT_EQ(firstDifference([](auto& r) { r.disableSpecDecode = true; }), "disableSpecDecode");
-    EXPECT_EQ(firstDifference([](auto& r) { r.numLogprobs = 5; }), "numLogprobs");
     EXPECT_EQ(firstDifference([](auto& r) { r.skipSpecialTokens = false; }), "skipSpecialTokens");
-    EXPECT_EQ(firstDifference([](auto& r) { r.maxGenerateLength = 256; }), "maxGenerateLength");
 
     // Context-cache behaviour travels with the coordinator request, so it is batch-wide too.
     EXPECT_EQ(firstDifference([](auto& r) { r.contextCacheLookupPolicy = ContextCacheLookupPolicy::kBypass; }),
@@ -81,7 +73,6 @@ TEST(BatchCompatibilityTests, EveryComparedFieldBlocksBatching)
     EXPECT_EQ(
         firstDifference([](auto& r) { r.contextCacheCommitPolicy = ContextCacheCommitPolicy::kPrefillStateOnly; }),
         "contextCacheCommitPolicy");
-    EXPECT_EQ(firstDifference([](auto& r) { r.saveSystemPromptKVCache = true; }), "saveSystemPromptKVCache");
     EXPECT_EQ(firstDifference([](auto& r) { r.enableThinking = !r.enableThinking; }), "enableThinking");
     EXPECT_EQ(firstDifference([](auto& r) { r.generateAudio = true; }), "generateAudio");
     EXPECT_EQ(firstDifference([](auto& r) { r.acceptHiddenLayer = 3; }), "acceptHiddenLayer");
@@ -91,13 +82,55 @@ TEST(BatchCompatibilityTests, EveryComparedFieldBlocksBatching)
         firstDifference([](auto& r) { r.onTokenGenerated = [](TokenCallbackInfo const&) {}; }), "onTokenGenerated");
 }
 
-TEST(BatchCompatibilityTests, DifferentExplicitSeedValuesMayShareAStep)
+TEST(BatchCompatibilityTests, PerSequenceSettingsDoNotBlockBatching)
 {
-    LLMGenerationRequest a = baseline();
-    LLMGenerationRequest b = baseline();
-    a.requests.front().samplingSeed = 1;
-    b.requests.front().samplingSeed = 2;
-    EXPECT_TRUE(BatchCompatibility::compatible(a, b));
+    // The runtime applies these row by row: each sequence samples with its own parameters and
+    // seed, stops at its own budget (or runs through EOS to it), and keeps its own logprobs width.
+    auto const compatibleWith = [](auto mutate) {
+        LLMGenerationRequest other = baseline();
+        mutate(other);
+        EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+        EXPECT_TRUE(BatchCompatibility::firstDifference(baseline(), other).empty());
+    };
+    compatibleWith([](auto& r) { r.temperature = 0.1F; });
+    compatibleWith([](auto& r) { r.topP = 0.5F; });
+    compatibleWith([](auto& r) { r.topK = 1; });
+    compatibleWith([](auto& r) { r.samplingSeed = 42; });
+    compatibleWith([](auto& r) { r.requests.front().samplingSeed = 42; });
+    compatibleWith([](auto& r) { r.numLogprobs = 5; });
+    compatibleWith([](auto& r) { r.maxGenerateLength = 256; });
+    compatibleWith([](auto& r) { r.ignoreEos = true; });
+}
+
+TEST(BatchCompatibilityTests, SamplingAgreesComparesTheRowParameters)
+{
+    // Asked only of requests on a decoder that takes one set of sampling parameters per batch.
+    auto const agreesWith = [](auto mutate) {
+        LLMGenerationRequest other = baseline();
+        mutate(other);
+        return BatchCompatibility::samplingAgrees(baseline(), other);
+    };
+    EXPECT_TRUE(agreesWith([](auto&) {}));
+    EXPECT_FALSE(agreesWith([](auto& r) { r.temperature = 0.1F; }));
+    EXPECT_FALSE(agreesWith([](auto& r) { r.topP = 0.5F; }));
+    EXPECT_FALSE(agreesWith([](auto& r) { r.topK = 1; }));
+    // Settings the decoder applies per row, or that are not sampling, do not count.
+    EXPECT_TRUE(agreesWith([](auto& r) { r.samplingSeed = 42; }));
+    EXPECT_TRUE(agreesWith([](auto& r) { r.numLogprobs = 5; }));
+    EXPECT_TRUE(agreesWith([](auto& r) { r.maxGenerateLength = 256; }));
+
+    // Top-k as the runtime stores it: a negative value disables it like zero, and values above the sampler's cap
+    // are clamped to it.
+    LLMGenerationRequest disabled = baseline();
+    disabled.topK = 0;
+    LLMGenerationRequest negative = baseline();
+    negative.topK = -1;
+    EXPECT_TRUE(BatchCompatibility::samplingAgrees(disabled, negative));
+    LLMGenerationRequest capped = baseline();
+    capped.topK = trt_edgellm::kMaxSamplingTopK;
+    LLMGenerationRequest above = baseline();
+    above.topK = trt_edgellm::kMaxSamplingTopK + 1;
+    EXPECT_TRUE(BatchCompatibility::samplingAgrees(capped, above));
 }
 
 TEST(BatchCompatibilityTests, PerSequencePayloadDoesNotBlockBatching)
@@ -121,6 +154,29 @@ TEST(BatchCompatibilityTests, PerSequencePayloadDoesNotBlockBatching)
     other = baseline();
     other.streamChannels.resize(1);
     EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+
+    // Per-item fields are per sequence by construction.
+    other = baseline();
+    other.requests.front().stopStrings = {"STOP"};
+    EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+
+    other = baseline();
+    other.requests.front().logitBias = {{7, 1.5F}};
+    EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+
+    other = baseline();
+    other.requests.front().contextCacheLookupPolicy = ContextCacheLookupPolicy::kBypass;
+    EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+
+    other = baseline();
+    other.requests.front().guidedDecoding = GuidedDecodingParams{};
+    EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+
+    // Given a resident request without a grammar constraint, when a candidate carries a
+    // guided-decoding constraint with jump-forward on, then the two may share a step.
+    other = baseline();
+    other.requests.front().guidedDecoding = GuidedDecodingParams{GuideType::kRegex, "[a-z]+", /*jumpForward=*/true};
+    EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
 }
 
 TEST(BatchCompatibilityTests, PreprocessingChoicesDoNotBlockBatching)
@@ -134,13 +190,49 @@ TEST(BatchCompatibilityTests, PreprocessingChoicesDoNotBlockBatching)
     other = baseline();
     other.addGenerationPrompt = false;
     EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+
+    // The tool and reasoning fields are consumed by the chat template alone.
+    other = baseline();
+    other.reasoningEffort = "high";
+    EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+
+    other = baseline();
+    ToolDefinition tool;
+    tool.name = "lookup";
+    other.tools.push_back(tool);
+    EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+
+    other = baseline();
+    other.toolChoice.mode = ToolChoice::Mode::kRequired;
+    EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+
+    other = baseline();
+    other.parallelToolCalls = false;
+    EXPECT_TRUE(BatchCompatibility::compatible(baseline(), other));
+}
+
+TEST(BatchCompatibilityTests, SchedulingFieldsDoNotBlockBatching)
+{
+    // Given two requests that differ only in their scheduling priority, or only in their generate budget
+    // When the engine asks whether they may share a step
+    // Then they may: priority orders admission and never reaches a step, and each resident stops at its own
+    //      budget, so neither drives the other's stopping point
+    LLMGenerationRequest priority = baseline();
+    priority.priority = -5;
+    LLMGenerationRequest budget = baseline();
+    budget.maxGenerateLength = 256;
+    for (LLMGenerationRequest const* other : {&priority, &budget})
+    {
+        EXPECT_TRUE(BatchCompatibility::compatible(baseline(), *other));
+        EXPECT_TRUE(BatchCompatibility::firstDifference(baseline(), *other).empty());
+    }
 }
 
 TEST(BatchCompatibilityTests, ComparisonIsSymmetricAndReflexive)
 {
     LLMGenerationRequest a = baseline();
     LLMGenerationRequest b = baseline();
-    b.temperature = 0.2F;
+    b.loraWeightsName = "adapter-b";
 
     EXPECT_TRUE(BatchCompatibility::compatible(a, a));
     EXPECT_EQ(BatchCompatibility::compatible(a, b), BatchCompatibility::compatible(b, a))

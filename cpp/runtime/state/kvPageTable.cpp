@@ -66,10 +66,10 @@ KVPageTable::KVPageTable(int32_t maxBatch, int32_t maxPagesPerSeq, int32_t numPa
     mUploadedHost = mHost;
     mSparseActivePages.resize(static_cast<size_t>(maxBatch));
     mSparseLogicalPages.resize(static_cast<size_t>(maxBatch));
-    mDevice = rt::Tensor(Coords{maxBatch, kKV_HALVES, maxPagesPerSeq}, DeviceType::kGPU, nvinfer1::DataType::kINT32,
+    mDevice = rt::Tensor(Coords{maxBatch, kKV_HALVES, maxPagesPerSeq}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
         "KVPageTable::kernelView");
     mUploadStaging = rt::Tensor(Coords{maxBatch, kKV_HALVES, maxPagesPerSeq}, DeviceType::kCPU,
-        nvinfer1::DataType::kINT32, "KVPageTable::uploadStaging");
+        trt_edgellm::DataType::kINT32, "KVPageTable::uploadStaging");
     CUDA_CHECK(cudaEventCreateWithFlags(&mUploadComplete, cudaEventDisableTiming));
 }
 
@@ -424,12 +424,12 @@ void KVPageTable::gatherRows(
     rt::Tensor& destination, rt::Tensor const& residentSlots, int32_t numRows, cudaStream_t stream) const
 {
     ELLM_CHECK(numRows >= 0 && numRows <= mMaxBatch, "KVPageTable::gatherRows: row count is out of range.");
-    ELLM_CHECK(residentSlots.getDataType() == nvinfer1::DataType::kINT32,
+    ELLM_CHECK(residentSlots.getDataType() == trt_edgellm::DataType::kINT32,
         "KVPageTable::gatherRows: resident slots must be INT32.");
     ELLM_CHECK(
         residentSlots.getShape().volume() >= numRows, "KVPageTable::gatherRows: resident slot tensor is too small.");
-    ELLM_CHECK(
-        destination.getDataType() == nvinfer1::DataType::kINT32, "KVPageTable::gatherRows: destination must be INT32.");
+    ELLM_CHECK(destination.getDataType() == trt_edgellm::DataType::kINT32,
+        "KVPageTable::gatherRows: destination must be INT32.");
     int64_t const requiredBytes = static_cast<int64_t>(numRows) * 2 * mMaxPagesPerSeq * sizeof(int32_t);
     ELLM_CHECK(
         destination.getMemoryCapacity() >= requiredBytes, "KVPageTable::gatherRows: destination storage is too small.");

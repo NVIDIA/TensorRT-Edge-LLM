@@ -23,7 +23,7 @@ weight layouts and distinct ONNX identities: an engine never carries both.
 
 ## Export
 
-`python -m tensorrt_edgellm.scripts.export --target-sm 110` exports of
+`python -m tensorrt_edgellm.onnx.cli --target-sm 110` exports of
 Nemotron 3.5 Lightning (ModelOpt `W4A16_NVFP4` routed experts) emit this
 plugin: `NemotronHMoEMLP._prepare_for_export_a16` stacks the experts with
 `repack_nvfp4_a16_blackwell_moe_experts` and `forward` calls
@@ -141,7 +141,7 @@ FP32 through the initializer downgrade.
 ## Thor sign-off checklist
 
 1. `python kernelSrcs/build_cutedsl.py --kernels ALL --gpu_arch sm_110 --arch aarch64`
-2. `cmake .. -DTRT_PACKAGE_DIR=/usr -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake -DEMBEDDED_TARGET=jetson-thor -DCUDA_CTK_VERSION=13.2 -DENABLE_CUTE_DSL=ALL -DBUILD_UNIT_TESTS=ON`
-3. `./unittests/unitTestKernelsMoe --gtest_filter='Nvfp4A16BlackwellMoe*'`
-4. `./unittests/unitTestPlugins --gtest_filter='Nvfp4A16BlackwellMoePlugin*'`
+2. `cmake -S . -B build -DTRT_PACKAGE_DIR=/usr -DEMBEDDED_TARGET=jetson-thor -DBUILD_UNIT_TESTS=ON`
+3. `./bin/unitTests/unitTestKernelsMoe --gtest_filter='Nvfp4A16BlackwellMoe*'`
+4. `./bin/unitTests/unitTestPlugins --gtest_filter='Nvfp4A16BlackwellMoePlugin*'`
 5. `pytest tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py`

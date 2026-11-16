@@ -20,9 +20,9 @@ import pytest
 
 pytest.importorskip("tensorrt")
 
-from experimental.builder.models.cosmos3.configuration import (
+from tensorrt_edgellm.builder.models.cosmos3.configuration import (
     Cosmos3PolicyGeometry, prepare_root)
-from experimental.builder.models.cosmos3.runtime_config import \
+from tensorrt_edgellm.builder.models.cosmos3.runtime_config import \
     component_runtime_config
 
 
@@ -118,3 +118,54 @@ def test_policy_component_contracts_separate_prefix_and_generation_geometry():
         1, 48, 9, 33, 40
     ]
     assert gen["num_video_tokens"] == 9 * 17 * 20
+
+
+def test_prepare_root_attaches_checkpoint_component_configs(tmp_path):
+    """Attach the transformer, VAE, and policy configs found in the checkpoint."""
+    for name in ("transformer", "vae"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "config.json").write_text(json.dumps({"id": name}))
+    (tmp_path / "checkpoint.json").write_text(
+        json.dumps({"policy": {
+            "domain_name": "droid_lerobot"
+        }}))
+
+    root = prepare_root(str(tmp_path), {})
+
+    assert root["_direct_transformer_config"] == {"id": "transformer"}
+    assert root["_direct_vae_config"] == {"id": "vae"}
+    assert root["_direct_policy_config"] == {"domain_name": "droid_lerobot"}
+
+
+def test_gen_contract_names_the_resolved_domain():
+    """Name the GEN domain from the same checkpoint metadata as its id."""
+    transformer = {
+        "hidden_size": 8,
+        "intermediate_size": 16,
+        "head_dim": 8,
+        "num_attention_heads": 1,
+        "num_key_value_heads": 1,
+        "num_hidden_layers": 0,
+        "hidden_act": "relu2",
+        "rope_theta": 1.0,
+    }
+    args = SimpleNamespace(max_batch_size=1, max_input_len=512)
+    named = SimpleNamespace(
+        root={
+            "_direct_policy_config": {
+                "action_chunk_size": 8,
+                "domain_name": "other",
+                "domain_id": 5,
+            },
+            "_direct_transformer_config": transformer,
+        })
+    unnamed = SimpleNamespace(
+        root={"_direct_transformer_config": {
+            **transformer, "domain_id": 3
+        }})
+
+    gen = component_runtime_config(named, "gen", args)
+    unnamed_gen = component_runtime_config(unnamed, "gen", args)
+
+    assert (gen["domain"], gen["domain_id"]) == ("other", 5)
+    assert (unnamed_gen["domain"], unnamed_gen["domain_id"]) == (None, 3)

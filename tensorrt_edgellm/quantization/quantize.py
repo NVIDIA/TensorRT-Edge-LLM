@@ -27,6 +27,7 @@ import time
 from contextlib import contextmanager
 from itertools import islice
 from pathlib import Path
+from types import MethodType
 from typing import Any, Iterable, Optional, Union
 
 import modelopt.torch.quantization as mtq
@@ -41,10 +42,14 @@ from transformers import (AutoModel, AutoModelForCausalLM,
                           AutoModelForTextToWaveform, AutoProcessor,
                           AutoTokenizer)
 
+from ..checkpoint.checkpoint_utils import _MOE_COUNT_KEYS, _MOE_SIZING_KEYS
+from ..checkpoint.component_prefixes import VISUAL_PREFIXES
+from ..config import _MTP_CONFIG_MODEL_TYPES
 from .datasets import (AudioDataset, ImageDataset, TextDataset, dataset_name,
                        resolve_dataset)
-from .quantization_configs import (_VISUAL_PREFIXES, append_quant_cfg_entries,
-                                   build_quant_config)
+from .quantization_configs import (append_quant_cfg_entries,
+                                   build_quant_config,
+                                   split_lm_head_calibration)
 from .qwen3_asr_loader import (asr_calibration_dataloader, is_qwen3_asr_model,
                                load_qwen3_asr_joint_for_calibration,
                                postprocess_qwen3_asr_checkpoint)
@@ -53,6 +58,47 @@ from .qwen3_cp_loader import (has_code_predictor, is_qwen3_next_omni,
                               qwen3_next_cp_calibration_loop)
 from .qwen3_omni import (_copy_vocoder_dir, _load_omni_model,
                          is_omni_model_dir, quantize_and_export_omni)
+
+_ALPAMAYO_SPECIAL_TOKEN_NAMES = (
+    "prompt_start",
+    "prompt_end",
+    "image_start",
+    "image_pre_tkn",
+    "image_end",
+    "traj_history_start",
+    "traj_history_pre_tkn",
+    "traj_history_end",
+    "cot_start",
+    "cot_end",
+    "meta_action_start",
+    "meta_action_end",
+    "traj_future_start",
+    "traj_future_pre_tkn",
+    "traj_future_end",
+    "traj_history",
+    "traj_future",
+    "image_pad",
+    "vectorized_wm",
+    "vectorized_wm_start",
+    "vectorized_wm_end",
+    "vectorized_wm_pre_tkn",
+    "route_start",
+    "route_pad",
+    "route_end",
+    "question_start",
+    "question_end",
+    "answer_start",
+    "answer_end",
+)
+
+_ALPAMAYO_TRAJECTORY_TOKENS = {
+    "history": "<|traj_history|>",
+    "future": "<|traj_future|>",
+    "history_start": "<|traj_history_start|>",
+    "future_start": "<|traj_future_start|>",
+    "history_end": "<|traj_history_end|>",
+    "future_end": "<|traj_future_end|>",
+}
 
 
 def _text_calib_dataloader(tokenizer,
@@ -114,6 +160,62 @@ def _is_qwen3_tts_model(model_dir: str) -> bool:
             return json.load(f).get("model_type") == "qwen3_tts"
     except (OSError, ValueError):
         return False
+
+
+def _alpamayo_config(model_dir: str) -> Optional[dict[str, Any]]:
+    """Return the Alpamayo root config, or ``None`` for another family."""
+    config_path = os.path.join(model_dir, "config.json")
+    if not os.path.isfile(config_path):
+        return None
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except (OSError, ValueError):
+        return None
+    return config if config.get("model_type") == "alpamayo_r1" else None
+
+
+def _load_alpamayo_tokenizer(config: dict[str, Any]):
+    """Build the runtime tokenizer used by Alpamayo's extended embedding."""
+    reference = config.get("vlm_name_or_path", "Qwen/Qwen3-VL-8B-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained(reference,
+                                              trust_remote_code=True)
+    # Leave chat_template unset so the exporter selects the native Alpamayo
+    # renderer, which inserts the trajectory-history tokens; a provider Jinja
+    # would take precedence over it.
+    tokenizer.chat_template = None
+    trajectory_start = int(config.get("traj_token_start_idx", len(tokenizer)))
+    if len(tokenizer) != trajectory_start:
+        raise ValueError("Alpamayo base tokenizer length does not match "
+                         f"traj_token_start_idx: {len(tokenizer)} != "
+                         f"{trajectory_start}")
+
+    tokenizer.add_tokens([
+        f"<i{value}>" for value in range(int(config.get("traj_vocab_size", 0)))
+    ])
+    tokenizer.add_tokens(
+        [f"<|{name}|>" for name in _ALPAMAYO_SPECIAL_TOKEN_NAMES],
+        special_tokens=True)
+
+    expected_vocabulary = int(config.get("vocab_size", len(tokenizer)))
+    if len(tokenizer) != expected_vocabulary:
+        raise ValueError("Alpamayo runtime tokenizer size does not match "
+                         f"vocab_size: {len(tokenizer)} != "
+                         f"{expected_vocabulary}")
+    for name, expected in (config.get("traj_token_ids") or {}).items():
+        token = _ALPAMAYO_TRAJECTORY_TOKENS.get(name)
+        if token is None:
+            continue
+        actual = int(tokenizer.convert_tokens_to_ids(token))
+        if actual != int(expected):
+            raise ValueError(f"Alpamayo token {token!r} has ID {actual}, "
+                             f"expected {expected}")
+    return tokenizer
+
+
+def _forward_alpamayo_vlm(model, *args, **kwargs):
+    """Expose Alpamayo's VLM as its generic forward for ModelOpt tracing."""
+    return model.vlm(*args, **kwargs)
 
 
 def _pre_register_phi4mm_attention_for_kv_quant(
@@ -240,15 +342,24 @@ def _multimodal_calib_dataloader(processor,
 def _load_model(model_dir, dtype="fp16", device="cuda"):
     """Load model + tokenizer + optional processor via Auto* classes."""
     torch_dtype = torch.float16 if dtype == "fp16" else torch.bfloat16
-    tokenizer = AutoTokenizer.from_pretrained(model_dir,
-                                              trust_remote_code=True)
-    try:
-        processor = AutoProcessor.from_pretrained(model_dir,
-                                                  trust_remote_code=True,
-                                                  min_pixels=128 * 28 * 28,
-                                                  max_pixels=2048 * 32 * 32)
-    except Exception:
+    alpamayo_config = _alpamayo_config(model_dir)
+    if alpamayo_config is not None:
+        # The provider root intentionally has no tokenizer files. Its VLM
+        # tokenizer is extended with trajectory tokens whose IDs must match
+        # the enlarged Alpamayo embedding and LM head exactly.
+        tokenizer = _load_alpamayo_tokenizer(alpamayo_config)
         processor = None
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_dir,
+                                                  trust_remote_code=True)
+        try:
+            processor = AutoProcessor.from_pretrained(model_dir,
+                                                      trust_remote_code=True,
+                                                      min_pixels=128 * 28 * 28,
+                                                      max_pixels=2048 * 32 *
+                                                      32)
+        except Exception:
+            processor = None
 
     # NemotronH (hybrid Mamba+Attention): the custom modeling code imports
     # ``mamba_ssm.ops.triton.layernorm_gated`` and (when available)
@@ -261,6 +372,17 @@ def _load_model(model_dir, dtype="fp16", device="cuda"):
         from tensorrt_edgellm.lora import load_phi4mm_model
         model = load_phi4mm_model(model_dir, torch_dtype)
         model.to(device)
+    elif alpamayo_config is not None:
+        # Alpamayo's registered HF class is provided by the official
+        # ``alpamayo_r1`` package, not Transformers itself.
+        from alpamayo_r1.models.alpamayo_r1 import AlpamayoR1
+        model = AlpamayoR1.from_pretrained(model_dir,
+                                           dtype=torch_dtype).to(device)
+        # The provider intentionally exposes task-specific ``sample_actions``
+        # rather than a generic top-level forward. ModelOpt's unified exporter
+        # traces a dummy forward to recover shared LLM inputs, so route that
+        # introspection through the VLM only. Action modules remain untouched.
+        model.forward = MethodType(_forward_alpamayo_vlm, model)
     elif _is_qwen3_tts_model(model_dir):
         # No released transformers registers model_type="qwen3_tts" and the
         # checkpoint ships no modeling code, so the AutoModel factories below
@@ -431,7 +553,15 @@ def _load_mtp_weights_for_unified_export(
 def _mtp_num_hidden_layers(model: torch.nn.Module) -> int:
     """Return the number of dense MTP draft layers declared by a HF config."""
     text_config = getattr(model.config, "text_config", model.config)
-    return int(getattr(text_config, "mtp_num_hidden_layers", 0) or 0)
+    declared = int(getattr(text_config, "mtp_num_hidden_layers", 0) or 0)
+    if declared:
+        return declared
+    # Dense Qwen3 heads only declare the DeepSeek-style module count. Hybrid
+    # families (Nemotron-H) also use that key but quantize their MTP stack
+    # elsewhere, so the fallback is restricted to the MTP model-type set.
+    if getattr(text_config, "model_type", "") in _MTP_CONFIG_MODEL_TYPES:
+        return int(getattr(text_config, "num_nextn_predict_layers", 0) or 0)
+    return 0
 
 
 def _has_mtp_weights(model_dir: str) -> Optional[bool]:
@@ -495,6 +625,54 @@ def _calibrate(model, dataloader):
             model(input_ids=data, input_mode=0, use_cache=False)
         else:
             model(data)
+
+
+def _image_to_chw_tensor(image) -> torch.Tensor:
+    """Load a calibration image (PIL, path or URL) as a uint8 CHW tensor."""
+    import numpy as np
+    from transformers import image_utils
+
+    return torch.from_numpy(np.asarray(image_utils.load_image(image))).permute(
+        2, 0, 1)
+
+
+def _alpamayo_calib_batches(model, image_dataset: ImageDataset,
+                            num_samples: int):
+    """Build image + trajectory-history prompts for Alpamayo's VLM backbone.
+
+    The runtime feeds the backbone camera frames and discretized ego-history
+    tokens. Text-only calibration records activation ranges that are too
+    narrow for those positions, so NVFP4 activation quantization clips them.
+    Each prompt carries one dataset image and a stationary ego history; the
+    runtime's 16-frame prompts and moving histories are not reproduced.
+    """
+    from alpamayo_r1 import helper
+
+    processor = helper.get_processor(model.tokenizer)
+    stationary_history = {
+        "ego_history_xyz":
+        torch.zeros(1, 1, 16, 3, device=model.device),
+        "ego_history_rot":
+        torch.eye(3, device=model.device).expand(1, 1, 16, 3, 3).clone(),
+    }
+    batches: list[dict[str, Any]] = []
+    for image, _ in islice(image_dataset(), num_samples):
+        inputs = processor.apply_chat_template(
+            helper.create_message(_image_to_chw_tensor(image)[None]),
+            tokenize=True,
+            add_generation_prompt=False,
+            continue_final_message=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        input_ids = model.fuse_traj_tokens(
+            inputs.pop("input_ids").to(model.device), stationary_history)
+        batches.append({"input_ids": input_ids.cpu(), **inputs})
+
+    if not batches:
+        raise RuntimeError(f"No usable Alpamayo calibration samples from "
+                           f"{dataset_name(image_dataset)!r}.")
+    return batches
 
 
 def _collect_attention_q_scales_for_export(
@@ -576,6 +754,62 @@ def _remove_stale_safetensors_index(output_dir: str) -> None:
         os.remove(index_path)
 
 
+def _restore_gemma4_attention_geometry(model_dir: str,
+                                       output_dir: str) -> None:
+    """Keep the source global head width when HF rewrites per-layer config."""
+    source_path = os.path.join(model_dir, "config.json")
+    output_path = os.path.join(output_dir, "config.json")
+    with open(source_path, encoding="utf-8") as source:
+        source_config = json.load(source)
+    if not str(source_config.get("model_type", "")).startswith("gemma4"):
+        return
+    with open(output_path, encoding="utf-8") as output:
+        exported = json.load(output)
+    source_text = source_config.get("text_config", source_config)
+    exported_text = exported.get("text_config", exported)
+    for field in ("global_head_dim", "num_global_key_value_heads"):
+        if field in source_text:
+            exported_text[field] = source_text[field]
+    if exported.get("tie_word_embeddings") is False:
+        exported_text["tie_word_embeddings"] = False
+    with open(output_path + ".tmp", "w", encoding="utf-8") as output:
+        json.dump(exported, output, indent=2)
+    os.replace(output_path + ".tmp", output_path)
+
+
+def _drop_undeclared_moe_defaults(model_dir: str, output_dir: str) -> None:
+    """Drop MoE sizing keys that ``save_pretrained`` filled from HF class defaults.
+
+    Mirrors the pruning in ``load_checkpoint_config_dicts``; no-op when the
+    source config declares an expert count anywhere.
+    TODO: remove once dense Qwen4 ships its own HF config class.
+    """
+
+    def sections(node):
+        if isinstance(node, dict):
+            yield node
+            for value in node.values():
+                yield from sections(value)
+
+    source_path = os.path.join(model_dir, "config.json")
+    exported_path = os.path.join(output_dir, "config.json")
+    if not (os.path.isfile(source_path) and os.path.isfile(exported_path)):
+        return
+    with open(source_path, encoding="utf-8") as f:
+        source = json.load(f)
+    if any(
+            section.get(key) for section in sections(source)
+            for key in _MOE_COUNT_KEYS):
+        return
+    with open(exported_path, encoding="utf-8") as f:
+        exported = json.load(f)
+    for section in list(sections(exported)):
+        for key in _MOE_SIZING_KEYS:
+            section.pop(key, None)
+    with open(exported_path, "w", encoding="utf-8") as f:
+        json.dump(exported, f, indent=2)
+
+
 def _surface_visual_q_scales(model: torch.nn.Module) -> None:
     """Save visual attention Q's calibrated scale as a top-level buffer.
 
@@ -595,7 +829,7 @@ def _surface_visual_q_scales(model: torch.nn.Module) -> None:
     """
     FP8_E4M3_MAX = 448.0
     for name, module in model.named_modules():
-        if not any(p in name for p in _VISUAL_PREFIXES):
+        if not any(p in name for p in VISUAL_PREFIXES):
             continue
         q_q = getattr(module, "q_bmm_quantizer", None)
         if q_q is None:
@@ -695,7 +929,9 @@ def _share_gdn_qkvzba_scales(model) -> int:
 
 
 @contextmanager
-def _skip_resmooth_for_hybrid(model, quantization: str = ""):
+def _skip_resmooth_for_hybrid(model,
+                              quantization: str = "",
+                              already_resmoothed: bool = False):
     """WAR for ModelOpt resmoothing bugs on selected custom models.
 
     ``export_hf_checkpoint`` calls ``requantize_resmooth_fused_llm_layers``
@@ -734,7 +970,8 @@ def _skip_resmooth_for_hybrid(model, quantization: str = ""):
     # Multimodal wrappers have no top-level ``forward``; resmooth's dummy
     # ``model(fake_input)`` crashes on them. Resmooth is a no-op without
     # AWQ pre_quant_scales, so skipping is safe here.
-    should_skip = ((_is_hybrid_model(model) and not is_nvfp4) or model_type
+    should_skip = (already_resmoothed
+                   or (_is_hybrid_model(model) and not is_nvfp4) or model_type
                    in ("phi4mm", "phi4_multimodal", "qwen3_omni",
                        "qwen3_omni_moe", "qwen3_omni_next", "qwen3_tts")
                    or (is_int4_awq and not _is_moe_model(model)))
@@ -756,6 +993,25 @@ def _skip_resmooth_for_hybrid(model, quantization: str = ""):
         _ueh.requantize_resmooth_fused_llm_layers = _orig
 
 
+@contextmanager
+def _skip_fused_expert_amax_sync():
+    """ModelOpt 0.45 registers a block type as sparse MoE once it sees per-expert
+    Linears (the MTP draft's ``_ExpertBank``); the base's blocks of that type keep
+    fused experts, which ``sync_moe_expert_amax`` cannot iterate."""
+    import modelopt.torch.quantization.plugins.huggingface as _hf
+    _orig = _hf.sync_moe_expert_amax
+
+    def _sync(experts, sync_weight_amax=False):
+        if hasattr(experts, "__iter__"):
+            _orig(experts, sync_weight_amax=sync_weight_amax)
+
+    _hf.sync_moe_expert_amax = _sync
+    try:
+        yield
+    finally:
+        _hf.sync_moe_expert_amax = _orig
+
+
 def _is_image_blind_calibration(model, quant_cfg: dict) -> bool:
     """Return True if a text-only calibration would miss image activations.
 
@@ -766,7 +1022,7 @@ def _is_image_blind_calibration(model, quant_cfg: dict) -> bool:
     ``max`` (fp8, nvfp4) only records ranges and is modality-blind either way.
     """
     if not any(
-            any(p in name for p in _VISUAL_PREFIXES)
+            any(p in name for p in VISUAL_PREFIXES)
             for name, _ in model.named_modules()):
         return False
     return quant_cfg.get("algorithm") not in (None, "max")
@@ -922,11 +1178,141 @@ def _calibrate_asr_multimodal(model, batch_iter):
             model(**kwargs)
 
 
+_REGISTERED_SCALED_EMBEDDINGS = set()
+
+
+def _register_scaled_embedding(embedding):
+    cls = type(embedding)
+    if (cls.__name__ == "Gemma4TextScaledWordEmbedding"
+            and cls not in _REGISTERED_SCALED_EMBEDDINGS):
+        from modelopt.torch.quantization.nn.modules.quant_embedding import \
+            QuantEmbedding
+        mtq.register(original_cls=cls, quantized_cls=QuantEmbedding)
+        _REGISTERED_SCALED_EMBEDDINGS.add(cls)
+
+
+def _ngram_table_names(model):
+    """Qwen4-Exp hashed n-gram tables, one ``nn.Embedding`` per PLE layer."""
+    return [
+        f"{name}.ngram_embedding"
+        for name, module in model.named_modules() if isinstance(
+            getattr(module, "ngram_embedding", None), torch.nn.Embedding)
+    ]
+
+
+def _embedding_quant_cfg(model, token_method, ple_method):
+    """Select the requested tables in one late ModelOpt embedding override."""
+    selected = {}
+    token_name = None
+    ple_names = []
+
+    def name_of(embedding, role):
+        names = [
+            name for name, module in model.named_modules()
+            if module is embedding
+        ]
+        if len(names) != 1 or not isinstance(embedding, torch.nn.Embedding):
+            raise ValueError(
+                f"Could not uniquely resolve the {role} embedding")
+        _register_scaled_embedding(embedding)
+        return names[0]
+
+    if token_method is not None:
+        if token_method not in ("fp8", "nvfp4"):
+            raise ValueError(
+                f"Unsupported token embedding quantization: {token_method}")
+        embedding = model.get_input_embeddings()
+        token_name = name_of(embedding, "token")
+        if token_method == "nvfp4" and embedding.embedding_dim % 16 != 0:
+            raise ValueError(
+                "ModelOpt NVFP4 token embedding requires a 16-aligned hidden dimension"
+            )
+        output_embedding = model.get_output_embeddings()
+        if (output_embedding is not None
+                and output_embedding.weight is embedding.weight):
+            output_embedding.weight = torch.nn.Parameter(
+                embedding.weight.detach().clone())
+            model.config.tie_word_embeddings = False
+            text_config = getattr(model.config, "text_config", None)
+            if text_config is not None:
+                text_config.tie_word_embeddings = False
+        selected[token_name] = ({
+            "num_bits": (4, 3),
+        } if token_method == "fp8" else {
+            "num_bits": (2, 1),
+            "block_sizes": {
+                -1: 16,
+                "type": "dynamic",
+                "scale_bits": (4, 3),
+            },
+        })
+
+    if ple_method is not None:
+        if ple_method != "fp8":
+            raise ValueError("PLE tables support only per-tensor FP8")
+        getter = getattr(model, "get_per_layer_input_embeddings", None)
+        if getter is not None:
+            ple_names = [name_of(getter(), "Gemma4 PLE")]
+        else:
+            ple_names = _ngram_table_names(model)
+        if not ple_names:
+            raise ValueError("The model has no per-layer input embedding")
+        if any(name in selected for name in ple_names):
+            raise ValueError("Token and PLE embeddings must be distinct")
+        for name in ple_names:
+            selected[name] = {"num_bits": (4, 3)}
+
+    entries = [{
+        "quantizer_name": f"{name}.weight_quantizer",
+        "enable": False,
+    } for name, module in model.named_modules()
+               if name and isinstance(module, torch.nn.Embedding)
+               and name not in selected]
+    entries.extend({
+        "quantizer_name": f"{name}.weight_quantizer",
+        "cfg": cfg,
+        "enable": True,
+    } for name, cfg in selected.items())
+    return token_name, ple_names, entries
+
+
+def _export_ngram_table(table, num_shards):
+    """Save an n-gram table in the released Qwen4-Exp layout: FP8
+    ``shard_<i>.weight`` rows under one scalar ``weight_scale``."""
+    from tensorrt_edgellm.checkpoint.embedding_quantization import \
+        quantize_embedding_to_fp8
+
+    packed, scale = quantize_embedding_to_fp8(table.weight.detach())
+    shards = [shard.clone() for shard in packed.chunk(num_shards)]
+    del packed
+
+    def split(module, state_dict, prefix, local_metadata):
+        state_dict.pop(prefix + "weight")
+        for index, shard in enumerate(shards):
+            state_dict[f"{prefix}shard_{index}.weight"] = shard
+        state_dict[prefix + "weight_scale"] = scale.reshape(1)
+
+    table.register_state_dict_post_hook(split)
+
+
+def _validate_token_embedding_selection(model, expected_names):
+    enabled = [
+        name for name, module in model.named_modules()
+        if (isinstance(module, torch.nn.Embedding)
+            and module.weight_quantizer.is_enabled)
+    ]
+    if set(enabled) != set(expected_names):
+        raise RuntimeError(
+            f"Expected embeddings {expected_names}, got {enabled}")
+
+
 def quantize_and_export(
     model_dir: str,
     output_dir: str,
     quantization: Optional[str] = None,
     lm_head_quantization: Optional[str] = None,
+    token_embedding_quantization: Optional[str] = None,
+    ple_embedding_quantization: Optional[str] = None,
     visual_quantization: Optional[str] = None,
     cp_quantization: Optional[str] = None,
     visual_mha_quantization: Optional[str] = None,
@@ -942,6 +1328,7 @@ def quantize_and_export(
     num_samples: int = 512,
     fuse_gdn_qkvzba_scales: bool = False,
     quantize_gemma4_down_proj: bool = False,
+    keep_last_layer_fp16: bool = False,
 ) -> str:
     """Load a HuggingFace model, quantize it, and export a unified checkpoint.
 
@@ -954,6 +1341,13 @@ def quantize_and_export(
 
     Image calibration is selected automatically for a quantized backbone under
     an unquantized visual tower -- see ``_is_image_blind_calibration``.
+
+    ``token_embedding_quantization`` independently quantizes the canonical
+    runtime input table to ModelOpt-native block FP8 or NVFP4. Other embedding
+    tables remain disabled by an exact late override.
+
+    ``ple_embedding_quantization`` selects the per-layer table: Gemma4's packed
+    PLE, or Qwen4-Exp's n-gram table saved as FP8 shards with one scalar scale.
 
     ``text_dataset`` / ``image_dataset`` / ``audio_dataset`` each accept a
     registered dataset name (str), a dataset generator function, or ``None``
@@ -969,6 +1363,16 @@ def quantize_and_export(
     # path-based consumers below (weight globs, processor-file copies, the
     # unified-export index probe) see a real directory.
     model_dir = _resolve_model_dir(model_dir)
+    alpamayo_config = _alpamayo_config(model_dir)
+    model_type = _get_model_type(model_dir)
+
+    if (token_embedding_quantization is not None and
+        (model_type in ("qwen3_omni", "qwen3_omni_moe")
+         or is_omni_model_dir(model_dir) or _is_qwen3_tts_model(model_dir)
+         or is_qwen3_asr_model(model_dir))):
+        raise ValueError(
+            "--token_embedding_quantization is not supported for Omni/TTS/ASR "
+            "checkpoint wrappers")
 
     # Qwen3-Omni needs a joint Thinker+Talker multimodal calibration chain
     # the generic single-model path below can't express; delegate the full
@@ -977,7 +1381,7 @@ def quantize_and_export(
     # excluded: the shared chat-template tuple lumps all three variants,
     # which would send Next into this driver whose HF classes cannot load
     # a Next checkpoint — Next dispatches to its orchestrator below.
-    if _get_model_type(model_dir) in ("qwen3_omni", "qwen3_omni_moe"):
+    if model_type in ("qwen3_omni", "qwen3_omni_moe"):
         from .qwen3_omni import quantize_qwen3_omni
 
         # Split num_samples across audio/image/text roughly evenly.
@@ -1046,6 +1450,14 @@ def quantize_and_export(
         model, tokenizer, processor = _load_model(model_dir, dtype, device)
 
     base_already_quantized = is_quantized(model)
+    if (token_embedding_quantization is not None or ple_embedding_quantization
+            is not None) and base_already_quantized:
+        raise ValueError(
+            "--token_embedding_quantization requires an unquantized source "
+            "checkpoint")
+    quantized_embedding_names = []
+    token_name = None
+    ple_names: list[str] = []
     mtp_layers = _mtp_num_hidden_layers(model)
     mtp_quantized = False
     mtp_state_dict: dict[str, torch.Tensor] = {}
@@ -1121,6 +1533,10 @@ def quantize_and_export(
             audio_quantization=audio_quantization,
             cp_quantization=cp_quantization,
             fuse_gdn_qkvzba_scales=fuse_gdn_qkvzba_scales,
+            exclude_action=alpamayo_config is not None,
+            fp16_layer_index=(
+                model.config.get_text_config().num_hidden_layers -
+                1 if keep_last_layer_fp16 else None),
         )
         # QAT-Q4_0 checkpoints are pre-conditioned for symmetric per-block RTN;
         # AWQ's calibrated pre_quant_scale smoothing inflates INT4 error on them.
@@ -1161,8 +1577,8 @@ def quantize_and_export(
         # it fp16. Scoped by module name so the vision/audio towers keep their
         # requested precision.
         if (not quantize_gemma4_down_proj
-                and quantization in ("int4_awq", "nvfp4")
-                and _get_model_type(model_dir).startswith("gemma4")):
+                and quantization in ("int4_awq", "nvfp4", "nvfp4_a16_gptq")
+                and model_type.startswith("gemma4")):
             gemma4_excludes = []
             for name, module in model.named_modules():
                 if (isinstance(module, torch.nn.Linear)
@@ -1177,6 +1593,19 @@ def quantize_and_export(
                         "enable": False,
                     })
             append_quant_cfg_entries(quant_cfg, gemma4_excludes)
+        if (token_embedding_quantization is not None
+                or ple_embedding_quantization is not None):
+            token_name, ple_names, entries = _embedding_quant_cfg(
+                model, token_embedding_quantization,
+                ple_embedding_quantization)
+            append_quant_cfg_entries(quant_cfg, entries)
+            quantized_embedding_names.extend(name for name in (token_name,
+                                                               *ple_names)
+                                             if name is not None)
+
+        lm_head_cfg = split_lm_head_calibration(quant_cfg,
+                                                lm_head_quantization)
+
         if kv_cache_quantization is not None and _is_phi4mm_model(model_dir):
             _pre_register_phi4mm_attention_for_kv_quant(model)
         if cp_quantization is not None and is_qwen3_next_omni(model):
@@ -1189,12 +1618,11 @@ def quantize_and_export(
             cp_n = min(num_samples, 64)
             # 2x margin: samples can be skipped (short thinker replies).
             texts = list(islice(text_ds(), cp_n * 2))
-            mtq.quantize(
-                model,
-                quant_cfg,
-                forward_loop=lambda m: qwen3_next_cp_calibration_loop(
-                    m, tokenizer, texts, num_cp_samples=cp_n),
-            )
+            forward_loop = lambda m: qwen3_next_cp_calibration_loop(
+                m, tokenizer, texts, num_cp_samples=cp_n)
+            mtq.quantize(model, quant_cfg, forward_loop=forward_loop)
+            if lm_head_cfg:
+                mtq.quantize(model, lm_head_cfg, forward_loop=forward_loop)
         elif cp_quantization is not None and has_code_predictor(model):
             # CP is only reached via the Thinker->Talker->CP generation path,
             # so a dedicated loop drives that chain (bs=1: Talker uses 3D
@@ -1221,13 +1649,16 @@ def quantize_and_export(
                                               num_cp_samples=cp_n)
 
                 mtq.quantize(model, quant_cfg, forward_loop=_joint_cp_loop)
+                if lm_head_cfg:
+                    mtq.quantize(model,
+                                 lm_head_cfg,
+                                 forward_loop=_joint_cp_loop)
             else:
-                mtq.quantize(
-                    model,
-                    quant_cfg,
-                    forward_loop=lambda m: qwen3_cp_calibration_loop(
-                        m, cp_loader, num_cp_samples=cp_n),
-                )
+                forward_loop = lambda m: qwen3_cp_calibration_loop(
+                    m, cp_loader, num_cp_samples=cp_n)
+                mtq.quantize(model, quant_cfg, forward_loop=forward_loop)
+                if lm_head_cfg:
+                    mtq.quantize(model, lm_head_cfg, forward_loop=forward_loop)
         elif is_qwen3_asr_model(model_dir):
             audio_ds = resolve_dataset(audio_dataset, "audio")
             print(f"Audio calibration dataset: {dataset_name(audio_ds)}")
@@ -1254,11 +1685,10 @@ def quantize_and_export(
                     audio_dataset=audio_ds,
                     num_samples=asr_samples,
                 ))
-            mtq.quantize(
-                model,
-                quant_cfg,
-                forward_loop=lambda m: _calibrate_asr_multimodal(m, batches),
-            )
+            forward_loop = lambda m: _calibrate_asr_multimodal(m, batches)
+            mtq.quantize(model, quant_cfg, forward_loop=forward_loop)
+            if lm_head_cfg:
+                mtq.quantize(model, lm_head_cfg, forward_loop=forward_loop)
         elif (visual_quantization is None and audio_dataset is not None
               and audio_quantization is None
               and quantization in ("fp8", "nvfp4")
@@ -1276,10 +1706,25 @@ def quantize_and_export(
             audio_samples = min(num_samples, 128)
             batches = _gemma4_audio_calib_batches(processor, audio_ds,
                                                   audio_samples)
-            mtq.quantize(
-                model,
-                quant_cfg,
-                forward_loop=lambda m: _calibrate_multimodal(m, batches))
+            forward_loop = lambda m: _calibrate_multimodal(m, batches)
+            mtq.quantize(model, quant_cfg, forward_loop=forward_loop)
+            if lm_head_cfg:
+                mtq.quantize(model, lm_head_cfg, forward_loop=forward_loop)
+        elif alpamayo_config is not None:
+            if text_dataset is not None:
+                print("[WAR] --text_dataset is ignored for Alpamayo; the "
+                      "backbone is calibrated on --image_dataset.")
+            image_ds = resolve_dataset(image_dataset, "image")
+            print(f"Image calibration dataset (Alpamayo): "
+                  f"{dataset_name(image_ds)}")
+            batches = _alpamayo_calib_batches(model, image_ds,
+                                              min(num_samples, 128))
+
+            forward_loop = lambda m: _calibrate_multimodal(m.vlm, batches)
+            with _skip_fused_expert_amax_sync():
+                mtq.quantize(model, quant_cfg, forward_loop=forward_loop)
+                if lm_head_cfg:
+                    mtq.quantize(model, lm_head_cfg, forward_loop=forward_loop)
         elif (visual_quantization is not None
               or _is_image_blind_calibration(model, quant_cfg)):
             image_ds = resolve_dataset(image_dataset, "image")
@@ -1289,8 +1734,7 @@ def quantize_and_export(
             _gemma4_patch_applied = False
             if visual_quantization is None:
                 from .gemma4_patch import apply as _apply_gemma4_patch
-                _gemma4_patch_applied = _apply_gemma4_patch(
-                    model, _get_model_type(model_dir))
+                _gemma4_patch_applied = _apply_gemma4_patch(model, model_type)
             processor = AutoProcessor.from_pretrained(model_dir,
                                                       trust_remote_code=True)
             mm_samples = min(num_samples, 128)
@@ -1309,11 +1753,11 @@ def quantize_and_export(
                       f"{dataset_name(audio_ds)}")
                 batches = batches + _gemma4_audio_calib_batches(
                     processor, audio_ds, mm_samples)
-            mtq.quantize(
-                model,
-                quant_cfg,
-                forward_loop=lambda m: _calibrate_multimodal(m, batches),
-            )
+            forward_loop = lambda m: _calibrate_multimodal(m, batches)
+            with _skip_fused_expert_amax_sync():
+                mtq.quantize(model, quant_cfg, forward_loop=forward_loop)
+                if lm_head_cfg:
+                    mtq.quantize(model, lm_head_cfg, forward_loop=forward_loop)
             if _gemma4_patch_applied:
                 from .gemma4_patch import restore as _restore_gemma4_patch
                 _restore_gemma4_patch(model)
@@ -1325,9 +1769,14 @@ def quantize_and_export(
                                             text_ds,
                                             batch_size=batch_size,
                                             num_samples=num_samples)
-            mtq.quantize(model,
-                         quant_cfg,
-                         forward_loop=lambda m: _calibrate(m, loader))
+            forward_loop = lambda m: _calibrate(m, loader)
+            with _skip_fused_expert_amax_sync():
+                mtq.quantize(model, quant_cfg, forward_loop=forward_loop)
+                if lm_head_cfg:
+                    mtq.quantize(model, lm_head_cfg, forward_loop=forward_loop)
+        if quantized_embedding_names:
+            _validate_token_embedding_selection(model,
+                                                quantized_embedding_names)
         if fuse_gdn_qkvzba_scales:
             n_shared = _share_gdn_qkvzba_scales(model)
             print(f"GDN qkvzba scale sharing: {n_shared} layer(s)")
@@ -1340,6 +1789,22 @@ def quantize_and_export(
     _fix_generation_config_for_strict_validate(model)
     _normalize_tied_weights_keys(model)
 
+    # Per-tensor FP8 tables can be packed on CPU at checkpoint export.
+    fp8_tables = [
+        name for name, method in [(token_name, token_embedding_quantization)] +
+        [(name, ple_embedding_quantization) for name in ple_names]
+        if name and method == "fp8"
+    ]
+    offloaded_embeddings = fp8_tables if device != "cpu" else []
+    if offloaded_embeddings:
+        import modelopt.torch.export.unified_export_hf as _ueh
+        with torch.inference_mode(), _skip_resmooth_for_hybrid(
+                model, quantization or ""):
+            _ueh.requantize_resmooth_fused_llm_layers(model)
+        for name in offloaded_embeddings:
+            model.get_submodule(name).to("cpu")
+        torch.cuda.empty_cache()
+
     if mtp_layers > 0 and not mtp_quantized:
         mtp_layer_prefixes, mtp_state_dict = (
             _load_mtp_weights_for_unified_export(model, model_dir))
@@ -1349,6 +1814,20 @@ def quantize_and_export(
     attention_q_scales = _collect_attention_q_scales_for_export(model)
     extra_state_dict = dict(mtp_state_dict)
     extra_state_dict.update(attention_q_scales)
+    # ModelOpt's scalar division can round in the source FP16/BF16 dtype.
+    # Pack in FP32, exactly as export-time token and PLE quantization do.
+    if fp8_tables:
+        from tensorrt_edgellm.checkpoint.embedding_quantization import \
+            quantize_embedding_to_fp8
+        text_config = getattr(model.config, "text_config", model.config)
+        for name in fp8_tables:
+            table = model.get_submodule(name)
+            if name.endswith(".ngram_embedding"):
+                _export_ngram_table(table, text_config.split_ngram_parts)
+                continue
+            packed, scale = quantize_embedding_to_fp8(table.weight.detach())
+            extra_state_dict[name + ".weight"] = packed
+            extra_state_dict[name + ".weight_scale"] = scale.reshape(())
 
     os.makedirs(output_dir, exist_ok=True)
     # MoE wrapper has no top-level ``forward`` → ``export_hf_checkpoint``'s
@@ -1378,7 +1857,7 @@ def quantize_and_export(
                     json.dump(exported_cfg, f, indent=2)
     else:
         with torch.inference_mode(), _skip_resmooth_for_hybrid(
-                model, quantization or ""):
+                model, quantization or "", bool(offloaded_embeddings)):
             export_hf_checkpoint(model,
                                  export_dir=output_dir,
                                  extra_state_dict=extra_state_dict)
@@ -1386,6 +1865,11 @@ def quantize_and_export(
             print("Exported calibrated Q-BMM scales for "
                   f"{len(attention_q_scales)} attention layer(s).")
     _remove_stale_safetensors_index(output_dir)
+    _restore_gemma4_attention_geometry(model_dir, output_dir)
+    _drop_undeclared_moe_defaults(model_dir, output_dir)
+    if mtp_quantized:
+        from .models.mtp_draft import list_quantized_mtp_layers
+        list_quantized_mtp_layers(output_dir, mtp_state_dict)
     tokenizer.save_pretrained(output_dir)
     if processor is not None:
         if _is_phi4mm_model(model_dir):

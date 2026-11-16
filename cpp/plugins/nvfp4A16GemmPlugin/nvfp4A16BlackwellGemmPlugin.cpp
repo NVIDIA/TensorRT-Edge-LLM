@@ -43,6 +43,8 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
+
 namespace
 {
 
@@ -55,6 +57,8 @@ constexpr int32_t kInBlockScales{2};
 constexpr int32_t kInGlobalScale{3};
 constexpr int32_t kOutOutput{4};
 constexpr int32_t kNbInputs{4};
+constexpr int32_t kTokenMajorActivationRank{2};
+constexpr int32_t kBatchedActivationRank{3};
 
 constexpr int32_t kLayoutBlackwellN128K64V1{1};
 constexpr int32_t kBackendDefault{0};
@@ -78,9 +82,14 @@ bool isIoType(DataType type) noexcept
     return type == DataType::kHALF || type == DataType::kBF16;
 }
 
+bool isSupportedActivationRank(int32_t rank) noexcept
+{
+    return rank == kTokenMajorActivationRank || rank == kBatchedActivationRank;
+}
+
 int32_t getTokenCount(Dims const& dims) noexcept
 {
-    if (dims.nbDims != 2 && dims.nbDims != 3)
+    if (!isSupportedActivationRank(dims.nbDims))
     {
         return 0;
     }
@@ -451,7 +460,7 @@ int32_t Nvfp4A16BlackwellGemmPlugin::getOutputShapes(DimsExprs const* inputs, in
         return -1;
     }
     int32_t const rank = inputs[kInActivation].nbDims;
-    if (rank != 2 && rank != 3)
+    if (!isSupportedActivationRank(rank))
     {
         return -1;
     }
@@ -469,7 +478,7 @@ bool Nvfp4A16BlackwellGemmPlugin::validateTensorDesc(int32_t pos, PluginTensorDe
     switch (pos)
     {
     case kInActivation:
-        return isIoType(desc.type) && (desc.dims.nbDims == 2 || desc.dims.nbDims == 3)
+        return isIoType(desc.type) && isSupportedActivationRank(desc.dims.nbDims)
             && desc.dims.d[desc.dims.nbDims - 1] == mGemmK;
     case kInQWeights:
         return desc.type == DataType::kINT8 && desc.dims.nbDims == 4 && desc.dims.d[0] == mGemmN / 128
@@ -479,7 +488,7 @@ bool Nvfp4A16BlackwellGemmPlugin::validateTensorDesc(int32_t pos, PluginTensorDe
             && desc.dims.d[1] == mGemmK / 64 && desc.dims.d[2] == 128 && desc.dims.d[3] == 4;
     case kInGlobalScale: return desc.type == DataType::kFLOAT && desc.dims.nbDims == 1 && desc.dims.d[0] == 1;
     case kOutOutput:
-        return isIoType(desc.type) && (desc.dims.nbDims == 2 || desc.dims.nbDims == 3)
+        return isIoType(desc.type) && isSupportedActivationRank(desc.dims.nbDims)
             && desc.dims.d[desc.dims.nbDims - 1] == mGemmN;
     default: return false;
     }

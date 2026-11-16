@@ -35,19 +35,17 @@ import torch
 from ..._version import __version__
 from ...onnx.export import _strip_attention_plugin_optional_inputs
 from ...onnx.export_encoder import _run_dynamo_export
-from .modeling_pi05_action import (DIFFUSION_DENOISE_PHASE, KV_TOKENS_PER_PAGE,
-                                   Pi05Action, Pi05ActionConfig,
-                                   build_pi05_action, build_pi05_cond,
-                                   kv_pages_per_seq, num_adarms_sites,
-                                   packed_mask_words, xqa_cache_capacity)
+from . import component_contracts
+from .modeling_pi05_action import (Pi05Action, Pi05ActionConfig,
+                                   build_pi05_action, build_pi05_cond)
 from .modeling_pi05_prefix import (Pi05Prefix, Pi05PrefixConfig,
                                    build_pi05_prefix)
 from .modeling_pi05_visual import (Pi05Visual, Pi05VisualConfig,
                                    build_pi05_visual)
-from .policy_assets import (MAX_CAMERA_SLOTS, MAX_TOKEN_LEN,
-                            OPENPI_POLICY_CONTRACTS, POLICY_CONTRACT_FILENAME,
-                            TEXT_TOKENIZER_DIRNAME, build_policy_contract,
-                            checkpoint_fingerprint, load_json_if_present,
+from .policy_assets import (MAX_CAMERA_SLOTS, OPENPI_POLICY_CONTRACTS,
+                            POLICY_CONTRACT_FILENAME, TEXT_TOKENIZER_DIRNAME,
+                            build_policy_contract, checkpoint_fingerprint,
+                            copy_asset_tree, load_json_if_present,
                             policy_config_name, policy_semantics, sha256_file,
                             stage_text_tokenizer, write_policy_contract)
 from .weights import (is_pi05_weights, load_checkpoint_weights,
@@ -58,78 +56,13 @@ logger = logging.getLogger(__name__)
 PI05_COMPONENTS = ("visual", "prefix", "action")
 # ``cond`` is emitted by the action export under hoisting, not selected directly.
 ALL_COMPONENTS = PI05_COMPONENTS + ("cond", )
-# The artifact ABI of a pi0.5 bundle. Bump only when an existing export stops being
-# buildable, and only alongside an edgellm release -- not for ordinary export changes.
-CONTRACT_VERSION = 1
-
-# openpi ``models/gemma.py`` variant tables. The converted config.json records
-# only the variant names, so the shapes are resolved here.
-_GEMMA_VARIANTS = {
-    "gemma_2b": {
-        "hidden_size": 2048,
-        "num_hidden_layers": 18,
-        "num_attention_heads": 8,
-        "num_key_value_heads": 1,
-        "head_dim": 256,
-        "intermediate_size": 16384,
-    },
-    "gemma_300m": {
-        "hidden_size": 1024,
-        "num_hidden_layers": 18,
-        "num_attention_heads": 8,
-        "num_key_value_heads": 1,
-        "head_dim": 256,
-        "intermediate_size": 4096,
-    },
-}
-
-# Prompt capacity the prefix is built for: openpi's ``max_token_len`` rounded up to a
-# multiple of 16, as the reference engine build does.
-DEFAULT_MAX_TOKEN_LEN = -(-MAX_TOKEN_LEN // 16) * 16
-_TOKENS_PER_VIEW = 256
-
-# Ceiling on the runtime-selectable denoise step count in a hoisted-cond export:
-# it sizes the cond graph's profile and the modulation buffer the runtime slices.
-MAX_DENOISE_STEPS = 64
-DEFAULT_NUM_DENOISE_STEPS = 10
-
-
-def _config_field(config: dict, names: "tuple[str, ...]", label: str):
-    """Read the first present key among \\p names.
-
-    Two checkpoint schemas carry the same pi0.5 weights: openpi's
-    ``convert_jax_model_to_pytorch.py`` writes ``action_dim`` /
-    ``action_horizon``, while the LeRobot HF releases write ``max_action_dim`` /
-    ``n_action_steps``.
-    """
-    for name in names:
-        if name in config:
-            return config[name]
-    raise KeyError(
-        f"pi0.5 config.json has no {label} field (tried {list(names)})")
-
-
-def _variant(name: str) -> dict:
-    if name not in _GEMMA_VARIANTS:
-        raise ValueError(f"Unsupported pi0.5 gemma variant {name!r}; "
-                         f"expected one of {sorted(_GEMMA_VARIANTS)}")
-    return _GEMMA_VARIANTS[name]
-
-
-def default_max_prefix_len(max_token_len: int = DEFAULT_MAX_TOKEN_LEN) -> int:
-    """Prefix capacity for every configuration: all image slots plus the prompt.
-
-    Sized for ``MAX_CAMERA_SLOTS`` whatever the configuration feeds, so the canonical
-    full-slot shape the accuracy and profiling harnesses use always fits.
-    """
-    return MAX_CAMERA_SLOTS * _TOKENS_PER_VIEW + max_token_len
 
 
 def _write_component_config(out_dir: str, config: dict,
                             export_id: str) -> None:
     """Stamp contract/package versions and the export identity, and write it."""
     config = dict(config)
-    config["contract_version"] = CONTRACT_VERSION
+    config["contract_version"] = component_contracts.CONTRACT_VERSION
     config["edgellm_version"] = __version__
     config["export_id"] = export_id
     os.makedirs(out_dir, exist_ok=True)
@@ -146,7 +79,7 @@ def _export_id(fingerprint: str, options: dict) -> str:
     """
     payload = json.dumps(
         {
-            "contract_version": CONTRACT_VERSION,
+            "contract_version": component_contracts.CONTRACT_VERSION,
             "edgellm_version": __version__,
             "checkpoint_fingerprint": fingerprint,
             "options": options,
@@ -243,363 +176,6 @@ def _discard(paths: "list[str]") -> None:
         logger.error("Removed %s left behind by the failed pi0.5 export", path)
 
 
-def _shape(min_s: list, opt_s: list, max_s: list) -> dict:
-    return {"min": min_s, "opt": opt_s, "max": max_s}
-
-
-# ---------------------------------------------------------------------------
-# Component configs
-# ---------------------------------------------------------------------------
-
-
-def make_visual_config(cfg: Pi05VisualConfig, num_views: int,
-                       max_views: int) -> dict:
-    hw = [3, cfg.image_size, cfg.image_size]
-    return {
-        "component": "visual",
-        "onnx_filename": "model.onnx",
-        "engine_filename": "visual.engine",
-        "batch_axis": {
-            "pixel_values": 0
-        },
-        "optimization_profile": {
-            "pixel_values": _shape([1] + hw, [num_views] + hw,
-                                   [max_views] + hw),
-        },
-        "tensor_contract": {
-            "inputs": {
-                "pixel_values": {
-                    "dtype": "fp16",
-                    "rank": 4,
-                    "axes": ["views", "channels", "height", "width"],
-                },
-            },
-            "outputs": {
-                "image_features": {
-                    "dtype": "fp16",
-                    "rank": 3,
-                    "axes": ["views", "tokens", "hidden_size"],
-                },
-            },
-        },
-        "builder_config": {
-            "max_views": max_views
-        },
-        "hidden_size": cfg.hidden_size,
-        "projection_dim": cfg.projection_dim,
-        "image_size": cfg.image_size,
-        "patch_size": cfg.patch_size,
-        "num_image_tokens": cfg.num_positions,
-    }
-
-
-def make_prefix_config(cfg: Pi05PrefixConfig, max_prefix_len: int,
-                       max_batch_size: int) -> dict:
-    num_layers, head_dim, hidden = cfg.num_hidden_layers, cfg.head_dim, cfg.hidden_size
-    opt_len = min(1024, max_prefix_len)
-    kv_axes = ["batch", "prefix_len", "num_kv_heads", "head_dim"]
-    return {
-        "component": "prefix",
-        "onnx_filename": "model.onnx",
-        "engine_filename": "prefix.engine",
-        "batch_axis": {
-            "inputs_embeds": 0,
-            "rope_rotary_cos_sin": 0,
-            "attention_pos_id": 0,
-        },
-        "optimization_profile": {
-            "inputs_embeds":
-            _shape([1, 2, hidden], [1, opt_len, hidden],
-                   [max_batch_size, max_prefix_len, hidden]),
-            "rope_rotary_cos_sin":
-            _shape([1, 2, head_dim], [1, opt_len, head_dim],
-                   [max_batch_size, max_prefix_len, head_dim]),
-            "attention_pos_id":
-            _shape([1, 2], [1, opt_len], [max_batch_size, max_prefix_len]),
-        },
-        "tensor_contract": {
-            "inputs": {
-                "inputs_embeds": {
-                    "dtype": "fp16",
-                    "rank": 3,
-                    "axes": ["batch", "prefix_len", "hidden_size"],
-                },
-                "rope_rotary_cos_sin": {
-                    "dtype": "fp32",
-                    "rank": 3,
-                    "axes": ["batch", "prefix_len", "head_dim"],
-                },
-                "attention_pos_id": {
-                    "dtype": "int32",
-                    "rank": 2,
-                    "axes": ["batch", "prefix_len"],
-                },
-            },
-            "outputs": {
-                "k_layerNN": {
-                    "dtype": "fp16",
-                    "rank": 4,
-                    "axes": kv_axes
-                },
-                "v_layerNN": {
-                    "dtype": "fp16",
-                    "rank": 4,
-                    "axes": kv_axes
-                },
-            },
-        },
-        "builder_config": {
-            "max_batch_size": max_batch_size,
-            "max_prefix_len": max_prefix_len,
-        },
-        "num_hidden_layers": num_layers,
-        "hidden_size": hidden,
-        "num_attention_heads": cfg.num_attention_heads,
-        "num_key_value_heads": cfg.num_key_value_heads,
-        "head_dim": head_dim,
-        "intermediate_size": cfg.intermediate_size,
-        "rms_norm_eps": cfg.rms_norm_eps,
-        "vocab_size": cfg.vocab_size,
-        "rope_theta": cfg.rope_theta,
-    }
-
-
-def make_action_config(
-    cfg: Pi05ActionConfig,
-    max_prefix_len: int,
-    max_batch_size: int,
-    num_denoise_steps: int,
-    hoist_cond: bool = False,
-) -> dict:
-    n, d, hkv = cfg.num_hidden_layers, cfg.head_dim, cfg.num_key_value_heads
-    horizon, action_dim = cfg.action_horizon, cfg.action_dim
-    sites, mod = num_adarms_sites(cfg), cfg.hidden_size * 3
-    profile = {
-        "noise_trajectory":
-        _shape([1, horizon, action_dim], [1, horizon, action_dim],
-               [max_batch_size, horizon, action_dim]),
-        "timestep":
-        _shape([1], [1], [max_batch_size]),
-        "rope_rotary_cos_sin":
-        _shape([horizon, d], [horizon, d], [max_batch_size * horizon, d]),
-        "attention_pos_id":
-        _shape([horizon], [horizon], [max_batch_size * horizon]),
-    }
-    cond_contract = {
-        "timestep": {
-            "dtype": "fp32",
-            "rank": 1,
-            "axes": ["batch"]
-        },
-    }
-    if hoist_cond:
-        del profile["timestep"]
-        profile["adarms_modulation"] = _shape([1, sites, mod], [1, sites, mod],
-                                              [max_batch_size, sites, mod])
-        cond_contract = {
-            "adarms_modulation": {
-                "dtype": "fp16",
-                "rank": 3,
-                "axes": ["batch", "adarms_sites", "scale_shift_gate"],
-            },
-        }
-    batch_axis = {name: 0 for name in profile}
-    # One request occupies a whole action horizon of the token-major axis.
-    batch_stride: dict = {
-        "rope_rotary_cos_sin": horizon,
-        "attention_pos_id": horizon
-    }
-    batch_bias: dict = {}
-    capacity = xqa_cache_capacity(max_prefix_len, horizon)
-    pages = kv_pages_per_seq(max_prefix_len, horizon)
-    words = packed_mask_words(horizon)
-    profile["query_lengths"] = _shape([1], [1], [max_batch_size])
-    batch_axis["query_lengths"] = 0
-    profile["attention_sequence_lengths"] = _shape([1], [1], [max_batch_size])
-    batch_axis["attention_sequence_lengths"] = 0
-    profile["query_start_offsets"] = _shape([2], [2], [max_batch_size + 1])
-    batch_axis["query_start_offsets"] = 0
-    batch_bias["query_start_offsets"] = 1
-    # Shape-only carriers: the extent IS the value, so all three bounds are the
-    # one the runtime binds -- tree decoding, and no context sequence.
-    profile["execution_phase_marker"] = _shape([DIFFUSION_DENOISE_PHASE],
-                                               [DIFFUSION_DENOISE_PHASE],
-                                               [DIFFUSION_DENOISE_PHASE])
-    batch_axis["execution_phase_marker"] = None
-    profile["context_sequence_count_carrier"] = _shape([0], [0], [0])
-    batch_axis["context_sequence_count_carrier"] = None
-    profile["kvcache_start_index"] = _shape([1], [1], [max_batch_size])
-    batch_axis["kvcache_start_index"] = 0
-    profile["kv_page_table"] = _shape([1, 2, pages], [1, 2, pages],
-                                      [max_batch_size, 2, pages])
-    batch_axis["kv_page_table"] = 0
-    profile["attention_mask"] = _shape([horizon, words], [horizon, words],
-                                       [max_batch_size * horizon, words])
-    batch_axis["attention_mask"] = 0
-    batch_stride["attention_mask"] = horizon
-    pool = _shape([2, pages, KV_TOKENS_PER_PAGE, hkv, d],
-                  [2, max_batch_size * pages, KV_TOKENS_PER_PAGE, hkv, d],
-                  [2, max_batch_size * pages, KV_TOKENS_PER_PAGE, hkv, d])
-    for i in range(n):
-        profile[f"kv_cache_layer{i:02d}"] = pool
-        # The pool grows by whole sequences, not by one page per request.
-        batch_axis[f"kv_cache_layer{i:02d}"] = 1
-        batch_stride[f"kv_cache_layer{i:02d}"] = pages
-    pool_axes = ["k_then_v", "num_pages", "page", "kv_heads", "head_dim"]
-    kv_contract = {
-        "query_lengths": {
-            "dtype": "int32",
-            "rank": 1,
-            "axes": ["batch"],
-        },
-        "attention_sequence_lengths": {
-            "dtype": "int32",
-            "rank": 1,
-            "axes": ["batch"],
-        },
-        "query_start_offsets": {
-            "dtype": "int32",
-            "rank": 1,
-            "axes": ["batch_plus_one"],
-        },
-        "execution_phase_marker": {
-            "dtype": "int32",
-            "rank": 1,
-            "axes": ["execution_phase"],
-        },
-        "context_sequence_count_carrier": {
-            "dtype": "int32",
-            "rank": 1,
-            "axes": ["context_sequences"],
-        },
-        "kvcache_start_index": {
-            "dtype": "int32",
-            "rank": 1,
-            "axes": ["batch"],
-        },
-        "kv_page_table": {
-            "dtype": "int32",
-            "rank": 3,
-            "axes": ["batch", "k_then_v", "pages_per_seq"],
-        },
-        "attention_mask": {
-            "dtype": "int32",
-            "rank": 2,
-            "axes": ["execution_tokens", "packed_mask_words"],
-        },
-        "kv_cache_layerNN": {
-            "dtype": "fp16",
-            "rank": 5,
-            "axes": pool_axes,
-        },
-    }
-    return {
-        "component": "action",
-        "onnx_filename": "model.onnx",
-        "engine_filename": "action.engine",
-        "batch_axis": batch_axis,
-        "batch_stride": batch_stride,
-        "batch_bias": batch_bias,
-        "optimization_profile": profile,
-        "tensor_contract": {
-            "inputs": {
-                "noise_trajectory": {
-                    "dtype": "fp32",
-                    "rank": 3,
-                    "axes": ["batch", "action_horizon", "action_dim"],
-                },
-                **cond_contract,
-                "rope_rotary_cos_sin": {
-                    "dtype": "fp32",
-                    "rank": 2,
-                    "axes": ["execution_tokens", "head_dim"],
-                },
-                "attention_pos_id": {
-                    "dtype": "int32",
-                    "rank": 1,
-                    "axes": ["execution_tokens"],
-                },
-                **kv_contract,
-            },
-            "outputs": {
-                "action_pred": {
-                    "dtype": "fp32",
-                    "rank": 3,
-                    "axes": ["batch", "action_horizon", "action_dim"],
-                },
-                "present_kv_cache_layerNN": {
-                    "dtype": "fp16",
-                    "rank": 5,
-                    "axes": pool_axes,
-                },
-            },
-        },
-        "builder_config": {
-            "max_batch_size": max_batch_size,
-            "max_prefix_len": max_prefix_len,
-            "kv_cache_capacity": capacity,
-            # The runtime reads this to reject a bundle exported before the pool.
-            "paged_kv_cache": True,
-        },
-        "num_hidden_layers": n,
-        "hidden_size": cfg.hidden_size,
-        "num_attention_heads": cfg.num_attention_heads,
-        "num_key_value_heads": hkv,
-        "head_dim": d,
-        "intermediate_size": cfg.intermediate_size,
-        "rms_norm_eps": cfg.rms_norm_eps,
-        "action_dim": action_dim,
-        "action_horizon": horizon,
-        # The graph emits the velocity only; the runtime owns the Euler step.
-        "num_denoise_steps": num_denoise_steps,
-        # False: the graph embeds the time embedder and the per-site AdaRMS
-        # Denses and recomputes them every step. True: they live in the cond
-        # component and the runtime binds one precomputed row per step.
-        "hoisted_adarms_cond": hoist_cond,
-        "num_adarms_sites": sites,
-    }
-
-
-def make_cond_config(cfg: Pi05ActionConfig, num_denoise_steps: int) -> dict:
-    sites, mod = num_adarms_sites(cfg), cfg.hidden_size * 3
-    return {
-        "component": "cond",
-        "onnx_filename": "model.onnx",
-        "engine_filename": "cond.engine",
-        "batch_axis": {
-            "timestep": None
-        },
-        "optimization_profile": {
-            "timestep": _shape([1], [num_denoise_steps], [MAX_DENOISE_STEPS]),
-        },
-        "tensor_contract": {
-            "inputs": {
-                "timestep": {
-                    "dtype": "fp32",
-                    "rank": 1,
-                    "axes": ["num_steps"]
-                },
-            },
-            "outputs": {
-                "adarms_modulation": {
-                    "dtype": "fp16",
-                    "rank": 3,
-                    "axes": ["num_steps", "adarms_sites", "scale_shift_gate"],
-                },
-            },
-        },
-        "builder_config": {
-            "max_denoise_steps": MAX_DENOISE_STEPS
-        },
-        "hidden_size": cfg.hidden_size,
-        "num_adarms_sites": sites,
-        "modulation_dim": mod,
-        # Site order: layer i -> rows 2i (input_layernorm) and 2i + 1
-        # (post_attention_layernorm), final norm last.
-        "num_denoise_steps": num_denoise_steps,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Sidecars
 # ---------------------------------------------------------------------------
@@ -651,7 +227,7 @@ def _stage_policy_assets(checkpoint: str, output_dir: str) -> None:
         raise FileNotFoundError(
             f"{src} carries no norm_stats.json; the policy layer cannot "
             "normalize the state or convert actions to robot units")
-    shutil.copytree(src, dst, dirs_exist_ok=True)
+    copy_asset_tree(src, dst)
     logger.info("Staged policy assets: %s", dst)
 
 
@@ -670,9 +246,10 @@ def export_visual(weights: Dict[str, torch.Tensor], out_dir: str,
     os.makedirs(out_dir, exist_ok=True)
     _run_dynamo_export(model, args, os.path.join(out_dir, "model.onnx"),
                        input_names, output_names, dynamic_shapes)
-    _write_component_config(out_dir,
-                            make_visual_config(cfg, num_views, max_views),
-                            export_id)
+    _write_component_config(
+        out_dir,
+        component_contracts.make_visual_config(cfg, num_views, max_views),
+        export_id)
     logger.info("pi0.5 visual export complete: %s", out_dir)
 
 
@@ -680,7 +257,7 @@ def export_prefix(weights: Dict[str, torch.Tensor],
                   embedding: Dict[str, torch.Tensor], out_dir: str,
                   dtype: torch.dtype, variant: str, max_prefix_len: int,
                   max_batch_size: int, export_id: str) -> None:
-    cfg = Pi05PrefixConfig(**_variant(variant))
+    cfg = Pi05PrefixConfig(**component_contracts.gemma_variant(variant))
     model: Pi05Prefix = build_pi05_prefix(cfg, weights, dtype).to("cpu")
     args, input_names, output_names, dynamic_shapes = (
         model.get_onnx_export_args("cpu"))
@@ -688,7 +265,8 @@ def export_prefix(weights: Dict[str, torch.Tensor],
     _run_dynamo_export(model, args, os.path.join(out_dir, "model.onnx"),
                        input_names, output_names, dynamic_shapes)
     artifacts = _save_embedding_sidecar(out_dir, embedding, dtype)
-    config = make_prefix_config(cfg, max_prefix_len, max_batch_size)
+    config = component_contracts.make_prefix_config(cfg, max_prefix_len,
+                                                    max_batch_size)
     config["artifacts"] = artifacts
     _write_component_config(out_dir, config, export_id)
     logger.info("pi0.5 prefix export complete: %s", out_dir)
@@ -699,7 +277,7 @@ def export_action(weights: Dict[str, torch.Tensor], out_dir: str,
                   action_horizon: int, max_prefix_len: int,
                   max_batch_size: int, num_denoise_steps: int,
                   hoist_cond: bool, cond_dir: str, export_id: str) -> None:
-    cfg = Pi05ActionConfig(**_variant(variant),
+    cfg = Pi05ActionConfig(**component_contracts.gemma_variant(variant),
                            action_dim=action_dim,
                            action_horizon=action_horizon)
     model: Pi05Action = build_pi05_action(cfg, weights, dtype,
@@ -715,8 +293,10 @@ def export_action(weights: Dict[str, torch.Tensor], out_dir: str,
     _strip_attention_plugin_optional_inputs(onnx_path)
     _write_component_config(
         out_dir,
-        make_action_config(cfg, max_prefix_len, max_batch_size,
-                           num_denoise_steps, hoist_cond), export_id)
+        component_contracts.make_action_config(cfg, max_prefix_len,
+                                               max_batch_size,
+                                               num_denoise_steps, hoist_cond),
+        export_id)
     logger.info("pi0.5 action export complete: %s", out_dir)
 
     if hoist_cond:
@@ -733,27 +313,10 @@ def export_cond(action: Pi05Action, cfg: Pi05ActionConfig, out_dir: str,
     os.makedirs(out_dir, exist_ok=True)
     _run_dynamo_export(model, args, os.path.join(out_dir, "model.onnx"),
                        input_names, output_names, dynamic_shapes)
-    _write_component_config(out_dir, make_cond_config(cfg, num_denoise_steps),
-                            export_id)
+    _write_component_config(
+        out_dir, component_contracts.make_cond_config(cfg, num_denoise_steps),
+        export_id)
     logger.info("pi0.5 cond export complete: %s", out_dir)
-
-
-def resolve_num_denoise_steps(config: dict, requested: "int | None") -> int:
-    """Explicit argument beats the checkpoint, which beats the default.
-
-    ``requested`` is None only when the caller supplied nothing; a value that
-    happens to equal the default is still an explicit choice and is honoured.
-    """
-    steps = requested
-    if steps is None:
-        steps = int(
-            config.get("num_inference_steps", DEFAULT_NUM_DENOISE_STEPS))
-    steps = int(steps)
-    if not 1 <= steps <= MAX_DENOISE_STEPS:
-        raise ValueError(
-            f"pi0.5 num_denoise_steps must be in [1, {MAX_DENOISE_STEPS}], "
-            f"got {steps}")
-    return steps
 
 
 def export_pi05_components(
@@ -764,7 +327,7 @@ def export_pi05_components(
     policy_config: "str | None" = None,
     num_views: "int | None" = None,
     max_views: int = MAX_CAMERA_SLOTS,
-    max_token_len: int = DEFAULT_MAX_TOKEN_LEN,
+    max_token_len: int = component_contracts.DEFAULT_MAX_TOKEN_LEN,
     max_prefix_len: "int | None" = None,
     max_batch_size: int = 1,
     num_denoise_steps: "int | None" = None,
@@ -790,7 +353,9 @@ def export_pi05_components(
 
     config = load_pi05_config(checkpoint)
     action_dim = int(
-        _config_field(config, ("action_dim", "max_action_dim"), "action dim"))
+        component_contracts.config_field(config,
+                                         ("action_dim", "max_action_dim"),
+                                         "action dim"))
     # From the openpi configuration, not the checkpoint: a Hugging Face mirror ships
     # LeRobot's own horizon (chunk_size 50, n_action_steps 10) and the graph must be
     # built at the same H the manifest declares.
@@ -799,16 +364,21 @@ def export_pi05_components(
     action_horizon = int(policy["action_horizon"])
     if num_views is None:
         num_views = int(policy["opt_views"])
-    num_denoise_steps = resolve_num_denoise_steps(config, num_denoise_steps)
-    paligemma_variant = _config_field(config, ("paligemma_variant", ),
-                                      "paligemma variant")
-    expert_variant = _config_field(config, ("action_expert_variant", ),
-                                   "action expert variant")
+    num_denoise_steps = component_contracts.resolve_num_denoise_steps(
+        config, num_denoise_steps)
+    paligemma_variant = component_contracts.config_field(
+        config, ("paligemma_variant", ), "paligemma variant")
+    expert_variant = component_contracts.config_field(
+        config, ("action_expert_variant", ), "action expert variant")
 
     if max_prefix_len is None:
-        max_prefix_len = default_max_prefix_len(max_token_len)
+        max_prefix_len = component_contracts.default_max_prefix_len(
+            max_token_len)
+    component_contracts.validate_max_prefix_len(config_name, policy,
+                                                max_prefix_len)
 
     options = {
+        "frontend": "onnx",
         "dtype": "float16",
         "num_views": num_views,
         "max_views": max_views,
@@ -855,7 +425,7 @@ def export_pi05_components(
             tokenizer = stage_text_tokenizer(scratch)
             contract = build_policy_contract(
                 checkpoint, tokenizer, {
-                    "contract_version": CONTRACT_VERSION,
+                    "contract_version": component_contracts.CONTRACT_VERSION,
                     "checkpoint_fingerprint": fingerprint,
                     "export_id": export_id,
                     "components": [],

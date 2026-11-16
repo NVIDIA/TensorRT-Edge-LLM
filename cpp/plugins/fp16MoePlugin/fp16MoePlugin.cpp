@@ -21,6 +21,7 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "kernels/moe/moeSigmoidGroupTopkKernels.h"
 #include "kernels/moe/moeTopkSoftmaxKernels.h"
 #include "plugins/utils/pluginUtils.h"
@@ -46,6 +47,8 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
+
 namespace
 {
 
@@ -678,14 +681,15 @@ int32_t Fp16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
         void* const runnerWorkspace
             = assignTensorFromWorkspace(next, {static_cast<int64_t>(runnerBytes)}, DataType::kINT8).rawPointer();
 
-        rt::Tensor routerTensor(const_cast<void*>(inputs[kIN_ROUTER_LOGITS]), rt::Coords{routerDims},
-            rt::DeviceType::kGPU, DataType::kFLOAT);
-        rt::Tensor topkWeightsTensor(topkWeights, {numTokens, mTopK}, rt::DeviceType::kGPU, DataType::kFLOAT);
-        rt::Tensor topkIdsTensor(topkIds, {numTokens, mTopK}, rt::DeviceType::kGPU, DataType::kINT32);
+        rt::Tensor routerTensor(const_cast<void*>(inputs[kIN_ROUTER_LOGITS]), rt::toCoords(routerDims),
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor topkWeightsTensor(
+            topkWeights, {numTokens, mTopK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor topkIdsTensor(topkIds, {numTokens, mTopK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         if (mRoutingMode == kROUTING_SIGMOID_GROUP_TOPK)
         {
             rt::Tensor expertScoreBias(const_cast<void*>(inputs[kIN_EXPERT_SCORE_BIAS]), {mNumExperts},
-                rt::DeviceType::kGPU, DataType::kFLOAT);
+                rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
             rt::OptionalInputTensor expertScoreBiasOpt = expertScoreBias;
             kernel::moeSigmoidGroupTopk(routerTensor, topkWeightsTensor, topkIdsTensor, mTopK, mNGroup, mTopkGroup,
                 mNormTopkProb != 0, mRoutedScalingFactor, stream, expertScoreBiasOpt);

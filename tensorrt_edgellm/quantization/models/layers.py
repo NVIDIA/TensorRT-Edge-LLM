@@ -20,6 +20,19 @@ Common building blocks used by both EAGLE3 and MTP draft models.
 import torch
 from torch import nn
 
+from ...config import _get_rope_theta
+
+
+def config_rope_theta(config) -> float:
+    """Return the RoPE theta of a transformers or namespace config, by the exporter's rule.
+
+    transformers >= 5 moves a top-level ``rope_theta`` into ``rope_parameters``.
+    """
+    return _get_rope_theta({
+        key: getattr(config, key, None)
+        for key in ("rope_theta", "rope_scaling", "rope_parameters")
+    })
+
 
 class RMSNorm(nn.Module):
     """Standard RMSNorm (Llama-style): ``weight * RMSNorm(x)``.

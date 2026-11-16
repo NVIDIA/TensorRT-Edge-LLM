@@ -54,6 +54,17 @@ enum class TerminalStatus : uint8_t
     kExecutionError,
 };
 
+//! Why a request ended in TerminalStatus::kExecutionError, for a caller that acts on the kind of failure.
+enum class FailureKind : uint8_t
+{
+    //! A failure the caller can only report.
+    kOther,
+    //! A plugin refused a compact step. The engine serves on without compact steps, so the request can be retried.
+    kCompactStepRefused,
+    //! The engine stopped serving: it fails every request until it is recreated.
+    kEngineStopped,
+};
+
 } // namespace scheduler
 } // namespace rt
 } // namespace trt_edgellm

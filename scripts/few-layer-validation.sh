@@ -75,6 +75,60 @@
 #                       Passed to the golden and the export together -- the two must agree, or the
 #                       comparison is measuring the flag instead of the engine.
 #   --verbose           Print per-tensor cos / max_abs for every round (passed to the comparison).
+#   --trt-native-moe    Build MoE experts through TensorRT's native TRT_MoE op
+#                       (IMoELayer -> Myelin) instead of the Edge-LLM MoE plugins.
+#                       Frontend switch (export, or the direct build below); the
+#                       golden is arm-agnostic.
+#   --trt-native-moe-w4a4
+#                       With --trt-native-moe: export NVFP4 experts as TRT_MoE
+#                       quantization_mode 2 (W4A4: NVFP4 dynamic activation
+#                       quantization, FP4 weights with separate block and
+#                       global scales) instead of W4A8.
+#                       Export-only (ONNX frontend): the direct builder has no
+#                       W4A4 form, so the flag is refused with --direct-builder.
+#                       Needs TensorRT 11.6 or newer (IMoELayer with
+#                       setQuantizationDynamicDblQ).
+#   --direct-builder    Build the engine with the checkpoint-direct builder
+#                       (edgellm build) instead of ONNX export +
+#                       llm_build: stages 2 and 3 become one step. The direct
+#                       builder compiles for the ACTIVE GPU (--target-sm is not
+#                       used) and leaves externalized weights in the checkpoint,
+#                       so stage 4 passes --checkpointDir. Not combined with --mtp.
+#   --no-golden-cache   Skip the shared golden cache under $EDGE_LLM_CACHE_DIR/golden_layers
+#                       even when it is set: always regenerate the PyTorch golden locally and
+#                       do not upload the result. For debugging a suspected stale/corrupt entry.
+#
+# Golden caching: when $EDGE_LLM_CACHE_DIR is set (CI/QA shared storage), stage 1 first looks
+# for a previously generated golden under $EDGE_LLM_CACHE_DIR/golden_layers/, keyed by
+# model + the options that change what the golden contains (layers / input file /
+# activation quantization).
+# PyTorch/Transformers version is deliberately NOT part of the key: teacher-forcing (see --mtp)
+# means the comparison replays the golden's recorded token choices rather than requiring
+# bit-identical reproduction, so a golden generated once at release time stays valid across
+# library upgrades. This lets PyTorch-less runners (e.g. Drive Thor) skip stage 1 entirely by
+# downloading the cached golden instead of installing PyTorch + Transformers locally.
+#   --dflash-draft-dir DIR
+#                       DFlash speculative decoding: build the base (--model) paired with the
+#                       draft checkpoint at DIR (a separate, untruncated checkpoint -- only the
+#                       base is truncated to --num-layers) and run with --specDecode. Like --mtp,
+#                       the golden stays vanilla; this checks the base's committed output under
+#                       DFlash verify/accept/commit, not the draft's own numerics (a broken draft
+#                       degrades acceptance rate, not correctness). The draft's target_layer_ids
+#                       name specific depths
+#                       in the *full* base stack it was trained against; a truncation clamps each
+#                       into range (tensorrt_edgellm/model.py and, for this builder,
+#                       tensorrt_edgellm/builder/models/dflash/configuration.py), which can duplicate
+#                       targets rather than reject the combination. Requires
+#                       --direct-builder (untested on ONNX here).
+#   --eagle3-draft-dir DIR
+#                       EAGLE3 speculative decoding: same shape as --dflash-draft-dir (base
+#                       truncated to --num-layers, golden stays vanilla, checks the base's
+#                       committed output, not the draft's own numerics). EAGLE3's draft is a
+#                       single fused layer regardless of the base's depth, so unlike DFlash its
+#                       own layer count is never truncated -- only the target_layer_ids it reads
+#                       from the base are clamped into range (and tolerate duplicates after
+#                       clamping: tensorrt_edgellm/builder/models/eagle3/configuration.py). Requires
+#                       --direct-builder (untested on ONNX here).
 #
 # Every stage reports its wall clock, followed by a summary table before the RESULT line.
 #   -h | --help         Show this help.
@@ -114,13 +168,15 @@ MAX_KV_CACHE_CAPACITY_OVERRIDDEN=0
 TARGET_SM=""
 VERBOSE=0
 QUANTIZE_ACTIVATIONS=1
+TRT_NATIVE_MOE=0
+TRT_NATIVE_MOE_W4A4=0
+DIRECT_BUILDER=0
 MTP=0
 SPEC_DRAFT_STEP=3
 CONTEXT_REUSE=0
-# Hybrid (Mamba / Gated DeltaNet) reuse refuses to start without a recurrent snapshot slot, and a
-# partial-KV pool is what lets a hit land off a page boundary. 256 MB each is ample for a few-layer
-# truncation; the runtime sizes its record count itself.
-CONTEXT_CACHE_POOL_BYTES=268435456
+GOLDEN_CACHE=1
+DFLASH_DRAFT_DIR=""
+EAGLE3_DRAFT_DIR=""
 
 # Print the leading doc block (from the title down to the first non-comment line).
 usage() { awk '/^# End-to-end/{p=1} p&&!/^#/{exit} p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
@@ -145,15 +201,21 @@ while [[ $# -gt 0 ]]; do
     --context-reuse) CONTEXT_REUSE=1; shift ;;
     --spec-draft-step) SPEC_DRAFT_STEP="$2"; shift 2 ;;
     --no-quantize-activations) QUANTIZE_ACTIVATIONS=0; shift ;;
+    --trt-native-moe) TRT_NATIVE_MOE=1; shift ;;
+    --trt-native-moe-w4a4) TRT_NATIVE_MOE_W4A4=1; shift ;;
+    --direct-builder) DIRECT_BUILDER=1; shift ;;
+    --no-golden-cache) GOLDEN_CACHE=0; shift ;;
     --verbose)     VERBOSE=1; shift ;;
+    --dflash-draft-dir) DFLASH_DRAFT_DIR="$2"; shift 2 ;;
+    --eagle3-draft-dir) EAGLE3_DRAFT_DIR="$2"; shift 2 ;;
     -h|--help)     usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
 
-LLM_BUILD="${BUILD_DIR}/examples/llm/llm_build"
-LLM_INFER="${BUILD_DIR}/examples/llm/llm_inference"
-PLUGIN="${BUILD_DIR}/libNvInfer_edgellm_plugin.so"
+LLM_BUILD="${BUILD_DIR}/bin/llm_build"
+LLM_INFER="${BUILD_DIR}/bin/llm_inference"
+PLUGIN="${BUILD_DIR}/lib/libNvInfer_edgellm_plugin.so"
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -163,9 +225,19 @@ fail() { echo "[few-layer] ERROR: $*" >&2; exit 2; }
 [[ -n "${MODEL}" ]] || fail "--model is required: pass a checkpoint dir or HF repo id"
 [[ -e "${MODEL}" || "${MODEL}" == */* ]] || fail "model '${MODEL}' not found (pass --model)"
 [[ -f "${INPUT_FILE}" ]] || fail "input file not found: ${INPUT_FILE}"
-[[ -x "${LLM_BUILD}" ]] || fail "llm_build not found at ${LLM_BUILD} (build first, or pass --build-dir)"
+if [[ "${DIRECT_BUILDER}" -eq 0 ]]; then
+  [[ -x "${LLM_BUILD}" ]] || fail "llm_build not found at ${LLM_BUILD} (build first, or pass --build-dir)"
+elif [[ "${MTP}" -eq 1 ]]; then
+  fail "--direct-builder does not drive the MTP draft build in this script; drop --mtp"
+fi
 [[ -x "${LLM_INFER}" ]] || fail "llm_inference not found at ${LLM_INFER} (build first, or pass --build-dir)"
 [[ -f "${PLUGIN}" ]] || fail "plugin not found at ${PLUGIN}"
+[[ -n "${DFLASH_DRAFT_DIR}" && "${DIRECT_BUILDER}" -eq 0 ]] && fail "--dflash-draft-dir without --direct-builder is untested here; drop one"
+[[ -n "${DFLASH_DRAFT_DIR}" && "${MTP}" -eq 1 ]] && fail "--dflash-draft-dir + --mtp: pick one decoding strategy"
+[[ -n "${DFLASH_DRAFT_DIR}" ]] && { [[ -e "${DFLASH_DRAFT_DIR}" || "${DFLASH_DRAFT_DIR}" == */* ]] || fail "dflash draft '${DFLASH_DRAFT_DIR}' not found"; }
+[[ -n "${EAGLE3_DRAFT_DIR}" && "${DIRECT_BUILDER}" -eq 0 ]] && fail "--eagle3-draft-dir without --direct-builder is untested here; drop one"
+[[ -n "${EAGLE3_DRAFT_DIR}" && ( "${MTP}" -eq 1 || -n "${DFLASH_DRAFT_DIR}" ) ]] && fail "--eagle3-draft-dir + --mtp/--dflash-draft-dir: pick one decoding strategy"
+[[ -n "${EAGLE3_DRAFT_DIR}" ]] && { [[ -e "${EAGLE3_DRAFT_DIR}" || "${EAGLE3_DRAFT_DIR}" == */* ]] || fail "eagle3 draft '${EAGLE3_DRAFT_DIR}' not found"; }
 
 # ---------------------------------------------------------------------------
 # Stage timing
@@ -216,7 +288,7 @@ PY
 DECODE_ROUNDS=$(( MAX_GEN - 1 ))
 
 # Speculative decoding (--mtp). A linear MTP chain verifies the pending token plus every drafted
-# one, so the runtime requires verifySize == draftStep + 1; the engines are built with the same
+# one, so the runtime requires verifyTokenCount == draftStep + 1; the engines are built with the same
 # bound. The golden is unaffected -- it stays vanilla, which is the invariant being checked.
 MTP_EXPORT_ARGS=()
 # One flag, both sides: the golden and the export must build the same graph regime.
@@ -224,20 +296,56 @@ WEIGHT_ONLY_ARGS=()
 if [[ "${QUANTIZE_ACTIVATIONS}" -eq 0 ]]; then
   WEIGHT_ONLY_ARGS=(--no-quantize-activations)
 fi
+# Frontend-only: TRT-native (OOTB) MoE instead of the MoE plugins, for the export or the direct
+# build. The golden does not change -- that is the point, the same PyTorch reference gates both arms.
+NATIVE_MOE_ARGS=()
+if [[ "${TRT_NATIVE_MOE}" -eq 1 ]]; then
+  NATIVE_MOE_ARGS=(--trt-native-moe)
+fi
+# W4A4 (TRT_MoE quantization_mode 2) is an export-only switch on top of --trt-native-moe: the direct
+# builder has no mode-2 form, so the combination is refused instead of silently building W4A8.
+if [[ "${TRT_NATIVE_MOE_W4A4}" -eq 1 ]]; then
+  if [[ "${TRT_NATIVE_MOE}" -ne 1 ]]; then
+    echo "[few-layer] --trt-native-moe-w4a4 requires --trt-native-moe" >&2; exit 2
+  fi
+  if [[ "${DIRECT_BUILDER}" -eq 1 ]]; then
+    echo "[few-layer] --trt-native-moe-w4a4 is export-only (ONNX frontend); drop --direct-builder" >&2; exit 2
+  fi
+  NATIVE_MOE_ARGS+=(--trt-native-moe-w4a4)
+fi
+# A direct-built engine keeps its externalized weights (embedding, LM head, FP16 projections) in
+# the checkpoint; llm_inference reads them from --checkpointDir at load time.
+DIRECT_INFER_ARGS=()
+if [[ "${DIRECT_BUILDER}" -eq 1 ]]; then
+  DIRECT_INFER_ARGS=(--checkpointDir "${MODEL}")
+fi
 MTP_BASE_BUILD_ARGS=()
-MTP_INFER_ARGS=()
+SPEC_INFER_ARGS=()
 REUSE_INFER_ARGS=()
 if [[ "${CONTEXT_REUSE}" -eq 1 ]]; then
-  REUSE_INFER_ARGS=(--enableContextReuse
-                    --contextCacheRecurrentSnapshotPoolBytes "${CONTEXT_CACHE_POOL_BYTES}"
-                    --contextCachePartialKVSnapshotPoolBytes "${CONTEXT_CACHE_POOL_BYTES}")
+  REUSE_INFER_ARGS=(--enableContextReuse)
 fi
+SPEC_DIRECT_BUILD_ARGS=()
 SPEC_VERIFY_SIZE=$(( SPEC_DRAFT_STEP + 1 ))
 if [[ "${MTP}" -eq 1 ]]; then
   MTP_EXPORT_ARGS=(--mtp)
-  MTP_BASE_BUILD_ARGS=(--maxVerifyTreeSize "${SPEC_VERIFY_SIZE}" --specBase)
-  MTP_INFER_ARGS=(--specDecode --specDraftTopK 1 --specDraftStep "${SPEC_DRAFT_STEP}"
-                  --specVerifySize "${SPEC_VERIFY_SIZE}")
+  MTP_BASE_BUILD_ARGS=(--maxSpecVerifyTokens "${SPEC_VERIFY_SIZE}" --specBase)
+  SPEC_INFER_ARGS=(--specDecode --specDraftTopK 1 --specDraftStep "${SPEC_DRAFT_STEP}"
+                   --specVerifyTokens "${SPEC_VERIFY_SIZE}")
+fi
+if [[ -n "${DFLASH_DRAFT_DIR}" ]]; then
+  # Linear DFlash derives its proposal and verification capacities from the draft
+  # engine metadata, so this path only selects deterministic top-1 drafting.
+  SPEC_DIRECT_BUILD_ARGS=(--spec-type dflash --draft-model-dir "${DFLASH_DRAFT_DIR}")
+  SPEC_INFER_ARGS=(--specDecode --specDraftTopK 1)
+fi
+if [[ -n "${EAGLE3_DRAFT_DIR}" ]]; then
+  # EAGLE3's draft is a single fused layer regardless of the base's own depth, so its
+  # own layer count is intentionally left untouched by --num-decoder-layer (see the
+  # base-only truncation in tensorrt_edgellm/builder/core/builder.py:load_device_config);
+  # only the target_layer_ids it reads from the base get clamped into range.
+  SPEC_DIRECT_BUILD_ARGS=(--spec-type eagle3 --draft-model-dir "${EAGLE3_DRAFT_DIR}")
+  SPEC_INFER_ARGS=(--specDecode --specDraftTopK 1 --specDraftStep 1)
 fi
 
 # Round @1 up to a multiple of @2.
@@ -267,19 +375,66 @@ fi
 echo "[few-layer] python      : ${PYBIN}"
 echo "[few-layer] workdir     : ${WORKDIR}"
 [[ -n "${TARGET_SM}" ]] && echo "[few-layer] target SM   : ${TARGET_SM}"
+[[ "${TRT_NATIVE_MOE}" -eq 1 ]] && echo "[few-layer] MoE arm     : TRT-native TRT_MoE (IMoELayer -> Myelin), not the MoE plugins"
+[[ "${TRT_NATIVE_MOE_W4A4}" -eq 1 ]] && echo "[few-layer] MoE quant   : W4A4 (TRT_MoE quantization_mode 2, NVFP4 dynamic activations), export-only"
+[[ "${DIRECT_BUILDER}" -eq 1 ]] && echo "[few-layer] frontend    : checkpoint-direct builder (edgellm build), compiled for the active GPU"
 echo
+
+# Golden cache key: only the inputs that change what the golden *contains* (model, layer
+# count, requests, activation quantization). PyTorch/Transformers version is deliberately
+# excluded -- see the "Golden caching" doc block above.
+# The requests file enters the key by content hash, not by name: the basename names the file
+# while the golden depends on what is inside it (prompts, batch_size, max_generate_length ->
+# decode rounds), so an in-place edit would otherwise hit a stale entry. The basename is kept
+# for human readability only.
+GOLDEN_KEY="$(basename "${MODEL%/}")__L${NUM_LAYERS}__$(basename "${INPUT_FILE}" .json)-$(sha256sum "${INPUT_FILE}" | cut -c1-12)"
+if [[ "${QUANTIZE_ACTIVATIONS}" -eq 0 ]]; then
+  GOLDEN_KEY="${GOLDEN_KEY}__w4a16"
+fi
+SHARED_GOLDEN=""
+if [[ "${GOLDEN_CACHE}" -eq 1 && -n "${EDGE_LLM_CACHE_DIR:-}" ]]; then
+  SHARED_GOLDEN="${EDGE_LLM_CACHE_DIR}/golden_layers/${GOLDEN_KEY}.safetensors"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. PyTorch golden
 # ---------------------------------------------------------------------------
 stage_begin "1/5 PyTorch golden"
-"${PYBIN}" "${REPO}/tests/golden_layer_dump.py" \
-  --ckpt "${MODEL}" \
-  --input-file "${INPUT_FILE}" \
-  --num-layers "${NUM_LAYERS}" \
-  --decode-rounds "${DECODE_ROUNDS}" \
-  --out "${GOLDEN}" \
-  ${WEIGHT_ONLY_ARGS[@]+"${WEIGHT_ONLY_ARGS[@]}"}
+if [[ -n "${SHARED_GOLDEN}" && -f "${SHARED_GOLDEN}" ]]; then
+  echo "[few-layer] golden cache hit: ${SHARED_GOLDEN}"
+  cp "${SHARED_GOLDEN}" "${GOLDEN}"
+else
+  "${PYBIN}" "${REPO}/tests/golden_layer_dump.py" \
+    --ckpt "${MODEL}" \
+    --input-file "${INPUT_FILE}" \
+    --num-layers "${NUM_LAYERS}" \
+    --decode-rounds "${DECODE_ROUNDS}" \
+    --out "${GOLDEN}" \
+    ${WEIGHT_ONLY_ARGS[@]+"${WEIGHT_ONLY_ARGS[@]}"}
+
+  if [[ -n "${SHARED_GOLDEN}" ]]; then
+    # Best-effort upload: a read-only mount or a race with another job populating the same
+    # entry must not fail validation, since the just-generated ${GOLDEN} is already usable.
+    # Explicit chmod: umask would otherwise leave this owner-only (0600 seen in practice),
+    # which defeats the point of a *shared* cache -- other users/runners couldn't read it.
+    # Matches the world-readable convention of the sibling baselines/ and trt_softwares/ dirs.
+    if mkdir -p "$(dirname "${SHARED_GOLDEN}")" 2>/dev/null \
+        && tmp_upload="$(mktemp "${SHARED_GOLDEN}.XXXXXX" 2>/dev/null)"; then
+      # Non-fatal: the dir may already exist, owned by an earlier (possibly different) writer.
+      chmod 0755 "$(dirname "${SHARED_GOLDEN}")" 2>/dev/null || true
+      if cp "${GOLDEN}" "${tmp_upload}" 2>/dev/null \
+          && chmod 0644 "${tmp_upload}" 2>/dev/null \
+          && mv -f "${tmp_upload}" "${SHARED_GOLDEN}" 2>/dev/null; then
+        echo "[few-layer] golden cache miss: uploaded ${SHARED_GOLDEN}"
+      else
+        rm -f "${tmp_upload}"
+        echo "[few-layer] golden cache miss: could not upload ${SHARED_GOLDEN} (continuing)" >&2
+      fi
+    else
+      echo "[few-layer] golden cache miss: could not create $(dirname "${SHARED_GOLDEN}") (continuing)" >&2
+    fi
+  fi
+fi
 
 # Teacher forcing: extract the golden's per-sequence tokens so EdgeLLM replays the exact same
 # sequence (decouples the numeric comparison from greedy argmax stability). One line per sequence.
@@ -318,6 +473,32 @@ PY
 stage_end
 
 # ---------------------------------------------------------------------------
+# 2+3. Checkpoint-direct build (--direct-builder): one step replaces the ONNX
+#      export and llm_build. The builder compiles for the active GPU, truncates
+#      to the first N layers itself and leaves the externalized weights in the
+#      checkpoint (hence --checkpointDir in stage 4). The ONNX stages below are
+#      unchanged and run otherwise.
+# ---------------------------------------------------------------------------
+if [[ "${DIRECT_BUILDER}" -eq 1 ]]; then
+stage_begin "2+3/5 EdgeLLM direct build"
+"${PYBIN}" -m tensorrt_edgellm.builder \
+  --model-dir "${MODEL}" \
+  --engine-dir "${ENGINE_DIR}" \
+  --plugin-path "${PLUGIN}" \
+  --components llm \
+  --num-decoder-layer "${NUM_LAYERS}" \
+  --max-batch-size "${BATCH_SIZE}" \
+  --max-input-len "${MAX_INPUT_LEN}" \
+  --max-kv-cache-capacity "${MAX_KV_CACHE_CAPACITY}" \
+  ${WEIGHT_ONLY_ARGS[@]+"${WEIGHT_ONLY_ARGS[@]}"} \
+  ${NATIVE_MOE_ARGS[@]+"${NATIVE_MOE_ARGS[@]}"} \
+  ${SPEC_DIRECT_BUILD_ARGS[@]+"${SPEC_DIRECT_BUILD_ARGS[@]}"}
+stage_end
+# A draft is a separate checkpoint that keeps its own externalized weights.
+[[ -n "${DFLASH_DRAFT_DIR}" ]] && DIRECT_INFER_ARGS+=(--draftCheckpointDir "${DFLASH_DRAFT_DIR}")
+[[ -n "${EAGLE3_DRAFT_DIR}" ]] && DIRECT_INFER_ARGS+=(--draftCheckpointDir "${EAGLE3_DRAFT_DIR}")
+else
+# ---------------------------------------------------------------------------
 # 2. EdgeLLM export (first N decoder layers)
 # ---------------------------------------------------------------------------
 stage_begin "2/5 EdgeLLM export"
@@ -334,12 +515,13 @@ if [[ -n "${TARGET_SM}" ]]; then
     export EDGELLM_NVFP4_MOE_TARGET=sm100
   fi
 fi
-"${PYBIN}" -m tensorrt_edgellm.scripts.export \
+"${PYBIN}" -m tensorrt_edgellm.onnx.cli \
   "${MODEL}" "${EXPORT_DIR}" \
   --num-decoder-layer "${NUM_LAYERS}" \
   --skip-visual --skip-audio \
   ${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"} \
   ${WEIGHT_ONLY_ARGS[@]+"${WEIGHT_ONLY_ARGS[@]}"} \
+  ${NATIVE_MOE_ARGS[@]+"${NATIVE_MOE_ARGS[@]}"} \
   ${MTP_EXPORT_ARGS[@]+"${MTP_EXPORT_ARGS[@]}"}
 stage_end
 
@@ -396,10 +578,11 @@ if [[ "${MTP}" -eq 1 ]]; then
     --maxBatchSize "${BATCH_SIZE}" \
     --maxInputLen "${MAX_INPUT_LEN}" \
     --maxKVCacheCapacity "${MAX_KV_CACHE_CAPACITY}" \
-    --maxDraftTreeSize "${SPEC_VERIFY_SIZE}" \
+    --maxSpecDraftTokens "${SPEC_VERIFY_SIZE}" \
     --specDraft
 fi
 stage_end
+fi  # DIRECT_BUILDER == 0: ONNX export + llm_build
 
 # ---------------------------------------------------------------------------
 # 4. EdgeLLM inference with the per-layer dump (greedy via top_k=1 in the JSON,
@@ -416,7 +599,8 @@ EDGELLM_DUMP_LOGITS_KVCACHE_DIR="${DUMP_DIR}" \
   --inputFile "${INPUT_FILE}" \
   --outputFile "${WORKDIR}/out.json" \
   --maxGenerateLength "${MAX_GEN}" \
-  ${MTP_INFER_ARGS[@]+"${MTP_INFER_ARGS[@]}"} \
+  ${DIRECT_INFER_ARGS[@]+"${DIRECT_INFER_ARGS[@]}"} \
+  ${SPEC_INFER_ARGS[@]+"${SPEC_INFER_ARGS[@]}"} \
   ${REUSE_INFER_ARGS[@]+"${REUSE_INFER_ARGS[@]}"}
 stage_end
 
@@ -442,12 +626,16 @@ stage_end
 
 print_timing
 
-DECODING=$([[ "${MTP}" -eq 1 ]] && echo "mtp" || echo "vanilla")
+DECODING="vanilla"
+[[ "${MTP}" -eq 1 ]] && DECODING="mtp"
+[[ -n "${DFLASH_DRAFT_DIR}" ]] && DECODING="dflash"
+[[ -n "${EAGLE3_DRAFT_DIR}" ]] && DECODING="eagle3"
 [[ "${CONTEXT_REUSE}" -eq 1 ]] && DECODING="${DECODING}+reuse"
+FRONTEND=$([[ "${DIRECT_BUILDER}" -eq 1 ]] && echo "direct-builder" || echo "onnx")
 echo
 if [[ "${RC}" -eq 0 ]]; then
-  echo "[few-layer] RESULT: PASS (model=${MODEL}, layers=${NUM_LAYERS}, decoding=${DECODING})"
+  echo "[few-layer] RESULT: PASS (model=${MODEL}, layers=${NUM_LAYERS}, decoding=${DECODING}, frontend=${FRONTEND})"
 else
-  echo "[few-layer] RESULT: FAIL (model=${MODEL}, layers=${NUM_LAYERS}, decoding=${DECODING})"
+  echo "[few-layer] RESULT: FAIL (model=${MODEL}, layers=${NUM_LAYERS}, decoding=${DECODING}, frontend=${FRONTEND})"
 fi
 exit "${RC}"

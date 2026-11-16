@@ -55,7 +55,9 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from tensorrt_edgellm._safetensors_io import save_file
 
 from ..datasets import TextDataset, dataset_name, resolve_dataset
-from ..quantization_configs import append_quant_cfg_entries, build_quant_config
+from ..quantization_configs import (append_quant_cfg_entries,
+                                    build_quant_config,
+                                    split_lm_head_calibration)
 from . import layers
 from .attention_scale import resolve_attention_scale
 from .layers import (RMSNorm, RotaryEmbedding, SwiGLUMLP, apply_rotary_pos_emb,
@@ -738,6 +740,7 @@ def quantize_and_export_dflash_draft(
     *,
     text_dataset: Union[str, TextDataset, None] = None,
     num_samples: int = 512,
+    keep_last_layer_fp16: bool = False,
 ) -> str:
     """Load base + DFlash draft models, quantize draft, and export."""
     import shutil
@@ -766,8 +769,12 @@ def quantize_and_export_dflash_draft(
         base, tokenizer = _load_base_for_calib(base_model_dir, dtype, device)
         embed_layer = _resolve_base_embed_layer(base)
 
-        quant_cfg = build_quant_config(quantization, lm_head_quantization,
-                                       kv_cache_quantization)
+        quant_cfg = build_quant_config(
+            quantization,
+            lm_head_quantization,
+            kv_cache_quantization,
+            fp16_layer_index=(draft.config.num_hidden_layers -
+                              1 if keep_last_layer_fp16 else None))
         _disable_dflash_fc_quantization(quant_cfg)
         if draft.is_gemma4 and quantization in _GEMMA4_FP16_DOWN_PROJ_QUANTS:
             _disable_gemma4_down_proj_quantization(quant_cfg, draft)
@@ -816,7 +823,11 @@ def quantize_and_export_dflash_draft(
                 # Use a single delta position for calibration
                 dm(proposal_embeds, target_hidden_concat)
 
+        lm_head_cfg = split_lm_head_calibration(quant_cfg,
+                                                lm_head_quantization)
         mtq.quantize(draft, quant_cfg, forward_loop=_calib)
+        if lm_head_cfg:
+            mtq.quantize(draft, lm_head_cfg, forward_loop=_calib)
         mtq.print_quant_summary(draft)
         _check_finite_amax(draft)
 
@@ -837,9 +848,11 @@ def quantize_and_export_dflash_draft(
     # Remove rotary_emb from saved state
     sd = {k: v for k, v in sd.items() if not k.startswith("rotary_emb")}
 
-    # Pass DSpark sidecar heads through unquantized: the exporter reads
-    # markov/confidence tensors from this checkpoint's safetensors.
-    passthrough_prefixes = ("markov_head.", "confidence_head.")
+    # Pass sidecar heads through unquantized: the exporter reads DSpark
+    # markov/confidence tensors and the Domino GRU/embed_proj tensors from
+    # this checkpoint's safetensors.
+    passthrough_prefixes = ("markov_head.", "confidence_head.", "prefix_gru.",
+                            "embed_proj.")
     for sf_path in sorted(Path(draft_model_dir).glob("*.safetensors")):
         with safe_open(str(sf_path), framework="pt", device="cpu") as f:
             for key in f.keys():
@@ -906,7 +919,7 @@ def _resolve_base_embed_layer(base):
 
 # Matches the Gemma4 base policy in ``quantization/quantize.py``: 4-bit
 # down_proj cannot represent the clamped +/-2048 GeGLU intermediate.
-_GEMMA4_FP16_DOWN_PROJ_QUANTS = ("int4_awq", "nvfp4")
+_GEMMA4_FP16_DOWN_PROJ_QUANTS = ("int4_awq", "nvfp4", "nvfp4_a16_gptq")
 
 
 def _disable_gemma4_down_proj_quantization(quant_cfg, draft):

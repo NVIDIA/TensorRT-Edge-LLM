@@ -86,6 +86,19 @@ constexpr int32_t kCpStoreIdxPlanes = 2;
 //! rerun with the same inputs reproduces the same accept decisions.
 constexpr uint64_t kCpSpecSamplingSeed = 0x51ED270BULL;
 
+//! Seed for Talker codec-token sampling.
+constexpr uint64_t kTalkerSamplingSeed = 42;
+
+//! Seed for CP sampling outside speculative decoding. It differs from kTalkerSamplingSeed so a
+//! Talker draw and a CP draw never share a random number.
+constexpr uint64_t kCpSamplingSeed = 0xC0DE5EEDULL;
+
+//! Random offset of CP draw code_k (k = 1..numRvqLayers) in frame frameIdx; distinct for every (frame, code) pair.
+constexpr uint64_t cpSamplingOffset(int32_t frameIdx, int32_t codeIdx, int32_t numRvqLayers) noexcept
+{
+    return static_cast<uint64_t>(frameIdx) * static_cast<uint64_t>(numRvqLayers) + static_cast<uint64_t>(codeIdx - 1);
+}
+
 // Audio output constants (Qwen3-Omni codec: 12.5 Hz frame rate, 24 kHz mono PCM output)
 constexpr int32_t kAudioSampleRate = 24000;     //!< Output PCM sample rate (Hz)
 constexpr int32_t kAudioSamplesPerFrame = 1920; //!< Samples produced per codec frame (24000 / 12.5)
@@ -513,9 +526,10 @@ private:
     //! @param activeBatchSize          Number of active batches (1..maxBatchSize).
     //! @param codecTokensPerBatch     [activeBS] code_0 from Talker for each batch.
     //! @param talkerLastHiddenBatched [activeBS, talkerHidden] per-batch Talker last hidden.
+    //! @param frameIdx                Frame index; selects the random offsets of this frame's CP draws.
     //! @param outputCodesPerBatch     [activeBS][mNumCodesPerFrame] generated codes per batch.
     bool runCodePredictorGenerationForFrame(int32_t activeBatchSize, std::vector<int32_t> const& codecTokensPerBatch,
-        rt::Tensor const& talkerLastHiddenBatched, SamplingParams const& samplingParams,
+        rt::Tensor const& talkerLastHiddenBatched, SamplingParams const& samplingParams, int32_t frameIdx,
         std::vector<std::vector<int32_t>>& outputCodesPerBatch, cudaStream_t stream);
 
     //! Chain speculative-decoding replacement for the per-frame CP decode loop.

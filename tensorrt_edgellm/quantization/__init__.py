@@ -12,19 +12,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Standalone quantization for TensorRT Edge-LLM.
+"""ModelOpt-backed checkpoint quantization for TensorRT Edge-LLM.
 
-Decoupled from the ONNX exporter — runs in a clean venv with only
-torch, transformers, and modelopt.
-
-    tensorrt-edgellm-quantize --help
+Implementations are imported by the quantization CLI only after the
+``quantize`` dependency stage is installed. Export and runtime code can import
+package metadata without loading ModelOpt.
 """
 
 _EXPORT_MODULES = {
     "DFlashCalibDraftModel": ".models",
     "Eagle3DraftModel": ".models",
+    "Eagle4CalibDraftModel": ".models",
     "quantize_and_export_dflash_draft": ".models",
     "quantize_and_export_draft": ".models",
+    "quantize_and_export_eagle4_draft": ".models",
     "build_quant_config": ".quantization_configs",
     "quantize_and_export": ".quantize",
 }

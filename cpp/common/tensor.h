@@ -18,8 +18,8 @@
 #pragma once
 
 #include "common/checkMacros.h"
+#include "common/dataType.h"
 #include "cudaMacros.h"
-#include <NvInferRuntime.h>
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -109,14 +109,6 @@ public:
     //! @return Reference to this
     Coords& operator=(Coords&& coords) noexcept = default;
 
-    //! @brief Construct from TensorRT Dims
-    //! @param dims TensorRT dimensions
-    Coords(nvinfer1::Dims const& dims) noexcept
-        : mNumDims(dims.nbDims)
-    {
-        std::copy(dims.d, dims.d + mNumDims, mDims.begin());
-    }
-
     //! @brief Equality comparison operator
     //! @param other Coords object to compare with
     //! @return True if both Coords have the same number of dimensions
@@ -200,10 +192,6 @@ public:
     //! @return Volume of the coordinates
     int64_t volume() const noexcept;
 
-    //! @brief Convert to TensorRT Dims
-    //! @return TensorRT dimensions
-    nvinfer1::Dims getTRTDims() const noexcept;
-
     //! @brief Format coordinates as string
     //! @return String representation of coordinates
     //! @throws std::runtime_error If coordinates are invalid or cannot be formatted
@@ -262,7 +250,7 @@ public:
      * @param name Optional name for the tensor
      * @throws std::runtime_error If volume is zero, data type is unsupported, or CUDA allocation fails
      */
-    Tensor(Coords const& extent, DeviceType deviceType, nvinfer1::DataType dataType, std::string const& name = "");
+    Tensor(Coords const& extent, DeviceType deviceType, trt_edgellm::DataType dataType, std::string const& name = "");
 
     /*!
      * @brief Constructor that reuses external memory
@@ -276,7 +264,7 @@ public:
      * @param dataType The data type of the tensor
      * @param name Optional name for the tensor
      */
-    Tensor(void* data, Coords const& extent, DeviceType deviceType, nvinfer1::DataType dataType,
+    Tensor(void* data, Coords const& extent, DeviceType deviceType, trt_edgellm::DataType dataType,
         std::string const& name = "");
 
     //! @brief Get the shape of the tensor
@@ -288,12 +276,8 @@ public:
     DeviceType getDeviceType() const noexcept;
 
     //! @brief Get the data type
-    //! @return TensorRT data type
-    nvinfer1::DataType getDataType() const noexcept;
-
-    //! @brief Get TensorRT dimensions
-    //! @return TensorRT Dims object
-    nvinfer1::Dims getTRTDims() const noexcept;
+    //! @return Element data type
+    trt_edgellm::DataType getDataType() const noexcept;
 
     //! @brief Check if tensor owns its memory
     //! @return True if memory is owned, false otherwise
@@ -385,7 +369,7 @@ private:
     Coords mShape{};
     std::array<int64_t, kMAX_DIMS> mStrides{};
     DeviceType mDeviceType{};
-    nvinfer1::DataType mDataType{};
+    trt_edgellm::DataType mDataType{};
     void* data{};
     bool ownMemory{};
 
@@ -398,11 +382,11 @@ private:
 
 namespace utils
 {
-//! @brief Get size in bytes of a TensorRT data type
-//! @param dataType TensorRT data type (nvinfer1::DataType)
+//! @brief Get size in bytes of a data type
+//! @param dataType Data type
 //! @return Size in bytes
 //! @throws std::runtime_error If data type is unsupported (e.g., sub-byte types)
-size_t getTypeSize(nvinfer1::DataType dataType);
+size_t getTypeSize(trt_edgellm::DataType dataType);
 
 //! @brief Compute strides for given shape
 //! @param shape Tensor shape

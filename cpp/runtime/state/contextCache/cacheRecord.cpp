@@ -52,6 +52,47 @@ void validateSpecState(SpecPagedStateRecord const& state, size_t basePathSize)
     ELLM_CHECK(!hasNegativePage(state.pagePath), "Context cache spec state page IDs must be non-negative");
 }
 
+void validateSwaState(CacheRecord const& record)
+{
+    if (!record.swaWindowState.has_value())
+    {
+        return;
+    }
+
+    SwaWindowState const& state = *record.swaWindowState;
+    ELLM_CHECK(!record.exactCheckpointLength.has_value() && !record.specState.has_value(),
+        "Context cache SWA state is supported only by vanilla records");
+    ELLM_CHECK(state.pageSizeTokens > 0 && state.windowSizeTokens > 0 && state.exactResidentTokenCount > 0,
+        "Context cache SWA record has invalid endpoint geometry");
+    ELLM_CHECK(state.retentionMode == SwaRetentionMode::kLive,
+        "Context cache SWA records must retain a full-input replay page");
+    int64_t const expectedEndpoint
+        = static_cast<int64_t>(record.key.fullBlockCount) * static_cast<int64_t>(state.pageSizeTokens);
+    ELLM_CHECK(expectedEndpoint == state.exactResidentTokenCount,
+        "Context cache SWA record endpoint does not match its exact key");
+
+    int32_t const expectedEnd = state.exactResidentTokenCount / state.pageSizeTokens;
+    int64_t const windowStart
+        = std::max<int64_t>(0, static_cast<int64_t>(state.exactResidentTokenCount) - state.windowSizeTokens);
+    int32_t const activeBegin = static_cast<int32_t>(windowStart / state.pageSizeTokens);
+    int32_t const expectedBegin = std::max(0, activeBegin - kSWA_REPLAY_HALO_PAGES);
+    ELLM_CHECK(state.retainedLogicalPageBegin == expectedBegin && state.retainedLogicalPageEnd == expectedEnd
+            && state.pageBindings.size() == static_cast<size_t>(expectedEnd - expectedBegin),
+        "Context cache SWA record does not contain its window and replay page");
+
+    for (size_t index = 0; index < state.pageBindings.size(); ++index)
+    {
+        SwaPageBinding const& binding = state.pageBindings[index];
+        ELLM_CHECK(binding.logicalPage == expectedBegin + static_cast<int32_t>(index) && binding.page >= 0,
+            "Context cache SWA record has an invalid logical page binding");
+        for (size_t previous = 0; previous < index; ++previous)
+        {
+            ELLM_CHECK(state.pageBindings[previous].page != binding.page,
+                "Context cache SWA record maps more than one logical page to one physical page");
+        }
+    }
+}
+
 void validateRecord(CacheRecord const& record)
 {
     bool const hasHybridIdentity = record.exactCheckpointLength.has_value();
@@ -83,6 +124,7 @@ void validateRecord(CacheRecord const& record)
         "Context cache record snapshot slot IDs must be non-negative");
     ELLM_CHECK(!record.exactCheckpointLength.has_value() || *record.exactCheckpointLength >= 0,
         "Context cache record exact checkpoint length must be non-negative");
+    validateSwaState(record);
 }
 
 } // namespace
@@ -91,8 +133,9 @@ std::vector<ResourceId> CacheRecord::resources() const
 {
     std::vector<ResourceId> recordResources;
     size_t const specPageCount = specState.has_value() ? specState->pagePath.size() : 0U;
+    size_t const swaPageCount = swaWindowState.has_value() ? swaWindowState->pageBindings.size() : 0U;
     recordResources.reserve(basePagePath.size() + specPageCount + static_cast<size_t>(recurrentSnapshotSlot.has_value())
-        + static_cast<size_t>(partialKvSnapshotSlot.has_value()));
+        + static_cast<size_t>(partialKvSnapshotSlot.has_value()) + swaPageCount);
     for (PageId const page : basePagePath)
     {
         recordResources.push_back(ResourceId{ResourceType::kBaseKvPage, page});
@@ -111,6 +154,13 @@ std::vector<ResourceId> CacheRecord::resources() const
     if (partialKvSnapshotSlot.has_value())
     {
         recordResources.push_back(ResourceId{ResourceType::kPartialKvSnapshot, *partialKvSnapshotSlot});
+    }
+    if (swaWindowState.has_value())
+    {
+        for (SwaPageBinding const& binding : swaWindowState->pageBindings)
+        {
+            recordResources.push_back(ResourceId{ResourceType::kSwaKvPage, binding.page});
+        }
     }
     return recordResources;
 }

@@ -58,7 +58,7 @@ constexpr int32_t kSampleRate{16000};
 void attachSamples(AudioPCM& pcm, std::vector<float> const& samples)
 {
     pcm.samples = std::make_shared<Tensor>(
-        Coords{static_cast<int64_t>(samples.size())}, DeviceType::kCPU, nvinfer1::DataType::kFLOAT);
+        Coords{static_cast<int64_t>(samples.size())}, DeviceType::kCPU, trt_edgellm::DataType::kFLOAT);
     std::copy(samples.begin(), samples.end(), pcm.samples->dataPointer<float>());
 }
 

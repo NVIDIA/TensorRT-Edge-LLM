@@ -23,10 +23,11 @@ def _turn(conversation, display, prompt, regenerate=False):
     display.begin_response()
     try:
         if regenerate:
-            conversation.regenerate(display.write, display.write_reasoning)
+            conversation.regenerate(display.write, display.write_reasoning,
+                                    display.show_tool)
         else:
             conversation.generate(prompt, display.write,
-                                  display.write_reasoning)
+                                  display.write_reasoning, display.show_tool)
     finally:
         display.finish_response(conversation)
 
@@ -37,7 +38,7 @@ def run(settings, responses):
     display.startup()
     with display.loading():
         model = backend.Backend(settings, display.progress)
-    conversation = session.Session(model, settings.messages)
+    conversation = session.Session(model, settings.messages, settings.agentic)
     try:
         if display.interactive:
             display.runtime_details(model.details())

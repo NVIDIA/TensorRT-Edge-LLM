@@ -22,6 +22,9 @@ EXPORT_DEPENDENCIES = frozenset({
     "onnxscript",
     "safetensors",
     "torch",
+    "peft",
+    "datasets",
+    "tqdm",
     "transformers",
 })
 TOOL_DEPENDENCIES = EXPORT_DEPENDENCIES | {

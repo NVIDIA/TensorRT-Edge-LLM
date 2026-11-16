@@ -17,6 +17,8 @@
 
 #include "kernels/qsaIndexer/qsaIndexerJitCompiler.h"
 #include "common/cudaUtils.h"
+#include "kernels/PluginJitKernels/pluginJitCubin.h"
+#include "kernels/PluginJitKernels/pluginJitDigest.h"
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -33,11 +35,6 @@ bool hasCudaDevice()
 {
     int32_t deviceCount = 0;
     return cudaGetDeviceCount(&deviceCount) == cudaSuccess && deviceCount > 0;
-}
-
-bool isNativeCubin(std::vector<uint8_t> const& cubin)
-{
-    return cubin.size() > 4 && cubin[0] == 0x7FU && cubin[1] == 0x45U && cubin[2] == 0x4CU && cubin[3] == 0x46U;
 }
 
 } // namespace
@@ -60,7 +57,8 @@ TEST(QsaIndexerJitCompiler, KeyValidation)
 }
 
 //! The kernels are arch-generic; NVRTC-compile both dtype variants for whatever device is
-//! present and require a native (non-empty ELF) cubin, mirroring the production contract.
+//! present and require a native (non-empty ELF) cubin carrying its digest, mirroring the
+//! production contract.
 TEST(QsaIndexerJitCompiler, CompilesBothDataTypesForCurrentDevice)
 {
     if (!hasCudaDevice())
@@ -75,7 +73,9 @@ TEST(QsaIndexerJitCompiler, CompilesBothDataTypesForCurrentDevice)
         key.dataType = dataType;
         QsaIndexerJitKernel const kernel = compileQsaIndexerJitKernel(key);
         EXPECT_TRUE(kernel.key == key);
-        EXPECT_TRUE(isNativeCubin(kernel.cubin)) << "dtype " << static_cast<uint32_t>(dataType);
+        EXPECT_TRUE(isNativeCubin(kernel.cubin.data(), kernel.cubin.size()))
+            << "dtype " << static_cast<uint32_t>(dataType);
+        EXPECT_EQ(kernel.digest, computePluginJitDigest(key, kernel.cubin.data(), kernel.cubin.size()));
     }
 }
 

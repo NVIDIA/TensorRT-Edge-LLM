@@ -21,19 +21,19 @@ import pytest
 
 trt = pytest.importorskip("tensorrt")
 
-from experimental.builder.models.dflash.modeling_dflash_draft import \
+from tensorrt_edgellm.builder.models.dflash.modeling_dflash_draft import \
     DFlashTargetProjection
-from experimental.builder.models.dspark.modeling_dspark_draft import \
+from tensorrt_edgellm.builder.models.dspark.modeling_dspark_draft import \
     DSparkTargetProjection
-from experimental.builder.models.phi4mm.modeling_phi4mm_text import \
+from tensorrt_edgellm.builder.models.phi4mm.modeling_phi4mm_text import \
     Phi4MultimodalMLP
-from experimental.builder.ops import functional as F
-from experimental.builder.ops.backend import Net
-from experimental.builder.ops.functional import core as functional_core
-from experimental.builder.ops.functional import moe as functional_moe
-from experimental.builder.ops.linear import Linear
-from experimental.builder.ops.module import BuildContext, BuildOptions
-from experimental.builder.ops.normalization import RMSNorm
+from tensorrt_edgellm.builder.ops import functional as F
+from tensorrt_edgellm.builder.ops.backend import Net
+from tensorrt_edgellm.builder.ops.functional import core as functional_core
+from tensorrt_edgellm.builder.ops.functional import moe as functional_moe
+from tensorrt_edgellm.builder.ops.linear import Linear
+from tensorrt_edgellm.builder.ops.module import BuildContext, BuildOptions
+from tensorrt_edgellm.builder.ops.normalization import RMSNorm
 
 
 class _Tensor:
@@ -290,6 +290,7 @@ class _SliceTensor(_Tensor):
 def _context():
     weights = SimpleNamespace(
         module_quant_type=lambda *args, **kwargs: "fp16",
+        uses_w4a16_fallback=lambda *args, **kwargs: False,
         linear_descriptor=lambda *args, **kwargs: SimpleNamespace(
             in_features=16, out_features=16),
         shard_linear=lambda descriptor, *args: descriptor,
@@ -312,9 +313,8 @@ def _context():
 def test_linear_uses_the_actual_activation_rank(monkeypatch):
     ranks = []
     monkeypatch.setattr(
-        F,
-        "linear_from_weights",
-        lambda hidden, descriptor, rank, name="": ranks.append(rank) or hidden)
+        F, "linear_from_weights",
+        lambda hidden, descriptor, rank, **_: ranks.append(rank) or hidden)
 
     Linear(_context(), "model.layers.0.self_attn.q_proj")(_Tensor(2))
 
@@ -324,9 +324,8 @@ def test_linear_uses_the_actual_activation_rank(monkeypatch):
 def test_linear_preserves_explicit_encoder_rank(monkeypatch):
     ranks = []
     monkeypatch.setattr(
-        F,
-        "linear_from_weights",
-        lambda hidden, descriptor, rank, name="": ranks.append(rank) or hidden)
+        F, "linear_from_weights",
+        lambda hidden, descriptor, rank, **_: ranks.append(rank) or hidden)
 
     Linear(_context(), "visual.proj", rank=3,
            tensor_parallel=False)(_Tensor(2))
@@ -334,10 +333,41 @@ def test_linear_preserves_explicit_encoder_rank(monkeypatch):
     assert ranks == [3]
 
 
+def test_non_tp_w4a16_without_config_uses_full_weights(monkeypatch):
+    """Given non-TP W4A16, when config is absent, then use full weights."""
+    ctx = _context()
+    ctx.cfg = None
+    descriptor = SimpleNamespace(quant_type="nvfp4_a16",
+                                 in_features=16,
+                                 out_features=16)
+    ctx.weights.module_quant_type = lambda *args, **kwargs: "nvfp4_a16"
+    ctx.weights.uses_w4a16_fallback = lambda *args, **kwargs: False
+    ctx.weights.linear_descriptor = lambda *args, **kwargs: descriptor
+    ctx.weights.shard_linear = lambda *args, **kwargs: pytest.fail(
+        "non-TP projection must not shard weights")
+    captured = {}
+
+    def fake_linear(hidden, weights, rank, sm110, name=""):
+        captured.update(hidden=hidden,
+                        weights=weights,
+                        rank=rank,
+                        sm110=sm110,
+                        name=name)
+        return hidden
+
+    monkeypatch.setattr(F, "nvfp4_a16_linear_from_weights", fake_linear)
+    hidden = _Tensor(2)
+
+    assert Linear(ctx, "visual.proj", tensor_parallel=False)(hidden) is hidden
+    assert captured["weights"] is descriptor
+    assert captured["rank"] == 2
+    assert captured["name"] == "visual.proj"
+
+
 def test_direct_weight_projection_infers_token_major_rank(monkeypatch):
     ranks = []
     backend = SimpleNamespace(linear_from_weights=lambda hidden, weights, rank,
-                              name="": ranks.append(rank) or hidden)
+                              **_: ranks.append(rank) or hidden)
     monkeypatch.setattr(functional_core, "current_net", lambda: backend)
     monkeypatch.setattr(functional_core, "tensor", lambda value: value)
 
@@ -349,7 +379,7 @@ def test_direct_weight_projection_infers_token_major_rank(monkeypatch):
 def test_direct_weight_projection_preserves_explicit_rank(monkeypatch):
     ranks = []
     backend = SimpleNamespace(linear_from_weights=lambda hidden, weights, rank,
-                              name="": ranks.append(rank) or hidden)
+                              **_: ranks.append(rank) or hidden)
     monkeypatch.setattr(functional_core, "current_net", lambda: backend)
     monkeypatch.setattr(functional_core, "tensor", lambda value: value)
 
@@ -360,7 +390,7 @@ def test_direct_weight_projection_preserves_explicit_rank(monkeypatch):
 
 @pytest.mark.parametrize("sm110", [False, True], ids=["generic", "sm110"])
 def test_nvfp4_a16_backend_accepts_token_major_rank(monkeypatch, sm110):
-    from experimental.builder.weight_packing import nvfp4
+    from tensorrt_edgellm.builder.weight_packing import nvfp4
 
     packed = (np.zeros((1, ), dtype=np.int8), np.zeros(
         (1, ), dtype=np.int8), np.zeros((1, ), dtype=np.float16), 16, 16)
@@ -415,10 +445,10 @@ def test_rmsnorm_preserves_explicit_encoder_rank(monkeypatch):
                          (DFlashTargetProjection, DSparkTargetProjection))
 def test_target_projection_uses_token_major_rank(monkeypatch, projection):
     ranks = []
-    monkeypatch.setattr(
-        F,
-        "linear_f32_from_weights",
-        lambda hidden, descriptor, name, rank=3: ranks.append(rank) or hidden)
+    monkeypatch.setattr(F,
+                        "linear_f32_from_weights",
+                        lambda hidden, descriptor, name, rank=3, **_: ranks.
+                        append(rank) or hidden)
 
     projection(_context(), "fc")(_Tensor(2))
 

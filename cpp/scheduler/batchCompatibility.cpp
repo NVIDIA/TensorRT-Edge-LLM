@@ -17,6 +17,8 @@
 
 #include "scheduler/batchCompatibility.h"
 
+#include "sampler/sampling.h"
+
 #include <algorithm>
 
 namespace trt_edgellm
@@ -36,25 +38,6 @@ struct ComparedField
 };
 
 constexpr ComparedField kComparedFields[] = {
-    // Sampling is applied to the batch as a whole, so a mismatch would not fail loudly: one request
-    // would simply generate with the other's settings.
-    {"temperature", [](auto const& a, auto const& b) { return a.temperature == b.temperature; }},
-    {"topP", [](auto const& a, auto const& b) { return a.topP == b.topP; }},
-    {"topK", [](auto const& a, auto const& b) { return a.topK == b.topK; }},
-
-    // The seed values themselves live per slot, but an explicit seed anywhere in a request flips
-    // the batch-wide stable-sampling mode; a request that asked for determinism must not share a
-    // step with one sampled the default way.
-    {"hasExplicitSamplingSeed",
-        [](auto const& a, auto const& b) {
-            auto const hasSeed = [](LLMGenerationRequest const& r) {
-                return r.samplingSeed.has_value()
-                    || std::any_of(r.requests.begin(), r.requests.end(),
-                        [](auto const& item) { return item.samplingSeed.has_value(); });
-            };
-            return hasSeed(a) == hasSeed(b);
-        }},
-
     // Selects the draft proposal path for the whole speculative step.
     {"proposalSampling", [](auto const& a, auto const& b) { return a.proposalSampling == b.proposalSampling; }},
 
@@ -64,22 +47,16 @@ constexpr ComparedField kComparedFields[] = {
     // Selects which decoder runs, so it cannot vary within a step.
     {"disableSpecDecode", [](auto const& a, auto const& b) { return a.disableSpecDecode == b.disableSpecDecode; }},
 
-    // Shapes the logits output for the whole batch.
-    {"numLogprobs", [](auto const& a, auto const& b) { return a.numLogprobs == b.numLogprobs; }},
-
-    // Final detokenization uses the founding request's policy for every resident.
+    // Final detokenization is one policy per request; residents must agree on it.
     {"skipSpecialTokens", [](auto const& a, auto const& b) { return a.skipSpecialTokens == b.skipSpecialTokens; }},
 
     // The context holds one batch-wide token callback, so a callback-bearing request never shares
-    // a batch: the founder's callback would receive the joiner's tokens. Founder-only, like guided
-    // decoding -- a callback on either side stalls the head until the batch turns over.
+    // a step: one request's callback would receive another's tokens. A callback on either side
+    // stalls the head until the session is empty.
     {"onTokenGenerated",
         [](auto const& a, auto const& b) {
             return !a.onTokenGenerated.has_value() && !b.onTokenGenerated.has_value();
         }},
-
-    // Step budget: mixing these lets the shorter request drive the batch's stopping point.
-    {"maxGenerateLength", [](auto const& a, auto const& b) { return a.maxGenerateLength == b.maxGenerateLength; }},
 
     // Model-level overrides that reconfigure the step rather than one sequence.
     {"diffusionMaxDenoisingSteps",
@@ -94,10 +71,6 @@ constexpr ComparedField kComparedFields[] = {
         [](auto const& a, auto const& b) { return a.contextCacheCommitPolicy == b.contextCacheCommitPolicy; }},
     {"contextCacheReplayTailLength",
         [](auto const& a, auto const& b) { return a.contextCacheReplayTailLength == b.contextCacheReplayTailLength; }},
-
-    // Writes into the shared system-prompt cache during the step.
-    {"saveSystemPromptKVCache",
-        [](auto const& a, auto const& b) { return a.saveSystemPromptKVCache == b.saveSystemPromptKVCache; }},
 
     // Changes what the tokenizer emits, and so what the step is asked to continue.
     {"enableThinking", [](auto const& a, auto const& b) { return a.enableThinking == b.enableThinking; }},
@@ -134,6 +107,16 @@ std::string BatchCompatibility::firstDifference(
         }
     }
     return {};
+}
+
+bool BatchCompatibility::samplingAgrees(
+    LLMGenerationRequest const& resident, LLMGenerationRequest const& candidate) noexcept
+{
+    // The row parameters the runtime stores, compared as the decoder compares its rows: a negative top-k
+    // disables it like zero, and a top-k above the sampler's cap is clamped to it.
+    auto const topK = [](int64_t value) { return std::clamp<int64_t>(value, 0, kMaxSamplingTopK); };
+    return resident.temperature == candidate.temperature && resident.topP == candidate.topP
+        && topK(resident.topK) == topK(candidate.topK);
 }
 
 } // namespace scheduler

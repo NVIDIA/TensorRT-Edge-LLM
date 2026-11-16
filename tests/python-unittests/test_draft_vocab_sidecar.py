@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import torch
 from safetensors import safe_open
 
-from tensorrt_edgellm.scripts import export as export_script
+from tensorrt_edgellm.onnx import cli as export_script
 from tensorrt_edgellm.vocab_reduction import constants
 
 

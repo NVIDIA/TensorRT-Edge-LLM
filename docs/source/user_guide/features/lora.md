@@ -6,7 +6,8 @@ Use dynamic LoRA when you need to select adapters at runtime. Use static LoRA
 merge when the adapter is always required, such as the Phi-4-Multimodal
 `vision-lora` adapter.
 
-Install the `tools` extra using the [wheel or source installation guide](../getting_started/installation.md#optional-python-dependencies).
+Install `[onnx]` for dynamic LoRA or `[quantize,onnx]` for the static
+merge and quantization workflow using the [wheel or source installation guide](../getting_started/installation.md#optional-python-dependencies).
 The C++ build/inference commands below still require a source build.
 
 ## Dynamic Runtime LoRA
@@ -37,14 +38,14 @@ trtedge process-lora \
   --output-dir /tmp/onnx_output/llm/lora_weights/adapter2
 
 # Step 4: Build the engine with LoRA support
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir /tmp/onnx_output/llm \
   --engine-dir engines \
   --max-batch-size 1 \
   --max-lora-rank 64
 
 # Step 5: Run inference with adapter selection in input.json
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
   --engine-dir engines \
   --input-file input.json \
   --output-file output.json
@@ -120,7 +121,7 @@ omit `lora_name` or set it to an empty string.
 
 ## Script Reference
 
-(tensorrt-edgellm-insert-lora)=
+(trtedge insert-lora)=
 ### `trtedge insert-lora`
 
 Inserts LoRA patterns into an exported `tensorrt_edgellm` ONNX model and creates
@@ -130,7 +131,7 @@ Inserts LoRA patterns into an exported `tensorrt_edgellm` ONNX model and creates
 |----------|----------|-------------|
 | `--onnx-dir` | Yes | Directory containing `model.onnx` and `config.json` |
 
-(tensorrt-edgellm-process-lora)=
+(trtedge process-lora)=
 ### `trtedge process-lora`
 
 Processes HuggingFace LoRA adapter weights for runtime use.
@@ -142,7 +143,7 @@ Processes HuggingFace LoRA adapter weights for runtime use.
 
 The output contains `processed_adapter_model.safetensors` and `config.json`.
 
-(tensorrt-edgellm-merge-lora)=
+(trtedge merge-lora)=
 ### `trtedge merge-lora`
 
 Permanently merges LoRA weights into a base HuggingFace checkpoint.

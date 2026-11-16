@@ -19,6 +19,7 @@
 
 #include "action/cosmos3Kernels.h"
 #include "common/cosmos3Bindings.h"
+#include "common/trtInterop.h"
 #include "profiling/nvtx_wrapper.h"
 
 #include "common/bindingNames.h"
@@ -49,7 +50,7 @@ Cosmos3PolicyRunner::Cosmos3PolicyRunner(std::string const& engineDir, cudaStrea
     LOG_DEBUG("Loading Cosmos3 policy runner from %s", engineDir.c_str());
 
     std::string const enginePath = engineDir + "/gen.engine";
-    mRuntime = std::unique_ptr<IRuntime>(createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<IRuntime>(createInferRuntime(TrtLogger::instance()));
     ELLM_CHECK(mRuntime, "Failed to create TensorRT runtime");
 
     mEngine = deserializeCudaEngineFromFile(*mRuntime, enginePath);
@@ -371,7 +372,7 @@ void Cosmos3PolicyRunner::buildRopeAndPositions(int32_t actionLen, int32_t undLe
 
 void Cosmos3PolicyRunner::initializeLatents(rt::Tensor const& condLatent, cudaStream_t stream)
 {
-    // Standard-normal noise over the whole packed [video ; action] state (Philox, seeded, on
+    // Standard-normal noise over the whole packed [video ; action] state (seeded, on
     // device), then the conditioning constraints: frame-0 latent injection and padded-action-dim
     // zeroing.
     kernel::launchNormalNoiseFill(mStateDevice, static_cast<uint64_t>(mNoiseSeed), /*offset=*/0, stream);

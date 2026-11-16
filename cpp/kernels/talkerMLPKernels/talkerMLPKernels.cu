@@ -228,8 +228,8 @@ __global__ void scatterKernelVectorized(half const* __restrict__ source, int32_t
 
 void invokeBiasAndSiLU(rt::Tensor& data, rt::Tensor const& bias, cudaStream_t stream)
 {
-    check::check(data.getDataType() == nvinfer1::DataType::kHALF, "Data tensor must be FP16");
-    check::check(bias.getDataType() == nvinfer1::DataType::kHALF, "Bias tensor must be FP16");
+    check::check(data.getDataType() == trt_edgellm::DataType::kHALF, "Data tensor must be FP16");
+    check::check(bias.getDataType() == trt_edgellm::DataType::kHALF, "Bias tensor must be FP16");
     check::check(data.getShape().getNumDims() == 2, "Data tensor must be 2D [numTokens, hiddenDim]");
     check::check(bias.getShape().getNumDims() == 1, "Bias tensor must be 1D [hiddenDim]");
     check::check(data.getShape()[1] == bias.getShape()[0], "Hidden dimension mismatch");
@@ -251,8 +251,8 @@ void invokeBiasAndSiLU(rt::Tensor& data, rt::Tensor const& bias, cudaStream_t st
 
 void invokeAddBias(rt::Tensor& data, rt::Tensor const& bias, cudaStream_t stream)
 {
-    check::check(data.getDataType() == nvinfer1::DataType::kHALF, "Data tensor must be FP16");
-    check::check(bias.getDataType() == nvinfer1::DataType::kHALF, "Bias tensor must be FP16");
+    check::check(data.getDataType() == trt_edgellm::DataType::kHALF, "Data tensor must be FP16");
+    check::check(bias.getDataType() == trt_edgellm::DataType::kHALF, "Bias tensor must be FP16");
     check::check(data.getShape().getNumDims() == 2, "Data tensor must be 2D [numTokens, hiddenDim]");
     check::check(bias.getShape().getNumDims() == 1, "Bias tensor must be 1D [hiddenDim]");
     check::check(data.getShape()[1] == bias.getShape()[0], "Hidden dimension mismatch");
@@ -287,10 +287,11 @@ void invokeTalkerMLP(rt::Tensor const& input, rt::Tensor const& fc1Weight, rt::T
     auto fc1WeightShape = fc1Weight.getShape();
     auto fc2WeightShape = fc2Weight.getShape();
 
-    if (input.getDataType() != nvinfer1::DataType::kHALF || fc1Weight.getDataType() != nvinfer1::DataType::kHALF
-        || fc1Bias.getDataType() != nvinfer1::DataType::kHALF || fc2Weight.getDataType() != nvinfer1::DataType::kHALF
-        || fc2Bias.getDataType() != nvinfer1::DataType::kHALF || output.getDataType() != nvinfer1::DataType::kHALF
-        || workspace.getDataType() != nvinfer1::DataType::kHALF)
+    if (input.getDataType() != trt_edgellm::DataType::kHALF || fc1Weight.getDataType() != trt_edgellm::DataType::kHALF
+        || fc1Bias.getDataType() != trt_edgellm::DataType::kHALF
+        || fc2Weight.getDataType() != trt_edgellm::DataType::kHALF
+        || fc2Bias.getDataType() != trt_edgellm::DataType::kHALF || output.getDataType() != trt_edgellm::DataType::kHALF
+        || workspace.getDataType() != trt_edgellm::DataType::kHALF)
     {
         LOG_ERROR("All tensors must be FP16");
         return;
@@ -350,8 +351,8 @@ void invokeLinearLayer(
     auto outputShape = output.getShape();
     auto weightShape = weight.getShape();
 
-    if (input.getDataType() != nvinfer1::DataType::kHALF || weight.getDataType() != nvinfer1::DataType::kHALF
-        || bias.getDataType() != nvinfer1::DataType::kHALF || output.getDataType() != nvinfer1::DataType::kHALF)
+    if (input.getDataType() != trt_edgellm::DataType::kHALF || weight.getDataType() != trt_edgellm::DataType::kHALF
+        || bias.getDataType() != trt_edgellm::DataType::kHALF || output.getDataType() != trt_edgellm::DataType::kHALF)
     {
         LOG_ERROR("All tensors must be FP16");
         return;
@@ -389,9 +390,9 @@ void invokeLinearLayer(
 
 void invokeGather(rt::Tensor const& source, rt::Tensor const& indices, rt::Tensor& output, cudaStream_t stream)
 {
-    check::check(source.getDataType() == nvinfer1::DataType::kHALF, "Source tensor must be FP16");
-    check::check(indices.getDataType() == nvinfer1::DataType::kINT32, "Indices tensor must be INT32");
-    check::check(output.getDataType() == nvinfer1::DataType::kHALF, "Output tensor must be FP16");
+    check::check(source.getDataType() == trt_edgellm::DataType::kHALF, "Source tensor must be FP16");
+    check::check(indices.getDataType() == trt_edgellm::DataType::kINT32, "Indices tensor must be INT32");
+    check::check(output.getDataType() == trt_edgellm::DataType::kHALF, "Output tensor must be FP16");
 
     auto const srcDims = source.getShape();
     int32_t const numIndices = static_cast<int32_t>(indices.getShape()[0]);
@@ -413,9 +414,9 @@ void invokeGather(rt::Tensor const& source, rt::Tensor const& indices, rt::Tenso
 
 void invokeScatter(rt::Tensor const& source, rt::Tensor const& indices, rt::Tensor& output, cudaStream_t stream)
 {
-    check::check(source.getDataType() == nvinfer1::DataType::kHALF, "Source tensor must be FP16");
-    check::check(indices.getDataType() == nvinfer1::DataType::kINT32, "Indices tensor must be INT32");
-    check::check(output.getDataType() == nvinfer1::DataType::kHALF, "Output tensor must be FP16");
+    check::check(source.getDataType() == trt_edgellm::DataType::kHALF, "Source tensor must be FP16");
+    check::check(indices.getDataType() == trt_edgellm::DataType::kINT32, "Indices tensor must be INT32");
+    check::check(output.getDataType() == trt_edgellm::DataType::kHALF, "Output tensor must be FP16");
 
     auto const srcDims = source.getShape();
     int32_t const numIndices = static_cast<int32_t>(indices.getShape()[0]);
@@ -900,8 +901,8 @@ __global__ void talkerLogitAdjustKernel(float* logits, int32_t suppressStart, in
 void invokeTalkerLogitAdjust(rt::Tensor const& seenTokens, rt::Tensor& logits, int32_t suppressStart,
     int32_t suppressEnd, int32_t codecEosId, int32_t numSeenTokens, float repetitionPenalty, cudaStream_t stream)
 {
-    check::check(logits.getDataType() == nvinfer1::DataType::kFLOAT, "Logits tensor must be FP32");
-    check::check(seenTokens.getDataType() == nvinfer1::DataType::kINT32, "seenTokens tensor must be INT32");
+    check::check(logits.getDataType() == trt_edgellm::DataType::kFLOAT, "Logits tensor must be FP32");
+    check::check(seenTokens.getDataType() == trt_edgellm::DataType::kINT32, "seenTokens tensor must be INT32");
 
     int32_t const suppressCount = suppressEnd - suppressStart;
     int32_t const totalWork = suppressCount + numSeenTokens;
@@ -951,9 +952,9 @@ __global__ void speakerCodecSumKernel(int64_t const* __restrict__ codes, __half 
 void invokeSpeakerCodecSum(rt::Tensor const& codes, rt::Tensor const& embPtrTable, rt::Tensor const& embVocabSizes,
     rt::Tensor& output, cudaStream_t stream)
 {
-    check::check(codes.getDataType() == nvinfer1::DataType::kINT64, "codes must be INT64");
-    check::check(embVocabSizes.getDataType() == nvinfer1::DataType::kINT32, "embVocabSizes must be INT32");
-    check::check(output.getDataType() == nvinfer1::DataType::kHALF, "output must be FP16");
+    check::check(codes.getDataType() == trt_edgellm::DataType::kINT64, "codes must be INT64");
+    check::check(embVocabSizes.getDataType() == trt_edgellm::DataType::kINT32, "embVocabSizes must be INT32");
+    check::check(output.getDataType() == trt_edgellm::DataType::kHALF, "output must be FP16");
 
     int32_t const numCodeGroups = static_cast<int32_t>(codes.getShape()[0]);
     int32_t const hiddenSize = static_cast<int32_t>(output.getShape().volume());

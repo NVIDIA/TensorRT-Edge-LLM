@@ -65,34 +65,34 @@ BlockDiffusionDecoder::BlockDiffusionDecoder(
     }
 
     int32_t const maxBatch = runtime.maxRuntimeBatchSize;
-    mCanvasIds = Tensor({maxBatch, mMaxConditioningSeqLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32,
+    mCanvasIds = Tensor({maxBatch, mMaxConditioningSeqLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
         "BlockDiffusionDecoder::canvasIds");
-    mArgmaxCanvasIds = Tensor(
-        {maxBatch, mCanvasLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "BlockDiffusionDecoder::argmaxCanvasIds");
-    mSampledCanvasIds = Tensor({maxBatch, mCanvasLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32,
+    mArgmaxCanvasIds = Tensor({maxBatch, mCanvasLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
+        "BlockDiffusionDecoder::argmaxCanvasIds");
+    mSampledCanvasIds = Tensor({maxBatch, mCanvasLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
         "BlockDiffusionDecoder::sampledCanvasIds");
-    mCommitCanvasIds = Tensor(
-        {maxBatch, mCanvasLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "BlockDiffusionDecoder::commitCanvasIds");
+    mCommitCanvasIds = Tensor({maxBatch, mCanvasLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
+        "BlockDiffusionDecoder::commitCanvasIds");
     mCommitLengths
-        = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "BlockDiffusionDecoder::commitLengths");
-    mPreviousArgmaxIds = Tensor({maxBatch, mCanvasLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32,
+        = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "BlockDiffusionDecoder::commitLengths");
+    mPreviousArgmaxIds = Tensor({maxBatch, mCanvasLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
         "BlockDiffusionDecoder::previousArgmaxIds");
     mStableCounts = Tensor(
-        {maxBatch, mCanvasLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "BlockDiffusionDecoder::stableCounts");
+        {maxBatch, mCanvasLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "BlockDiffusionDecoder::stableCounts");
     mAcceptedMask = Tensor(
-        {maxBatch, mCanvasLen}, DeviceType::kGPU, nvinfer1::DataType::kINT8, "BlockDiffusionDecoder::acceptedMask");
+        {maxBatch, mCanvasLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT8, "BlockDiffusionDecoder::acceptedMask");
     mPrefixLengths
-        = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "BlockDiffusionDecoder::prefixLengths");
-    mHostPrefixLengths
-        = Tensor({maxBatch}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "BlockDiffusionDecoder::hostPrefixLengths");
+        = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "BlockDiffusionDecoder::prefixLengths");
+    mHostPrefixLengths = Tensor(
+        {maxBatch}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "BlockDiffusionDecoder::hostPrefixLengths");
     mSelfConditioningEmbedsA = Tensor({maxBatch, mMaxConditioningSeqLen, runtime.deployment.base.hiddenSize},
-        DeviceType::kGPU, nvinfer1::DataType::kHALF, "BlockDiffusionDecoder::selfConditioningEmbedsA");
+        DeviceType::kGPU, trt_edgellm::DataType::kHALF, "BlockDiffusionDecoder::selfConditioningEmbedsA");
     mSelfConditioningEmbedsB = Tensor({maxBatch, mMaxConditioningSeqLen, runtime.deployment.base.hiddenSize},
-        DeviceType::kGPU, nvinfer1::DataType::kHALF, "BlockDiffusionDecoder::selfConditioningEmbedsB");
+        DeviceType::kGPU, trt_edgellm::DataType::kHALF, "BlockDiffusionDecoder::selfConditioningEmbedsB");
     mSelfConditioningTemperature = Tensor(
-        {1}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "BlockDiffusionDecoder::selfConditioningTemperature");
+        {1}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "BlockDiffusionDecoder::selfConditioningTemperature");
     mHostSelfConditioningTemperature = Tensor(
-        {1}, DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "BlockDiffusionDecoder::hostSelfConditioningTemperature");
+        {1}, DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, "BlockDiffusionDecoder::hostSelfConditioningTemperature");
 
     mHostSelfConditioningTemperature.dataPointer<float>()[0] = denoiseTemperature(0);
     mCommittedLengthsScratch.resize(maxBatch);
@@ -214,6 +214,14 @@ bool BlockDiffusionDecoder::prepareCanvasMetadata(int32_t batchSize, int32_t can
             static_cast<size_t>(contextMaskSelectorLen) * sizeof(int32_t), stream));
     }
     io.recordStepHostUploads(stream);
+    if (mRuntime.preprocess.gemma4Ple)
+    {
+        Tensor& canvas = denoisePhase ? mCanvasIds : mCommitCanvasIds;
+        Tensor const tokenIds(
+            canvas.rawPointer(), {batchSize, canvasLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        mRuntime.preprocess.gemma4Ple->embed(tokenIds, stream, batch.queryLengths, &io.queryLengths);
+    }
+
     return true;
 }
 
@@ -294,10 +302,6 @@ bool BlockDiffusionDecoder::runDenoiseStep(DenoiseStepParams const& params)
     {
         return false;
     }
-    if (mRuntime.preprocess.gemma4Ple)
-    {
-        mRuntime.preprocess.gemma4Ple->embed(mCanvasIds, params.stream);
-    }
     Tensor& denoiseLogits = currentDenoiseLogits();
     check::check(denoiseLogits.reshape({params.batchSize * params.canvasLen, mRuntime.deployment.base.outputVocabSize}),
         "Tensor reshape failed");
@@ -310,11 +314,16 @@ bool BlockDiffusionDecoder::runDenoiseStep(DenoiseStepParams const& params)
 
     {
         TIME_STAGE(metrics::StageNames::kBLOCK_DIFFUSION_DENOISE, params.stream);
-        bool status
-            = mRuntime.base.executor.prepare(kDecodeProfile, denoiseDims, mRuntime.base.tensorMap, params.stream);
-        if (status)
+        bool status;
         {
-            status = mRuntime.base.executor.execute(params.stream);
+            auto forward = gTimer.startForward(
+                "base", denoiseDims.batch, denoiseDims.seqLen, denoiseDims.selectLen, params.stream);
+            status
+                = mRuntime.base.executor.prepare(kDecodeProfile, denoiseDims, mRuntime.base.tensorMap, params.stream);
+            if (status)
+            {
+                status = mRuntime.base.executor.execute(params.stream);
+            }
         }
         if (!status)
         {
@@ -472,11 +481,8 @@ bool BlockDiffusionDecoder::commitBlock(
     check::check(io.inputsEmbeds.reshape({batchSize * commitSeqLen, mRuntime.deployment.base.hiddenSize}),
         "Tensor reshape failed");
     kernel::embeddingLookup(mCommitCanvasIds, mRuntime.preprocess.embedding.table,
-        mRuntime.preprocess.embedding.scalesAsOptional(), io.inputsEmbeds, context.stream);
-    if (mRuntime.preprocess.gemma4Ple)
-    {
-        mRuntime.preprocess.gemma4Ple->embed(mCommitCanvasIds, context.stream);
-    }
+        mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.preprocess.embedding.descriptor, io.inputsEmbeds,
+        context.stream);
     bindDefaultSelfConditioningTensors();
     check::check(mSelfConditioningEmbedsA.reshape({batchSize * commitSeqLen, mRuntime.deployment.base.hiddenSize}),
         "Tensor reshape failed");
@@ -498,11 +504,16 @@ bool BlockDiffusionDecoder::commitBlock(
 
     {
         TIME_STAGE(metrics::StageNames::kBLOCK_DIFFUSION_COMMIT, context.stream);
-        bool status
-            = mRuntime.base.executor.prepare(kDecodeProfile, commitDims, mRuntime.base.tensorMap, context.stream);
-        if (status)
+        bool status;
         {
-            status = mRuntime.base.executor.execute(context.stream);
+            auto forward = gTimer.startForward(
+                "base", commitDims.batch, commitDims.seqLen, commitDims.selectLen, context.stream);
+            status
+                = mRuntime.base.executor.prepare(kDecodeProfile, commitDims, mRuntime.base.tensorMap, context.stream);
+            if (status)
+            {
+                status = mRuntime.base.executor.execute(context.stream);
+            }
         }
         if (!status)
         {
@@ -539,7 +550,7 @@ bool BlockDiffusionDecoder::decodeStep(DecodingInferenceContext& context)
     int32_t maxRemaining = 0;
     for (int32_t b = 0; b < batchSize; ++b)
     {
-        remainingLengths[b] = context.maxGenerateLength - context.currentGenerateLengths[b];
+        remainingLengths[b] = context.generateBudget(b) - context.currentGenerateLengths[b];
         maxRemaining = std::max(maxRemaining, remainingLengths[b]);
     }
     if (maxRemaining <= 0)
@@ -639,15 +650,15 @@ bool BlockDiffusionDecoder::decodeStep(DecodingInferenceContext& context)
     }
     LOG_DEBUG("DiffusionGemma finalized commit maxBlockLen=%d minAcceptedPrefix=%d canvasLen=%d denoiseSteps=%d",
         maxBlockLen, minAcceptedPrefix, canvasLen, denoiseSteps);
-    if (context.numLogprobs > 0)
+    if (context.maxNumLogprobs() > 0)
     {
         Tensor& denoiseLogits = currentDenoiseLogits();
         int32_t const rows = batchSize * canvasLen;
         check::check(denoiseLogits.reshape({rows, mRuntime.deployment.base.outputVocabSize}), "Tensor reshape failed");
-        decoder_utils::enqueueLogprobsD2H(denoiseLogits, rows, mRuntime, context.numLogprobs, context.stream);
+        decoder_utils::enqueueLogprobsD2H(denoiseLogits, rows, mRuntime, context.maxNumLogprobs(), context.stream);
         CUDA_CHECK(cudaStreamSynchronize(context.stream));
         decoder_utils::collectSpecLogprobsFromHost(
-            mRuntime, context, batchSize, canvasLen, commitLengths.data(), context.numLogprobs);
+            mRuntime, context, batchSize, canvasLen, commitLengths.data(), context.maxNumLogprobs());
     }
     return commitBlock(context, commitLengths, canvasLen);
 }
@@ -680,7 +691,7 @@ bool BlockDiffusionDecoder::captureCudaGraphs(cudaStream_t stream)
         bindDefaultSelfConditioningTensors();
         std::vector<int32_t> zeroCacheLens(mRuntime.maxRuntimeBatchSize, 0);
         Tensor zeroCacheLensTensor(
-            zeroCacheLens.data(), {mRuntime.maxRuntimeBatchSize}, DeviceType::kCPU, nvinfer1::DataType::kINT32);
+            zeroCacheLens.data(), {mRuntime.maxRuntimeBatchSize}, DeviceType::kCPU, trt_edgellm::DataType::kINT32);
         mRuntime.base.cacheManager.resetForNewSequences(zeroCacheLensTensor, stream);
     }};
 
@@ -691,7 +702,7 @@ bool BlockDiffusionDecoder::captureCudaGraphs(cudaStream_t stream)
     for (int32_t batchSize = 1; batchSize <= mRuntime.maxRuntimeBatchSize; ++batchSize)
     {
         std::vector<int32_t> simCacheLens(batchSize, simulateCacheLength);
-        Tensor simCacheLensTensor(simCacheLens.data(), {batchSize}, DeviceType::kCPU, nvinfer1::DataType::kINT32);
+        Tensor simCacheLensTensor(simCacheLens.data(), {batchSize}, DeviceType::kCPU, trt_edgellm::DataType::kINT32);
         mRuntime.base.cacheManager.resetForNewSequences(simCacheLensTensor, stream);
 
         std::vector<int32_t> validCanvasLengths(batchSize, captureCanvasLen);
@@ -713,10 +724,6 @@ bool BlockDiffusionDecoder::captureCudaGraphs(cudaStream_t stream)
                     "step=%d.",
                     batchSize, captureCanvasLen, step);
                 return false;
-            }
-            if (mRuntime.preprocess.gemma4Ple)
-            {
-                mRuntime.preprocess.gemma4Ple->embed(mCanvasIds, stream);
             }
             auto const denoiseDims = mRuntime.deployment.base.denoiseDims(batchSize, captureCanvasLen);
             if (!prepareCanvasMetadata(
@@ -744,11 +751,8 @@ bool BlockDiffusionDecoder::captureCudaGraphs(cudaStream_t stream)
                          {batchSize * captureCanvasLen, mRuntime.deployment.base.hiddenSize}),
             "Tensor reshape failed");
         kernel::embeddingLookup(mCommitCanvasIds, mRuntime.preprocess.embedding.table,
-            mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.base.pipelineIO.inputsEmbeds, stream);
-        if (mRuntime.preprocess.gemma4Ple)
-        {
-            mRuntime.preprocess.gemma4Ple->embed(mCommitCanvasIds, stream);
-        }
+            mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.preprocess.embedding.descriptor,
+            mRuntime.base.pipelineIO.inputsEmbeds, stream);
         bindDefaultSelfConditioningTensors();
         check::check(
             mSelfConditioningEmbedsA.reshape({batchSize * captureCanvasLen, mRuntime.deployment.base.hiddenSize}),

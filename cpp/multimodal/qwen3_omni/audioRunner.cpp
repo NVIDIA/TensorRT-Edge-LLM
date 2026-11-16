@@ -20,6 +20,7 @@
 #include "common/checkMacros.h"
 #include "common/cudaUtils.h"
 #include "common/logger.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 #include "kernels/posEncoding/initializeCosSinCache.h"
 #include "multimodal/common/audioUtils.h"
@@ -53,7 +54,7 @@ bool prepareSeqlensInput(rt::Tensor& seqlensTensor, nvinfer1::IExecutionContext&
         return false;
     }
 
-    if (!context.setInputShape(bindingName, seqlensTensor.getShape().getTRTDims()))
+    if (!context.setInputShape(bindingName, toTrtDims(seqlensTensor.getShape())))
     {
         LOG_ERROR("Failed to set %s input shape", tensorLabel);
         return false;
@@ -66,13 +67,14 @@ bool prepareSeqlensInput(rt::Tensor& seqlensTensor, nvinfer1::IExecutionContext&
 }
 } // namespace
 
-Qwen3OmniAudioRunner::Qwen3OmniAudioRunner(std::string const& engineDir, cudaStream_t stream)
+Qwen3OmniAudioRunner::Qwen3OmniAudioRunner(
+    std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
     : MultimodalRunner()
 {
     bool const configValid = validateAndFillConfig(engineDir);
     ELLM_CHECK(configValid, "Failed to validate and fill config");
 
-    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
 
     // Initialize audio encoder (engineDir is already the audio subdirectory)
     std::string audioEnginePath = engineDir + "/audio_encoder.engine";
@@ -82,6 +84,7 @@ Qwen3OmniAudioRunner::Qwen3OmniAudioRunner(std::string const& engineDir, cudaStr
         try
         {
             mAudioEngine = deserializeCudaEngineFromFile(*mRuntime, audioEnginePath);
+            prepareEngineWeights(engineDir, checkpointDir, stream, *mAudioEngine);
 
             mAudioContext = std::unique_ptr<nvinfer1::IExecutionContext>(
                 mAudioEngine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
@@ -200,7 +203,6 @@ bool Qwen3OmniAudioRunner::validateAndFillConfig(std::string const& engineDir)
     {
         mConfig.mropeTheta = jsonConfig["rope_theta"].get<float>();
     }
-    // Audio-only prompts rely on this runner to fill the MRoPE table; without theta it stays uninitialized.
     if (mConfig.mropeTheta <= 0.0F)
     {
         LOG_ERROR("Audio encoder config.json has no text_config.rope_theta; re-export the audio encoder.");
@@ -251,17 +253,19 @@ bool Qwen3OmniAudioRunner::allocateBuffer([[maybe_unused]] cudaStream_t stream)
     // Allocate tensors
     int64_t const maxNumChunks = paddedFeaturesShapeMax.d[0];
     int64_t const maxChunkLen = paddedFeaturesShapeMax.d[2];
-    mPaddedFeature = rt::Tensor({maxNumChunks, melBins, maxChunkLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    mPaddedFeature
+        = rt::Tensor({maxNumChunks, melBins, maxChunkLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     int64_t const maxLenAfterCNN = (maxChunkLen - 1) / 2 + 1;
-    mPaddedMaskAfterCNN = rt::Tensor({maxNumChunks, maxLenAfterCNN}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
+    mPaddedMaskAfterCNN
+        = rt::Tensor({maxNumChunks, maxLenAfterCNN}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
 
     int64_t const maxValidElements = paddedMaskIndicesShapeMax.d[0];
-    mPaddedMaskIndices = rt::Tensor({maxValidElements, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
+    mPaddedMaskIndices = rt::Tensor({maxValidElements, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
 
     // Sized for one full-length clip; preprocess() grows it via
     // resizeEmbeddingForRows() when a batch packs more clips.
-    mAudioEmbedding = rt::Tensor({maxAudioTokens, audioFeatureDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    mAudioEmbedding = rt::Tensor({maxAudioTokens, audioFeatureDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     int64_t maxSeqlensHostCapacity = 0;
     mHasCuSeqlens = isEngineInput(*mAudioEngine, binding_names::kCuSeqlens);
@@ -272,7 +276,7 @@ bool Qwen3OmniAudioRunner::allocateBuffer([[maybe_unused]] cudaStream_t stream)
         int64_t const maxCuSeqlens = cuSeqlensShapeMax.d[0];
         maxSeqlensHostCapacity = std::max(maxSeqlensHostCapacity, maxCuSeqlens);
         mCuSeqlens = rt::Tensor(
-            {maxCuSeqlens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "Qwen3OmniAudioRunner::mCuSeqlens");
+            {maxCuSeqlens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "Qwen3OmniAudioRunner::mCuSeqlens");
         if (!mAudioContext->setTensorAddress(binding_names::kCuSeqlens, mCuSeqlens.rawPointer()))
         {
             LOG_ERROR("Failed to set cu_seqlens input address");
@@ -288,7 +292,7 @@ bool Qwen3OmniAudioRunner::allocateBuffer([[maybe_unused]] cudaStream_t stream)
         int64_t const maxKvLengths = kvLengthsShapeMax.d[0];
         maxSeqlensHostCapacity = std::max(maxSeqlensHostCapacity, maxKvLengths);
         mKvLengths = rt::Tensor(
-            {maxKvLengths}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "Qwen3OmniAudioRunner::mKvLengths");
+            {maxKvLengths}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "Qwen3OmniAudioRunner::mKvLengths");
         if (!mAudioContext->setTensorAddress(binding_names::kKvLengths, mKvLengths.rawPointer()))
         {
             LOG_ERROR("Failed to set kv_lengths input address");
@@ -298,8 +302,30 @@ bool Qwen3OmniAudioRunner::allocateBuffer([[maybe_unused]] cudaStream_t stream)
 
     if (maxSeqlensHostCapacity > 0)
     {
-        mCuSeqlensHost = rt::Tensor({maxSeqlensHostCapacity}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32,
+        mCuSeqlensHost = rt::Tensor({maxSeqlensHostCapacity}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32,
             "Qwen3OmniAudioRunner::mCuSeqlensHost");
+    }
+
+    // A plugin-attention engine carries the window partition in cu_seqlens and drops the dense
+    // mask, so the mask path is selected by what the engine actually exposes.
+    mHasAttentionMask = isEngineInput(*mAudioEngine, binding_names::kAudioAttentionMask);
+    mHasMaxSeqLenCarrier = isEngineInput(*mAudioEngine, binding_names::kMaxSeqLenCarrier);
+    if (mHasMaxSeqLenCarrier)
+    {
+        nvinfer1::Dims const carrierShapeMax
+            = mAudioEngine->getProfileShape(binding_names::kMaxSeqLenCarrier, 0, nvinfer1::OptProfileSelector::kMAX);
+        mMaxSeqLenCarrier = rt::Tensor({carrierShapeMax.d[0]}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32,
+            "Qwen3OmniAudioRunner::mMaxSeqLenCarrier");
+        if (!mAudioContext->setTensorAddress(binding_names::kMaxSeqLenCarrier, mMaxSeqLenCarrier.rawPointer()))
+        {
+            LOG_ERROR("Failed to set max_seqlen_carrier input address");
+            return false;
+        }
+    }
+    if (!mHasAttentionMask && !(mHasCuSeqlens && mHasMaxSeqLenCarrier))
+    {
+        LOG_ERROR("Audio encoder engine exposes neither a dense attention_mask nor cu_seqlens+max_seqlen_carrier");
+        return false;
     }
 
     return true;
@@ -622,16 +648,16 @@ bool Qwen3OmniAudioRunner::initFbankResources(cudaStream_t stream)
     // Allocate every device buffer the online fbank path uses, sized at the
     // bounds above.
     mFbankResources.melFilterFp16Kmajor
-        = rt::Tensor({nMel, audioUtils::kFbankKPad}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    mFbankResources.hannWindow = rt::Tensor({nFft}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    mFbankResources.fftTwiddle = rt::Tensor({nFft, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    mFbankResources.framedF32 = rt::Tensor({maxFramesFull, nFft}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+        = rt::Tensor({nMel, audioUtils::kFbankKPad}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    mFbankResources.hannWindow = rt::Tensor({nFft}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    mFbankResources.fftTwiddle = rt::Tensor({nFft, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    mFbankResources.framedF32 = rt::Tensor({maxFramesFull, nFft}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     mFbankResources.magFp16
-        = rt::Tensor({nPadMax, audioUtils::kFbankKPad}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    mFbankResources.melPowerFp16 = rt::Tensor({nMel, nPadMax}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    mFbankResources.maxLogScalar = rt::Tensor({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    mPcmF32Device = rt::Tensor({maxPcmSamples}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    mMelSpecDevice = rt::Tensor({1, nMel, maxFrames}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        = rt::Tensor({nPadMax, audioUtils::kFbankKPad}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    mFbankResources.melPowerFp16 = rt::Tensor({nMel, nPadMax}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    mFbankResources.maxLogScalar = rt::Tensor({1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    mPcmF32Device = rt::Tensor({maxPcmSamples}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    mMelSpecDevice = rt::Tensor({1, nMel, maxFrames}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Fill the persistent weight / table tensors (H2D). Mel filter: cast +
     // K-pad the Slaney weights into the [nMel, K_pad] F16 K-major GEMM
@@ -695,7 +721,7 @@ bool Qwen3OmniAudioRunner::resizeEmbeddingForRows(int64_t rows)
         return mAudioEmbedding.reshape({rows, hidden});
     }
     LOG_WARNING("Qwen3OmniAudioRunner: mAudioEmbedding reallocation at runtime (%ld rows)", static_cast<long>(rows));
-    mAudioEmbedding = rt::Tensor({rows, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    mAudioEmbedding = rt::Tensor({rows, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     return true;
 }
 
@@ -727,7 +753,7 @@ bool Qwen3OmniAudioRunner::tryOnlineGpuFbank(rt::audio::AudioPCM const& pcm, rt:
     // preprocess() call — inside mMelSpecDevice's lifetime.
     melSpec = rt::Tensor(mMelSpecDevice.rawPointer(),
         {1, static_cast<int64_t>(mFbankResources.nMel), static_cast<int64_t>(numFrames)}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF);
+        trt_edgellm::DataType::kHALF);
     if (!audioUtils::fbankWhisper(mPcmF32Device, mFbankResources, melSpec, stream))
     {
         LOG_WARNING("Online GPU fbank failed; falling back to CPU MelExtractor for this clip.");
@@ -768,25 +794,26 @@ bool Qwen3OmniAudioRunner::encodeClip(
     LOG_DEBUG("Mask shape: [%ld, %ld], Indices shape: [%ld, %ld]", mPaddedMaskAfterCNN.getShape()[0],
         mPaddedMaskAfterCNN.getShape()[1], mPaddedMaskIndices.getShape()[0], mPaddedMaskIndices.getShape()[1]);
 
-    // Create attention mask with merged windows (matching PyTorch cu_seqlens logic)
-    if (!audioUtils::createChunkwiseAttentionMask(
+    std::vector<int64_t> const windowLens
+        = audioUtils::computeChunkwiseWindowLens(afterCNNLens, mConfig.nWindow, mConfig.nWindowInfer);
+
+    if (mHasAttentionMask
+        && !audioUtils::createChunkwiseAttentionMask(
             afterCNNLens, mConfig.nWindow, mConfig.nWindowInfer, mAudioAttentionMask, stream))
     {
         LOG_ERROR("Failed to create attention mask");
         return false;
     }
 
-    LOG_DEBUG(
-        "Created attention mask [%ld, %ld]", mAudioAttentionMask.getShape()[0], mAudioAttentionMask.getShape()[1]);
-
     // Calculate total audio tokens
     int64_t const totalAudioTokens = mPaddedMaskIndices.getShape()[0];
 
     if (mHasCuSeqlens || mHasKvLengths)
     {
-        // NOTE: Currently, audio encoder always runs at batch size of 1.
-        // Thus, we always set the seqlens size to 2 and set values to {0, totalAudioTokens}.
-        int64_t const seqlensSize = 2;
+        // The ragged attention plugin reads the window partition here; the TRT-native path
+        // still carries the whole clip as one segment because it also takes the dense mask.
+        bool const perWindow = mHasMaxSeqLenCarrier;
+        int64_t const seqlensSize = perWindow ? static_cast<int64_t>(windowLens.size()) + 1 : 2;
         int64_t const seqlensSizeInBytes = seqlensSize * static_cast<int64_t>(sizeof(int32_t));
         if (mCuSeqlensHost.getMemoryCapacity() < seqlensSizeInBytes)
         {
@@ -801,8 +828,30 @@ bool Qwen3OmniAudioRunner::encodeClip(
             return false;
         }
         int32_t* seqlensData = mCuSeqlensHost.dataPointer<int32_t>();
-        seqlensData[0] = 0;
-        seqlensData[1] = static_cast<int32_t>(totalAudioTokens);
+        if (perWindow)
+        {
+            int64_t const maxWindowLen = audioUtils::fillChunkwiseCuSeqlens(windowLens, seqlensData);
+            int64_t const covered = seqlensData[windowLens.size()];
+            if (covered != totalAudioTokens)
+            {
+                LOG_ERROR("Window partition covers %ld tokens but the encoder has %ld", static_cast<long>(covered),
+                    static_cast<long>(totalAudioTokens));
+                return false;
+            }
+            if (!mMaxSeqLenCarrier.reshape({maxWindowLen})
+                || !mAudioContext->setInputShape(
+                    binding_names::kMaxSeqLenCarrier, toTrtDims(mMaxSeqLenCarrier.getShape())))
+            {
+                LOG_ERROR(
+                    "Failed to set max_seqlen_carrier shape (max window len %ld)", static_cast<long>(maxWindowLen));
+                return false;
+            }
+        }
+        else
+        {
+            seqlensData[0] = 0;
+            seqlensData[1] = static_cast<int32_t>(totalAudioTokens);
+        }
 
         if (mHasCuSeqlens)
         {
@@ -834,20 +883,20 @@ bool Qwen3OmniAudioRunner::encodeClip(
     __half* const audioOutPtr = mAudioEmbedding.dataPointer<__half>() + destRowOffset * mConfig.audioFeatureDim;
 
     // Set input shapes
-    if (!mAudioContext->setInputShape(binding_names::kAudioPaddedFeatures, mPaddedFeature.getShape().getTRTDims()))
+    if (!mAudioContext->setInputShape(binding_names::kAudioPaddedFeatures, toTrtDims(mPaddedFeature.getShape())))
     {
         LOG_ERROR("Failed to set padded features input shape");
         return false;
     }
 
-    if (!mAudioContext->setInputShape(
-            binding_names::kAudioPaddedMaskIndices, mPaddedMaskIndices.getShape().getTRTDims()))
+    if (!mAudioContext->setInputShape(binding_names::kAudioPaddedMaskIndices, toTrtDims(mPaddedMaskIndices.getShape())))
     {
         LOG_ERROR("Failed to set padded mask indices input shape");
         return false;
     }
 
-    if (!mAudioContext->setInputShape(binding_names::kAudioAttentionMask, mAudioAttentionMask.getShape().getTRTDims()))
+    if (mHasAttentionMask
+        && !mAudioContext->setInputShape(binding_names::kAudioAttentionMask, toTrtDims(mAudioAttentionMask.getShape())))
     {
         LOG_ERROR("Failed to set attention mask input shape");
         return false;
@@ -866,7 +915,8 @@ bool Qwen3OmniAudioRunner::encodeClip(
         return false;
     }
 
-    if (!mAudioContext->setTensorAddress(binding_names::kAudioAttentionMask, mAudioAttentionMask.rawPointer()))
+    if (mHasAttentionMask
+        && !mAudioContext->setTensorAddress(binding_names::kAudioAttentionMask, mAudioAttentionMask.rawPointer()))
     {
         LOG_ERROR("Failed to set attention mask input address");
         return false;
@@ -881,10 +931,9 @@ bool Qwen3OmniAudioRunner::encodeClip(
     // Execute audio encoder
     LOG_DEBUG(
         "Executing audio encoder with shapes: "
-        "input=[%ld,%ld,%ld], indices=[%ld,2], mask=[%ld,%ld], output=[%ld,%ld]",
+        "input=[%ld,%ld,%ld], indices=[%ld,2], windows=%zu, output=[%ld,%d]",
         mPaddedFeature.getShape()[0], mPaddedFeature.getShape()[1], mPaddedFeature.getShape()[2],
-        mPaddedMaskIndices.getShape()[0], mAudioAttentionMask.getShape()[0], mAudioAttentionMask.getShape()[1],
-        totalAudioTokens, mConfig.audioFeatureDim);
+        mPaddedMaskIndices.getShape()[0], windowLens.size(), totalAudioTokens, mConfig.audioFeatureDim);
 
     {
         TIME_STAGE(metrics::StageNames::kAUDIO_ENCODER, stream);
@@ -965,7 +1014,7 @@ bool Qwen3OmniAudioRunner::initializeSequentialMRopeCache(
 
     // Copy position IDs to device
     rt::Tensor positionIdsDevice({activeBatchSize, 3, maxPositionEmbeddings}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kINT64, "sequentialMRopePositionIds");
+        trt_edgellm::DataType::kINT64, "sequentialMRopePositionIds");
     CUDA_CHECK(cudaMemcpyAsync(positionIdsDevice.rawPointer(), positionIdsHost.data(), numElements * sizeof(int64_t),
         cudaMemcpyHostToDevice, stream));
 

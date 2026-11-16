@@ -25,15 +25,38 @@
 namespace trt_edgellm
 {
 
-/*! \brief Structure to hold sampling parameters
+//! Upper bound on one row's top-k: the top-k kernels' cost and workspace grow with k, so one request
+//! must not dictate everyone's launch. The same bound TensorRT-LLM enforces for this kernel family;
+//! the runtime clamps requests above it (with a warning) and the sampler rejects them.
+inline constexpr int32_t kMaxSamplingTopK = 1024;
+
+//! Sampling parameters of one logits row, as a request carries them: the part of SamplingParams
+//! that does not depend on the launch. A plain value, so the runtime stores one per slot and rows
+//! that compare equal share a launch. topK <= 0 disables top-k.
+struct RowSamplingParams
+{
+    float temperature{1.0F};
+    int32_t topK{0};
+    float topP{1.0F};
+};
+
+bool operator==(RowSamplingParams const& lhs, RowSamplingParams const& rhs) noexcept;
+bool operator!=(RowSamplingParams const& lhs, RowSamplingParams const& rhs) noexcept;
+
+/*! \brief A row's parameters from API values.
+ *
+ *  The API sends a negative top-k to disable it; it is stored as 0 so rows that mean the same
+ *  thing compare equal.
+ *  \throws std::invalid_argument if topK does not fit the kernels' int32 top-k
  */
-struct SamplingParams
+RowSamplingParams makeRowSamplingParams(float temperature, int64_t topK, float topP);
+
+/*! \brief Parameters of one sampling launch: the rows' shared RowSamplingParams plus the launch geometry
+ */
+struct SamplingParams : RowSamplingParams
 {
     int32_t batchSize; //!< Number of samples in the batch
     int32_t vocabSize; //!< Size of the vocabulary
-    float temperature; //!< Temperature parameter for sampling (higher = more random)
-    int32_t topK;      //!< Top-K sampling parameter (0 = disabled)
-    float topP;        //!< Top-P (nucleus) sampling parameter (1.0 = disabled)
     bool useTopK;      //!< Flag indicating if top-K sampling is enabled
     bool useTopP;      //!< Flag indicating if top-P sampling is enabled
 
@@ -43,23 +66,19 @@ struct SamplingParams
      *  \param temperature_ Temperature parameter (default: 1.0f)
      *  \param topK_ Top-K parameter (default: 0, disabled)
      *  \param topP_ Top-P parameter (default: 1.0f, disabled)
-     *  \throws std::invalid_argument if neither topK nor topP is set, or if temperature is invalid
+     *
+     *  With top-k disabled and top-p at 1.0 (a temperature alone) the row samples from its whole
+     *  temperature-scaled distribution through the top-p path, which retains everything at p = 1.0.
+     *  \throws std::invalid_argument if temperature is negative
      */
     SamplingParams(
         int32_t batchSize_, int32_t vocabSize_, float temperature_ = 1.0f, int32_t topK_ = 0, float topP_ = 1.0f)
-        : batchSize(batchSize_)
+        : RowSamplingParams{temperature_, topK_, topP_}
+        , batchSize(batchSize_)
         , vocabSize(vocabSize_)
-        , temperature(temperature_)
-        , topK(topK_)
-        , topP(topP_)
         , useTopK(topK_ > 0)
-        , useTopP(topP_ < 1.0f)
+        , useTopP(topP_ < 1.0f || topK_ <= 0)
     {
-        if (!useTopK && !useTopP)
-        {
-            throw std::invalid_argument("Either topK or topP must be set");
-        }
-
         if (temperature < 0.0f)
         {
             throw std::invalid_argument("Temperature must be greater than 0.0f");
@@ -78,6 +97,12 @@ struct SamplingParams
                 useTopP = false;
             }
         }
+    }
+
+    //! A launch over \p batchSize_ rows that all take \p row.
+    SamplingParams(int32_t batchSize_, int32_t vocabSize_, RowSamplingParams const& row)
+        : SamplingParams(batchSize_, vocabSize_, row.temperature, row.topK, row.topP)
+    {
     }
 };
 
@@ -98,6 +123,8 @@ inline constexpr int32_t kMaxLogprobsK = 50;
  *
  * Greedy decoding is used for the default tuple `(temperature=1.0, topK<=1, topP=1.0)`
  * as well as near-zero temperatures, which are treated as greedy to avoid unstable softmax.
+ * Everything else samples, including a temperature alone with top-k disabled and top-p at
+ * 1.0, which draws from the whole temperature-scaled distribution (see SamplingParams).
  *
  * @param temperature Sampling temperature
  * @param topK Top-k sampling parameter
@@ -105,6 +132,9 @@ inline constexpr int32_t kMaxLogprobsK = 50;
  * @return True when top-k / top-p sampling should be used, false for greedy top-1
  */
 bool shouldUseNonGreedySampling(float temperature, int64_t topK, float topP) noexcept;
+
+//! The same decision for a row's parameters.
+bool shouldUseNonGreedySampling(RowSamplingParams const& params) noexcept;
 
 /*!
  * \brief Main sampling function for top-K and top-P sampling from logits.
@@ -118,16 +148,57 @@ bool shouldUseNonGreedySampling(float temperature, int64_t topK, float topP) noe
  * \param[in] params Sampling parameters including batch size, vocab size, temperature, top-K, and top-P values
  * \param[in,out] workspace Workspace buffer [GPU, Int8] for intermediate computations
  * \param[in] stream CUDA stream to execute the kernel
- * \param[in] philoxSeed Random seed for sampling (default: 42)
- * \param[in] philoxOffset Random offset for sampling (default: 0)
+ * \param[in] randomSeed Random seed for rows without a supplied uniform (default: 42)
+ * \param[in] randomOffset Random offset for rows without a supplied uniform; use a new value per decoding step
+ *                         (default: 0)
  * \param[in] rowUniforms Optional GPU FP32 tensor [batch-size]. When supplied,
  *                         each row uses this request-derived uniform instead of
  *                         deriving randomness from its transient batch index.
  * \throws std::runtime_error If CUDA operations fail
  */
 void topKtopPSamplingFromLogits(rt::Tensor const& logits, rt::Tensor& selectedIndices, SamplingParams const& params,
-    rt::Tensor& workspace, cudaStream_t stream, uint64_t philoxSeed = 42, uint64_t philoxOffset = 0,
+    rt::Tensor& workspace, cudaStream_t stream, uint64_t randomSeed = 42, uint64_t randomOffset = 0,
     rt::Tensor const* rowUniforms = nullptr);
+
+/*! \brief One row of a per-row sampling launch: a request's parameters as the kernels read them,
+ *  with the uniform the row draws.
+ *
+ *  makeSamplingRow folds a greedy row into top-k 1, so the top-k kernels serve it; topK == 0 sends a
+ *  row to the top-p kernels, which sample its whole temperature-scaled distribution at topP == 1.
+ */
+struct SamplingRow
+{
+    float temperature{1.0F};
+    int32_t topK{1};
+    float topP{1.0F};
+    float uniform{0.0F};
+};
+
+//! The row the kernels run for \p params, drawing \p uniform in [0, 1).
+SamplingRow makeSamplingRow(RowSamplingParams const& params, float uniform) noexcept;
+
+//! Workspace bytes for \ref sampleRows over at most \p maxRows rows: the top-k region at
+//! \ref kMaxSamplingTopK and the top-p region, both resident because one launch may use both.
+size_t getRowSamplingWorkspaceSize(int32_t maxRows, int32_t vocabSize);
+
+/*!
+ * \brief Sample one token per row, each row with its own parameters, in a fixed number of launches.
+ *
+ * The top-k kernels run once over every row with topK > 0 and the top-p kernels once over the rest;
+ * rows that belong to the other path return at the top of each kernel. A row's token is what the
+ * whole-batch launch of its parameters and uniform would produce (see topKtopPSamplingFromLogits),
+ * whatever else is in the batch and however the rows are ordered.
+ *
+ * \param[in] logits [GPU, Float] with shape [row-count, vocab-size]
+ * \param[out] selectedIndices [GPU, Int32] with shape [row-count, 1]
+ * \param[in] hostRows The \p rowCount rows, read on the host to plan the launches: every topK in
+ *                     [0, kMaxSamplingTopK] and every temperature non-negative
+ * \param[in] deviceRows [GPU, Int8] holding the same rows as \p rowCount SamplingRow, copied on \p stream
+ * \param[in,out] workspace [GPU, Int8] sized by \ref getRowSamplingWorkspaceSize
+ * \throws std::runtime_error on a contract violation or a CUDA failure
+ */
+void sampleRows(rt::Tensor const& logits, rt::Tensor& selectedIndices, SamplingRow const* hostRows,
+    rt::Tensor const& deviceRows, int32_t rowCount, rt::Tensor& workspace, cudaStream_t stream);
 
 //! Construct the exact top-p distribution in the original vocabulary order.
 void topPProbabilitiesFromLogits(rt::Tensor const& logits, rt::Tensor& probabilities, float temperature, float topP,
@@ -326,7 +397,7 @@ void extractTopKLogprobs(rt::Tensor const& logits, rt::Tensor& logprobsValues, r
  * \param[out] gathered        GPU float32 [batchSize * maxAcceptDepth, vocabSize]
  * \param[in]  batchSize       Active batch size
  * \param[in]  verifyTreeSize  Rows per batch item in logits
- * \param[in]  maxAcceptDepth  draftingStep + 1
+ * \param[in]  maxAcceptDepth  draftSteps + 1
  * \param[in]  vocabSize       Vocabulary size
  * \param[in]  stream          CUDA stream
  */

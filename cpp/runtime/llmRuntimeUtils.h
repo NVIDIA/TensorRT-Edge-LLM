@@ -19,6 +19,7 @@
 
 #include "action/alpamayo1RunnerUtils.h"
 #include "common/tensor.h"
+#include "kernels/embeddingKernels/embeddingKernels.h"
 #include "runtime/audioUtils.h"
 #include "runtime/imageUtils.h"
 #include "runtime/state/contextCache/contextCacheConfig.h"
@@ -56,8 +57,7 @@ struct Message
         std::string id;               //!< Provider tool-call identifier
         std::string type{"function"}; //!< Tool-call type
         std::string name;             //!< Function name
-        std::string arguments;        //!< JSON object text or provider-native argument text
-        bool argumentsIsString{true}; //!< Preserve the provider's argument representation
+        std::string arguments;        //!< JSON object text; templates receive the parsed object
     };
 
     std::string role;                     //!< Message role (system, user, assistant, tool)
@@ -165,6 +165,8 @@ struct GuidedDecodingParams
 {
     GuideType type{GuideType::kJsonObject};
     std::string guide;
+    //! Append grammar-forced tokens without forward passes; honoured by decoding strategies that support it.
+    bool jumpForward{false};
 };
 
 //! Human-readable name for logs and error messages.
@@ -230,17 +232,16 @@ struct LLMGenerationRequest
     mutable std::vector<FormattedRequest>
         formattedRequests; //!< Formatted requests (mutable to allow runtime modification)
     std::vector<std::vector<int32_t>> preTokenizedInputIds; //!< Optional pre-tokenized text inputs, one per request.
-    float temperature;                                      //!< Temperature parameter for sampling
-    float topP;                                             //!< Top-p (nucleus) sampling parameter
-    int64_t topK;                                           //!< Top-k sampling parameter
-    int64_t maxGenerateLength;                              //!< Max length of the generated tokens
-    std::optional<uint64_t> samplingSeed;                   //!< Stable request-level sampling seed
+    //! Greedy unless overridden (topK = 1).
+    float temperature{1.0F};                                            //!< Temperature parameter for sampling
+    float topP{1.0F};                                                   //!< Top-p (nucleus) sampling parameter
+    int64_t topK{1};                                                    //!< Top-k sampling parameter
+    int64_t maxGenerateLength{0};                                       //!< Max length of the generated tokens
+    std::optional<uint64_t> samplingSeed;                               //!< Stable request-level sampling seed
     SpecProposalSampling proposalSampling{SpecProposalSampling::kAuto}; //!< Draft proposal sampling policy
     int32_t diffusionMaxDenoisingSteps{0}; //!< Optional DiffusionGemma denoise-step override (0 = runtime default)
     std::string loraWeightsName{""};       //!< Name of the LoRA weights. Default to empty string for no LoRA weights
 
-    // Whether to save system prompt KV cache of this request to be used by later requests
-    bool saveSystemPromptKVCache{false};
     // Whether to apply chat template formatting. If false, raw messages will be concatenated without special tokens
     bool applyChatTemplate{true};
     // Whether to add generation prompt (e.g., assistant header) at the end. Only effective when
@@ -252,10 +253,13 @@ struct LLMGenerationRequest
     std::vector<ToolDefinition> tools; //!< Tools available to this request batch
     ToolChoice toolChoice;             //!< Requested tool selection mode
     bool parallelToolCalls{true};      //!< Whether the model may emit parallel calls
-    // Disable speculative decoding for this request when the loaded engine contract supports vanilla fallback.
+    // Disable speculative decoding for this request when the loaded engine contract supports vanilla fallback. A
+    // runtime session serves it per sequence: the sequence shares speculative steps but commits no draft token.
     bool disableSpecDecode{false};
     //! Preserve model control tokens when false so an output parser can consume them.
     bool skipSpecialTokens{true};
+    //! Ignore EOS tokens and generate until maxGenerateLength.
+    bool ignoreEos{false};
 
     //! Number of top log-probabilities to return per generated token (0 = disabled, max = kMaxLogprobsK).
     //! Logprobs are computed as log(softmax(logits)) and returned in LLMGenerationResponse::logprobs.
@@ -286,12 +290,16 @@ struct LLMGenerationRequest
     //! Ready endpoints to retain when the context cache is enabled.
     ContextCacheCommitPolicy contextCacheCommitPolicy{ContextCacheCommitPolicy::kIncludingGeneratedTokens};
 
-    //! Hybrid+MTP boundary-replay tail length. Set to -1 to derive it with the native provider-template renderer.
+    //! Hybrid+spec boundary-replay tail length. Set to -1 to derive it with the native provider-template renderer.
     int32_t contextCacheReplayTailLength{0};
 
-    //! Periodic recurrent-state capture interval (0 disables). Hybrid+MTP endpoint reuse requires this to be 0 so the
+    //! Periodic recurrent-state capture interval (0 disables). Hybrid+spec endpoint reuse requires this to be 0 so the
     //! recurrent snapshot lands only at the stable predecessor boundary (mirrors reference request validation).
     int32_t recurrentCaptureInterval{0};
+
+    //! Scheduling priority; a lower value is served first. Honoured only by a RequestEngine running
+    //! SchedulingPolicy::kPriority.
+    int32_t priority{0};
 };
 
 /*! \brief LLM Generation Response structure
@@ -314,8 +322,12 @@ struct LLMGenerationResponse
     //! Prompt length per request, counted after chat templating and media expansion.
     std::vector<int32_t> inputTokenCounts;
 
+    //! Prompt tokens per request served from reused state rather than prefilled (see reusedPromptTokens()).
+    std::vector<int32_t> reusedInputTokenCounts;
+
     //! Speculative verification iterations per request; zero for vanilla decoding.
     std::vector<int32_t> specVerifyCounts;
+    std::vector<int32_t> decodeRoundCounts; //!< Completed decode rounds per sequence, excluding prefill.
 
     //! Per-request generated tokens divided by speculative verification iterations.
     std::vector<float> specAcceptanceLengths;
@@ -371,6 +383,12 @@ struct YarnParams
     float mscale{1.0F};                        //!< Attention magnitude scale applied to cos/sin
 };
 
+inline bool operator==(YarnParams const& lhs, YarnParams const& rhs) noexcept
+{
+    return lhs.originalMaxPositionEmbeddings == rhs.originalMaxPositionEmbeddings && lhs.factor == rhs.factor
+        && lhs.betaFast == rhs.betaFast && lhs.betaSlow == rhs.betaSlow && lhs.mscale == rhs.mscale;
+}
+
 /*! \brief RoPE configuration structure with optional Long-Rope parameters
  *
  *  Contains common RoPE fields and (optionally) Long-Rope specific parameters when type==kLongRope.
@@ -384,7 +402,7 @@ struct RopeConfig
     int32_t maxPositionEmbeddings{32768};     //!< Maximum position embeddings supported
     std::vector<int32_t> mropeSection;        //!< MRoPE frequency partition, empty for non-MRoPE
     std::optional<LongRopeParams> longRope{}; //!< Long-Rope specific parameters
-    std::optional<YarnParams> yarn{};         //!< YaRN specific parameters
+    std::optional<YarnParams> yarn{};         //!< YaRN parameters, for kYarn or YaRN-scaled kMRope
     std::optional<Llama3Params> llama3{};     //!< Llama-3 scaling parameters
 };
 
@@ -408,6 +426,16 @@ RopeConfig collectRopeConfig(nlohmann::json const& config);
  *  \return True if the initialization is successful, false otherwise
  */
 bool initializeRopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& config, cudaStream_t stream) noexcept;
+
+/*! \brief Upload the YaRN inverse frequencies of a cos/sin cache to the GPU
+ *
+ *  \param config [RopeConfig] The rope configuration, with YaRN parameters
+ *  \param rotaryDim Width of the cos/sin cache
+ *  \param stream [CUDA stream] The stream to execute the copy
+ *  \return A [rotaryDim / 2] float GPU tensor
+ *  \throws std::runtime_error if the YaRN parameters are missing or invalid
+ */
+Tensor uploadYarnInvFreq(RopeConfig const& config, int64_t rotaryDim, cudaStream_t stream);
 
 /*! \brief Initialize an identity cos/sin cache for models without positional encoding (NoPE)
  *
@@ -471,44 +499,53 @@ std::vector<int32_t> buildBatchMapping(std::vector<int8_t> const& finishedStates
 // Embedding Loading Utilities
 //=============================================================================
 
-/*! \brief FP8 embedding block size (fixed at 128)
+/*! \brief Compatibility block size for older FP8 embedding artifacts.
  *
- *  This matches the quantization granularity: scales shape is [vocabSize, hiddenSize/128]
+ *  New token and PLE FP8 exports use one FP32 tensor scale.
  */
 inline constexpr int64_t kFP8EmbeddingBlockSize = 128;
+inline constexpr char const* kEmbeddingDescriptorMetadataKey = "tensorrt_edge_llm.embedding_descriptor";
+inline constexpr char const* kEmbeddingTensorName = "embedding";
+inline constexpr char const* kFp8EmbeddingScaleTensorName = "embedding_scale";
+inline constexpr char const* kNvfp4EmbeddingBlockScaleTensorName = "embedding_block_scale";
+inline constexpr char const* kNvfp4EmbeddingMultiplierScaleTensorName = "embedding_multiplier_scale";
 
-/*! \brief Embedding data - supports both FP16 and FP8 formats
+/*! \brief Embedding data - supports FP16, FP8, and packed NVFP4 formats
  *
- *  The embedding table datatype determines the format:
+ *  The table datatype determines the FP16/FP8 formats. NVFP4 uses the descriptor:
  *  - FP16: table is FP16, tableScalingFactor is empty
  *  - FP8: table is FP8 (E4M3), tableScalingFactor contains FP32 per-group scales
+ *  - NVFP4: table is packed U8 and tableScalingFactor contains FP8 E4M3 block scales
  *
- *  The kernel functions automatically dispatch based on table.getDataType().
+ *  Packed formats never infer their logical hidden width from the physical table shape.
  */
 struct EmbeddingData
 {
-    rt::Tensor table;              //!< Embedding table [vocabSize, hiddenSize] (FP16 or FP8)
-    rt::Tensor tableScalingFactor; //!< FP32 per-group scales [vocabSize, hiddenSize/128] (only if FP8)
+    rt::Tensor table;              //!< Physical embedding table.
+    rt::Tensor tableScalingFactor; //!< FP32 scales for FP8 or FP8 E4M3 block scales for NVFP4.
+    kernel::EmbeddingTableDescriptor descriptor;
 
-    //! \brief Returns scales as OptionalInputTensor (std::nullopt when FP16, reference when FP8)
+    //! \brief Returns scales as OptionalInputTensor (std::nullopt for FP16, a reference otherwise)
     rt::OptionalInputTensor scalesAsOptional() const
     {
         return tableScalingFactor.getShape().volume() > 0 ? rt::OptionalInputTensor{tableScalingFactor} : std::nullopt;
     }
 };
 
-/*! \brief Load embedding table from safetensors file (auto-detects FP16 vs FP8 by dtype)
+/*! \brief Load an embedding table from a safetensors sidecar
  *
  *  Loads embedding.safetensors and detects format by checking the "embedding" tensor dtype:
  *  - FP8: loads "embedding" (FP8) + "embedding_scale" (FP32)
  *  - FP16: loads "embedding" (FP16)
+ *  - NVFP4: requires descriptor metadata and loads a packed U8 table, FP8 block scales,
+ *            and a normalized FP32 multiplier scale
  *
  *  \param embeddingPath Path to embedding.safetensors file
  *  \param stream CUDA stream for async operations
  *  \return EmbeddingData with loaded tensors and format flag
  *  \throws std::runtime_error if file not found, tensors missing, or invalid dtypes
  */
-EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cudaStream_t stream);
+EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cudaStream_t stream, bool offload = false);
 
 /*!
  * @brief Clamp max generation length against KV-cache capacity across the full active batch
@@ -538,6 +575,27 @@ int32_t clampMaxGenerateLengthForKVCapacity(std::vector<int32_t> const& effectiv
  */
 rt::Tensor generateMultimodalIndices(
     rt::Tensor const& inputIds, std::optional<int32_t> audioTokenId, std::optional<int32_t> imageTokenId);
+
+/*!
+ * @brief Map one prefill slice of request-local media rows to rows of a per-slot reservation buffer
+ *
+ * The reservation buffer has shape [slots * maxMediaRowsPerSlot, hiddenSize] and slot `slot` owns rows
+ * [slot * maxMediaRowsPerSlot, (slot + 1) * maxMediaRowsPerSlot). Image and audio use separate buffers, so one
+ * mapping serves both index spaces.
+ *
+ * @param requestLocalIndices Media row of every prompt position of one request (generateMultimodalIndices
+ *        output for that prompt); -1 marks a text position
+ * @param sliceBegin First prompt position of the slice (the committed length)
+ * @param sliceLength Number of prompt positions in the slice
+ * @param slot Resident slot of the request
+ * @param maxMediaRowsPerSlot Rows reserved per slot (E_max)
+ * @param totalReservedRows Rows of the whole buffer (slots * E_max)
+ * @param[out] globalIndices sliceLength entries; text positions receive -1
+ * @throws std::runtime_error if the slice exceeds the prompt, a local row is outside [0, E_max), or a global row
+ *         is not below totalReservedRows or does not fit in INT32
+ */
+void mapMediaIndicesToReservationRows(std::vector<int32_t> const& requestLocalIndices, int32_t sliceBegin,
+    int32_t sliceLength, int32_t slot, int32_t maxMediaRowsPerSlot, int64_t totalReservedRows, int32_t* globalIndices);
 
 /*! \brief Build Gemma4 block IDs from host token IDs.
  *

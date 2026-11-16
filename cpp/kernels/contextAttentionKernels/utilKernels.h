@@ -20,6 +20,7 @@
 #include "common/tensor.h"
 
 #include "common/cudaMacros.h"
+#include "common/pagedKvTypes.h"
 #include <cstddef>
 #include <cstdint>
 #include <cuda_runtime_api.h>
@@ -36,7 +37,7 @@ namespace kernel
 //! valid prefix (contextLengths[b], clamped to seqLen) yields
 //! blockBegin = run start and blockEnd = run end for every position in the
 //! run.  Text/audio positions (ID < 0) and padding positions receive the
-//! -1/-1 sentinel (empty interval).  All tensors are [B, S] int32 device
+//! -1/-2 sentinel (empty interval).  All tensors are [B, S] int32 device
 //! buffers.
 void launchBuildVisionBlockRanges(int32_t const* visionBlockIds, int32_t const* contextLengths, int32_t* blockBegin,
     int32_t* blockEnd, int32_t batchSize, int32_t seqLen, cudaStream_t stream);
@@ -59,6 +60,12 @@ void launchGatherTokenAlignedRope(float const* source, float* output, int32_t co
 //! Invalid resident rows are ignored.
 void launchScatterActiveRows(void const* source, void* destination, int32_t const* stateIndices, int32_t activeRows,
     int32_t residentRows, size_t rowBytes, cudaStream_t stream);
+
+//! Fill a [numSequences, 2, maxPagesPerSeq] page table that maps sequence b's logical page p to K page
+//! b * maxPagesPerSeq + p and V page vPageOffset + b * maxPagesPerSeq + p, i.e. a dense [B, cap, H, D] K buffer
+//! followed by a V buffer viewed as one page pool.
+void launchBuildDensePageTable(
+    int32_t* pageTable, int32_t numSequences, int32_t maxPagesPerSeq, int32_t vPageOffset, cudaStream_t stream);
 
 //! \brief Host-side wrapper that launches a lightweight CUDA kernel to compute prefix-sum of sequence lengths
 //! and KV cache end indices.
@@ -111,10 +118,35 @@ void calSWAChunkedPrefillMetadata(rt::Tensor const& inputSeqLen, rt::Tensor cons
 //!
 //! For each batch row, logical tokens `[start - min(start, W), start)` are gathered through `swaPageTable`; newly
 //! roped K/V from the current chunk are appended directly. The outputs have shape `[B, W + S, Hkv, D]`, are padded
-//! with zeros, and are consumed with cu-seqlens from calSWAChunkedPrefillMetadata(). The persistent pool remains
-//! bounded independently of the maximum sequence length.
+//! with zeros, and are consumed with cu-seqlens from calSWAChunkedPrefillMetadata(). FP8 resident pages are
+//! dequantized with their K/V scales; current K/V and the workspaces remain FP16. The persistent pool remains bounded
+//! independently of the maximum sequence length.
 void assemblePagedSWAChunkedPrefillFMHAKV(rt::Tensor const& swaPool, rt::Tensor const& swaPageTable,
     rt::Tensor const& k, rt::Tensor const& v, rt::Tensor const& inputSeqLen, rt::Tensor const& kvCacheStartIndices,
-    rt::Tensor& kWorkspace, rt::Tensor& vWorkspace, int32_t slidingWindowSize, cudaStream_t stream);
+    rt::Tensor& kWorkspace, rt::Tensor& vWorkspace, int32_t slidingWindowSize, float kScale, float vScale,
+    cudaStream_t stream);
+
+//! \brief Assemble the K/V of the prefill sequences of a compact phase 8 step for the paged ragged FMHA.
+//!
+//! Prefill sequence b owns query rows `[queryStartOffsets[b], queryStartOffsets[b + 1])` and KV extent
+//! `kvEndLengths[b]`. Its in-window history `[max(0, past - W), past)` is read through `swaPageTable` (FP8 pages
+//! dequantized, unmapped pages read as zero) and its current rows from the token-major `k`/`v` scratch `[T_p, Hkv, D]`.
+//! Tokens keep their absolute in-page positions: pages `max(0, past - W) / 128` up to the page holding the last token
+//! are copied to `assembledPool` `[2, P, 128, Hkv, D]` after the pages of earlier sequences, and
+//! `assembledPageTable` `[Np, 2, maxPagesPerSeq]` maps every logical page into that range (clamped at both ends; V
+//! entries add P). The FMHA therefore reads the assembly with the original KV extents and window. P must cover the
+//! sum of the spans, e.g. `min(Np * maxPagesPerSeq, swaCompactAssembledPages(Np, T_p, W))`.
+void assemblePagedSWACompactPrefillFMHAKV(rt::Tensor const& swaPool, int32_t const* swaPageTable,
+    int32_t maxPagesPerSeq, rt::Tensor const& k, rt::Tensor const& v, int32_t const* queryStartOffsets,
+    int32_t const* kvEndLengths, int32_t numSequences, int32_t slidingWindowSize, float kScale, float vScale,
+    rt::Tensor& assembledPool, int32_t* assembledPageTable, cudaStream_t stream);
+
+//! Upper bound on the assembled pages of assemblePagedSWACompactPrefillFMHAKV for Np sequences with T_p query rows:
+//! each sequence spans at most (W + q_b) / 128 + 2 pages.
+constexpr int64_t swaCompactAssembledPages(int64_t numSequences, int64_t numQueryRows, int64_t slidingWindowSize)
+{
+    return (numSequences * (slidingWindowSize + 2 * rt::kTOKENS_PER_PAGE) + numQueryRows + rt::kTOKENS_PER_PAGE - 1)
+        / rt::kTOKENS_PER_PAGE;
+}
 } // namespace kernel
 } // namespace trt_edgellm

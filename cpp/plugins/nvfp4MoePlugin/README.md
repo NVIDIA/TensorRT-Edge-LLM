@@ -1,10 +1,10 @@
 # Nvfp4MoePlugin
 
-TensorRT plugin that wraps the SM100/SM101/SM110 decomposed split FC1/FC2
+TensorRT plugin that wraps the SM100/SM101/SM103/SM110 decomposed split FC1/FC2
 NVFP4 MoE kernel in
 [`kernelSrcs/nvfp4_moe_cutedsl/`](../../../kernelSrcs/nvfp4_moe_cutedsl/).
 
-This plugin is the **SM100/SM101/SM110** counterpart of
+This plugin is the **SM100/SM101/SM103/SM110** counterpart of
 [`NvFP4MoEPluginGeforce`](../nvfp4MoePluginGeforce/nvfp4MoePluginGeforce.cpp),
 which targets **SM120 / SM121 (consumer Blackwell)** via the fused
 CuTe DSL path.
@@ -33,7 +33,7 @@ may be generated but are not dispatched yet.
 | Parameter | Supported values |
 |---|---|
 | `io_dtype` | FP16 |
-| `SM` | 100, 101, 110 |
+| `SM` | 100, 101, 103, 110 |
 | `activation_type` | swiglu, relu2 |
 | `routing_mode` | 0=softmax top-k (Qwen3), 1=sigmoid grouped top-k (Nemotron-H) |
 | `backend` | decode + prefill (`auto` picks decode when `num_tokens*top_k` is small) |
@@ -50,7 +50,7 @@ rules, emitting a clear error when they are violated.
 
 - [`nvfp4MoePlugin.h`](nvfp4MoePlugin.h) / [`nvfp4MoePlugin.cpp`](nvfp4MoePlugin.cpp) — the `IPluginV3` implementation.
 - [`../../kernels/moe/nvfp4_cutedsl/cuteDslNvfp4MoeSm110Runner.{h,cpp}`](../../kernels/moe/nvfp4_cutedsl/)
-  — the SM100/101/110 AOT-module owner: per-variant lazy loading,
+  — the SM100/101/103/110 AOT-module owner: per-variant lazy loading,
   shape checks, workspace layout, and split FC1 / FC2 dispatch. Loaded
   modules remain resident for process lifetime.
 - [`../../../kernelSrcs/nvfp4_moe_cutedsl/README.md`](../../../kernelSrcs/nvfp4_moe_cutedsl/README.md)
@@ -108,14 +108,14 @@ and rebuild.
 ## Validation
 
 The split-path backend is covered by the
-[SM100/101/110 runner smoke and accuracy tests](../../../unittests/cpp/kernels/moe/nvfp4MoeCuteDslSm110Tests.cu).
+[SM100/101/103/110 runner smoke and accuracy tests](../../../unittests/cpp/kernels/moe/nvfp4MoeCuteDslSm110Tests.cu).
 Avoid validating production routing by instantiating Python-only helper
 modules directly; model integration should be tested at the export path
-that explicitly emits `Nvfp4MoePlugin` for an SM100/101/110 target.
+that explicitly emits `Nvfp4MoePlugin` for an SM100/101/103/110 target.
 
 ### Thor sign-off checklist (runner-test equivalent)
 
 1. Manually generate the `nvfp4_moe` artifact with the shared workflow.
 2. Copy or mount the workspace on Thor.
 3. Build the plugin with `-DENABLE_CUTE_DSL=nvfp4_moe -DCMAKE_CUDA_ARCHITECTURES=110a`.
-4. Run `./build/unittests/unitTestKernelsMoe --gtest_filter='CuteDslNvfp4MoeSm110Test.*'`.
+4. Run `./build/bin/unitTests/unitTestKernelsMoe --gtest_filter='CuteDslNvfp4MoeSm110Test.*'`.

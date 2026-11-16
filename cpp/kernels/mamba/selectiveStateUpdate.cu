@@ -34,9 +34,12 @@
 #include "common/checkMacros.h"
 #include "conversion.cuh"
 
+#include <algorithm>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <initializer_list>
+#include <type_traits>
 
 namespace mamba_ssm
 {
@@ -45,6 +48,8 @@ namespace
 {
 
 constexpr int32_t kStateCopyBlockSize{256};
+constexpr int64_t kSTATE_COPY_TILE_BYTES{16384};
+constexpr int32_t kMAX_STATE_COPY_BLOCKS_PER_ROW{65535};
 
 template <bool Scatter>
 __global__ void copyIndexedStateRowsKernel(
@@ -69,14 +74,16 @@ __global__ void copyIndexedStateRowsKernel(
         int64_t const vectorCount = rowBytes / static_cast<int64_t>(sizeof(uint4));
         auto const* sourceVectors = reinterpret_cast<uint4 const*>(sourceRowPtr);
         auto* destinationVectors = reinterpret_cast<uint4*>(destinationRowPtr);
-        for (int64_t vector = threadIdx.x; vector < vectorCount; vector += blockDim.x)
+        for (int64_t vector = static_cast<int64_t>(blockIdx.y) * blockDim.x + threadIdx.x; vector < vectorCount;
+            vector += static_cast<int64_t>(gridDim.y) * blockDim.x)
         {
             destinationVectors[vector] = validResidentRow ? sourceVectors[vector] : uint4{};
         }
     }
     else
     {
-        for (int64_t byte = threadIdx.x; byte < rowBytes; byte += blockDim.x)
+        for (int64_t byte = static_cast<int64_t>(blockIdx.y) * blockDim.x + threadIdx.x; byte < rowBytes;
+            byte += static_cast<int64_t>(gridDim.y) * blockDim.x)
         {
             destinationRowPtr[byte] = validResidentRow ? sourceRowPtr[byte] : uint8_t{};
         }
@@ -121,6 +128,13 @@ int64_t logicalStateRowBytes(trt_edgellm::rt::Tensor const& state)
     return elements * elementBytes;
 }
 
+dim3 stateCopyGrid(int32_t activeRows, int64_t rowBytes)
+{
+    int64_t const blocksPerRow = (rowBytes - 1) / kSTATE_COPY_TILE_BYTES + 1;
+    // The grid-stride loop covers rows that exceed CUDA's grid.y limit.
+    return dim3(activeRows, static_cast<uint32_t>(std::min<int64_t>(blocksPerRow, kMAX_STATE_COPY_BLOCKS_PER_ROW)));
+}
+
 void validateStateCopyTensors(trt_edgellm::rt::Tensor const& residentState, trt_edgellm::rt::Tensor const& activeState,
     trt_edgellm::rt::Tensor const& stateIndices)
 {
@@ -132,7 +146,7 @@ void validateStateCopyTensors(trt_edgellm::rt::Tensor const& residentState, trt_
         residentState.getDataType() == activeState.getDataType(), "Mamba active and resident state types must match.");
     ELLM_CHECK(residentState.getShape().getNumDims() == 4 && activeState.getShape().getNumDims() == 4,
         "Mamba active and resident state must be rank four.");
-    ELLM_CHECK(stateIndices.getDataType() == nvinfer1::DataType::kINT32 && stateIndices.getShape().getNumDims() == 1,
+    ELLM_CHECK(stateIndices.getDataType() == trt_edgellm::DataType::kINT32 && stateIndices.getShape().getNumDims() == 1,
         "Mamba state indices must be rank-one INT32.");
     ELLM_CHECK(activeState.getShape()[0] == stateIndices.getShape()[0],
         "Mamba active state and state-index extents must match.");
@@ -220,7 +234,7 @@ static void setOptionalStateIndices(
     }
     auto const& indices = stateIndices->get();
     ELLM_CHECK(indices.getDeviceType() == trt_edgellm::rt::DeviceType::kGPU
-            && indices.getDataType() == nvinfer1::DataType::kINT32 && indices.getShape().getNumDims() == 1
+            && indices.getDataType() == trt_edgellm::DataType::kINT32 && indices.getShape().getNumDims() == 1
             && indices.getShape()[0] == activeRows,
         "Mamba state indices must be GPU INT32 with shape [activeBatchSize].");
     params.state_batch_indices = const_cast<int32_t*>(indices.dataPointer<int32_t>());
@@ -243,6 +257,12 @@ inline void setContiguousStrides(SelectiveStateUpdateParams& params)
 }
 
 using namespace conversion;
+
+__device__ __forceinline__ float updateTokenState(float state, float decay, float inputWeight, float input)
+{
+    // Decode, verify, and replay share this FP32 rounding boundary before storing FP16 state.
+    return __fmaf_rn(inputWeight, input, __fmul_rn(state, decay));
+}
 
 template <typename state_t>
 __device__ __forceinline__ float roundTripState(float value)
@@ -386,7 +406,7 @@ __global__ void selective_state_update_kernel_simple(SelectiveStateUpdateParams 
                 auto C_value = toFloat(sram.C[i + ii]);
 
                 auto const dB = B_value * dt_value;
-                auto const new_state = state_value * dA + dB * x_value;
+                auto const new_state = updateTokenState(state_value, dA, dB, x_value);
 
                 convertAndStore(&rState.val[ii], new_state);
 
@@ -527,7 +547,8 @@ __global__ void selective_state_update_prefill_kernel_simple(SelectiveStateUpdat
                         = toFloat(C[batch * params.C_stride_batch + t * params.C_stride_seq + group * DSTATE + i]);
                     // The current-token output uses FP32 state before the token-boundary state_t round-trip below.
                     float const dB = B_val * dt_val;
-                    runState[ii] = runState[ii] * dA + dB * x_val;
+                    runState[ii] = params.replay_u ? updateTokenState(runState[ii], dA, dB, x_val)
+                                                   : runState[ii] * dA + dB * x_val;
                     out_val += runState[ii] * C_val;
                 }
             }
@@ -616,6 +637,299 @@ __global__ void selective_state_update_prefill_kernel_simple(SelectiveStateUpdat
                     convertAndStore(&stateRow[_d * params.state_stride_dim + i], runState[ii]);
             }
         }
+    }
+}
+
+// Short-sequence scan for decode and chain verify (seq_len <= kMULTI_TOKEN_MAX_SEQ_LEN). Each state element and
+// output goes through the same FP32 operations, in the same order, as selective_state_update_prefill_kernel_simple,
+// so results are bitwise identical; only the work distribution differs. Each warp owns ROWS_PER_WARP dim rows and
+// each CTA owns ROWS_PER_WARP * NUM_WARPS rows of one head. Row-independent per-token operands (dt, dA, B, C) are
+// staged once per CTA in shared memory, and the MAXT per-token output sums are reduced together.
+constexpr int32_t kMULTI_TOKEN_MAX_SEQ_LEN{8};
+constexpr int32_t kMULTI_TOKEN_ROWS_PER_WARP{2};
+constexpr int32_t kMULTI_TOKEN_NUM_WARPS{8};
+constexpr int32_t kSINGLE_TOKEN_ROWS_PER_WARP{2};
+constexpr int32_t kSINGLE_TOKEN_NUM_WARPS{4};
+constexpr int32_t kREPLAY_ROWS_PER_WARP{8};
+constexpr int32_t kREPLAY_NUM_WARPS{4};
+
+// Sums each of the N per-lane values across the warp. Stage s adds the partner value from lane ^ s, as
+// warpReduceSum does, so every sum has the same association as warpReduceSum's lane-0 result. The first log2(N)
+// stages also halve the live values, which leaves the sum for token (lane >> (5 - log2(N))) in this lane.
+template <int N>
+__device__ __forceinline__ float warpReduceScatterSum(float (&values)[N], int lane)
+{
+    static_assert(N > 0 && (N & (N - 1)) == 0 && N <= static_cast<int>(kWARP_SIZE), "N must be a power of two.");
+    int offset = kWARP_SIZE / 2;
+#pragma unroll
+    for (int live = N; live > 1; live /= 2)
+    {
+        bool const upper = (lane & offset) != 0;
+#pragma unroll
+        for (int j = 0; j < live / 2; ++j)
+        {
+            float const keep = upper ? values[j + live / 2] : values[j];
+            float const send = upper ? values[j] : values[j + live / 2];
+            values[j] = keep + __shfl_xor_sync(UINT32_MAX, send, offset);
+        }
+        offset /= 2;
+    }
+    float sum = values[0];
+    for (; offset > 0; offset /= 2)
+    {
+        sum += __shfl_xor_sync(UINT32_MAX, sum, offset);
+    }
+    return sum;
+}
+
+template <typename state_t, int N>
+__device__ __forceinline__ void roundTripStates(float (&values)[N])
+{
+    if constexpr (std::is_same_v<state_t, half> && N % 2 == 0)
+    {
+#pragma unroll
+        for (int i = 0; i < N; i += 2)
+        {
+            float2 const rounded = __half22float2(__floats2half2_rn(values[i], values[i + 1]));
+            values[i] = rounded.x;
+            values[i + 1] = rounded.y;
+        }
+    }
+    else
+    {
+#pragma unroll
+        for (int i = 0; i < N; ++i)
+        {
+            values[i] = roundTripState<state_t>(values[i]);
+        }
+    }
+}
+
+template <typename input_t, typename weight_t, typename matrixA_t, typename state_t, int DIM, int DSTATE, int MAXT,
+    int ROWS_PER_WARP, int NUM_WARPS>
+__global__ void __launch_bounds__(NUM_WARPS* kWARP_SIZE)
+    selective_state_update_multi_token_kernel(SelectiveStateUpdateParams params)
+{
+    static_assert(DSTATE % kWARP_SIZE == 0, "Each lane must own a whole dstate slice.");
+    constexpr int dstatePerLane = DSTATE / kWARP_SIZE;
+    constexpr int rowsPerCta = ROWS_PER_WARP * NUM_WARPS;
+    constexpr int lanesPerToken = kWARP_SIZE / MAXT;
+    constexpr int chunkSize = 4;
+    static_assert(DSTATE % chunkSize == 0, "dstate must split into whole staging chunks.");
+    constexpr int chunksPerToken = DSTATE / chunkSize;
+    using stateVec = PackedAligned<state_t, dstatePerLane>;
+    using inputChunk = PackedAligned<input_t, chunkSize>;
+    using floatSlice = PackedAligned<float, dstatePerLane>;
+
+    // Staged with float4 stores and read as floatSlice.
+    constexpr size_t sharedAlignment = sizeof(floatSlice) > sizeof(float4) ? sizeof(floatSlice) : sizeof(float4);
+    __shared__ alignas(sharedAlignment) float sharedB[MAXT][DSTATE];
+    __shared__ alignas(sharedAlignment) float sharedC[MAXT][DSTATE];
+    __shared__ float sharedDt[MAXT];
+    __shared__ float sharedDA[MAXT];
+
+    auto* __restrict__ output = reinterpret_cast<input_t*>(params.output);
+    auto* __restrict__ state = reinterpret_cast<state_t*>(params.state);
+    auto const* __restrict__ x = reinterpret_cast<input_t const*>(params.x);
+    auto const* __restrict__ dt = reinterpret_cast<weight_t const*>(params.dt);
+    auto const* __restrict__ A = reinterpret_cast<matrixA_t const*>(params.A);
+    auto const* __restrict__ B = reinterpret_cast<input_t const*>(params.B);
+    auto const* __restrict__ C = reinterpret_cast<input_t const*>(params.C);
+    auto const* __restrict__ D = reinterpret_cast<weight_t const*>(params.D);
+    auto const* __restrict__ dt_bias = reinterpret_cast<weight_t const*>(params.dt_bias);
+
+    int const nheads = params.nheads;
+    int const ngroups = params.ngroups;
+    int const batch = blockIdx.x;
+    int const head = blockIdx.y;
+    int const group = head / (nheads / ngroups);
+    int const lane = threadIdx.x;
+    int const firstRow = blockIdx.z * rowsPerCta + threadIdx.y * ROWS_PER_WARP;
+    bool const replay = params.replay_u != nullptr;
+
+    auto const* stateIndices = static_cast<int32_t const*>(params.state_batch_indices);
+    int32_t const stateBatch = stateIndices ? stateIndices[batch] : batch;
+    bool const validSlot = stateBatch >= 0 && stateBatch < static_cast<int32_t>(params.state_cache_size)
+        && (params.pad_slot_id < 0 || stateBatch != params.pad_slot_id);
+    state_t* const stateRow = validSlot
+        ? state + static_cast<int64_t>(stateBatch) * params.state_stride_batch + head * params.state_stride_head
+        : nullptr;
+
+    // Graph capture may pass a dummy context length above the tensor extent; never read or write past seq_len.
+    int const requestedLen = params.context_lengths ? params.context_lengths[batch] : params.seq_len;
+    int const seqLen = min(requestedLen, params.seq_len);
+
+    // Issue this warp's state and x loads before staging. Token rows are clamped to the tensor extent rather than
+    // predicated on seqLen so that the loads do not wait for context_lengths; rows past seqLen are never consumed.
+    float runState[ROWS_PER_WARP][dstatePerLane];
+    float xValue[ROWS_PER_WARP][MAXT];
+#pragma unroll
+    for (int r = 0; r < ROWS_PER_WARP; ++r)
+    {
+        int const d = min(firstRow + r, DIM - 1);
+        auto rState = make_zeros<stateVec>();
+        if (validSlot)
+        {
+            rState = *reinterpret_cast<stateVec const*>(&stateRow[d * params.state_stride_dim + lane * dstatePerLane]);
+        }
+#pragma unroll
+        for (int ii = 0; ii < dstatePerLane; ++ii)
+        {
+            runState[r][ii] = toFloat(rState.val[ii]);
+        }
+#pragma unroll
+        for (int t = 0; t < MAXT; ++t)
+        {
+            int const row = min(t, params.seq_len - 1);
+            xValue[r][t] = toFloat(
+                x[batch * params.x_stride_batch + row * params.x_stride_seq + head * params.x_stride_head + d]);
+        }
+    }
+
+    float const A_value = toFloat(A[head]);
+    float const d_value = D ? toFloat(D[head]) : 0.f;
+    float const dtBiasValue = dt_bias ? toFloat(dt_bias[head]) : 0.f;
+    bool const writesHeadStash = replay && blockIdx.z == 0;
+    bool const writesGroupStash = writesHeadStash && head % (nheads / ngroups) == 0;
+    int const threadIndex = threadIdx.y * kWARP_SIZE + threadIdx.x;
+    for (int chunk = threadIndex; chunk < MAXT * chunksPerToken; chunk += NUM_WARPS * kWARP_SIZE)
+    {
+        int const t = chunk / chunksPerToken;
+        int const i = (chunk % chunksPerToken) * chunkSize;
+        int const row = min(t, params.seq_len - 1);
+        float dtValue = toFloat(dt[batch * params.dt_stride_batch + row * params.dt_stride_seq + head]);
+        if (dt_bias)
+            dtValue += dtBiasValue;
+        if (params.dt_softplus)
+            dtValue = thresholded_softplus(dtValue);
+        auto const bChunk = *reinterpret_cast<inputChunk const*>(
+            &B[batch * params.B_stride_batch + row * params.B_stride_seq + group * DSTATE + i]);
+        auto const cChunk = *reinterpret_cast<inputChunk const*>(
+            &C[batch * params.C_stride_batch + row * params.C_stride_seq + group * DSTATE + i]);
+        float4 const b = make_float4(
+            toFloat(bChunk.val[0]), toFloat(bChunk.val[1]), toFloat(bChunk.val[2]), toFloat(bChunk.val[3]));
+        float4 const c = make_float4(
+            toFloat(cChunk.val[0]), toFloat(cChunk.val[1]), toFloat(cChunk.val[2]), toFloat(cChunk.val[3]));
+        *reinterpret_cast<float4*>(&sharedB[t][i]) = b;
+        *reinterpret_cast<float4*>(&sharedC[t][i]) = c;
+        float const dA = __expf(A_value * dtValue);
+        if (i == 0)
+        {
+            sharedDt[t] = dtValue;
+            sharedDA[t] = dA;
+        }
+        if (t < seqLen && t < params.replay_seq_len)
+        {
+            int64_t const tokenRow = static_cast<int64_t>(batch) * params.replay_seq_len + t;
+            if (writesHeadStash && i == 0)
+            {
+                reinterpret_cast<float*>(params.replay_dA)[tokenRow * nheads + head] = dA;
+                reinterpret_cast<float*>(params.replay_dt)[tokenRow * nheads + head] = dtValue;
+            }
+            if (writesGroupStash)
+            {
+                float* const replayB
+                    = reinterpret_cast<float*>(params.replay_B) + (tokenRow * ngroups + group) * DSTATE + i;
+                *reinterpret_cast<float4*>(replayB) = b;
+            }
+        }
+    }
+    __syncthreads();
+
+    auto const scanRows = [&](auto replayTag) {
+        constexpr bool stashReplay = decltype(replayTag)::value;
+        // Token-outer, row-inner order interleaves the independent row recurrences of this warp.
+        float outValue[ROWS_PER_WARP][MAXT];
+#pragma unroll
+        for (int t = 0; t < MAXT; ++t)
+        {
+#pragma unroll
+            for (int r = 0; r < ROWS_PER_WARP; ++r)
+            {
+                outValue[r][t] = 0.f;
+            }
+            if (t < seqLen)
+            {
+                float const dtValue = sharedDt[t];
+                float const dA = sharedDA[t];
+                auto const b = *reinterpret_cast<floatSlice const*>(&sharedB[t][lane * dstatePerLane]);
+                auto const c = *reinterpret_cast<floatSlice const*>(&sharedC[t][lane * dstatePerLane]);
+#pragma unroll
+                for (int r = 0; r < ROWS_PER_WARP; ++r)
+                {
+                    float const x_val = xValue[r][t];
+                    float out_val = (lane == 0) ? d_value * x_val : 0.f;
+#pragma unroll
+                    for (int ii = 0; ii < dstatePerLane; ++ii)
+                    {
+                        // The token-serial kernel's non-replay `S * dA + dB * x` contracts to exactly this FMA;
+                        // writing it out keeps the result independent of how this kernel's code gets contracted.
+                        float const dB = b.val[ii] * dtValue;
+                        runState[r][ii] = updateTokenState(runState[r][ii], dA, dB, x_val);
+                        out_val += runState[r][ii] * c.val[ii];
+                    }
+                    outValue[r][t] = out_val;
+                    if (stashReplay && t + 1 < seqLen)
+                    {
+                        roundTripStates<state_t>(runState[r]);
+                    }
+                }
+            }
+        }
+
+#pragma unroll
+        for (int r = 0; r < ROWS_PER_WARP; ++r)
+        {
+            int const d = firstRow + r;
+            if (d >= DIM)
+            {
+                break;
+            }
+            float const sum = warpReduceScatterSum(outValue[r], lane);
+            int const token = lane / lanesPerToken;
+            if (lane % lanesPerToken == 0 && token < params.seq_len)
+            {
+                convertAndStore(&output[batch * params.out_stride_batch + token * params.out_stride_seq
+                                    + head * params.out_stride_head + d],
+                    sum);
+            }
+
+            if constexpr (stashReplay)
+            {
+                if (lane == 0)
+                {
+#pragma unroll
+                    for (int t = 0; t < MAXT; ++t)
+                    {
+                        if (t < seqLen && t < params.replay_seq_len)
+                        {
+                            int64_t const tokenRow = static_cast<int64_t>(batch) * params.replay_seq_len + t;
+                            reinterpret_cast<float*>(params.replay_u)[(tokenRow * nheads + head) * DIM + d]
+                                = xValue[r][t];
+                        }
+                    }
+                }
+            }
+
+            if (params.update_state && validSlot)
+            {
+                stateVec rState;
+#pragma unroll
+                for (int ii = 0; ii < dstatePerLane; ++ii)
+                {
+                    convertAndStore(&rState.val[ii], runState[r][ii]);
+                }
+                *reinterpret_cast<stateVec*>(&stateRow[d * params.state_stride_dim + lane * dstatePerLane]) = rState;
+            }
+        }
+    };
+    if (replay)
+    {
+        scanRows(std::true_type{});
+    }
+    else
+    {
+        scanRows(std::false_type{});
     }
 }
 
@@ -733,7 +1047,7 @@ __global__ void mamba_tree_verify_kernel(
                     float const bValue
                         = toFloat(B[batch * params.B_stride_batch + token * params.B_stride_seq + group * DSTATE + i]);
                     float const dB = bValue * dtValue;
-                    runState[ii] = runState[ii] * dA + dB * xValue;
+                    runState[ii] = updateTokenState(runState[ii], dA, dB, xValue);
                 }
             }
 
@@ -810,13 +1124,17 @@ __global__ void mamba_tree_verify_kernel(
 
 // MTP spec-verify (replay): rebuild the committed recurrent state after acceptance by re-running the
 // SSD recurrence  S = dA * S + u ⊗ B  over the first ``p`` accepted tokens (params.context_lengths[b])
-// from the read-only committed state. The stash (replay_dA/u/B) was produced by the prefill kernel.
-// Same block/warp/lane mapping as the forward scan; the update is in-place on disjoint state elements.
-template <typename state_t, int DIM, int DSTATE, int numWarps>
-__global__ void mamba_replay_reconstruct_batched_kernel(MambaReplayLayerInfo const* __restrict__ layerInfos,
-    SelectiveStateUpdateParams params, int32_t const* __restrict__ acceptedNodeIds, int32_t maxAcceptLen)
+// from the read-only committed state. The stash (replay_dA/u/B) was produced by the verify scan.
+// Lanes own the same dstate slices as the forward scan; each warp advances ROWS_PER_WARP dim rows together so
+// the per-token operand loads are shared across rows, and blockIdx.y spans (head, row chunk).
+template <typename state_t, int DIM, int DSTATE, int ROWS_PER_WARP, int NUM_WARPS>
+__global__ void __launch_bounds__(NUM_WARPS* kWARP_SIZE) mamba_replay_reconstruct_batched_kernel(
+    MambaReplayLayerInfo const* __restrict__ layerInfos, SelectiveStateUpdateParams params,
+    int32_t const* __restrict__ acceptedNodeIds, int32_t maxAcceptLen, bool stateStridesVectorAligned)
 {
     constexpr int dstatePerLane = (DSTATE + kWARP_SIZE - 1) / kWARP_SIZE;
+    constexpr int rowsPerCta = ROWS_PER_WARP * NUM_WARPS;
+    constexpr int rowChunks = (DIM + rowsPerCta - 1) / rowsPerCta;
 
     int32_t const layer = blockIdx.z;
     MambaReplayLayerInfo const& layerInfo = layerInfos[layer];
@@ -829,70 +1147,121 @@ __global__ void mamba_replay_reconstruct_batched_kernel(MambaReplayLayerInfo con
     int const nheads = params.nheads;
     int const ngroups = params.ngroups;
 
-    auto const batch = blockIdx.x;
+    int const batch = blockIdx.x;
     auto const* stateIndices = static_cast<int32_t const*>(params.state_batch_indices);
-    auto const stateBatch = stateIndices ? stateIndices[batch] : static_cast<int32_t>(batch);
-    auto const head = blockIdx.y;
-    auto const group = head / (nheads / ngroups);
-    auto const lane = threadIdx.x % kWARP_SIZE;
-    auto const warp = threadIdx.y;
+    int32_t const stateBatch = stateIndices ? stateIndices[batch] : batch;
+    int const head = blockIdx.y / rowChunks;
+    int const firstRow = (blockIdx.y % rowChunks) * rowsPerCta + threadIdx.y * ROWS_PER_WARP;
+    int const group = head / (nheads / ngroups);
+    int const lane = threadIdx.x;
 
     bool const validSlot = stateBatch >= 0 && stateBatch < static_cast<int32_t>(params.state_cache_size)
         && (params.pad_slot_id < 0 || stateBatch != params.pad_slot_id);
     // Accepted-token count for this batch; 0 accepted => committed state already correct.
     int const p = params.context_lengths ? params.context_lengths[batch] : params.seq_len;
-    if (!validSlot || p <= 0)
+    if (!validSlot || p <= 0 || firstRow >= DIM)
         return;
 
     state += static_cast<int64_t>(stateBatch) * params.state_stride_batch + head * params.state_stride_head;
-    constexpr auto rowsPerWarp = (DIM + numWarps - 1) / numWarps;
 
-    for (int _d = warp * rowsPerWarp; _d < (warp + 1) * rowsPerWarp; _d++)
+    // Whole-slice vector access needs every lane to own a full, aligned dstate slice in this layer's state.
+    constexpr bool wholeSlices = DSTATE % kWARP_SIZE == 0;
+    using stateVec = PackedAligned<state_t, wholeSlices ? dstatePerLane : 1>;
+    bool const vectorState
+        = wholeSlices && stateStridesVectorAligned && reinterpret_cast<uintptr_t>(state) % sizeof(stateVec) == 0;
+    float runState[ROWS_PER_WARP][dstatePerLane];
+#pragma unroll
+    for (int r = 0; r < ROWS_PER_WARP; ++r)
     {
-        if (_d >= DIM)
-            break;
+        int const d = min(firstRow + r, DIM - 1);
+        if constexpr (wholeSlices)
+        {
+            if (vectorState)
+            {
+                auto const rState
+                    = *reinterpret_cast<stateVec const*>(&state[d * params.state_stride_dim + lane * dstatePerLane]);
+#pragma unroll
+                for (int ii = 0; ii < dstatePerLane; ++ii)
+                {
+                    runState[r][ii] = toFloat(rState.val[ii]);
+                }
+                continue;
+            }
+        }
+        {
+#pragma unroll
+            for (int ii = 0; ii < dstatePerLane; ++ii)
+            {
+                int const i = lane * dstatePerLane + ii;
+                runState[r][ii] = i < DSTATE ? toFloat(state[d * params.state_stride_dim + i]) : 0.f;
+            }
+        }
+    }
 
-        float runState[dstatePerLane];
+    int const replaySeqLen = static_cast<int>(params.replay_seq_len);
+    int const replayCount = acceptedNodeIds != nullptr ? min(min(p, replaySeqLen), maxAcceptLen) : min(p, replaySeqLen);
+    for (int t = 0; t < replayCount; ++t)
+    {
+        int32_t const token = acceptedNodeIds != nullptr ? acceptedNodeIds[batch * maxAcceptLen + t] : t;
+        if (token < 0 || token >= params.replay_seq_len)
+        {
+            continue;
+        }
+        int64_t const tokenRow = static_cast<int64_t>(batch) * params.replay_seq_len + token;
+        float const dA = replayDA[tokenRow * nheads + head];
+        float const dt = replayDt[tokenRow * nheads + head];
+        int64_t const bOff = (tokenRow * ngroups + group) * DSTATE;
+        float dB[dstatePerLane];
 #pragma unroll
         for (int ii = 0; ii < dstatePerLane; ++ii)
         {
             int const i = lane * dstatePerLane + ii;
-            runState[ii] = (i < DSTATE) ? toFloat(state[_d * params.state_stride_dim + i]) : 0.f;
+            dB[ii] = (i < DSTATE ? replayB[bOff + i] : 0.f) * dt;
         }
-
-        int const replaySeqLen = static_cast<int>(params.replay_seq_len);
-        int const replayCount
-            = acceptedNodeIds != nullptr ? min(min(p, replaySeqLen), maxAcceptLen) : min(p, replaySeqLen);
-        for (int t = 0; t < replayCount; ++t)
+#pragma unroll
+        for (int r = 0; r < ROWS_PER_WARP; ++r)
         {
-            int32_t const token = acceptedNodeIds != nullptr ? acceptedNodeIds[batch * maxAcceptLen + t] : t;
-            if (token < 0 || token >= params.replay_seq_len)
+            int const d = min(firstRow + r, DIM - 1);
+            float const x = replayU[(tokenRow * nheads + head) * DIM + d];
+#pragma unroll
+            for (int ii = 0; ii < dstatePerLane; ++ii)
             {
+                runState[r][ii] = updateTokenState(runState[r][ii], dA, dB[ii], x);
+            }
+            roundTripStates<state_t>(runState[r]);
+        }
+    }
+
+#pragma unroll
+    for (int r = 0; r < ROWS_PER_WARP; ++r)
+    {
+        int const d = firstRow + r;
+        if (d >= DIM)
+        {
+            break;
+        }
+        if constexpr (wholeSlices)
+        {
+            if (vectorState)
+            {
+                stateVec rState;
+#pragma unroll
+                for (int ii = 0; ii < dstatePerLane; ++ii)
+                {
+                    convertAndStore(&rState.val[ii], runState[r][ii]);
+                }
+                *reinterpret_cast<stateVec*>(&state[d * params.state_stride_dim + lane * dstatePerLane]) = rState;
                 continue;
             }
-            int64_t const tokenRow = static_cast<int64_t>(batch) * params.replay_seq_len + token;
-            float const dA = replayDA[tokenRow * nheads + head];
-            float const x = replayU[(tokenRow * nheads + head) * DIM + _d];
-            float const dt = replayDt[tokenRow * nheads + head];
-            int64_t const bOff = (tokenRow * ngroups + group) * DSTATE;
+        }
+        {
 #pragma unroll
             for (int ii = 0; ii < dstatePerLane; ++ii)
             {
                 int const i = lane * dstatePerLane + ii;
                 if (i < DSTATE)
-                {
-                    float const dB = replayB[bOff + i] * dt;
-                    runState[ii] = roundTripState<state_t>(runState[ii] * dA + dB * x);
-                }
+                    convertAndStore(&state[d * params.state_stride_dim + i], runState[r][ii]);
             }
-        }
-
-#pragma unroll
-        for (int ii = 0; ii < dstatePerLane; ++ii)
-        {
-            int const i = lane * dstatePerLane + ii;
-            if (i < DSTATE)
-                convertAndStore(&state[_d * params.state_stride_dim + i], runState[ii]);
         }
     }
 }
@@ -933,11 +1302,62 @@ struct SsmPrefillKernelLauncher
     template <int DIM, int DSTATE>
     void operator()()
     {
+        if constexpr (DSTATE % kWARP_SIZE == 0)
+        {
+            if (params.seq_len >= 1 && params.seq_len <= kMULTI_TOKEN_MAX_SEQ_LEN
+                && multiTokenOperandsAligned<DSTATE / kWARP_SIZE>())
+            {
+                if (params.seq_len == 1)
+                {
+                    launchMultiToken<DIM, DSTATE, 1, kSINGLE_TOKEN_ROWS_PER_WARP, kSINGLE_TOKEN_NUM_WARPS>();
+                }
+                else
+                {
+                    launchMultiToken<DIM, DSTATE, kMULTI_TOKEN_MAX_SEQ_LEN, kMULTI_TOKEN_ROWS_PER_WARP,
+                        kMULTI_TOKEN_NUM_WARPS>();
+                }
+                return;
+            }
+        }
         constexpr int numWarps = 4;
         dim3 block(kWARP_SIZE, numWarps);
         dim3 grid(params.batch, params.nheads);
         selective_state_update_prefill_kernel_simple<input_t, weight_t, matrixA_t, state_t, stateIndex_t, DIM, DSTATE,
             numWarps><<<grid, block, 0, stream>>>(params);
+    }
+
+private:
+    // The multi-token kernel accesses each lane's state slice, 4-element B/C chunks, and the replay B stash as
+    // single vectors.
+    template <int DSTATE_PER_LANE>
+    bool multiTokenOperandsAligned() const
+    {
+        auto const aligned
+            = [](void const* ptr, std::initializer_list<int64_t> strides, size_t elementBytes, size_t elements) {
+                  size_t const vectorBytes = elements * elementBytes;
+                  bool ok = reinterpret_cast<uintptr_t>(ptr) % vectorBytes == 0;
+                  for (int64_t const stride : strides)
+                  {
+                      ok = ok && (static_cast<size_t>(stride) * elementBytes) % vectorBytes == 0;
+                  }
+                  return ok;
+              };
+        constexpr size_t kCHUNK = 4;
+        return aligned(params.state, {params.state_stride_batch, params.state_stride_head, params.state_stride_dim},
+                   sizeof(state_t), DSTATE_PER_LANE)
+            && aligned(params.B, {params.B_stride_batch, params.B_stride_seq}, sizeof(input_t), kCHUNK)
+            && aligned(params.C, {params.C_stride_batch, params.C_stride_seq}, sizeof(input_t), kCHUNK)
+            && (params.replay_B == nullptr || aligned(params.replay_B, {}, sizeof(float), kCHUNK));
+    }
+
+    template <int DIM, int DSTATE, int MAXT, int ROWS_PER_WARP, int NUM_WARPS>
+    void launchMultiToken()
+    {
+        constexpr int rowsPerCta = ROWS_PER_WARP * NUM_WARPS;
+        dim3 const block(kWARP_SIZE, NUM_WARPS);
+        dim3 const grid(params.batch, params.nheads, (DIM + rowsPerCta - 1) / rowsPerCta);
+        selective_state_update_multi_token_kernel<input_t, weight_t, matrixA_t, state_t, DIM, DSTATE, MAXT,
+            ROWS_PER_WARP, NUM_WARPS><<<grid, block, 0, stream>>>(params);
     }
 };
 
@@ -972,11 +1392,27 @@ struct SsmReplayReconstructLauncher
     template <int DIM, int DSTATE>
     void operator()()
     {
-        constexpr int numWarps = 4;
-        dim3 block(kWARP_SIZE, numWarps);
-        dim3 grid(params.batch, params.nheads, numLayers);
-        mamba_replay_reconstruct_batched_kernel<state_t, DIM, DSTATE, numWarps>
-            <<<grid, block, 0, stream>>>(layerInfos, params, acceptedNodeIds, maxAcceptLen);
+        // Bound the per-lane FP32 state held across the token loop so the dstate-256 variants do not spill.
+        constexpr int dstatePerLane = (DSTATE + kWARP_SIZE - 1) / kWARP_SIZE;
+        constexpr int maxStatePerLane = DSTATE >= 256 ? 16 : 32;
+        constexpr int rowsPerWarp = std::min(kREPLAY_ROWS_PER_WARP, std::max(1, maxStatePerLane / dstatePerLane));
+        constexpr int rowsPerCta = rowsPerWarp * kREPLAY_NUM_WARPS;
+        constexpr int rowChunks = (DIM + rowsPerCta - 1) / rowsPerCta;
+        dim3 const block(kWARP_SIZE, kREPLAY_NUM_WARPS);
+        dim3 const grid(params.batch, params.nheads * rowChunks, numLayers);
+        mamba_replay_reconstruct_batched_kernel<state_t, DIM, DSTATE, rowsPerWarp, kREPLAY_NUM_WARPS>
+            <<<grid, block, 0, stream>>>(
+                layerInfos, params, acceptedNodeIds, maxAcceptLen, stridesVectorAligned<DSTATE>());
+    }
+
+private:
+    template <int DSTATE>
+    bool stridesVectorAligned() const
+    {
+        size_t const vectorBytes = ((DSTATE + kWARP_SIZE - 1) / kWARP_SIZE) * sizeof(state_t);
+        return (static_cast<size_t>(params.state_stride_batch) * sizeof(state_t)) % vectorBytes == 0
+            && (static_cast<size_t>(params.state_stride_head) * sizeof(state_t)) % vectorBytes == 0
+            && (static_cast<size_t>(params.state_stride_dim) * sizeof(state_t)) % vectorBytes == 0;
     }
 };
 
@@ -1056,11 +1492,11 @@ void invokeSelectiveStateUpdate(trt_edgellm::rt::Tensor const& x, trt_edgellm::r
         params.z_stride_head = z->get().getStride(1);
     }
 
-    if (x.getDataType() == nvinfer1::DataType::kHALF && dt.getDataType() == nvinfer1::DataType::kHALF)
+    if (x.getDataType() == trt_edgellm::DataType::kHALF && dt.getDataType() == trt_edgellm::DataType::kHALF)
     {
         invokeSelectiveStateUpdateImpl<half, half, float, half, int32_t>(params, stream);
     }
-    else if (x.getDataType() == nvinfer1::DataType::kHALF && dt.getDataType() == nvinfer1::DataType::kFLOAT)
+    else if (x.getDataType() == trt_edgellm::DataType::kHALF && dt.getDataType() == trt_edgellm::DataType::kFLOAT)
     {
         invokeSelectiveStateUpdateImpl<half, float, float, half, int32_t>(params, stream);
     }
@@ -1121,11 +1557,11 @@ void invokeSelectiveStateUpdatePrefill(trt_edgellm::rt::Tensor const& x, trt_edg
         params.z_stride_head = z->get().getStride(2);
     }
 
-    if (x.getDataType() == nvinfer1::DataType::kHALF && dt.getDataType() == nvinfer1::DataType::kHALF)
+    if (x.getDataType() == trt_edgellm::DataType::kHALF && dt.getDataType() == trt_edgellm::DataType::kHALF)
     {
         invokeSelectiveStateUpdatePrefillImpl<half, half, float, half, int32_t>(params, stream);
     }
-    else if (x.getDataType() == nvinfer1::DataType::kHALF && dt.getDataType() == nvinfer1::DataType::kFLOAT)
+    else if (x.getDataType() == trt_edgellm::DataType::kHALF && dt.getDataType() == trt_edgellm::DataType::kFLOAT)
     {
         invokeSelectiveStateUpdatePrefillImpl<half, float, float, half, int32_t>(params, stream);
     }
@@ -1153,8 +1589,8 @@ void invokeSelectiveStateUpdateDDTree(trt_edgellm::rt::Tensor const& x, trt_edge
     }
     if (treeParentIds.getDeviceType() != trt_edgellm::rt::DeviceType::kGPU
         || treeDepths.getDeviceType() != trt_edgellm::rt::DeviceType::kGPU
-        || treeParentIds.getDataType() != nvinfer1::DataType::kINT32
-        || treeDepths.getDataType() != nvinfer1::DataType::kINT32)
+        || treeParentIds.getDataType() != trt_edgellm::DataType::kINT32
+        || treeDepths.getDataType() != trt_edgellm::DataType::kINT32)
     {
         throw std::runtime_error("invokeSelectiveStateUpdateDDTree: tree metadata must be GPU INT32.");
     }
@@ -1182,13 +1618,13 @@ void invokeSelectiveStateUpdateDDTree(trt_edgellm::rt::Tensor const& x, trt_edge
     params.replay_dt = replayDT.rawPointer();
     params.update_state = false;
 
-    if (x.getDataType() == nvinfer1::DataType::kHALF && dt.getDataType() == nvinfer1::DataType::kHALF)
+    if (x.getDataType() == trt_edgellm::DataType::kHALF && dt.getDataType() == trt_edgellm::DataType::kHALF)
     {
         SsmTreeVerifyLauncher<half, half, float, half> launcher{
             params, treeParentIds.dataPointer<int32_t>(), treeDepths.dataPointer<int32_t>(), stream};
         dispatchDimDstate(params, AllowedDims{}, AllowedDstates{}, launcher);
     }
-    else if (x.getDataType() == nvinfer1::DataType::kHALF && dt.getDataType() == nvinfer1::DataType::kFLOAT)
+    else if (x.getDataType() == trt_edgellm::DataType::kHALF && dt.getDataType() == trt_edgellm::DataType::kFLOAT)
     {
         SsmTreeVerifyLauncher<half, float, float, half> launcher{
             params, treeParentIds.dataPointer<int32_t>(), treeDepths.dataPointer<int32_t>(), stream};
@@ -1246,15 +1682,15 @@ void invokeMambaReplayReconstructBatched(MambaReplayLayerInfo const* deviceLayer
             "invokeMambaReplayReconstructBatched: state must be rank four and cover the active batch.");
     }
     if (stateIndices.getDeviceType() != trt_edgellm::rt::DeviceType::kGPU
-        || stateIndices.getDataType() != nvinfer1::DataType::kINT32 || stateIndices.getShape().getNumDims() != 1
+        || stateIndices.getDataType() != trt_edgellm::DataType::kINT32 || stateIndices.getShape().getNumDims() != 1
         || stateIndices.getShape()[0] != activeBatchSize)
     {
         throw std::runtime_error(
             "invokeMambaReplayReconstructBatched: stateIndices must be GPU INT32 [activeBatchSize].");
     }
     if (acceptedLengths.getDeviceType() != trt_edgellm::rt::DeviceType::kGPU
-        || acceptedLengths.getDataType() != nvinfer1::DataType::kINT32 || acceptedLengths.getShape().getNumDims() != 1
-        || acceptedLengths.getShape()[0] != activeBatchSize)
+        || acceptedLengths.getDataType() != trt_edgellm::DataType::kINT32
+        || acceptedLengths.getShape().getNumDims() != 1 || acceptedLengths.getShape()[0] != activeBatchSize)
     {
         throw std::runtime_error(
             "invokeMambaReplayReconstructBatched: acceptedLengths must be GPU INT32 [activeBatchSize].");
@@ -1271,7 +1707,7 @@ void invokeMambaReplayReconstructBatched(MambaReplayLayerInfo const* deviceLayer
     {
         auto const idsShape = acceptedNodeIds->getShape();
         if (maxAcceptLen <= 0 || idsShape.getNumDims() != 2 || idsShape[0] < activeBatchSize
-            || idsShape[1] < maxAcceptLen || acceptedNodeIds->getDataType() != nvinfer1::DataType::kINT32
+            || idsShape[1] < maxAcceptLen || acceptedNodeIds->getDataType() != trt_edgellm::DataType::kINT32
             || acceptedNodeIds->getDeviceType() != trt_edgellm::rt::DeviceType::kGPU)
         {
             throw std::runtime_error(
@@ -1297,13 +1733,13 @@ void invokeMambaReplayReconstructBatched(MambaReplayLayerInfo const* deviceLayer
     params.replay_seq_len = replayU.getShape()[1]; // [batch, seq_len, nheads, dim]
     params.context_lengths = acceptedLengths.dataPointer<int32_t>();
 
-    if (state.getDataType() == nvinfer1::DataType::kHALF)
+    if (state.getDataType() == trt_edgellm::DataType::kHALF)
     {
         SsmReplayReconstructLauncher<half> launcher{params, deviceLayerInfos, numLayers,
             acceptedNodeIds != nullptr ? acceptedNodeIds->dataPointer<int32_t>() : nullptr, maxAcceptLen, stream};
         dispatchDimDstate(params, AllowedDims{}, AllowedDstates{}, launcher);
     }
-    else if (state.getDataType() == nvinfer1::DataType::kFLOAT)
+    else if (state.getDataType() == trt_edgellm::DataType::kFLOAT)
     {
         SsmReplayReconstructLauncher<float> launcher{params, deviceLayerInfos, numLayers,
             acceptedNodeIds != nullptr ? acceptedNodeIds->dataPointer<int32_t>() : nullptr, maxAcceptLen, stream};
@@ -1327,7 +1763,7 @@ void invokeMambaStateGather(trt_edgellm::rt::Tensor const& residentState, trt_ed
     }
     int64_t const rowBytes = logicalStateRowBytes(residentState);
     int32_t const residentRows = static_cast<int32_t>(residentState.getShape()[0]);
-    copyIndexedStateRowsKernel<false><<<activeRows, kStateCopyBlockSize, 0, stream>>>(
+    copyIndexedStateRowsKernel<false><<<stateCopyGrid(activeRows, rowBytes), kStateCopyBlockSize, 0, stream>>>(
         static_cast<uint8_t const*>(residentState.rawPointer()), static_cast<uint8_t*>(activeState.rawPointer()),
         stateIndices.dataPointer<int32_t>(), residentRows, rowBytes);
     CUDA_CHECK(cudaGetLastError());
@@ -1344,7 +1780,7 @@ void invokeMambaStateScatter(trt_edgellm::rt::Tensor const& activeState, trt_edg
     }
     int64_t const rowBytes = logicalStateRowBytes(residentState);
     int32_t const residentRows = static_cast<int32_t>(residentState.getShape()[0]);
-    copyIndexedStateRowsKernel<true><<<activeRows, kStateCopyBlockSize, 0, stream>>>(
+    copyIndexedStateRowsKernel<true><<<stateCopyGrid(activeRows, rowBytes), kStateCopyBlockSize, 0, stream>>>(
         static_cast<uint8_t const*>(activeState.rawPointer()), static_cast<uint8_t*>(residentState.rawPointer()),
         stateIndices.dataPointer<int32_t>(), residentRows, rowBytes);
     CUDA_CHECK(cudaGetLastError());

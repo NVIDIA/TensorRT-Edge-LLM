@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <gtest/gtest.h>
 #include <limits>
@@ -45,6 +46,8 @@ constexpr int32_t kNumKVHeadsPool = 2;
 constexpr int32_t kPoolHeadDim = 384;
 constexpr int32_t kHeadSize = 256;
 constexpr float kRmsEps = 1e-6f;
+//! kbar of block g sits in the V-tail of token 4g + 1 (see "Pool tails" in qsaIndexerKernels.h).
+constexpr int32_t kKbarTokenOffset = 1;
 
 //! These kernels are arch-generic; the only runtime requirement is any CUDA device.
 bool hasCudaDevice()
@@ -120,9 +123,9 @@ struct PagedPoolHarness
               __float2half(std::numeric_limits<float>::quiet_NaN()))
     {
         dPool = rt::Tensor({2 * numPages, qsa_ref::kTokensPerPage, kNumKVHeadsPool, kPoolHeadDim}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "pool");
+            trt_edgellm::DataType::kHALF, "pool");
         dPageTable
-            = rt::Tensor({batch, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "pageTable");
+            = rt::Tensor({batch, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "pageTable");
         upload();
         copyHostToDevice(dPageTable, pageTable);
     }
@@ -183,16 +186,18 @@ struct PreDecodeHarness
         cosSinF = makeCosSinTable(maxPositions);
 
         dIndexQk = rt::Tensor(
-            {batch, 1, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "indexQk");
-        dCosSin = rt::Tensor(
-            {maxPositions, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "cosSin");
-        dLens = rt::Tensor({batch}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "contextLengths");
-        dWQ = rt::Tensor({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "wQ");
-        dWK = rt::Tensor({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "wK");
+            {batch, 1, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "indexQk");
+        // Token-aligned decode rope rows (row b = sequence b's new token); the absolute table
+        // cosSinF stays host-side for the references.
+        dCosSin
+            = rt::Tensor({batch, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "cosSin");
+        dLens = rt::Tensor({batch}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "contextLengths");
+        dWQ = rt::Tensor({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "wQ");
+        dWK = rt::Tensor({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "wK");
         dQNormed = rt::Tensor({batch, 1, qsa_ref::kNumHeads, qsa_ref::kHeadDim}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "qNormed");
+            trt_edgellm::DataType::kHALF, "qNormed");
         copyHostToDevice(dIndexQk, indexQkH);
-        copyHostToDevice(dCosSin, cosSinF);
+        copyHostToDevice(dCosSin, qsa_ref::gatherCosSinRows(cosSinF, qsa_ref::decodeRopePositions(lens)));
         copyHostToDevice(dLens, lens);
         copyHostToDevice(dWQ, wQH);
         copyHostToDevice(dWK, wKH);
@@ -262,10 +267,24 @@ TEST(QsaIndexerDecode, PoolStateRejectsZeroHeadSize)
         /* batch = */ 1, /* numPages = */ 2, /* maxPagesPerSeq = */ 1, /* pagesUsed = */ 1, /* seed = */ 7);
     kernel::QsaIndexerPoolState bad = pool.state();
     bad.headSize = 0;
-    rt::Tensor dQk({1, 1, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "indexQk");
-    rt::Tensor dLens({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "contextLengths");
-    EXPECT_THROW(kernel::launchQsaRawKTailWritePrefill<half>(dQk.dataPointer<half>(), dLens.dataPointer<int32_t>(), bad,
-                     /* batchSize = */ 1, /* seqLen = */ 1, nullptr),
+    rt::Tensor dQk({1, 1, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "indexQk");
+    rt::Tensor dCosSin({1, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "cosSin");
+    rt::Tensor dLens({1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "contextLengths");
+    EXPECT_THROW(kernel::launchQsaRawKTailWritePrefill<half>(dQk.dataPointer<half>(), dCosSin.dataPointer<float>(),
+                     dLens.dataPointer<int32_t>(), nullptr, bad, /* batchSize = */ 1, /* seqLen = */ 1, nullptr),
+        std::runtime_error);
+    // An odd headSize would put the tail (and the FP32 block rope row) on a 2-byte boundary.
+    kernel::QsaIndexerPoolState odd = pool.state();
+    odd.headSize = 255;
+    EXPECT_THROW(kernel::launchQsaRawKTailWritePrefill<half>(dQk.dataPointer<half>(), dCosSin.dataPointer<float>(),
+                     dLens.dataPointer<int32_t>(), nullptr, odd, /* batchSize = */ 1, /* seqLen = */ 1, nullptr),
+        std::runtime_error);
+    // So would an odd row stride (numKVHeads * poolHeadDim), whatever the headSize.
+    kernel::QsaIndexerPoolState oddStride = pool.state();
+    oddStride.numKVHeads = 1;
+    oddStride.poolHeadDim = kPoolHeadDim + 1;
+    EXPECT_THROW(kernel::launchQsaRawKTailWritePrefill<half>(dQk.dataPointer<half>(), dCosSin.dataPointer<float>(),
+                     dLens.dataPointer<int32_t>(), nullptr, oddStride, /* batchSize = */ 1, /* seqLen = */ 1, nullptr),
         std::runtime_error);
 }
 
@@ -275,8 +294,7 @@ TEST(QsaIndexerDecode, PreDecodeQPrepMatchesReference)
     {
         GTEST_SKIP() << "No CUDA device available";
     }
-    // Positions 0, 5, and 129 (page-crossing); no length is a multiple of 4, so phase 3
-    // stays a device-side no-op.
+    // Positions 0, 5, and 129 (page-crossing).
     PreDecodeHarness h({1, 6, 130}, /* maxPositions = */ 256, /* seed = */ 2001);
     PagedPoolHarness pool(h.batch, /* numPages = */ 8, /* maxPagesPerSeq = */ 3, /* pagesUsed = */ 2, /* seed = */ 7);
     h.run(pool);
@@ -307,9 +325,9 @@ TEST(QsaIndexerDecode, PreDecodeRawTailWriteBitExactAndNaNSafe)
     h.run(pool);
     std::vector<half> const gotPool = pool.download();
 
-    // The only written cells are each sequence's K-tail of the new token (no length is a
-    // multiple of 4, so no V-tail compress happened); the values are bit-exact copies of
-    // indexQk columns [512, 640).
+    // The written cells are each sequence's K-tail of the new token plus, for b0 (token 0
+    // opens block 0), the block rope row in the V-tail of token 0; the K-tail values are
+    // bit-exact copies of indexQk columns [512, 640).
     std::vector<char> written(gotPool.size(), 0);
     for (int32_t b = 0; b < h.batch; ++b)
     {
@@ -321,6 +339,18 @@ TEST(QsaIndexerDecode, PreDecodeRawTailWriteBitExactAndNaNSafe)
                 bitsOf(h.indexQkH[static_cast<int64_t>(b) * qsa_ref::kIndexQkWidth + qsa_ref::kQRowWidth + d]))
                 << "b=" << b << " d=" << d;
             written[base + d] = 1;
+        }
+        if (h.lens[b] % qsa_ref::kRatio == 1)
+        {
+            int64_t const vBase = pool.tailOffset(b, /* plane = */ 1, pos);
+            std::vector<float> const ropeRow = qsa_ref::blockRopeRow(gotPool, vBase);
+            for (int32_t d = 0; d < qsa_ref::kRotaryDim; ++d)
+            {
+                ASSERT_EQ(qsa_ref::floatBits(ropeRow[d]),
+                    qsa_ref::floatBits(h.cosSinF[static_cast<int64_t>(pos) * qsa_ref::kRotaryDim + d]))
+                    << "block rope row b=" << b << " d=" << d;
+            }
+            std::fill_n(written.begin() + vBase, qsa_ref::kHeadDim, 1);
         }
     }
     for (size_t i = 0; i < gotPool.size(); ++i)
@@ -334,13 +364,15 @@ TEST(QsaIndexerDecode, PreDecodeRawTailWriteBitExactAndNaNSafe)
 
 TEST(QsaIndexerDecode, PreDecodeCompressBoundaryBitParityWithPrefill)
 {
+    // Given b0's K-tails of tokens 128..130 and block 32's rope row in the pool, and b1 one token
+    // short of completing block 32 with a sentinel in that block's kbar cell;
+    // when B1 runs at ctx 132 and 130;
+    // then b0's kbar of block 32 matches the reference and prefill K1b bit for bit, and b1's
+    // incomplete block keeps its kbar cell.
     if (!hasCudaDevice())
     {
         GTEST_SKIP() << "No CUDA device available";
     }
-    // b0 hits a block boundary (132 % 4 == 0): block 32 = tokens [128, 131] compresses with
-    // three raw keys read back from pool K-tails and the newest forwarded in registers.
-    // b1 (130 % 4 != 0) must not compress.
     PreDecodeHarness h({132, 130}, /* maxPositions = */ 256, /* seed = */ 2003);
     PagedPoolHarness pool(h.batch, /* numPages = */ 6, /* maxPagesPerSeq = */ 2, /* pagesUsed = */ 2, /* seed = */ 13);
 
@@ -353,6 +385,12 @@ TEST(QsaIndexerDecode, PreDecodeCompressBoundaryBitParityWithPrefill)
         int64_t const base = pool.tailOffset(0, /* plane = */ 0, 128 + j);
         std::copy(rawKH[j].begin(), rawKH[j].end(), pool.poolH.begin() + base);
     }
+    // ... and block 32's rope row the ctx = 129 step left in the V-tail of token 128: the 64 FP32
+    // cos/sin of position 128 as raw bytes.
+    std::memcpy(static_cast<void*>(pool.poolH.data() + pool.tailOffset(0, /* plane = */ 1, 128)),
+        h.cosSinF.data() + static_cast<int64_t>(128) * qsa_ref::kRotaryDim, qsa_ref::kRotaryDim * sizeof(float));
+    int64_t const b1KbarCell = pool.tailOffset(1, /* plane = */ 1, 128 + kKbarTokenOffset);
+    std::fill_n(pool.poolH.begin() + b1KbarCell, qsa_ref::kHeadDim, __float2half(7.0f));
     pool.upload();
     // Token 131's raw key is the new indexQk row's columns [512, 640).
     rawKH[3].assign(h.indexQkH.begin() + qsa_ref::kQRowWidth, h.indexQkH.begin() + qsa_ref::kIndexQkWidth);
@@ -360,7 +398,7 @@ TEST(QsaIndexerDecode, PreDecodeCompressBoundaryBitParityWithPrefill)
     h.run(pool);
     std::vector<half> const gotPool = pool.download();
 
-    // (1) kbar at the V-tail of token 128 matches the decode compress reference.
+    // (1) kbar at the V-tail of token 129 matches the compress reference.
     std::array<std::vector<float>, 4> rawKF;
     std::array<float const*, 4> rawKPtr{};
     for (int32_t j = 0; j < 4; ++j)
@@ -370,7 +408,7 @@ TEST(QsaIndexerDecode, PreDecodeCompressBoundaryBitParityWithPrefill)
     }
     std::vector<float> const refKbar
         = qsa_ref::refKCompressGroup(rawKPtr, h.cosSinF, /* firstToken = */ 128, h.wKF, kRmsEps);
-    int64_t const vBase = pool.tailOffset(0, /* plane = */ 1, 128);
+    int64_t const vBase = pool.tailOffset(0, /* plane = */ 1, 128 + kKbarTokenOffset);
     for (int32_t d = 0; d < qsa_ref::kHeadDim; ++d)
     {
         float const v = __half2float(gotPool[vBase + d]);
@@ -378,50 +416,39 @@ TEST(QsaIndexerDecode, PreDecodeCompressBoundaryBitParityWithPrefill)
             << "d=" << d << " got " << v << " want " << refKbar[d];
     }
 
-    // (2) BIT-PARITY with prefill K1b over the same 4 raw keys at the same rope position
-    // (blockBegin = 32, pastLen = 128 places the block at absolute tokens [128, 131]).
-    constexpr int32_t kNumBlocks = 33;
+    // (2) BIT-PARITY with prefill K1b over the same 4 raw keys. Local block 0 receives
+    // token-aligned rope rows for absolute positions 128..131.
+    constexpr int32_t kNumBlocks = 1;
     std::vector<half> prefillQk(static_cast<size_t>(4) * qsa_ref::kIndexQkWidth, __float2half(0.0f));
     for (int32_t j = 0; j < 4; ++j)
     {
         std::copy(rawKH[j].begin(), rawKH[j].end(),
             prefillQk.begin() + static_cast<int64_t>(j) * qsa_ref::kIndexQkWidth + qsa_ref::kQRowWidth);
     }
-    rt::Tensor dPrefillQk({1, 4, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "prefillQk");
-    rt::Tensor dPrefillLens({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "prefillLens");
-    rt::Tensor dKbar({1, kNumBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "kbar");
+    rt::Tensor dPrefillQk(
+        {1, 4, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "prefillQk");
+    rt::Tensor dPrefillLens({1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "prefillLens");
+    rt::Tensor dKbar({1, kNumBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "kbar");
+    rt::Tensor dPrefillCosSin(
+        {4, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "prefillCosSin");
     copyHostToDevice(dPrefillQk, prefillQk);
-    copyHostToDevice(dPrefillLens, std::vector<int32_t>{132});
+    copyHostToDevice(dPrefillLens, std::vector<int32_t>{4});
+    copyHostToDevice(dPrefillCosSin, qsa_ref::gatherCosSinRows(h.cosSinF, {128, 129, 130, 131}));
     kernel::launchQsaIndexKCompress<half>(dKbar.dataPointer<half>(), dPrefillQk.dataPointer<half>(),
-        h.dCosSin.dataPointer<float>(), dPrefillLens.dataPointer<int32_t>(), h.dWK.dataPointer<half>(), kRmsEps,
-        /* batchSize = */ 1, /* seqLen = */ 4, kNumBlocks, /* blockBegin = */ 32, /* blockEnd = */ 33,
-        /* pastLen = */ 128, nullptr);
+        dPrefillCosSin.dataPointer<float>(), dPrefillLens.dataPointer<int32_t>(), h.dWK.dataPointer<half>(), kRmsEps,
+        /* batchSize = */ 1, /* seqLen = */ 4, kNumBlocks, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<half> const prefillKbar = copyDeviceToHost<half>(dKbar);
     for (int32_t d = 0; d < qsa_ref::kHeadDim; ++d)
     {
-        ASSERT_EQ(bitsOf(gotPool[vBase + d]), bitsOf(prefillKbar[static_cast<int64_t>(32) * qsa_ref::kHeadDim + d]))
+        ASSERT_EQ(bitsOf(gotPool[vBase + d]), bitsOf(prefillKbar[d]))
             << "decode compress not bit-identical to prefill K1b at d=" << d;
     }
 
-    // (3) The completing token's raw key is consumed from registers, never persisted: b0's
-    // K-tail of token 131 stays NaN.
+    // (3) b1's block 32 is incomplete: its kbar cell keeps the sentinel.
+    for (int32_t d = 0; d < qsa_ref::kHeadDim; ++d)
     {
-        int64_t const base = pool.tailOffset(0, /* plane = */ 0, 131);
-        for (int32_t d = 0; d < qsa_ref::kHeadDim; ++d)
-        {
-            ASSERT_TRUE(std::isnan(__half2float(gotPool[base + d]))) << "b0 K-tail of token 131 d=" << d;
-        }
-    }
-
-    // (4) b1 crossed no boundary: its V plane stays NaN.
-    for (int32_t g = 0; g < 130 / qsa_ref::kRatio; ++g)
-    {
-        int64_t const base = pool.tailOffset(1, /* plane = */ 1, g * qsa_ref::kRatio);
-        for (int32_t d = 0; d < qsa_ref::kHeadDim; ++d)
-        {
-            ASSERT_TRUE(std::isnan(__half2float(gotPool[base + d]))) << "b1 V-tail g=" << g << " d=" << d;
-        }
+        ASSERT_EQ(__half2float(gotPool[b1KbarCell + d]), 7.0f) << "b1 kbar cell of block 32 d=" << d;
     }
 }
 
@@ -447,7 +474,7 @@ TEST(QsaIndexerDecode, ScoresDecodeMatchesReference)
         for (int32_t g = 0; g < numVisible; ++g)
         {
             std::vector<half> const row = randomHalves(qsa_ref::kHeadDim, rng);
-            int64_t const base = pool.tailOffset(b, /* plane = */ 1, g * qsa_ref::kRatio);
+            int64_t const base = pool.tailOffset(b, /* plane = */ 1, g * qsa_ref::kRatio + kKbarTokenOffset);
             std::copy(row.begin(), row.end(), pool.poolH.begin() + base);
             for (half v : row)
             {
@@ -459,15 +486,15 @@ TEST(QsaIndexerDecode, ScoresDecodeMatchesReference)
 
     std::vector<half> const qNormedH = randomHalves(static_cast<size_t>(kBatch) * qsa_ref::kQRowWidth, rng);
     std::vector<float> const qNormedF = toFloats(qNormedH);
-    rt::Tensor dQNormed(
-        {kBatch, 1, qsa_ref::kNumHeads, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "qNormed");
-    rt::Tensor dLens({kBatch}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "contextLengths");
+    rt::Tensor dQNormed({kBatch, 1, qsa_ref::kNumHeads, qsa_ref::kHeadDim}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kHALF, "qNormed");
+    rt::Tensor dLens({kBatch}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "contextLengths");
     copyHostToDevice(dQNormed, qNormedH);
     copyHostToDevice(dLens, lens);
 
     // Sentinel-filled logits: only the valid prefix may be overwritten.
     constexpr float kSentinel = 1e30f;
-    rt::Tensor dLogits({kBatch, kMaxBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "logits");
+    rt::Tensor dLogits({kBatch, kMaxBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "logits");
     copyHostToDevice(dLogits, std::vector<float>(static_cast<size_t>(kBatch) * kMaxBlocks, kSentinel));
 
     kernel::launchQsaIndexScoresDecode<half>(dLogits.dataPointer<float>(), dQNormed.dataPointer<half>(),
@@ -505,10 +532,10 @@ std::vector<int32_t> runTopKExpand(std::vector<float> const& logitsHost, std::ve
     int32_t maxBlocks, bool withCounters, std::vector<int32_t>* countersOut, int32_t outIdxPoison = -7)
 {
     int32_t const batch = static_cast<int32_t>(lens.size());
-    rt::Tensor dLogits({batch, maxBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "logits");
-    rt::Tensor dLens({batch}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "contextLengths");
-    rt::Tensor dOutIdx({batch, 1, kWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "outIdx");
-    rt::Tensor dCounters({batch, kNumKVHeadsPool}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "counters");
+    rt::Tensor dLogits({batch, maxBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "logits");
+    rt::Tensor dLens({batch}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "contextLengths");
+    rt::Tensor dOutIdx({batch, 1, kWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "outIdx");
+    rt::Tensor dCounters({batch, kNumKVHeadsPool}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "counters");
     copyHostToDevice(dLogits, logitsHost);
     copyHostToDevice(dLens, lens);
     copyHostToDevice(dOutIdx, std::vector<int32_t>(static_cast<size_t>(batch) * kWidth, outIdxPoison));
@@ -736,46 +763,40 @@ TEST(QsaIndexerDecode, PrefillTailPopulationMatchesDenseKbar)
     std::vector<float> const cosSinF = makeCosSinTable(kSeqLen);
 
     rt::Tensor dIndexQk(
-        {kBatch, kSeqLen, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "indexQk");
-    rt::Tensor dCosSin({kSeqLen, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "cosSin");
-    rt::Tensor dLens({kBatch}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "contextLengths");
-    rt::Tensor dWK({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "wK");
-    rt::Tensor dKbarPaged(
-        {kBatch, kNumBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "kbarPaged");
+        {kBatch, kSeqLen, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "indexQk");
+    rt::Tensor dCosSin({static_cast<int64_t>(kBatch) * kSeqLen, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kFLOAT, "cosSin");
+    rt::Tensor dLens({kBatch}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "contextLengths");
+    rt::Tensor dWK({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "wK");
+    rt::Tensor dOutIdx({kBatch, kSeqLen, kWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "outIdx");
+    size_t const workspaceBytes = kernel::getQsaIndexerWorkspaceSize(kBatch, kSeqLen, kNumBlocks, true);
+    rt::Tensor dWorkspace(
+        {static_cast<int64_t>(workspaceBytes)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "workspace");
     rt::Tensor dKbarPlain(
-        {kBatch, kNumBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "kbarPlain");
+        {kBatch, kNumBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "kbarPlain");
     copyHostToDevice(dIndexQk, indexQkH);
-    copyHostToDevice(dCosSin, cosSinF);
+    copyHostToDevice(dCosSin, qsa_ref::gatherCosSinRows(cosSinF, qsa_ref::prefillRopePositions(lens, kSeqLen)));
     copyHostToDevice(dLens, lens);
     copyHostToDevice(dWK, wKH);
 
-    kernel::launchQsaRawKTailWritePrefill<half>(
-        dIndexQk.dataPointer<half>(), dLens.dataPointer<int32_t>(), pool.state(), kBatch, kSeqLen, nullptr);
-    kernel::launchQsaIndexKCompressPaged<half>(dKbarPaged.dataPointer<half>(), dIndexQk.dataPointer<half>(),
-        dCosSin.dataPointer<float>(), dLens.dataPointer<int32_t>(), dWK.dataPointer<half>(), kRmsEps, pool.state(),
-        kBatch, kSeqLen, kNumBlocks, /* blockBegin = */ 0, /* blockEnd = */ kNumBlocks, /* pastLen = */ 0, nullptr);
+    auto const poolState = pool.state();
+    kernel::runQsaIndexerPrefill<half>(dOutIdx.dataPointer<int32_t>(), dIndexQk.dataPointer<half>(),
+        dCosSin.dataPointer<float>(), dLens.dataPointer<int32_t>(), nullptr, dWK.dataPointer<half>(),
+        dWK.dataPointer<half>(), kRmsEps, &poolState, dWorkspace.rawPointer(), workspaceBytes, kBatch, kSeqLen,
+        kNumBlocks, nullptr);
     kernel::launchQsaIndexKCompress<half>(dKbarPlain.dataPointer<half>(), dIndexQk.dataPointer<half>(),
         dCosSin.dataPointer<float>(), dLens.dataPointer<int32_t>(), dWK.dataPointer<half>(), kRmsEps, kBatch, kSeqLen,
-        kNumBlocks, /* blockBegin = */ 0, /* blockEnd = */ kNumBlocks, /* pastLen = */ 0, nullptr);
+        kNumBlocks, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    // The paged variant's dense output stays bit-identical to plain K1b.
-    std::vector<half> const kbarPaged = copyDeviceToHost<half>(dKbarPaged);
     std::vector<half> const kbarPlain = copyDeviceToHost<half>(dKbarPlain);
-    ASSERT_EQ(kbarPaged.size(), kbarPlain.size());
-    for (size_t i = 0; i < kbarPaged.size(); ++i)
-    {
-        ASSERT_EQ(bitsOf(kbarPaged[i]), bitsOf(kbarPlain[i])) << "dense kbar diverged at " << i;
-    }
 
     std::vector<half> const gotPool = pool.download();
     std::vector<char> written(gotPool.size(), 0);
     for (int32_t b = 0; b < kBatch; ++b)
     {
-        // K-tails: bit-exact copies of indexQk columns [512, 640) for the trailing INCOMPLETE
-        // block's tokens only (137 -> token 136; 90 -> tokens 88, 89); complete blocks store
-        // no raw rows (their K-tails must stay NaN, checked below).
-        for (int32_t t = lens[b] - lens[b] % qsa_ref::kRatio; t < lens[b]; ++t)
+        // K-tails: bit-exact copies of indexQk columns [512, 640) for every token.
+        for (int32_t t = 0; t < lens[b]; ++t)
         {
             int64_t const base = pool.tailOffset(b, /* plane = */ 0, t);
             int64_t const src = (static_cast<int64_t>(b) * kSeqLen + t) * qsa_ref::kIndexQkWidth + qsa_ref::kQRowWidth;
@@ -786,18 +807,28 @@ TEST(QsaIndexerDecode, PrefillTailPopulationMatchesDenseKbar)
                 written[base + d] = 1;
             }
         }
-        // V-tails: bit-exact copies of the dense kbar rows for every COMPLETE block.
-        for (int32_t g = 0; g < kNumBlocks; ++g)
+        // V-tails: every block's rope row (64 FP32 of position 4g, raw bytes) at token 4g, and the
+        // dense kbar row of every COMPLETE block at token 4g + 1.
+        for (int32_t g = 0; g * qsa_ref::kRatio < lens[b]; ++g)
         {
-            if (g * qsa_ref::kRatio + qsa_ref::kRatio - 1 >= lens[b])
+            int64_t const ropeBase = pool.tailOffset(b, /* plane = */ 1, g * qsa_ref::kRatio);
+            std::vector<float> const ropeRow = qsa_ref::blockRopeRow(gotPool, ropeBase);
+            for (int32_t d = 0; d < qsa_ref::kRotaryDim; ++d)
             {
-                continue; // incomplete block: its V-tail must stay NaN (checked below)
+                ASSERT_EQ(qsa_ref::floatBits(ropeRow[d]),
+                    qsa_ref::floatBits(cosSinF[static_cast<int64_t>(g) * qsa_ref::kRatio * qsa_ref::kRotaryDim + d]))
+                    << "block rope row b=" << b << " g=" << g << " d=" << d;
             }
-            int64_t const base = pool.tailOffset(b, /* plane = */ 1, g * qsa_ref::kRatio);
+            std::fill_n(written.begin() + ropeBase, qsa_ref::kHeadDim, 1);
+            if (g * qsa_ref::kRatio + qsa_ref::kRatio > lens[b])
+            {
+                continue; // incomplete block: no kbar
+            }
+            int64_t const base = pool.tailOffset(b, /* plane = */ 1, g * qsa_ref::kRatio + kKbarTokenOffset);
             int64_t const src = (static_cast<int64_t>(b) * kNumBlocks + g) * qsa_ref::kHeadDim;
             for (int32_t d = 0; d < qsa_ref::kHeadDim; ++d)
             {
-                ASSERT_EQ(bitsOf(gotPool[base + d]), bitsOf(kbarPaged[src + d]))
+                ASSERT_EQ(bitsOf(gotPool[base + d]), bitsOf(kbarPlain[src + d]))
                     << "b=" << b << " g=" << g << " d=" << d;
                 written[base + d] = 1;
             }
@@ -828,12 +859,6 @@ TEST(QsaIndexerDecode, MultiStepLadderMatchesReference)
     // first decode boundary (ctx 64) compresses three PREFILL-written K-tails.
     std::vector<int32_t> lens = {64, 63};
     std::vector<int32_t> const prefillLens = lens;
-    // A token's raw index-K is persisted only while its block is incomplete: never for the
-    // block-completing token (t % 4 == 3), and after a prefill just for its trailing block.
-    auto const rawTailWritten = [&prefillLens](int32_t b, int32_t t) {
-        int32_t const trailingStart = prefillLens[b] - prefillLens[b] % qsa_ref::kRatio;
-        return t >= trailingStart && t % qsa_ref::kRatio != qsa_ref::kRatio - 1;
-    };
     std::mt19937 rng(90210);
 
     PagedPoolHarness pool(kBatch, /* numPages = */ 4, /* maxPagesPerSeq = */ 2, /* pagesUsed = */ 1, /* seed = */ 23);
@@ -863,40 +888,48 @@ TEST(QsaIndexerDecode, MultiStepLadderMatchesReference)
         }
     }
 
-    rt::Tensor dCosSin(
-        {kMaxPositions, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "cosSin");
-    rt::Tensor dLens({kBatch}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "contextLengths");
-    rt::Tensor dWQ({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "wQ");
-    rt::Tensor dWK({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "wK");
-    copyHostToDevice(dCosSin, cosSinF);
+    // Decode rope rows are token-aligned ([kBatch, 64], row b = the new token) and refilled
+    // every step; the absolute table cosSinF stays host-side for the references.
+    rt::Tensor dCosSin({kBatch, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "cosSin");
+    rt::Tensor dLens({kBatch}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "contextLengths");
+    rt::Tensor dWQ({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "wQ");
+    rt::Tensor dWK({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "wK");
     copyHostToDevice(dLens, lens);
     copyHostToDevice(dWQ, wQH);
     copyHostToDevice(dWK, wKH);
 
-    // Prefill tail population (kernels 4a + 4b).
+    // Populate the pool tails through the prefill pipeline.
     {
         constexpr int32_t kPrefillBlocks = kPrefillSeqLen / qsa_ref::kRatio;
         rt::Tensor dPrefillQk({kBatch, kPrefillSeqLen, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "prefillQk");
-        rt::Tensor dKbar(
-            {kBatch, kPrefillBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "kbar");
+            trt_edgellm::DataType::kHALF, "prefillQk");
+        rt::Tensor dPrefillOut(
+            {kBatch, kPrefillSeqLen, kWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "prefillOut");
+        size_t const prefillWorkspaceBytes
+            = kernel::getQsaIndexerWorkspaceSize(kBatch, kPrefillSeqLen, kPrefillBlocks, true);
+        rt::Tensor dPrefillWorkspace({static_cast<int64_t>(prefillWorkspaceBytes)}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kINT8, "prefillWorkspace");
+        // Prefill rope rows: token-aligned [kBatch * kPrefillSeqLen, 64]; b1's padding row 63 is NaN.
+        rt::Tensor dPrefillCosSin({static_cast<int64_t>(kBatch) * kPrefillSeqLen, qsa_ref::kRotaryDim},
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "prefillCosSin");
         copyHostToDevice(dPrefillQk, prefillQkH);
-        kernel::launchQsaRawKTailWritePrefill<half>(dPrefillQk.dataPointer<half>(), dLens.dataPointer<int32_t>(),
-            pool.state(), kBatch, kPrefillSeqLen, nullptr);
-        kernel::launchQsaIndexKCompressPaged<half>(dKbar.dataPointer<half>(), dPrefillQk.dataPointer<half>(),
-            dCosSin.dataPointer<float>(), dLens.dataPointer<int32_t>(), dWK.dataPointer<half>(), kRmsEps, pool.state(),
-            kBatch, kPrefillSeqLen, kPrefillBlocks, /* blockBegin = */ 0, /* blockEnd = */ kPrefillBlocks,
-            /* pastLen = */ 0, nullptr);
+        copyHostToDevice(dPrefillCosSin,
+            qsa_ref::gatherCosSinRows(cosSinF, qsa_ref::prefillRopePositions(prefillLens, kPrefillSeqLen)));
+        auto const poolState = pool.state();
+        kernel::runQsaIndexerPrefill<half>(dPrefillOut.dataPointer<int32_t>(), dPrefillQk.dataPointer<half>(),
+            dPrefillCosSin.dataPointer<float>(), dLens.dataPointer<int32_t>(), nullptr, dWQ.dataPointer<half>(),
+            dWK.dataPointer<half>(), kRmsEps, &poolState, dPrefillWorkspace.rawPointer(), prefillWorkspaceBytes, kBatch,
+            kPrefillSeqLen, kPrefillBlocks, nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
     size_t const workspaceBytes = kernel::getQsaIndexerDecodeWorkspaceSize(kBatch, kMaxBlocks);
     rt::Tensor dWorkspace(
-        {static_cast<int64_t>(workspaceBytes)}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "workspace");
+        {static_cast<int64_t>(workspaceBytes)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "workspace");
     rt::Tensor dIndexQk(
-        {kBatch, 1, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "indexQk");
-    rt::Tensor dOutIdx({kBatch, 1, kWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "outIdx");
-    rt::Tensor dCounters({kBatch, kNumKVHeadsPool}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "counters");
+        {kBatch, 1, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "indexQk");
+    rt::Tensor dOutIdx({kBatch, 1, kWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "outIdx");
+    rt::Tensor dCounters({kBatch, kNumKVHeadsPool}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "counters");
     // Documented decode workspace layout: slot 0 qNormed [B, 1, 4, 128] T, slot 1 logits
     // [B, maxBlocks] FP32, 128-byte-aligned slots.
     auto const alignUp = [](size_t bytes) { return (bytes + 127) / 128 * 128; };
@@ -919,6 +952,7 @@ TEST(QsaIndexerDecode, MultiStepLadderMatchesReference)
         }
         copyHostToDevice(dIndexQk, newRowsH);
         copyHostToDevice(dLens, lens);
+        copyHostToDevice(dCosSin, qsa_ref::gatherCosSinRows(cosSinF, qsa_ref::decodeRopePositions(lens)));
         copyHostToDevice(dOutIdx, std::vector<int32_t>(static_cast<size_t>(kBatch) * kWidth, -7));
         copyHostToDevice(dCounters, std::vector<int32_t>(static_cast<size_t>(kBatch) * kNumKVHeadsPool, 99));
 
@@ -965,14 +999,9 @@ TEST(QsaIndexerDecode, MultiStepLadderMatchesReference)
                 ASSERT_TRUE(isclose(v, qRef[i], /* rtol = */ 1e-2f, /* atol = */ 1e-3f)) << "qNormed i=" << i;
             }
 
-            // (2) Raw K-tails: bit-exact copies for exactly the tokens whose block was still
-            // incomplete when they arrived (stale copies are left in place, never read).
+            // (2) Raw K-tails: bit-exact copies for every token.
             for (int32_t t = 0; t < ctx; ++t)
             {
-                if (!rawTailWritten(b, t))
-                {
-                    continue;
-                }
                 int64_t const base = pool.tailOffset(b, /* plane = */ 0, t);
                 float const* src
                     = histF[b].data() + static_cast<int64_t>(t) * qsa_ref::kIndexQkWidth + qsa_ref::kQRowWidth;
@@ -986,7 +1015,7 @@ TEST(QsaIndexerDecode, MultiStepLadderMatchesReference)
             std::vector<float> kbarRows(static_cast<size_t>(numVisible) * qsa_ref::kHeadDim);
             for (int32_t g = 0; g < numVisible; ++g)
             {
-                int64_t const base = pool.tailOffset(b, /* plane = */ 1, g * qsa_ref::kRatio);
+                int64_t const base = pool.tailOffset(b, /* plane = */ 1, g * qsa_ref::kRatio + kKbarTokenOffset);
                 for (int32_t d = 0; d < qsa_ref::kHeadDim; ++d)
                 {
                     float const v = __half2float(gotPool[base + d]);
@@ -1023,6 +1052,20 @@ TEST(QsaIndexerDecode, MultiStepLadderMatchesReference)
             std::vector<int32_t> expected(numVisible);
             std::iota(expected.begin(), expected.end(), 0);
             ASSERT_EQ(sorted(gpuBlocks), expected);
+
+            // (6) Block rope rows: the first token of every block keeps the 64 FP32 cos/sin of its
+            // position in its V-tail (bit-exact), written by the prefill or by B1.
+            for (int32_t first = 0; first < ctx; first += qsa_ref::kRatio)
+            {
+                std::vector<float> const ropeRow
+                    = qsa_ref::blockRopeRow(gotPool, pool.tailOffset(b, /* plane = */ 1, first));
+                for (int32_t d = 0; d < qsa_ref::kRotaryDim; ++d)
+                {
+                    ASSERT_EQ(qsa_ref::floatBits(ropeRow[d]),
+                        qsa_ref::floatBits(cosSinF[static_cast<int64_t>(first) * qsa_ref::kRotaryDim + d]))
+                        << "block rope row token=" << first << " d=" << d;
+                }
+            }
         }
         for (int32_t c : counters)
         {
@@ -1034,27 +1077,26 @@ TEST(QsaIndexerDecode, MultiStepLadderMatchesReference)
         }
     }
 
-    // NaN discipline after the full ladder: only the K-tails of tokens that arrived into an
-    // incomplete block and the V-tails of complete blocks may have been written; everything
-    // else — including every K-tail of the blocks prefill completed and every
-    // block-completing token — must still be NaN.
+    // NaN discipline after the full ladder: only the K-tails of present tokens, the rope rows of
+    // present blocks and the kbar cells of complete blocks may have been written.
     std::vector<half> const gotPool = pool.download();
     std::vector<char> written(gotPool.size(), 0);
     for (int32_t b = 0; b < kBatch; ++b)
     {
         for (int32_t t = 0; t < lens[b]; ++t)
         {
-            if (!rawTailWritten(b, t))
-            {
-                continue;
-            }
             int64_t const base = pool.tailOffset(b, /* plane = */ 0, t);
             std::fill_n(written.begin() + base, qsa_ref::kHeadDim, 1);
         }
-        for (int32_t g = 0; g < lens[b] / qsa_ref::kRatio; ++g)
+        for (int32_t g = 0; g * qsa_ref::kRatio < lens[b]; ++g)
         {
-            int64_t const base = pool.tailOffset(b, /* plane = */ 1, g * qsa_ref::kRatio);
-            std::fill_n(written.begin() + base, qsa_ref::kHeadDim, 1);
+            int64_t const ropeBase = pool.tailOffset(b, /* plane = */ 1, g * qsa_ref::kRatio);
+            std::fill_n(written.begin() + ropeBase, qsa_ref::kHeadDim, 1);
+            if (g < lens[b] / qsa_ref::kRatio)
+            {
+                int64_t const base = pool.tailOffset(b, /* plane = */ 1, g * qsa_ref::kRatio + kKbarTokenOffset);
+                std::fill_n(written.begin() + base, qsa_ref::kHeadDim, 1);
+            }
         }
     }
     for (size_t i = 0; i < gotPool.size(); ++i)
@@ -1064,4 +1106,290 @@ TEST(QsaIndexerDecode, MultiStepLadderMatchesReference)
             ASSERT_TRUE(std::isnan(__half2float(gotPool[i]))) << "pool cell " << i << " was clobbered";
         }
     }
+}
+
+namespace
+{
+
+template <typename T>
+void checkChunkPrefillAndDecode(trt_edgellm::DataType dataType)
+{
+    constexpr int32_t kBatch = 8;
+    constexpr int32_t kChunkLen = 9;
+    constexpr int32_t kDecodeSteps = 4;
+    constexpr int32_t kFullLen = 2072;
+    constexpr int32_t kMaxBlocks = kFullLen / qsa_ref::kRatio;
+    constexpr int32_t kPagesPerSeq = (kFullLen + qsa_ref::kTokensPerPage - 1) / qsa_ref::kTokensPerPage;
+    constexpr int32_t kNumPages = kBatch * kPagesPerSeq;
+    std::vector<int32_t> const past = {0, 1, 2, 3, 127, 2051, 130, 129};
+    std::vector<int32_t> const queries = {9, 8, 1, 6, 9, 9, 0, 2};
+    std::vector<int32_t> total(kBatch);
+    for (int32_t b = 0; b < kBatch; ++b)
+    {
+        total[b] = past[b] + queries[b] + kDecodeSteps;
+    }
+
+    std::mt19937 rng(137);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    auto randomValues = [&](size_t count) {
+        std::vector<T> values(count);
+        for (T& value : values)
+        {
+            value = static_cast<T>(dist(rng));
+        }
+        return values;
+    };
+    auto bits = [](T value) {
+        uint16_t result;
+        std::memcpy(&result, &value, sizeof(result));
+        return result;
+    };
+    std::vector<T> const history = randomValues(static_cast<size_t>(kBatch) * kFullLen * qsa_ref::kIndexQkWidth);
+    std::vector<T> const wQ = randomValues(qsa_ref::kHeadDim);
+    std::vector<T> const wK = randomValues(qsa_ref::kHeadDim);
+    std::vector<float> const rope = makeCosSinTable(kFullLen);
+    T const poison = static_cast<T>(std::numeric_limits<float>::quiet_NaN());
+    std::vector<int32_t> const pageTable
+        = qsa_ref::makePermutedPageTable(kBatch, kPagesPerSeq, kPagesPerSeq, kNumPages, 47);
+    rt::Tensor dPool({2 * kNumPages, qsa_ref::kTokensPerPage, kNumKVHeadsPool, kPoolHeadDim}, rt::DeviceType::kGPU,
+        dataType, "chunkPool");
+    rt::Tensor dPages({kBatch, 2, kPagesPerSeq}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "chunkPages");
+    copyHostToDevice(dPool,
+        std::vector<T>(
+            static_cast<size_t>(2) * kNumPages * qsa_ref::kTokensPerPage * kNumKVHeadsPool * kPoolHeadDim, poison));
+    copyHostToDevice(dPages, pageTable);
+    kernel::QsaIndexerPoolState const pool{dPool.rawPointer(), dPages.dataPointer<int32_t>(), kPagesPerSeq, kNumPages,
+        kNumKVHeadsPool, kPoolHeadDim, kHeadSize};
+    auto tailOffset = [&](int32_t b, int32_t plane, int32_t token) {
+        int32_t const page = qsa_ref::pageOf(pageTable, kPagesPerSeq, b, plane, token);
+        return qsa_ref::poolOffset(page, token % qsa_ref::kTokensPerPage, 0, kHeadSize, kNumKVHeadsPool, kPoolHeadDim);
+    };
+
+    rt::Tensor dHistory({kBatch, kFullLen, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, dataType, "history");
+    rt::Tensor dRope(
+        {kBatch, kFullLen, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "rope");
+    rt::Tensor dWQ({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, dataType, "wQ");
+    rt::Tensor dWK({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, dataType, "wK");
+    rt::Tensor dLengths({kBatch}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "lengths");
+    rt::Tensor dPast({kBatch}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "past");
+    rt::Tensor dKbar({kBatch, kMaxBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, dataType, "kbar");
+    rt::Tensor dFullOut({kBatch, kFullLen, kWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "fullOut");
+    copyHostToDevice(dHistory, history);
+    copyHostToDevice(dRope, qsa_ref::gatherCosSinRows(rope, qsa_ref::prefillRopePositions(total, kFullLen)));
+    copyHostToDevice(dWQ, wQ);
+    copyHostToDevice(dWK, wK);
+    copyHostToDevice(dPast, past);
+    copyHostToDevice(dLengths, total);
+    size_t const fullWorkspaceBytes = kernel::getQsaIndexerWorkspaceSize(kBatch, kFullLen, kMaxBlocks, false);
+    rt::Tensor dFullWorkspace({static_cast<int64_t>(fullWorkspaceBytes)}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kINT8, "fullWorkspace");
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    Defer cleanup([&] { cudaStreamDestroy(stream); });
+    kernel::runQsaIndexerPrefill<T>(dFullOut.dataPointer<int32_t>(), dHistory.dataPointer<T>(),
+        dRope.dataPointer<float>(), dLengths.dataPointer<int32_t>(), nullptr, dWQ.dataPointer<T>(),
+        dWK.dataPointer<T>(), kRmsEps, nullptr, dFullWorkspace.rawPointer(), fullWorkspaceBytes, kBatch, kFullLen,
+        kMaxBlocks, stream);
+    kernel::launchQsaIndexKCompress<T>(dKbar.dataPointer<T>(), dHistory.dataPointer<T>(), dRope.dataPointer<float>(),
+        dLengths.dataPointer<int32_t>(), dWK.dataPointer<T>(), kRmsEps, kBatch, kFullLen, kMaxBlocks, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    std::vector<int32_t> const expectedIndices = copyDeviceToHost<int32_t>(dFullOut);
+    std::vector<T> const expectedKbar = copyDeviceToHost<T>(dKbar);
+
+    kernel::runQsaIndexerPrefill<T>(dFullOut.dataPointer<int32_t>(), dHistory.dataPointer<T>(),
+        dRope.dataPointer<float>(), dPast.dataPointer<int32_t>(), nullptr, dWQ.dataPointer<T>(), dWK.dataPointer<T>(),
+        kRmsEps, &pool, dFullWorkspace.rawPointer(), fullWorkspaceBytes, kBatch, kFullLen, kMaxBlocks, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    std::vector<T> const before = copyDeviceToHost<T>(dPool);
+    std::vector<int32_t> const initialIndices = copyDeviceToHost<int32_t>(dFullOut);
+    // A commit leaves up to kQSA_SEAL_BLOCKS of the newest kbar cells unsealed; the chunk must reseal them.
+    std::vector<T> unsealed = before;
+    for (int32_t b = 0; b < kBatch; ++b)
+    {
+        for (int32_t g = std::max(0, past[b] / qsa_ref::kRatio - kernel::kQSA_SEAL_BLOCKS);
+            g < past[b] / qsa_ref::kRatio; ++g)
+        {
+            std::fill_n(
+                unsealed.begin() + tailOffset(b, 1, g * qsa_ref::kRatio + kKbarTokenOffset), qsa_ref::kHeadDim, poison);
+        }
+    }
+    copyHostToDevice(dPool, unsealed);
+    for (int32_t b = 0; b < kBatch; ++b)
+    {
+        for (int32_t t = 0; t < kFullLen; ++t)
+        {
+            for (int32_t i = 0; i < kWidth; ++i)
+            {
+                int64_t const offset = (static_cast<int64_t>(b) * kFullLen + t) * kWidth + i;
+                ASSERT_EQ(initialIndices[offset], t < past[b] ? expectedIndices[offset] : -1)
+                    << "initial prefill batch=" << b << " query=" << t << " slot=" << i;
+            }
+        }
+    }
+
+    std::vector<T> chunk(static_cast<size_t>(kBatch) * kChunkLen * qsa_ref::kIndexQkWidth, poison);
+    std::vector<int32_t> positions(static_cast<size_t>(kBatch) * kChunkLen, -1);
+    for (int32_t b = 0; b < kBatch; ++b)
+    {
+        for (int32_t t = 0; t < queries[b]; ++t)
+        {
+            std::copy_n(history.begin() + (static_cast<int64_t>(b) * kFullLen + past[b] + t) * qsa_ref::kIndexQkWidth,
+                qsa_ref::kIndexQkWidth,
+                chunk.begin() + (static_cast<int64_t>(b) * kChunkLen + t) * qsa_ref::kIndexQkWidth);
+            positions[b * kChunkLen + t] = past[b] + t;
+        }
+    }
+    rt::Tensor dChunk({kBatch, kChunkLen, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, dataType, "chunk");
+    rt::Tensor dChunkRope(
+        {kBatch, kChunkLen, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "chunkRope");
+    rt::Tensor dChunkOut({kBatch, kChunkLen, kWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "chunkOut");
+    size_t const chunkWorkspaceBytes = kernel::getQsaIndexerWorkspaceSize(kBatch, kChunkLen, kMaxBlocks, true);
+    rt::Tensor dChunkWorkspace({static_cast<int64_t>(chunkWorkspaceBytes)}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kINT8, "chunkWorkspace");
+    copyHostToDevice(dChunk, chunk);
+    copyHostToDevice(dChunkRope, qsa_ref::gatherCosSinRows(rope, positions));
+    copyHostToDevice(dLengths, queries);
+    kernel::runQsaIndexerPrefill<T>(dChunkOut.dataPointer<int32_t>(), dChunk.dataPointer<T>(),
+        dChunkRope.dataPointer<float>(), dLengths.dataPointer<int32_t>(), dPast.dataPointer<int32_t>(),
+        dWQ.dataPointer<T>(), dWK.dataPointer<T>(), kRmsEps, &pool, dChunkWorkspace.rawPointer(), chunkWorkspaceBytes,
+        kBatch, kChunkLen, kMaxBlocks, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    std::vector<int32_t> const actualIndices = copyDeviceToHost<int32_t>(dChunkOut);
+    std::vector<T> const after = copyDeviceToHost<T>(dPool);
+    std::vector<char> changed(after.size(), 0);
+    for (int32_t b = 0; b < kBatch; ++b)
+    {
+        SCOPED_TRACE("batch=" + std::to_string(b));
+        int32_t const length = past[b] + queries[b];
+        for (int32_t t = 0; t < kChunkLen; ++t)
+        {
+            for (int32_t i = 0; i < kWidth; ++i)
+            {
+                int32_t const expected = t < queries[b]
+                    ? expectedIndices[(static_cast<int64_t>(b) * kFullLen + past[b] + t) * kWidth + i]
+                    : -1;
+                ASSERT_EQ(actualIndices[(static_cast<int64_t>(b) * kChunkLen + t) * kWidth + i], expected)
+                    << "query=" << t << " slot=" << i;
+            }
+        }
+        for (int32_t g = past[b] / qsa_ref::kRatio; g < length / qsa_ref::kRatio; ++g)
+        {
+            int64_t const offset = tailOffset(b, 1, g * qsa_ref::kRatio + kKbarTokenOffset);
+            for (int32_t d = 0; d < qsa_ref::kHeadDim; ++d)
+            {
+                ASSERT_EQ(bits(after[offset + d]), bits(expectedKbar[(b * kMaxBlocks + g) * qsa_ref::kHeadDim + d]))
+                    << "compressed group=" << g << " dim=" << d;
+            }
+            std::fill_n(changed.begin() + offset, qsa_ref::kHeadDim, 1);
+        }
+        for (int32_t t = 0; t < length; ++t)
+        {
+            int64_t const offset = tailOffset(b, 0, t);
+            for (int32_t d = 0; d < qsa_ref::kHeadDim; ++d)
+            {
+                ASSERT_EQ(bits(after[offset + d]),
+                    bits(history[(static_cast<int64_t>(b) * kFullLen + t) * qsa_ref::kIndexQkWidth + qsa_ref::kQRowWidth
+                        + d]))
+                    << "raw K token=" << t << " dim=" << d;
+            }
+            if (t >= past[b])
+            {
+                std::fill_n(changed.begin() + offset, qsa_ref::kHeadDim, 1);
+            }
+        }
+        for (int32_t first = 0; first < length; first += qsa_ref::kRatio)
+        {
+            int64_t const offset = tailOffset(b, 1, first);
+            ASSERT_EQ(std::memcmp(after.data() + offset, rope.data() + first * qsa_ref::kRotaryDim,
+                          qsa_ref::kRotaryDim * sizeof(float)),
+                0)
+                << "block rope row token=" << first;
+            if (first >= past[b])
+            {
+                std::fill_n(changed.begin() + offset, qsa_ref::kHeadDim, 1);
+            }
+        }
+    }
+    for (size_t i = 0; i < after.size(); ++i)
+    {
+        if (changed[i] == 0)
+        {
+            ASSERT_EQ(bits(after[i]), bits(before[i])) << "unrelated pool cell=" << i;
+        }
+    }
+
+    size_t const decodeWorkspaceBytes = kernel::getQsaIndexerDecodeWorkspaceSize(kBatch, kMaxBlocks);
+    rt::Tensor dDecodeWorkspace({static_cast<int64_t>(decodeWorkspaceBytes)}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kINT8, "decodeWorkspace");
+    rt::Tensor dDecode({kBatch, 1, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, dataType, "decode");
+    rt::Tensor dDecodeRope(
+        {kBatch, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "decodeRope");
+    rt::Tensor dDecodeOut({kBatch, 1, kWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "decodeOut");
+    for (int32_t step = 0; step < kDecodeSteps; ++step)
+    {
+        std::vector<T> rows(static_cast<size_t>(kBatch) * qsa_ref::kIndexQkWidth);
+        std::vector<int32_t> decodeLengths(kBatch);
+        for (int32_t b = 0; b < kBatch; ++b)
+        {
+            decodeLengths[b] = past[b] + queries[b] + step + 1;
+            std::copy_n(
+                history.begin() + (static_cast<int64_t>(b) * kFullLen + decodeLengths[b] - 1) * qsa_ref::kIndexQkWidth,
+                qsa_ref::kIndexQkWidth, rows.begin() + b * qsa_ref::kIndexQkWidth);
+        }
+        copyHostToDevice(dDecode, rows);
+        copyHostToDevice(dLengths, decodeLengths);
+        copyHostToDevice(dDecodeRope, qsa_ref::gatherCosSinRows(rope, qsa_ref::decodeRopePositions(decodeLengths)));
+        kernel::runQsaIndexerDecode<T>(dDecodeOut.dataPointer<int32_t>(), dDecode.dataPointer<T>(),
+            dDecodeRope.dataPointer<float>(), dLengths.dataPointer<int32_t>(), dWQ.dataPointer<T>(),
+            dWK.dataPointer<T>(), kRmsEps, pool, nullptr, dDecodeWorkspace.rawPointer(), decodeWorkspaceBytes, kBatch,
+            kMaxBlocks, stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        std::vector<int32_t> const decodeIndices = copyDeviceToHost<int32_t>(dDecodeOut);
+        std::vector<T> const decodePool = copyDeviceToHost<T>(dPool);
+        for (int32_t b = 0; b < kBatch; ++b)
+        {
+            int64_t const expectedOffset = (static_cast<int64_t>(b) * kFullLen + decodeLengths[b] - 1) * kWidth;
+            std::vector<int32_t> expected(
+                expectedIndices.begin() + expectedOffset, expectedIndices.begin() + expectedOffset + kWidth);
+            std::vector<int32_t> actual(decodeIndices.begin() + b * kWidth, decodeIndices.begin() + (b + 1) * kWidth);
+            ASSERT_EQ(sorted(actual), sorted(expected)) << "decode step=" << step << " batch=" << b;
+            if (decodeLengths[b] % qsa_ref::kRatio == 0)
+            {
+                int32_t const g = decodeLengths[b] / qsa_ref::kRatio - 1;
+                int64_t const offset = tailOffset(b, 1, g * qsa_ref::kRatio + kKbarTokenOffset);
+                for (int32_t d = 0; d < qsa_ref::kHeadDim; ++d)
+                {
+                    ASSERT_EQ(
+                        bits(decodePool[offset + d]), bits(expectedKbar[(b * kMaxBlocks + g) * qsa_ref::kHeadDim + d]))
+                        << "decode-completed group=" << g << " dim=" << d;
+                }
+            }
+        }
+    }
+}
+
+} // namespace
+
+TEST(QsaIndexerChunkPrefill, HalfMatchesFullPrefillAndContinuesDecode)
+{
+    // Given ragged cached prefixes with their newest blocks unsealed, every group residue, page crossings and sparse
+    // selection; when a NaN-padded chunk and four decode tokens are appended;
+    // then paged initial/chunk indices match standalone prefill, the prefix is resealed, and decode agrees.
+    if (!hasCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA device available";
+    }
+    checkChunkPrefillAndDecode<half>(trt_edgellm::DataType::kHALF);
+}
+
+TEST(QsaIndexerChunkPrefill, Bfloat16MatchesFullPrefillAndContinuesDecode)
+{
+    // Given BF16 cached keys and byte-exact FP32 rope rows at all prefix residues;
+    // when chunk-prefill completes groups and decode resumes;
+    // then initial/chunk rounding, absolute causality and cache state match standalone BF16 prefill.
+    if (!hasCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA device available";
+    }
+    checkChunkPrefillAndDecode<__nv_bfloat16>(trt_edgellm::DataType::kBF16);
 }

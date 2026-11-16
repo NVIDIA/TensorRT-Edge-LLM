@@ -31,6 +31,8 @@
 //
 // Limits: dk = dv = 128, verify-tree size N <= 64, accepted path <= 16.
 
+#include "common/tensor.h"
+
 #include <cstdint>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -74,6 +76,18 @@ inline size_t gdnTreeStashNodeBytes(int32_t h, int32_t hv)
         + static_cast<size_t>(hv) * 128 * sizeof(__half); // v
 }
 
+//! Bytes one request occupies in a layer's verify stash buffer for a tree of numNodes, rounded up to 256 B: the replay
+//! stash, plus the split kernels' KS/QS and prep scratch when numNodes takes the split path on this device
+//! (gdnTreeVerifyFusedFits). Verify writes and the replay commit read rows at this stride.
+size_t gdnTreeVerifyRowBytes(int32_t h, int32_t hv, int32_t numNodes);
+
+//! Shape of a layer's spec-verify stash for maxBatch rows of maxNodes verify nodes. A layer the chunk-form verify
+//! serves (FP32 state; q, k and v heads 128 wide, fused in a conv of convDim channels) needs only rows of
+//! gdnTreeVerifyRowBytes, held as [maxBatch, maxNodes, FP32 words], which also fit the rows of smaller trees; any other
+//! layer keeps one state per node, [maxBatch, maxNodes, hv, dk, dv]. An active [batch, nodes] keeps the trailing dims.
+rt::Coords gdnTreeVerifyStashShape(
+    bool fp32State, int32_t convDim, int32_t maxBatch, int32_t maxNodes, int32_t hv, int32_t dk, int32_t dv);
+
 //! Build packed inclusive ancestor masks from DDTree parent ids.
 //! parentIds [GPU int32]: [batch, numNodes], root/padding = -1 (only node 0
 //!   may be a root; padding nodes have parent -1 at index > 0 and mask 0).
@@ -83,18 +97,34 @@ inline size_t gdnTreeStashNodeBytes(int32_t h, int32_t hv)
 cudaError_t gdnTreeBuildAncestorMasks(int32_t const* parentIds, uint32_t* masksOut, int32_t batch, int32_t numNodes,
     int32_t maxDepth, cudaStream_t stream);
 
+//! Kernel selection for gdnTreeVerifyChunk. kAuto runs the fused kernel when its shared memory fits the device
+//! and the split prep + apply kernels otherwise, which happens only for trees over 48 nodes on GPUs with 99 KB of
+//! shared memory per block (SM86, SM89, SM120, SM121). Both produce bitwise-equal outputs and stash.
+enum class GdnTreeVerifyPath : int32_t
+{
+    kAuto,
+    kFused,
+    kSplit,
+};
+
+//! True when the fused verify kernel's shared memory for a numNodes tree fits the current device.
+bool gdnTreeVerifyFusedFits(int32_t numNodes);
+
 //! Chunk-form tree verify. Reads h0 (fp32, READ-ONLY), emits per-node outputs
 //! o (fp16) and the replay stash. No state is written anywhere.
 //! Shapes follow the GDN plugin contract:
 //!   q,k [batch, N, h, 128] fp16; v [batch, N, hv, 128] fp16;
 //!   a,b [batch, N, hv] fp16; A_log [hv] fp32; dt_bias [hv] fp16;
-//!   h0 [batch, hv, 128, 128] fp32; o [batch, N, hv, 128] fp16;
-//!   masks [batch, N, kGDN_TREE_CHUNK_MASK_WORDS] uint32 (inclusive);
+//!   h0 [statePoolRows, hv, 128, 128] fp32, the resident state pool: request b reads row stateIndices[b]
+//!     (row b when stateIndices is nullptr); a row outside [0, statePoolRows) reads as a zero state;
+//!   o [batch, N, hv, 128] fp16;
+//!   parentIds [batch, N] int32 DDTree parents (root/padding = -1);
+//!   masks [batch, N, kGDN_TREE_CHUNK_MASK_WORDS] uint32 scratch for the split path's ancestor masks;
 //!   stash: base pointer of this layer's intermediate buffer; stride
 //!     stashBatchStrideBytes between batch rows; nodes packed at
-//!     gdnTreeStashNodeBytes() intervals. The unused row tail past the last
-//!     stash cell also holds the verify scratch (KS/QS + prep blocks:
-//!     align256(MAX_NODES * nodeBytes) + hv*2*MAX_NODES*128 f32 +
+//!     gdnTreeStashNodeBytes() intervals. On the split path the unused row
+//!     tail past the last stash cell also holds the verify scratch (KS/QS +
+//!     prep blocks: align256(N * nodeBytes) + hv*2*ceil16(N)*128 f32 +
 //!     hv*kGDN_TREE_CHUNK_PREP_WORDS f32); the launcher validates capacity
 //!     and refuses to launch on overflow.
 //! Returns the launch status: cudaSuccess, or the launch/attribute error, or
@@ -102,17 +132,18 @@ cudaError_t gdnTreeBuildAncestorMasks(int32_t const* parentIds, uint32_t* masksO
 //! caller MUST propagate a non-success return — continuing would consume
 //! garbage verify output and, via the unwritten stash, corrupt the persistent
 //! recurrent state on the subsequent replay commit.
-cudaError_t gdnTreeVerifyChunk(float const* h0, __half const* q, __half const* k, __half const* v, __half const* a,
-    __half const* b, float const* A_log, __half const* dt_bias, uint32_t const* masks, __half* o, void* stash,
-    size_t stashBatchStrideBytes, int32_t batch, int32_t numNodes, int32_t h, int32_t hv, float scale, bool useQKL2Norm,
-    cudaStream_t stream);
+cudaError_t gdnTreeVerifyChunk(float const* h0, int32_t const* stateIndices, int32_t statePoolRows, __half const* q,
+    __half const* k, __half const* v, __half const* a, __half const* b, float const* A_log, __half const* dt_bias,
+    int32_t const* parentIds, uint32_t* masks, __half* o, void* stash, size_t stashBatchStrideBytes, int32_t batch,
+    int32_t numNodes, int32_t h, int32_t hv, float scale, bool useQKL2Norm, cudaStream_t stream,
+    GdnTreeVerifyPath path = GdnTreeVerifyPath::kAuto);
 
 //! Batched replay commit across ALL recurrent layers in one launch (grid =
 //! [batch*hv, numLayers]). Per layer, advances the persistent state
 //! (MtpLayerInfo::recurrentDst) along the accepted path using the stash the
 //! chunk-form verify wrote at the head of MtpLayerInfo::recurrentSrc.
 //! Identical math/op-order to a sequential scan over the accepted nodes.
-//!   acceptedIndices [GPU int32]: [batch, maxAcceptLen] verify-node indices.
+//!   acceptedIndices [GPU int32]: [batch, maxAcceptLen] verify-node indices; nullptr selects the chain prefix.
 //!   acceptLengths [GPU int32]: [batch].
 //! Returns the kernel launch status (cudaSuccess on success); the caller must
 //! propagate a failure rather than continue with a partially-committed state.

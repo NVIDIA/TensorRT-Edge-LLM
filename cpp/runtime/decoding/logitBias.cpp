@@ -92,6 +92,64 @@ void uploadLogitBias(LogitBias& logitBias, DecodingInferenceContext& context, cu
     context.logitBiasGpuDirty = false;
 }
 
+bool isWholeBatchInOrder(std::vector<int32_t> const& contextRows, int32_t activeBatchSize) noexcept
+{
+    if (contextRows.size() != static_cast<size_t>(activeBatchSize))
+    {
+        return false;
+    }
+    for (size_t i = 0; i < contextRows.size(); ++i)
+    {
+        if (contextRows[i] != static_cast<int32_t>(i))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void uploadLogitBiasForRows(LogitBias& logitBias, DecodingInferenceContext const& context,
+    std::vector<int32_t> const& contextRows, cudaStream_t stream)
+{
+    size_t const rowCount = contextRows.size();
+    size_t const entryCapacity
+        = static_cast<size_t>(logitBias.rowSetHostTokenIds.getMemoryCapacity()) / sizeof(int32_t);
+    check::check(
+        rowCount + 1U <= static_cast<size_t>(logitBias.rowSetHostOffsets.getMemoryCapacity()) / sizeof(int32_t),
+        "Logit bias row set exceeds the staging capacity");
+    int32_t* const hostOffsets = logitBias.rowSetHostOffsets.dataPointer<int32_t>();
+    int32_t* const hostTokenIds = logitBias.rowSetHostTokenIds.dataPointer<int32_t>();
+    float* const hostValues = logitBias.rowSetHostValues.dataPointer<float>();
+    size_t totalEntries = 0;
+    for (size_t r = 0; r < rowCount; ++r)
+    {
+        hostOffsets[r] = static_cast<int32_t>(totalEntries);
+        auto const& slotBias = context.logitBiasPerSlot[static_cast<size_t>(contextRows[r])];
+        check::check(totalEntries + slotBias.size() <= entryCapacity, "Logit bias entries exceed the staging capacity");
+        for (auto const& [tokenId, bias] : slotBias)
+        {
+            hostTokenIds[totalEntries] = tokenId;
+            hostValues[totalEntries] = bias;
+            ++totalEntries;
+        }
+    }
+    hostOffsets[rowCount] = static_cast<int32_t>(totalEntries);
+
+    check::check(logitBias.tokenIds.reshape({static_cast<int64_t>(totalEntries)}), "Tensor reshape failed");
+    check::check(logitBias.values.reshape({static_cast<int64_t>(totalEntries)}), "Tensor reshape failed");
+    check::check(logitBias.offsets.reshape({static_cast<int64_t>(rowCount) + 1}), "Tensor reshape failed");
+
+    if (totalEntries > 0)
+    {
+        CUDA_CHECK(cudaMemcpyAsync(logitBias.tokenIds.rawPointer(), hostTokenIds, totalEntries * sizeof(int32_t),
+            cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            logitBias.values.rawPointer(), hostValues, totalEntries * sizeof(float), cudaMemcpyHostToDevice, stream));
+    }
+    CUDA_CHECK(cudaMemcpyAsync(logitBias.offsets.rawPointer(), hostOffsets, (rowCount + 1U) * sizeof(int32_t),
+        cudaMemcpyHostToDevice, stream));
+}
+
 } // namespace
 
 void allocateLogitBias(LogitBias& logitBias, int32_t maxBatchSize)
@@ -100,13 +158,19 @@ void allocateLogitBias(LogitBias& logitBias, int32_t maxBatchSize)
 
     size_t const maxEntriesHost = static_cast<size_t>(maxBatchSize) * limits::security::kMaxLogitBiasTokens;
     int64_t const maxEntries = static_cast<int64_t>(maxEntriesHost);
-    logitBias.tokenIds = Tensor({maxEntries}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "LogitBias::tokenIds");
-    logitBias.values = Tensor({maxEntries}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "LogitBias::values");
-    logitBias.offsets = Tensor(
-        {static_cast<int64_t>(maxBatchSize) + 1}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "LogitBias::offsets");
+    logitBias.tokenIds = Tensor({maxEntries}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "LogitBias::tokenIds");
+    logitBias.values = Tensor({maxEntries}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "LogitBias::values");
+    logitBias.offsets = Tensor({static_cast<int64_t>(maxBatchSize) + 1}, DeviceType::kGPU,
+        trt_edgellm::DataType::kINT32, "LogitBias::offsets");
     logitBias.hostOffsets.reserve(static_cast<size_t>(maxBatchSize) + 1U);
     logitBias.hostTokenIds.reserve(maxEntriesHost);
     logitBias.hostValues.reserve(maxEntriesHost);
+    logitBias.rowSetHostTokenIds
+        = Tensor({maxEntries}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "LogitBias::rowSetHostTokenIds");
+    logitBias.rowSetHostValues
+        = Tensor({maxEntries}, DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, "LogitBias::rowSetHostValues");
+    logitBias.rowSetHostOffsets = Tensor({static_cast<int64_t>(maxBatchSize) + 1}, DeviceType::kCPU,
+        trt_edgellm::DataType::kINT32, "LogitBias::rowSetHostOffsets");
 }
 
 void setLogitBiasVocabMap(LogitBias& logitBias, Tensor const& reducedToFullVocabMap, int32_t fullVocabSize,
@@ -116,7 +180,7 @@ void setLogitBiasVocabMap(LogitBias& logitBias, Tensor const& reducedToFullVocab
     check::check(reducedVocabSize > 0, "Reduced vocabulary size must be positive");
     check::check(reducedToFullVocabMap.getDeviceType() == DeviceType::kGPU, "Vocabulary map must be on GPU");
     check::check(
-        reducedToFullVocabMap.getDataType() == nvinfer1::DataType::kINT32, "Vocabulary map must use INT32 values");
+        reducedToFullVocabMap.getDataType() == trt_edgellm::DataType::kINT32, "Vocabulary map must use INT32 values");
 
     auto const mapShape = reducedToFullVocabMap.getShape();
     check::check(mapShape.getNumDims() == 1, "Vocabulary map must be one-dimensional");
@@ -143,42 +207,48 @@ bool hasLogitBias(LLMGenerationRequest const& request) noexcept
         request.requests.begin(), request.requests.end(), [](auto const& slot) { return !slot.logitBias.empty(); });
 }
 
+std::unordered_map<int32_t, float> normalizeLogitBias(
+    LogitBias const& logitBias, std::unordered_map<int32_t, float> const& fullVocabBias, int32_t sequence)
+{
+    std::unordered_map<int32_t, float> outputVocabBias;
+    for (auto const& [fullTokenId, bias] : fullVocabBias)
+    {
+        int32_t outputTokenId = fullTokenId;
+        if (!logitBias.fullToReducedVocabMap.empty())
+        {
+            check::check(fullTokenId >= 0 && static_cast<size_t>(fullTokenId) < logitBias.fullToReducedVocabMap.size(),
+                "Logit bias token ID is outside the full vocabulary map");
+            int32_t const reducedTokenId = logitBias.fullToReducedVocabMap[static_cast<size_t>(fullTokenId)];
+            if (reducedTokenId < 0)
+            {
+                if (bias > 0.0F)
+                {
+                    LOG_WARNING(
+                        "Ignoring positive logit_bias %.6f for token ID %d in request %d because the token is "
+                        "not present in the reduced vocabulary.",
+                        bias, fullTokenId, sequence);
+                }
+                continue;
+            }
+            outputTokenId = reducedTokenId;
+        }
+        outputVocabBias[outputTokenId] = bias;
+    }
+    return outputVocabBias;
+}
+
 void prepareLogitBias(
     LogitBias const& logitBias, LLMGenerationRequest const& request, DecodingInferenceContext& context)
 {
     context.logitBiasPerSlot.clear();
     context.logitBiasPerSlot.resize(static_cast<size_t>(context.activeBatchSize));
     context.hasLogitBias = false;
-    context.logitBiasGpuDirty = false;
 
     for (int32_t i = 0; i < context.activeBatchSize; ++i)
     {
         auto& destination = context.logitBiasPerSlot[static_cast<size_t>(i)];
-        for (auto const& [fullTokenId, bias] : request.requests[static_cast<size_t>(i)].logitBias)
-        {
-            int32_t outputTokenId = fullTokenId;
-            if (!logitBias.fullToReducedVocabMap.empty())
-            {
-                check::check(
-                    fullTokenId >= 0 && static_cast<size_t>(fullTokenId) < logitBias.fullToReducedVocabMap.size(),
-                    "Logit bias token ID is outside the full vocabulary map");
-                int32_t const reducedTokenId = logitBias.fullToReducedVocabMap[static_cast<size_t>(fullTokenId)];
-                if (reducedTokenId < 0)
-                {
-                    if (bias > 0.0F)
-                    {
-                        LOG_WARNING(
-                            "Ignoring positive logit_bias %.6f for token ID %d in request %d because the token is "
-                            "not present in the reduced vocabulary.",
-                            bias, fullTokenId, i);
-                    }
-                    continue;
-                }
-                outputTokenId = reducedTokenId;
-            }
-            destination[outputTokenId] = bias;
-            context.hasLogitBias = true;
-        }
+        destination = normalizeLogitBias(logitBias, request.requests[static_cast<size_t>(i)].logitBias, i);
+        context.hasLogitBias = context.hasLogitBias || !destination.empty();
     }
 
     context.logitBiasGpuDirty = context.hasLogitBias;
@@ -211,6 +281,33 @@ void applyLogitBiasRepeatedRows(
     }
 
     applySamplerLogitBiasRepeatedRows(logitBias, logits, rowsPerSlot, stream);
+}
+
+void applyLogitBiasForRows(LogitBias& logitBias, Tensor& logits, DecodingInferenceContext& context,
+    std::vector<int32_t> const& contextRows, cudaStream_t stream)
+{
+    if (!context.hasLogitBias || contextRows.empty())
+    {
+        return;
+    }
+    auto const shape = logits.getShape();
+    check::check(shape.getNumDims() == 2 && shape[0] == static_cast<int64_t>(contextRows.size()),
+        "Row-set logit bias expects one [vocab] logits row per selected context row");
+    check::check(
+        context.activeBatchSize >= 0 && static_cast<size_t>(context.activeBatchSize) <= context.logitBiasPerSlot.size(),
+        "Logit bias slot state does not match the active batch size");
+    context.checkRowSet(contextRows);
+
+    if (isWholeBatchInOrder(contextRows, context.activeBatchSize))
+    {
+        applyLogitBias(logitBias, logits, context, stream);
+        return;
+    }
+
+    uploadLogitBiasForRows(logitBias, context, contextRows, stream);
+    // The device CSR now follows contextRows, not the all-rows layout applyLogitBias() reuses while clean.
+    context.logitBiasGpuDirty = true;
+    applySamplerLogitBiasRepeatedRows(logitBias, logits, 1, stream);
 }
 
 } // namespace rt

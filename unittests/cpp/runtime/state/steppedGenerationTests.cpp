@@ -37,14 +37,15 @@ TEST(SteppedGenerationStorageTests, ReusesOwningStorageAcrossRequests)
 {
     // Given runtime-owned pinned storage, when consecutive requests reserve and reshape their token snapshots,
     // then each uses the same allocation and returns its ownership and full capacity before the next request.
-    Tensor storage({kMAX_TOKENS}, DeviceType::kCPU, nvinfer1::DataType::kINT32);
+    Tensor storage({kMAX_TOKENS}, DeviceType::kCPU, trt_edgellm::DataType::kINT32);
     void* const pointer = storage.rawPointer();
+    DeviceFailureState failure;
     std::atomic<bool> active{false};
     for (int32_t request = 0; request < kREQUESTS; ++request)
     {
         active.store(true);
         {
-            LLMRankRuntime::SteppedGeneration generation(active, storage);
+            LLMRankRuntime::SteppedGeneration generation(active, storage, failure, nullptr);
             EXPECT_TRUE(storage.isEmpty());
             generation.context.initializeRaggedScratch(kCONTRACT);
             Tensor& snapshot = generation.context.raggedExecutionBatch.hostTokenIds;
@@ -67,12 +68,13 @@ TEST(SteppedGenerationStorageTests, ReturnsStorageOnException)
 {
     // Given a request borrowing pinned storage, when request processing throws,
     // then unwinding returns ownership and releases the latch so the next request can reuse the buffer.
-    Tensor storage({kMAX_TOKENS}, DeviceType::kCPU, nvinfer1::DataType::kINT32);
+    Tensor storage({kMAX_TOKENS}, DeviceType::kCPU, trt_edgellm::DataType::kINT32);
     void* const pointer = storage.rawPointer();
+    DeviceFailureState failure;
     std::atomic<bool> active{true};
     EXPECT_THROW(
         {
-            LLMRankRuntime::SteppedGeneration generation(active, storage);
+            LLMRankRuntime::SteppedGeneration generation(active, storage, failure, nullptr);
             generation.context.initializeRaggedScratch(kCONTRACT);
             throw std::runtime_error("request failed");
         },
@@ -82,7 +84,7 @@ TEST(SteppedGenerationStorageTests, ReturnsStorageOnException)
     EXPECT_TRUE(storage.getOwnMemory());
     active.store(true);
     {
-        LLMRankRuntime::SteppedGeneration generation(active, storage);
+        LLMRankRuntime::SteppedGeneration generation(active, storage, failure, nullptr);
         generation.context.initializeRaggedScratch(kCONTRACT);
         EXPECT_EQ(generation.context.raggedExecutionBatch.hostTokenIds.rawPointer(), pointer);
     }
@@ -93,11 +95,12 @@ TEST(SteppedGenerationStorageTests, ReturnsStorageBeforeScratchInitialization)
 {
     // Given a request rejected before scratch initialization, when its generation state is destroyed,
     // then the borrowed allocation is returned without requiring a ragged batch builder.
-    Tensor storage({kMAX_TOKENS}, DeviceType::kCPU, nvinfer1::DataType::kINT32);
+    Tensor storage({kMAX_TOKENS}, DeviceType::kCPU, trt_edgellm::DataType::kINT32);
     void* const pointer = storage.rawPointer();
+    DeviceFailureState failure;
     std::atomic<bool> active{true};
     {
-        LLMRankRuntime::SteppedGeneration generation(active, storage);
+        LLMRankRuntime::SteppedGeneration generation(active, storage, failure, nullptr);
         EXPECT_FALSE(generation.context.raggedBatchBuilder.has_value());
         EXPECT_TRUE(storage.isEmpty());
     }

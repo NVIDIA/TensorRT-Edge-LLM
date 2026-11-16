@@ -18,6 +18,7 @@
 #include "timer.h"
 #include "common/checkMacros.h"
 #include "common/logger.h"
+#include <algorithm>
 #include <cuda_runtime.h>
 #include <numeric>
 
@@ -42,158 +43,199 @@ void setProfilingEnabled(bool enabled) noexcept
 namespace timer
 {
 
+void Timer::reserve(size_t maxSamples, size_t maxSequences)
+{
+    ELLM_CHECK(mActive.empty(), "Cannot resize timing storage inside a timed stage");
+    if (mGpuTimingEnabled)
+    {
+        grow(maxSamples, maxSequences);
+    }
+}
+
+void Timer::grow(size_t maxSamples, size_t maxSequences)
+{
+    if (maxSamples <= mPending.size() && maxSequences <= mMaxSequences)
+    {
+        return;
+    }
+    mMaxSequences = std::max(mMaxSequences, maxSequences);
+    mPending.resize(std::max(maxSamples, mPending.size()));
+    for (auto& timing : mPending)
+    {
+        timing.events.initialize();
+        timing.sample.stageId.reserve(96);
+        timing.sample.parentStage.reserve(96);
+        timing.sample.pastLengths.reserve(mMaxSequences);
+    }
+    mPastLengths.reserve(mMaxSequences);
+    mSamples.reserve(maxSamples);
+    mAcceptanceSamples.reserve(mAcceptanceSamples.size() + maxSamples);
+    mActive.reserve(maxSamples);
+}
+
 void Timer::reset() noexcept
 {
+    for (size_t i = 0; i < mUsed; ++i)
+    {
+        if (!mPending[i].events.hasStarted)
+        {
+            static_cast<void>(cudaEventSynchronize(mPending[i].events.gpuEnd));
+        }
+    }
+    mUsed = 0;
+    mActive.clear();
     mTimingData.clear();
-    mTimers.clear();
-    mTimingResults.clear();
-    mPendingTimings.clear();
+    mSamples.clear();
+    mAcceptanceSamples.clear();
+    mPastLengths.clear();
+    mRound = -1;
+    mNextForwardIndex = 0;
+}
+
+void Timer::recordAcceptance(int32_t sequenceIndex, int32_t proposed, int32_t accepted, int32_t output, int32_t bonus,
+    int32_t baseLength, bool provenanceExact, bool proposedExact)
+{
+    if (getProfilingEnabled())
+    {
+        mAcceptanceSamples.push_back({mRequestId, mRound, sequenceIndex, proposed, accepted, output, bonus, baseLength,
+            provenanceExact, proposedExact});
+    }
+}
+
+void Timer::beginRequest()
+{
+    ELLM_CHECK(mActive.empty(), "A profiling request cannot start inside an active stage");
+    collect();
+    mUsed = 0;
+    mAcceptanceSamples.reserve(mAcceptanceSamples.size() + mPending.size());
+    ++mRequestId;
+    mRound = -1;
+    mNextForwardIndex = 0;
+    mPastLengths.clear();
+}
+
+void Timer::setRound(int32_t round) noexcept
+{
+    if (mRound != round)
+    {
+        mNextForwardIndex = 0;
+    }
+    mRound = round;
+    mPastLengths.clear();
+}
+
+void Timer::setPastLengths(std::vector<int32_t> const& lengths)
+{
+    if (getProfilingEnabled())
+    {
+        mPastLengths = lengths;
+    }
 }
 
 TimerSession Timer::startStage(std::string const& stageId, cudaStream_t stream)
 {
-    if (!getProfilingEnabled())
+    return start(stageId, false, 0, 0, 0, stream);
+}
+
+TimerSession Timer::startForward(
+    std::string const& modelRole, int64_t batch, int64_t tokens, int64_t selected, cudaStream_t stream)
+{
+    return start(modelRole, true, batch, tokens, selected, stream);
+}
+
+TimerSession Timer::start(
+    std::string const& name, bool forward, int64_t batch, int64_t tokens, int64_t selected, cudaStream_t stream)
+{
+    if (!getProfilingEnabled() || !mGpuTimingEnabled)
     {
         return TimerSession(nullptr);
     }
+    cudaStreamCaptureStatus captureStatus;
+    CUDA_CHECK(cudaStreamIsCapturing(stream, &captureStatus));
+    if (captureStatus != cudaStreamCaptureStatusNone)
+    {
+        return TimerSession(nullptr);
+    }
+    if (mPending.empty())
+    {
+        constexpr size_t kDefaultCapacity = 16384;
+        reserve(kDefaultCapacity);
+    }
+    if (mUsed == mPending.size())
+    {
+        // Sessions retain slot indices, so growing the pool preserves unfinished parent stages.
+        grow(mPending.size() * 2, mMaxSequences);
+    }
+    size_t const index = mUsed++;
+    auto& timing = mPending[index];
+    auto& sample = timing.sample;
+    sample.stageId.assign(forward ? "forward/" : "");
+    sample.stageId.append(name);
+    sample.parentStage = mActive.empty() ? "" : mPending[mActive.back()].sample.stageId;
+    sample.requestId = mRequestId;
+    sample.round = mRound;
+    sample.batchSize = batch;
+    sample.queryTokens = tokens;
+    sample.selectedTokens = selected;
+    sample.forward = forward;
+    sample.forwardIndex = forward ? mNextForwardIndex++ : -1;
+    sample.gpuTimeMs = 0;
+    sample.pastLengths.clear();
+    if (forward)
+    {
+        sample.pastLengths.assign(mPastLengths.begin(), mPastLengths.end());
+        mPastLengths.clear();
+    }
+    timing.collected = false;
+    timing.stream = stream;
+    CUDA_CHECK(cudaEventRecord(timing.events.gpuStart, stream));
+    timing.events.hasStarted = true;
+    mActive.push_back(index);
+    return TimerSession([this, index]() {
+        auto& pending = mPending[index];
+        CUDA_CHECK(cudaEventRecord(pending.events.gpuEnd, pending.stream));
+        pending.events.hasStarted = false;
+        if (!mActive.empty() && mActive.back() == index)
+        {
+            mActive.pop_back();
+        }
+    });
+}
 
-    startTimer(stageId, stream);
-    return TimerSession([this, stageId, stream]() { onStageComplete(stageId, stream); });
+void Timer::collect() const
+{
+    for (size_t i = 0; i < mUsed; ++i)
+    {
+        auto& pending = mPending[i];
+        if (pending.collected || pending.events.hasStarted)
+        {
+            continue;
+        }
+        CUDA_CHECK(cudaEventSynchronize(pending.events.gpuEnd));
+        CUDA_CHECK(cudaEventElapsedTime(&pending.sample.gpuTimeMs, pending.events.gpuStart, pending.events.gpuEnd));
+        mTimingData[pending.sample.stageId].addTiming(pending.sample.gpuTimeMs);
+        mSamples.push_back(pending.sample);
+        pending.collected = true;
+    }
 }
 
 std::optional<StageTimingData> Timer::getTimingData(std::string const& stageId) const
 {
-    // Calculate any pending timings for this stage
-    if (mPendingTimings.find(stageId) != mPendingTimings.end())
-    {
-        recordTiming(stageId);
-        mPendingTimings.erase(stageId);
-    }
-
-    // Aggregate any stored timing results
-    auto resultIt = mTimingResults.find(stageId);
-    if (resultIt != mTimingResults.end() && !resultIt->second.empty())
-    {
-        for (float timeMs : resultIt->second)
-        {
-            mTimingData[stageId].addTiming(timeMs);
-        }
-        resultIt->second.clear();
-    }
-
-    auto it = mTimingData.find(stageId);
-    return it != mTimingData.end() ? std::make_optional(it->second) : std::nullopt;
+    collect();
+    auto const it = mTimingData.find(stageId);
+    return it == mTimingData.end() ? std::nullopt : std::make_optional(it->second);
 }
 
 std::unordered_map<std::string, StageTimingData> const& Timer::getAllTimingData() const
 {
-    if (mPendingTimings.size() > 0)
-    {
-        for (auto const& stageId : mPendingTimings)
-        {
-            recordTiming(stageId);
-        }
-        mPendingTimings.clear();
-    }
-    // Aggregate all stored timing results
-    for (auto& [stageId, resultList] : mTimingResults)
-    {
-        if (!resultList.empty())
-        {
-            for (float timeMs : resultList)
-            {
-                mTimingData[stageId].addTiming(timeMs);
-            }
-            resultList.clear();
-        }
-    }
-
+    collect();
     return mTimingData;
 }
 
-void Timer::startTimer(std::string const& stageId, cudaStream_t stream)
+std::vector<TimingSample> const& Timer::getSamples() const
 {
-    if (!getProfilingEnabled())
-    {
-        return;
-    }
-
-    // Simple timer management - one timer per stage
-    if (mTimers.find(stageId) == mTimers.end())
-    {
-        mTimers[stageId] = TimerPair();
-    }
-
-    auto& timer = mTimers[stageId];
-
-    // If there's a pending timing for this stage, record it first
-    if (mPendingTimings.find(stageId) != mPendingTimings.end())
-    {
-        recordTiming(stageId);
-        mPendingTimings.erase(stageId);
-    }
-
-    timer.initialize();
-    CUDA_CHECK(cudaEventRecord(timer.gpuStart, stream));
-    timer.hasStarted = true;
-}
-
-void Timer::endTimer(std::string const& stageId, cudaStream_t stream)
-{
-    if (!getProfilingEnabled())
-    {
-        return;
-    }
-
-    auto it = mTimers.find(stageId);
-    if (it == mTimers.end() || !it->second.hasStarted)
-    {
-        LOG_WARNING("Timer '%s' was not started", stageId.c_str());
-        return;
-    }
-
-    auto& timer = it->second;
-    CUDA_CHECK(cudaEventRecord(timer.gpuEnd, stream));
-    timer.hasStarted = false;
-
-    // Mark for deferred calculation
-    if (mTimingResults.find(stageId) == mTimingResults.end())
-    {
-        mTimingResults[stageId] = {};
-    }
-    mPendingTimings.insert(stageId);
-}
-
-void Timer::recordTiming(std::string const& stageId) const
-{
-    auto it = mTimers.find(stageId);
-    if (it == mTimers.end() || !it->second.isInitialized)
-    {
-        LOG_WARNING("Timer '%s' cannot be found or not initialized", stageId.c_str());
-        return;
-    }
-
-    auto& timer = it->second;
-
-    // Skip if timer is currently running
-    if (timer.hasStarted)
-    {
-        return;
-    }
-
-    // Deferred synchronization - only synchronize the end event
-    CUDA_CHECK(cudaEventSynchronize(timer.gpuEnd));
-
-    float gpuElapsedTime = 0.0f;
-    CUDA_CHECK(cudaEventElapsedTime(&gpuElapsedTime, timer.gpuStart, timer.gpuEnd));
-
-    // Store result for aggregation
-    mTimingResults[stageId].push_back(gpuElapsedTime);
-}
-
-void Timer::onStageComplete(std::string const& stageId, cudaStream_t stream)
-{
-    endTimer(stageId, stream);
+    collect();
+    return mSamples;
 }
 
 } // namespace timer

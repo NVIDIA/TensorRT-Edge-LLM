@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -36,7 +37,6 @@
 #include "kernels/contextAttentionKernels/cuteDslFMHARunner.h"
 #include "testUtils.h"
 
-using namespace nvinfer1;
 using namespace trt_edgellm;
 
 namespace
@@ -44,7 +44,7 @@ namespace
 
 bool isSupportedCuteDslTestSm(int32_t smVersion)
 {
-    return smVersion == 100 || smVersion == 101 || smVersion == 110;
+    return smVersion == 100 || smVersion == 101 || smVersion == 103 || smVersion == 110;
 }
 
 void expectHalfOutputsClose(rt::Tensor const& actualTensor, rt::Tensor const& expectedTensor, std::string const& label)
@@ -234,8 +234,35 @@ void expectSkipSoftmaxOutputsClose(
     EXPECT_FALSE(nanDetected) << label;
 }
 
-void runViTAccuracyCase(
-    std::vector<int32_t> const& cuSeqLens, int32_t numHeads, int32_t headDim, int32_t maxSeqLen, float attentionScale)
+//! Q/K/V contents of a ViT accuracy case.
+//!  - kRandom: uniform [-1, 1). With the kernel's skip-correction the running row max never moves after the
+//!    first KV tile, so every per-tile O rescale factor is exactly 1.0 (identity) and the correction warpgroup
+//!    skips the TMEM read-modify-write.
+//!  - kRampedK: K grows along each sequence and Q carries a +1 bias on every element, so the row max of every
+//!    row keeps growing past the skip-correction threshold and the rescale is a real multiply on those tiles.
+//!  - kMixedRows: same ramp, but the Q bias alternates sign per token, so within every correction warp half of
+//!    the lanes (rows) rescale and the other half keep the identity: the warp vote fails and the whole warp
+//!    multiplies, the identity rows by 1.0.
+enum class ViTTestData
+{
+    kRandom,
+    kRampedK,
+    kMixedRows
+};
+
+char const* toString(ViTTestData data)
+{
+    switch (data)
+    {
+    case ViTTestData::kRandom: return "random";
+    case ViTTestData::kRampedK: return "rampedK";
+    case ViTTestData::kMixedRows: return "mixedRows";
+    }
+    return "?";
+}
+
+void runViTAccuracyCase(std::vector<int32_t> const& cuSeqLens, int32_t numHeads, int32_t headDim, int32_t maxSeqLen,
+    float attentionScale, ViTTestData data = ViTTestData::kRandom)
 {
     int32_t const batchSize = static_cast<int32_t>(cuSeqLens.size()) - 1;
     int32_t const totalSeqLen = cuSeqLens.back();
@@ -249,6 +276,31 @@ void runViTAccuracyCase(
     uniformFloatInitialization(qInput, -1.0f, 1.0f);
     uniformFloatInitialization(kInput, -1.0f, 1.0f);
     uniformFloatInitialization(vInput, -1.0f, 1.0f);
+
+    if (data != ViTTestData::kRandom)
+    {
+        // Row bias on Q and a linear ramp on K along each sequence: the score of row t against key j grows by
+        // ramp(j) * sum_d Q[t, d] ~ +-2 * headDim raw units over the sequence, i.e. tens of log2 units at
+        // attentionScale ~ 1/sqrt(headDim) - past the skip-correction threshold for the +bias rows, while the
+        // -bias rows see decreasing scores and keep their first-tile max.
+        for (int32_t batchIdx = 0; batchIdx < batchSize; ++batchIdx)
+        {
+            int32_t const seqLen
+                = cuSeqLens[static_cast<size_t>(batchIdx) + 1] - cuSeqLens[static_cast<size_t>(batchIdx)];
+            for (int32_t token = 0; token < seqLen; ++token)
+            {
+                float const qBias = (data == ViTTestData::kMixedRows && (token % 2 == 1)) ? -1.0F : 1.0F;
+                float const kRamp = 2.0F * static_cast<float>(token) / static_cast<float>(std::max(seqLen - 1, 1));
+                size_t const rowBase
+                    = static_cast<size_t>(cuSeqLens[static_cast<size_t>(batchIdx)] + token) * numHeads * headDim;
+                for (size_t idx = rowBase; idx < rowBase + static_cast<size_t>(numHeads) * headDim; ++idx)
+                {
+                    qInput[idx] = __float2half(__half2float(qInput[idx]) + qBias);
+                    kInput[idx] = __float2half(__half2float(kInput[idx]) + kRamp);
+                }
+            }
+        }
+    }
 
     rt::Tensor qTensor({totalSeqLen, numHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
     rt::Tensor kTensor({totalSeqLen, numHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
@@ -277,14 +329,47 @@ void runViTAccuracyCase(
     CUDA_CHECK(cudaGetLastError());
 
     expectHalfOutputsClose(outputCuteDsl, outputReference,
-        "ViT CuTe DSL FMHA headDim=" + std::to_string(headDim) + " numHeads=" + std::to_string(numHeads));
+        "ViT CuTe DSL FMHA headDim=" + std::to_string(headDim) + " numHeads=" + std::to_string(numHeads)
+            + " totalSeqLen=" + std::to_string(totalSeqLen) + " data=" + toString(data));
+}
+
+//! Device copy of a skip-softmax scale table (flattened (seqlen_bin, S) pairs); empty dispatches dense.
+struct SkipSoftmaxScaleTable
+{
+    explicit SkipSoftmaxScaleTable(std::vector<int32_t> const& flat)
+        : length(static_cast<int32_t>(flat.size()))
+        , device({std::max<int32_t>(1, length)}, rt::DeviceType::kGPU, DataType::kINT32)
+    {
+        if (!flat.empty())
+        {
+            copyHostToDevice(device, flat);
+        }
+    }
+
+    int32_t const* data() const
+    {
+        return length > 0 ? device.dataPointer<int32_t>() : nullptr;
+    }
+
+    int32_t length;
+    rt::Tensor device;
+};
+
+//! Flat S = lambda * seqLen as the one-row table {0, S}; lambda <= 0 leaves the table empty (dense).
+std::vector<int32_t> flatScaleTable(float skipSoftmaxLambda, int32_t seqLen)
+{
+    if (skipSoftmaxLambda <= 0.0F)
+    {
+        return {};
+    }
+    return {0, static_cast<int32_t>(skipSoftmaxLambda * static_cast<float>(seqLen))};
 }
 
 void runLlmAccuracyCase(int32_t batchSize, int32_t seqLen, int32_t numQHeads, int32_t numKVHeads, int32_t headDim,
     float attentionScale, float skipSoftmaxLambda = 0.0F)
 {
     bool const enableSkipSoftmax = skipSoftmaxLambda > 0.0F;
-    float const skipSoftmaxScaleFactor = enableSkipSoftmax ? skipSoftmaxLambda * static_cast<float>(seqLen) : 0.0F;
+    SkipSoftmaxScaleTable const skipSoftmaxScaleTable(flatScaleTable(skipSoftmaxLambda, seqLen));
     size_t const qSize = static_cast<size_t>(batchSize) * seqLen * numQHeads * headDim;
     size_t const kvSize = static_cast<size_t>(batchSize) * seqLen * numKVHeads * headDim;
 
@@ -353,7 +438,7 @@ void runLlmAccuracyCase(int32_t batchSize, int32_t seqLen, int32_t numQHeads, in
     CuteDslFMHARunner runner(numQHeads, numKVHeads, headDim, batchSize, seqLen, seqLen);
     ASSERT_TRUE(runner.run(qCute.dataPointer<half>(), kvCacheCute.dataPointer<half>(),
         outputCuteDsl.dataPointer<half>(), cuKVSeqLens.dataPointer<int32_t>(), stream, attentionScale, INT_MAX, false,
-        1.0F, 1.0F, 1.0F, skipSoftmaxScaleFactor));
+        1.0F, 1.0F, 1.0F, skipSoftmaxScaleTable.data(), skipSoftmaxScaleTable.length));
 
     rt::launchFmhaReferenceBshd(qReference, kReference, vReference, outputReference, true, attentionScale, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -370,6 +455,96 @@ void runLlmAccuracyCase(int32_t batchSize, int32_t seqLen, int32_t numQHeads, in
     {
         expectHalfOutputsClose(outputCuteDsl, outputReference, label);
     }
+}
+
+//! Runs the same LLM problem under two scale tables. Same-cubin pairs must be bit-identical; a dense-vs-skip
+//! pair (empty tableA) is held to the dense comparator tolerance instead: the skip cubin is compiled without
+//! skip-correction, so its rescale points differ from the dense cubin's by a few fp16 ulps even when no tile
+//! is skipped (a real skip deviates up to the 0.1 skip-softmax gate).
+void runLlmScaleTablesMatchCase(int32_t batchSize, int32_t seqLen, int32_t numQHeads, int32_t numKVHeads,
+    int32_t headDim, std::vector<int32_t> const& tableA, std::vector<int32_t> const& tableB)
+{
+    bool const denseVsSkip = tableA.empty() != tableB.empty();
+    float const attentionScale = 1.0F / std::sqrt(static_cast<float>(headDim));
+    size_t const qSize = static_cast<size_t>(batchSize) * seqLen * numQHeads * headDim;
+    size_t const kvSize = static_cast<size_t>(batchSize) * seqLen * numKVHeads * headDim;
+
+    std::vector<half> qInput(qSize);
+    std::vector<half> kInput(kvSize);
+    std::vector<half> vInput(kvSize);
+    uniformFloatInitialization(qInput, -1.0f, 1.0f);
+    uniformFloatInitialization(kInput, -1.0f, 1.0f);
+    uniformFloatInitialization(vInput, -1.0f, 1.0f);
+
+    rt::Tensor qCute({batchSize, seqLen, numQHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    copyHostToDevice(qCute, qInput);
+
+    // Pack K/V into the combined-cache layout [B, 2, Hkv, S, D] on the host.
+    std::vector<half> kvContiguousInput(static_cast<size_t>(batchSize) * 2 * numKVHeads * seqLen * headDim);
+    for (int32_t batchIdx = 0; batchIdx < batchSize; ++batchIdx)
+    {
+        for (int32_t tokenIdx = 0; tokenIdx < seqLen; ++tokenIdx)
+        {
+            for (int32_t headIdx = 0; headIdx < numKVHeads; ++headIdx)
+            {
+                for (int32_t dimIdx = 0; dimIdx < headDim; ++dimIdx)
+                {
+                    size_t const srcOffset
+                        = (((static_cast<size_t>(batchIdx) * seqLen + tokenIdx) * numKVHeads + headIdx) * headDim)
+                        + dimIdx;
+                    size_t const kOffset
+                        = ((((static_cast<size_t>(batchIdx) * 2) * numKVHeads + headIdx) * seqLen + tokenIdx) * headDim)
+                        + dimIdx;
+                    size_t const vOffset
+                        = (((((static_cast<size_t>(batchIdx) * 2 + 1) * numKVHeads + headIdx) * seqLen + tokenIdx)
+                               * headDim)
+                            + dimIdx);
+                    kvContiguousInput[kOffset] = kInput[srcOffset];
+                    kvContiguousInput[vOffset] = vInput[srcOffset];
+                }
+            }
+        }
+    }
+    rt::Tensor kvCache({batchSize, 2, numKVHeads, seqLen, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor outputA({batchSize, seqLen, numQHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor outputB({batchSize, seqLen, numQHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    copyHostToDevice(kvCache, kvContiguousInput);
+    CUDA_CHECK(cudaMemset(outputA.rawPointer(), 0, outputA.getShape().volume() * sizeof(half)));
+    CUDA_CHECK(cudaMemset(outputB.rawPointer(), 0, outputB.getShape().volume() * sizeof(half)));
+    SkipSoftmaxScaleTable const scaleTableA(tableA);
+    SkipSoftmaxScaleTable const scaleTableB(tableB);
+
+    rt::Tensor cuKVSeqLens({batchSize + 1}, rt::DeviceType::kGPU, DataType::kINT32);
+    std::vector<int32_t> cuKVSeqLensHost(static_cast<size_t>(batchSize + 1));
+    for (int32_t idx = 0; idx <= batchSize; ++idx)
+    {
+        cuKVSeqLensHost[static_cast<size_t>(idx)] = idx * seqLen;
+    }
+    copyHostToDevice(cuKVSeqLens, cuKVSeqLensHost);
+
+    cudaStream_t stream = nullptr;
+    CuteDslFMHARunner runner(numQHeads, numKVHeads, headDim, batchSize, seqLen, seqLen);
+    ASSERT_TRUE(runner.run(qCute.dataPointer<half>(), kvCache.dataPointer<half>(), outputA.dataPointer<half>(),
+        cuKVSeqLens.dataPointer<int32_t>(), stream, attentionScale, INT_MAX, false, 1.0F, 1.0F, 1.0F,
+        scaleTableA.data(), scaleTableA.length));
+    ASSERT_TRUE(runner.run(qCute.dataPointer<half>(), kvCache.dataPointer<half>(), outputB.dataPointer<half>(),
+        cuKVSeqLens.dataPointer<int32_t>(), stream, attentionScale, INT_MAX, false, 1.0F, 1.0F, 1.0F,
+        scaleTableB.data(), scaleTableB.length));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(cudaGetLastError());
+
+    if (denseVsSkip)
+    {
+        expectHalfOutputsClose(outputB, outputA,
+            "skip cubin with a non-skipping table vs dense cubin, seqLen=" + std::to_string(seqLen)
+                + " headDim=" + std::to_string(headDim));
+        return;
+    }
+    auto const hostA = copyDeviceToHost<half>(outputA);
+    auto const hostB = copyDeviceToHost<half>(outputB);
+    ASSERT_EQ(hostA.size(), hostB.size());
+    EXPECT_EQ(0, std::memcmp(hostA.data(), hostB.data(), hostA.size() * sizeof(half)))
+        << "outputs under the two scale tables are not bit-identical";
 }
 
 size_t contiguousKVIdx(int32_t b, int32_t kv, int32_t h, int32_t s, int32_t d, int32_t H, int32_t S, int32_t D)
@@ -463,7 +638,7 @@ std::pair<std::vector<int32_t>, std::vector<int32_t>> buildVisionBlockRanges(
     std::vector<int32_t> const& blockIds, std::vector<int32_t> const& validSeqLens, int32_t physicalSeqLen)
 {
     std::vector<int32_t> blockBegin(blockIds.size(), -1);
-    std::vector<int32_t> blockEnd(blockIds.size(), -1);
+    std::vector<int32_t> blockEnd(blockIds.size(), -2);
     for (int32_t batchIdx = 0; batchIdx < static_cast<int32_t>(validSeqLens.size()); ++batchIdx)
     {
         int32_t const validSeqLen = validSeqLens[static_cast<size_t>(batchIdx)];
@@ -727,10 +902,9 @@ void runLlmD512PagedAccuracyCase(int32_t physicalSeqLen, int32_t numQHeads, int3
     constexpr int32_t kHeadDim = 512;
     constexpr int32_t kTokensPerPage = 128;
     int32_t const batchSize = static_cast<int32_t>(validSeqLens.size());
-    // S = lambda * longest valid seq; the kernel derives per-seq lambda = S / L.
-    float const skipSoftmaxScaleFactor = skipSoftmaxLambda > 0.0F
-        ? skipSoftmaxLambda * static_cast<float>(*std::max_element(validSeqLens.begin(), validSeqLens.end()))
-        : 0.0F;
+    // Flat S = lambda * longest valid seq; the kernel derives per-seq lambda = S / L.
+    SkipSoftmaxScaleTable const skipSoftmaxScaleTable(
+        flatScaleTable(skipSoftmaxLambda, *std::max_element(validSeqLens.begin(), validSeqLens.end())));
     int32_t const maxPagesPerSeq = (physicalSeqLen + kTokensPerPage - 1) / kTokensPerPage;
     int32_t const capacity = maxPagesPerSeq * kTokensPerPage;
     bool const useBidirectional = blockBeginHost != nullptr || blockEndHost != nullptr;
@@ -891,19 +1065,20 @@ void runLlmD512PagedAccuracyCase(int32_t physicalSeqLen, int32_t numQHeads, int3
             runner.runPaged(qTensor.rawPointer(), kvPagedTensor.rawPointer(), pageListTensor.dataPointer<int32_t>(),
                 outputCuteDsl.rawPointer(), paddedCuKVSeqLens.dataPointer<int32_t>(), numPages, maxPagesPerSeq,
                 kTokensPerPage, DataType::kHALF, stream, attentionScale, slidingWindowSize, false, 1.0F, 1.0F, 1.0F,
-                /*isCausal=*/true, /*skipSoftmaxScaleFactor=*/0.0F, blockBegin, nullptr),
+                /*isCausal=*/true, nullptr, 0, nullptr, blockBegin, nullptr),
             std::runtime_error);
         EXPECT_THROW(
             runner.runPaged(qTensor.rawPointer(), kvPagedTensor.rawPointer(), pageListTensor.dataPointer<int32_t>(),
                 outputCuteDsl.rawPointer(), paddedCuKVSeqLens.dataPointer<int32_t>(), numPages, maxPagesPerSeq,
                 kTokensPerPage, DataType::kHALF, stream, attentionScale, slidingWindowSize, false, 1.0F, 1.0F, 1.0F,
-                /*isCausal=*/true, /*skipSoftmaxScaleFactor=*/0.0F, nullptr, blockEnd),
+                /*isCausal=*/true, nullptr, 0, nullptr, nullptr, blockEnd),
             std::runtime_error);
     }
     ASSERT_TRUE(runner.runPaged(qTensor.rawPointer(), kvPagedTensor.rawPointer(), pageListTensor.dataPointer<int32_t>(),
         outputCuteDsl.rawPointer(), paddedCuKVSeqLens.dataPointer<int32_t>(), numPages, maxPagesPerSeq, kTokensPerPage,
         DataType::kHALF, stream, attentionScale, slidingWindowSize, false, 1.0F, 1.0F, 1.0F,
-        /*isCausal=*/true, skipSoftmaxScaleFactor, blockBegin, blockEnd));
+        /*isCausal=*/true, skipSoftmaxScaleTable.data(), skipSoftmaxScaleTable.length,
+        /*skipSoftmaxCuKVSeqLens=*/nullptr, blockBegin, blockEnd));
     if (useBidirectional)
     {
         auto const reference
@@ -1025,8 +1200,7 @@ void runLlmPagedMatchesContiguousCase(int32_t batchSize, int32_t seqLen, int32_t
     std::vector<int32_t> const& kvSeqLens = {})
 {
     ASSERT_EQ(seqLen % tokensPerPage, 0);
-    float const skipSoftmaxScaleFactor
-        = skipSoftmaxLambda > 0.0F ? skipSoftmaxLambda * static_cast<float>(seqLen) : 0.0F;
+    SkipSoftmaxScaleTable const skipSoftmaxScaleTable(flatScaleTable(skipSoftmaxLambda, seqLen));
     ASSERT_TRUE(packedQ || (qSeqLens.empty() && kvSeqLens.empty()));
     if (packedQ)
     {
@@ -1238,13 +1412,14 @@ void runLlmPagedMatchesContiguousCase(int32_t batchSize, int32_t seqLen, int32_t
     cudaStream_t stream = nullptr;
     float const attentionScale = 1.0F / std::sqrt(static_cast<float>(headDim));
     CuteDslFMHARunner runner(numQHeads, numKVHeads, headDim, batchSize, seqLen, seqLen);
-    ASSERT_TRUE(runner.run(qContiguous.rawPointer(), kvContiguousTensor.rawPointer(),
-        outputContiguous.dataPointer<half>(), cuKVSeqLens.dataPointer<int32_t>(), stream, attentionScale,
-        slidingWindowSize, fp8Input, qScale, kScale, vScale, skipSoftmaxScaleFactor));
+    ASSERT_TRUE(
+        runner.run(qContiguous.rawPointer(), kvContiguousTensor.rawPointer(), outputContiguous.dataPointer<half>(),
+            cuKVSeqLens.dataPointer<int32_t>(), stream, attentionScale, slidingWindowSize, fp8Input, qScale, kScale,
+            vScale, skipSoftmaxScaleTable.data(), skipSoftmaxScaleTable.length));
     ASSERT_TRUE(runner.runPaged(qPaged.rawPointer(), kvPagedTensor.rawPointer(), pageListTensor.dataPointer<int32_t>(),
         outputPaged.dataPointer<half>(), cuKVSeqLens.dataPointer<int32_t>(), numPages, maxPagesPerSeq, tokensPerPage,
         dataType, stream, attentionScale, slidingWindowSize, fp8Input, qScale, kScale, vScale, /*isCausal=*/true,
-        skipSoftmaxScaleFactor));
+        skipSoftmaxScaleTable.data(), skipSoftmaxScaleTable.length));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     CUDA_CHECK(cudaGetLastError());
 
@@ -1372,15 +1547,15 @@ TEST(CuteDslFMHARunnerTest, canImplement)
 {
     EXPECT_TRUE(CuteDslFMHARunner::canImplement(64, 100));
     EXPECT_TRUE(CuteDslFMHARunner::canImplement(128, 101));
+    EXPECT_TRUE(CuteDslFMHARunner::canImplement(64, 103));
     EXPECT_TRUE(CuteDslFMHARunner::canImplement(256, 110));
     EXPECT_TRUE(CuteDslFMHARunner::canImplement(512, 100));
     EXPECT_TRUE(CuteDslFMHARunner::canImplement(512, 101));
+    EXPECT_TRUE(CuteDslFMHARunner::canImplement(512, 103));
     EXPECT_TRUE(CuteDslFMHARunner::canImplement(512, 110));
     EXPECT_FALSE(CuteDslFMHARunner::canImplement(256, 90));
-    EXPECT_FALSE(CuteDslFMHARunner::canImplement(64, 103));
     EXPECT_FALSE(CuteDslFMHARunner::canImplement(128, 120));
     EXPECT_FALSE(CuteDslFMHARunner::canImplement(512, 90));
-    EXPECT_FALSE(CuteDslFMHARunner::canImplement(512, 103));
     EXPECT_FALSE(CuteDslFMHARunner::canImplement(512, 120));
     EXPECT_FALSE(CuteDslFMHARunner::canImplement(512, 121));
 
@@ -1398,8 +1573,8 @@ TEST(CuteDslFMHARunnerTest, canImplement)
         CuteDslFMHARunner::canImplementPagedRagged(8, 2, 64, 100, DataType::kHALF, CuteDslFMHAMaskType::kPADDING));
 
     EXPECT_TRUE(CuteDslFMHARunner::canImplementViT(64, 100));
+    EXPECT_TRUE(CuteDslFMHARunner::canImplementViT(64, 103));
     EXPECT_TRUE(CuteDslFMHARunner::canImplementViT(128, 110));
-    EXPECT_FALSE(CuteDslFMHARunner::canImplementViT(64, 103));
     EXPECT_FALSE(CuteDslFMHARunner::canImplementViT(128, 120));
 }
 
@@ -1452,7 +1627,7 @@ TEST(CuteDslFMHARunnerTest, llmD512PagedAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     struct LlmD512Case
@@ -1488,7 +1663,7 @@ TEST(CuteDslFMHARunnerTest, llmD512PagedSkipSoftmaxAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     // Kernel modules lazy-load on first dispatch (upstream lazy-loading refactor);
@@ -1496,7 +1671,9 @@ TEST(CuteDslFMHARunnerTest, llmD512PagedSkipSoftmaxAccuracy)
 
     // Conservative lambda: exercises the d512 skip dispatch/kernel end to end while
     // staying within the dense reference tolerance (random data rarely skips).
-    float const lambda = 0.001F;
+    // S = lambda * seqLen must round to an integer in (0, seqLen), or the kernel's
+    // per-sequence guard runs the sequence dense and this degrades to dense-vs-dense.
+    float const lambda = 0.01F;
     runLlmD512PagedAccuracyCase(
         /*physicalSeqLen=*/257, /*numQHeads=*/8, /*numKVHeads=*/1, {257},
         /*attentionScale=*/1.0F / std::sqrt(static_cast<float>(512)),
@@ -1509,7 +1686,7 @@ TEST(CuteDslFMHARunnerTest, llmD512PagedRaggedAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     std::vector<int32_t> const validSeqLens{1, 128, 257};
@@ -1521,7 +1698,7 @@ TEST(CuteDslFMHARunnerTest, llmD512PagedNonCausalAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
     runLlmPagedNonCausalAccuracyCase(32, 8, 1, 512, /*qSeqLens=*/{17, 9}, /*kvSeqLens=*/{96, 37}, /*fp8Input=*/false);
 }
@@ -1531,7 +1708,7 @@ TEST(CuteDslFMHARunnerTest, llmD256PagedNonCausalAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "D256 CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "D256 CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     runLlmPagedNonCausalAccuracyCase(4, 16, 8, 256, /*qSeqLens=*/{4, 3}, /*kvSeqLens=*/{24, 11}, /*fp8Input=*/false);
@@ -1542,7 +1719,7 @@ TEST(CuteDslFMHARunnerTest, llmD512PagedBidirectionalAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
     constexpr int32_t kNumQHeads = 4;
     constexpr int32_t kNumKVHeads = 2;
@@ -1609,7 +1786,7 @@ TEST(CuteDslFMHARunnerTest, llmD512PagedFp8Accuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
     runLlmD512PagedFp8AccuracyCase(128, INT_MAX);
     runLlmD512PagedFp8AccuracyCase(128, 63);
@@ -1621,7 +1798,7 @@ TEST(CuteDslFMHARunnerTest, llmD512PagedFp8NonCausalAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "D512 CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
     runLlmPagedNonCausalAccuracyCase(32, 8, 1, 512, /*qSeqLens=*/{17, 9}, /*kvSeqLens=*/{96, 37}, /*fp8Input=*/true);
 }
@@ -1631,7 +1808,7 @@ TEST(CuteDslFMHARunnerTest, llmD256PagedFp8NonCausalAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "D256 CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "D256 CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
     runLlmPagedNonCausalAccuracyCase(4, 16, 8, 256, /*qSeqLens=*/{4, 3}, /*kvSeqLens=*/{24, 11}, /*fp8Input=*/true);
 }
@@ -1641,7 +1818,7 @@ TEST(CuteDslFMHARunnerTest, vitAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     struct ViTCase
@@ -1681,12 +1858,46 @@ TEST(CuteDslFMHARunnerTest, vitAccuracy)
     }
 }
 
+//! d72 over several 128-token KV tiles, so the correction loop runs: identity rescales (random data), real
+//! rescales on every row (ramped K) and mixed lanes within one warp (alternating row bias). 16 heads cover both
+//! sector-alignment parities of the compact 144 B head pitch; the two-sequence case adds the cu_seqlens offsets.
+TEST(CuteDslFMHARunnerTest, vitD72MultiTileRescale)
+{
+    int32_t const rawSmVersion = getSMVersion();
+    if (!isSupportedCuteDslTestSm(rawSmVersion))
+    {
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
+    }
+
+    int32_t const numHeads = 16;
+    int32_t const headDim = 72;
+    float const attentionScale = 1.0F / std::sqrt(static_cast<float>(headDim));
+    struct MultiTileCase
+    {
+        std::vector<int32_t> cuSeqLens;
+        int32_t maxSeqLen;
+    };
+    std::vector<MultiTileCase> const cases{
+        {{0, 400}, 400},
+        {{0, 300, 700}, 400},
+    };
+    for (auto const& testCase : cases)
+    {
+        for (ViTTestData data : {ViTTestData::kRandom, ViTTestData::kRampedK, ViTTestData::kMixedRows})
+        {
+            SCOPED_TRACE(::testing::Message() << "totalSeqLen=" << testCase.cuSeqLens.back() << " sequences="
+                                              << testCase.cuSeqLens.size() - 1 << " data=" << toString(data));
+            runViTAccuracyCase(testCase.cuSeqLens, numHeads, headDim, testCase.maxSeqLen, attentionScale, data);
+        }
+    }
+}
+
 TEST(CuteDslFMHARunnerTest, llmAccuracy)
 {
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     struct LlmCase
@@ -1727,7 +1938,7 @@ TEST(CuteDslFMHARunnerTest, llmSkipSoftmaxAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     struct LlmCase
@@ -1754,12 +1965,236 @@ TEST(CuteDslFMHARunnerTest, llmSkipSoftmaxAccuracy)
                                           << " numQHeads=" << testCase.numQHeads
                                           << " numKVHeads=" << testCase.numKVHeads << " headDim=" << testCase.headDim);
         float const attentionScale = 1.0F / std::sqrt(static_cast<float>(testCase.headDim));
-        // A defaulted 0.0 threshold trips the runner's validity guard and
-        // silently dispatches dense; pass a real lambda.
-        float const lambda = testCase.headDim == 64 ? 0.003F : 0.001F;
+        // S = lambda * seqLen must round to an integer in (0, seqLen), or the kernel's
+        // per-sequence guard runs the sequence dense and this degrades to dense-vs-dense.
+        float const lambda = testCase.headDim == 64 ? 0.003F : 0.002F;
         runLlmAccuracyCase(testCase.batchSize, testCase.seqLen, testCase.numQHeads, testCase.numKVHeads,
             testCase.headDim, attentionScale, lambda);
     }
+}
+
+TEST(CuteDslFMHARunnerTest, shouldDispatchSkipSoftmax)
+{
+    int32_t const table[4]{0, 64, 4096, 512};
+    // Dense side: no table, or a table bound at length 0 (nothing to skip this step).
+    EXPECT_FALSE(CuteDslFMHARunner::shouldDispatchSkipSoftmax(nullptr, 0));
+    EXPECT_FALSE(CuteDslFMHARunner::shouldDispatchSkipSoftmax(table, 0));
+    EXPECT_FALSE(CuteDslFMHARunner::shouldDispatchSkipSoftmax(nullptr, 4));
+    // Skip side: at least one (seqlen_bin, S) pair.
+    EXPECT_TRUE(CuteDslFMHARunner::shouldDispatchSkipSoftmax(table, 2));
+    EXPECT_TRUE(CuteDslFMHARunner::shouldDispatchSkipSoftmax(table, 4));
+}
+
+// The skip cubin's per-sequence guard: a sequence below the table's first bin, or whose
+// looked-up S >= seqlen_kv (lambda >= 1), skips nothing and matches the dense cubin within the dense tolerance.
+TEST(CuteDslFMHARunnerTest, llmSkipSoftmaxGuardMatchesDense)
+{
+    int32_t const rawSmVersion = getSMVersion();
+    if (!isSupportedCuteDslTestSm(rawSmVersion))
+    {
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+    }
+
+    struct GuardCase
+    {
+        int32_t batchSize;
+        int32_t seqLen;
+        int32_t numQHeads;
+        int32_t numKVHeads;
+        int32_t headDim;
+        std::vector<int32_t> guardTable;
+    };
+
+    std::vector<GuardCase> const cases{
+        {2, 256, 8, 2, 64, {512, 64}},             // below the first bin
+        {1, 384, 16, 8, 128, {0, 384}},            // S == seqlen_kv
+        {1, 256, 16, 2, 256, {0, 4096}},           // S > seqlen_kv
+        {1, 384, 16, 8, 128, {0, 4096, 384, 384}}, // floor picks the second row
+    };
+
+    for (auto const& testCase : cases)
+    {
+        SCOPED_TRACE(::testing::Message()
+            << "batchSize=" << testCase.batchSize << " seqLen=" << testCase.seqLen
+            << " numQHeads=" << testCase.numQHeads << " numKVHeads=" << testCase.numKVHeads
+            << " headDim=" << testCase.headDim << " guardTableRows=" << testCase.guardTable.size() / 2);
+        runLlmScaleTablesMatchCase(testCase.batchSize, testCase.seqLen, testCase.numQHeads, testCase.numKVHeads,
+            testCase.headDim, /*tableA=*/{}, testCase.guardTable);
+    }
+}
+
+// Floor-bin lookup: extra rows that do not cover seqlen_kv must not change the resolved S.
+//! Ragged causal batch on the contiguous-KV path: slot 0 is a full-length sequence, slot 1 a short one padded
+//! to the same physical length (the plugin's bottom-right contract: padded cu_seqlens, valid rows leading). The
+//! table's first bin lies between the two lengths, so with actual lengths slot 1 is guarded (dense result) while
+//! slot 0 skips; with padded lengths slot 1 would be looked up as a full-length sequence and skip heavily.
+void runLlmRaggedSkipSoftmaxUsesActualLengthsCase(int32_t numQHeads, int32_t numKVHeads, int32_t headDim)
+{
+    int32_t const batchSize = 2;
+    int32_t const physicalSeqLen = 1024;
+    // The short slot needs several KV tiles: the first and the diagonal tile never skip, so a two-tile
+    // sequence could not discriminate a guarded lookup from a skipping one.
+    std::vector<int32_t> const validSeqLens{1024, 512};
+    // bin 640 -> S = 1000: lambda = 1000 / 1024 skips nearly every off-diagonal tile; 512 < 640 is guarded.
+    std::vector<int32_t> const table{640, 1000};
+    float const attentionScale = 1.0F / std::sqrt(static_cast<float>(headDim));
+
+    size_t const qSize = static_cast<size_t>(batchSize) * physicalSeqLen * numQHeads * headDim;
+    size_t const kvSize = static_cast<size_t>(batchSize) * physicalSeqLen * numKVHeads * headDim;
+    std::vector<half> qInput(qSize);
+    std::vector<half> kInput(kvSize);
+    std::vector<half> vInput(kvSize);
+    // The first KV tile has attention scores near 1; later tiles have scores 0.
+    // Distinct V values make skipping those later tiles observably change the output.
+    std::fill(qInput.begin(), qInput.end(), __float2half(0.0f));
+    std::fill(kInput.begin(), kInput.end(), __float2half(0.0f));
+    for (int32_t slot = 0; slot < batchSize; ++slot)
+    {
+        for (int32_t token = 0; token < physicalSeqLen; ++token)
+        {
+            for (int32_t head = 0; head < numQHeads; ++head)
+            {
+                size_t const offset = (static_cast<size_t>(slot * physicalSeqLen + token) * numQHeads + head) * headDim;
+                qInput[offset] = __float2half(std::sqrt(static_cast<float>(headDim)));
+            }
+            for (int32_t head = 0; head < numKVHeads; ++head)
+            {
+                size_t const offset
+                    = (static_cast<size_t>(slot * physicalSeqLen + token) * numKVHeads + head) * headDim;
+                kInput[offset] = __float2half(token < 128 ? 1.0f : 0.0f);
+                for (int32_t dim = 0; dim < headDim; ++dim)
+                {
+                    float const baseValue = (slot == 0 ? -0.25f : 0.25f) + static_cast<float>(head) / 64.0f;
+                    float const tokenValue = token < 128 ? static_cast<float>(token) / 256.0f : 1.0f;
+                    vInput[offset + dim] = __float2half(baseValue + tokenValue);
+                }
+            }
+        }
+    }
+
+    // Pack slots [slotBegin, slotEnd) with the leading `seqLen` tokens into the combined-cache layout.
+    auto packKV = [&](int32_t slotBegin, int32_t slotEnd, int32_t seqLen) {
+        int32_t const slots = slotEnd - slotBegin;
+        std::vector<half> packed(static_cast<size_t>(slots) * 2 * numKVHeads * seqLen * headDim);
+        for (int32_t slot = 0; slot < slots; ++slot)
+        {
+            for (int32_t token = 0; token < seqLen; ++token)
+            {
+                for (int32_t head = 0; head < numKVHeads; ++head)
+                {
+                    for (int32_t dim = 0; dim < headDim; ++dim)
+                    {
+                        size_t const src
+                            = (((static_cast<size_t>(slotBegin + slot) * physicalSeqLen + token) * numKVHeads + head)
+                                  * headDim)
+                            + dim;
+                        packed[contiguousKVIdx(slot, 0, head, token, dim, numKVHeads, seqLen, headDim)] = kInput[src];
+                        packed[contiguousKVIdx(slot, 1, head, token, dim, numKVHeads, seqLen, headDim)] = vInput[src];
+                    }
+                }
+            }
+        }
+        return packed;
+    };
+    auto sliceQ = [&](int32_t slot, int32_t seqLen) {
+        size_t const rowElems = static_cast<size_t>(numQHeads) * headDim;
+        auto const begin
+            = qInput.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(slot) * physicalSeqLen * rowElems);
+        return std::vector<half>(begin, begin + static_cast<std::ptrdiff_t>(static_cast<size_t>(seqLen) * rowElems));
+    };
+    auto runOne = [&](std::vector<half> const& q, std::vector<half> const& kv, int32_t slots, int32_t seqLen,
+                      std::vector<int32_t> const& paddedCu, std::vector<int32_t> const& actualCu,
+                      SkipSoftmaxScaleTable const& scaleTable) {
+        rt::Tensor qTensor({slots, seqLen, numQHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+        rt::Tensor kvTensor({slots, 2, numKVHeads, seqLen, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+        rt::Tensor output({slots, seqLen, numQHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+        rt::Tensor paddedCuTensor({slots + 1}, rt::DeviceType::kGPU, DataType::kINT32);
+        rt::Tensor actualCuTensor({slots + 1}, rt::DeviceType::kGPU, DataType::kINT32);
+        copyHostToDevice(qTensor, q);
+        copyHostToDevice(kvTensor, kv);
+        copyHostToDevice(paddedCuTensor, paddedCu);
+        copyHostToDevice(actualCuTensor, actualCu);
+        cudaStream_t stream = nullptr;
+        CuteDslFMHARunner runner(numQHeads, numKVHeads, headDim, slots, seqLen, seqLen);
+        EXPECT_TRUE(runner.run(qTensor.dataPointer<half>(), kvTensor.dataPointer<half>(), output.dataPointer<half>(),
+            paddedCuTensor.dataPointer<int32_t>(), stream, attentionScale, INT_MAX, false, 1.0F, 1.0F, 1.0F,
+            scaleTable.data(), scaleTable.length, actualCuTensor.dataPointer<int32_t>()));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        CUDA_CHECK(cudaGetLastError());
+        return copyDeviceToHost<half>(output);
+    };
+    auto maxAbsDiff = [&](std::vector<half> const& a, size_t aOffset, std::vector<half> const& b, size_t count) {
+        float maxDiff = 0.0F;
+        for (size_t idx = 0; idx < count; ++idx)
+        {
+            maxDiff = std::max(maxDiff, std::fabs(__half2float(a[aOffset + idx]) - __half2float(b[idx])));
+        }
+        return maxDiff;
+    };
+
+    SkipSoftmaxScaleTable const scaleTable(table);
+    SkipSoftmaxScaleTable const denseTable({});
+    std::vector<int32_t> const paddedCu{0, physicalSeqLen, 2 * physicalSeqLen};
+    std::vector<int32_t> const actualCu{0, validSeqLens[0], validSeqLens[0] + validSeqLens[1]};
+    auto const batched
+        = runOne(qInput, packKV(0, 2, physicalSeqLen), batchSize, physicalSeqLen, paddedCu, actualCu, scaleTable);
+    // Negative control: the same launch told the padded lengths are the actual ones.
+    auto const batchedPaddedLookup
+        = runOne(qInput, packKV(0, 2, physicalSeqLen), batchSize, physicalSeqLen, paddedCu, paddedCu, scaleTable);
+
+    size_t const rowElems = static_cast<size_t>(numQHeads) * headDim;
+    // Slot 0 (full length): identical to running it alone with the same table.
+    auto const slot0Alone = runOne(sliceQ(0, physicalSeqLen), packKV(0, 1, physicalSeqLen), 1, physicalSeqLen,
+        {0, physicalSeqLen}, {0, physicalSeqLen}, scaleTable);
+    EXPECT_EQ(0, std::memcmp(batched.data(), slot0Alone.data(), slot0Alone.size() * sizeof(half)))
+        << "full-length slot of a ragged batch differs from the same sequence run alone";
+    // Slot 1 (short, below the first bin): the dense result within the dense tolerance.
+    int32_t const shortLen = validSeqLens[1];
+    auto const slot1Dense
+        = runOne(sliceQ(1, shortLen), packKV(1, 2, shortLen), 1, shortLen, {0, shortLen}, {0, shortLen}, denseTable);
+    size_t const slot1Offset = static_cast<size_t>(physicalSeqLen) * rowElems;
+    size_t const slot1Count = static_cast<size_t>(shortLen) * rowElems;
+    float const guardDiff = maxAbsDiff(batched, slot1Offset, slot1Dense, slot1Count);
+    EXPECT_LT(guardDiff, 1e-2F) << "short slot was not guarded: max |diff| vs dense = " << guardDiff;
+    float const paddedLookupDiff = maxAbsDiff(batchedPaddedLookup, slot1Offset, slot1Dense, slot1Count);
+    EXPECT_GT(paddedLookupDiff, 1e-2F)
+        << "negative control did not skip on the short slot (test cannot discriminate): max |diff| = "
+        << paddedLookupDiff;
+}
+
+TEST(CuteDslFMHARunnerTest, llmSkipSoftmaxTableLookupMatchesFlat)
+{
+    int32_t const rawSmVersion = getSMVersion();
+    if (!isSupportedCuteDslTestSm(rawSmVersion))
+    {
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+    }
+
+    int32_t const seqLen = 1024;
+    int32_t const scale = 3; // lambda = 3 / 1024, skips on random data (see llmSkipSoftmaxAccuracy)
+    std::vector<int32_t> const flat{0, scale};
+    std::vector<std::vector<int32_t>> const equivalentTables{
+        {0, 1, seqLen, scale},       // seqLen sits exactly on the second bin
+        {0, scale, seqLen + 1, 1},   // next bin starts past seqLen
+        {0, 1, 512, scale, 2048, 1}, // interior bin
+    };
+    for (auto const& table : equivalentTables)
+    {
+        SCOPED_TRACE(::testing::Message() << "tableRows=" << table.size() / 2);
+        runLlmScaleTablesMatchCase(
+            /*batchSize=*/1, seqLen, /*numQHeads=*/16, /*numKVHeads=*/8, /*headDim=*/128, flat, table);
+    }
+}
+
+TEST(CuteDslFMHARunnerTest, llmRaggedSkipSoftmaxUsesActualLengths)
+{
+    int32_t const rawSmVersion = getSMVersion();
+    if (!isSupportedCuteDslTestSm(rawSmVersion))
+    {
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+    }
+    runLlmRaggedSkipSoftmaxUsesActualLengthsCase(/*numQHeads=*/16, /*numKVHeads=*/8, /*headDim=*/128);
+    runLlmRaggedSkipSoftmaxUsesActualLengthsCase(/*numQHeads=*/16, /*numKVHeads=*/2, /*headDim=*/256);
 }
 
 TEST(CuteDslFMHARunnerTest, llmPagedKVMatchesContiguous)
@@ -1767,7 +2202,7 @@ TEST(CuteDslFMHARunnerTest, llmPagedKVMatchesContiguous)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     struct LlmPagedCase
@@ -1812,7 +2247,7 @@ TEST(CuteDslFMHARunnerTest, llmPagedKVSkipSoftmaxMatchesContiguous)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     struct LlmPagedSkipCase
@@ -1835,7 +2270,8 @@ TEST(CuteDslFMHARunnerTest, llmPagedKVSkipSoftmaxMatchesContiguous)
         SCOPED_TRACE(::testing::Message() << "batchSize=" << testCase.batchSize << " seqLen=" << testCase.seqLen
                                           << " numQHeads=" << testCase.numQHeads
                                           << " numKVHeads=" << testCase.numKVHeads << " headDim=" << testCase.headDim);
-        float const lambda = testCase.headDim == 64 ? 0.003F : 0.001F;
+        // S = lambda * seqLen must round to an integer in (0, seqLen); see llmSkipSoftmaxAccuracy.
+        float const lambda = testCase.headDim == 64 ? 0.003F : 0.002F;
         runLlmPagedMatchesContiguousCase<half>(testCase.batchSize, testCase.seqLen, testCase.numQHeads,
             testCase.numKVHeads, testCase.headDim, /*tokensPerPage=*/128, DataType::kHALF,
             /*slidingWindowSize=*/INT_MAX,
@@ -1848,7 +2284,7 @@ TEST(CuteDslFMHARunnerTest, llmPagedKVFp8MatchesContiguous)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     constexpr float qScale = 0.01429094560444355F;
@@ -1867,7 +2303,7 @@ TEST(CuteDslFMHARunnerTest, llmFp8LongSequenceAccuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     runLlmFp8LongSequenceAccuracyCase(32, 2, 128);
@@ -2090,7 +2526,7 @@ TEST(CuteDslFMHARunnerTest, vitFp8Accuracy)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
 
     struct ViTFp8Case
@@ -2132,7 +2568,7 @@ TEST(CuteDslFMHARunnerTest, vitFp8PaddedHeadDim72)
     int32_t const rawSmVersion = getSMVersion();
     if (!isSupportedCuteDslTestSm(rawSmVersion))
     {
-        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/110. Current SM=" << rawSmVersion;
+        GTEST_SKIP() << "CuTe DSL FMHA unit tests only run on SM100/101/103/110. Current SM=" << rawSmVersion;
     }
     // Phi-4 SigLIP contract: zero-pad d=72 to d=80 + real 1/sqrt(72) scale
     // must reproduce true d=72 attention through the FP8 d=80 kernel.

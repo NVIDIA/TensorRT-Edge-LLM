@@ -31,18 +31,21 @@ namespace kernel
 //! Each support row must contain unique token ids. The residual distribution
 //! is evaluated on support(p) union support(q), so
 //! callers such as DFlash2 never allocate [B, P, vocab] proposal probabilities.
+//! forcedAcceptanceLength is -1 for natural acceptance, otherwise the positive length including the target bonus.
 void speculativeSparseAccept(rt::Tensor const& targetSupportProbabilities, rt::Tensor const& targetSupportIds,
     rt::Tensor const& proposalSupportProbabilities, rt::Tensor const& proposalSupportIds,
     rt::Tensor const& proposalTokenIds, rt::Tensor const& proposalLengths, rt::Tensor const& acceptUniforms,
     rt::Tensor& acceptedTokenIds, rt::Tensor& acceptLength, rt::Tensor* acceptedTokenIndices, cudaStream_t stream,
-    rt::Tensor const* maxAcceptLengths = nullptr);
+    rt::Tensor const* maxAcceptLengths = nullptr, int32_t forcedAcceptanceLength = -1);
 
 //! Verify sparse draft proposals against a dense target distribution without materializing a dense proposal or
 //! residual distribution. Proposal support IDs must be unique within each row.
+//! forcedAcceptanceLength is -1 for natural acceptance, otherwise the positive length including the target bonus.
 void speculativeDenseTargetAccept(rt::Tensor const& targetProbabilities, rt::Tensor const& proposalSupportProbabilities,
     rt::Tensor const& proposalSupportIds, rt::Tensor const& proposalTokenIds, rt::Tensor const& proposalLengths,
     rt::Tensor const& acceptUniforms, rt::Tensor& acceptedTokenIds, rt::Tensor& acceptLength,
-    rt::Tensor* acceptedTokenIndices, cudaStream_t stream, rt::Tensor const* maxAcceptLengths = nullptr);
+    rt::Tensor* acceptedTokenIndices, cudaStream_t stream, rt::Tensor const* maxAcceptLengths = nullptr,
+    int32_t forcedAcceptanceLength = -1);
 
 //! Convert descending top-k logits to the exact temperature/top-p sampling
 //! distribution on the fixed sparse support. Entries outside the nucleus are

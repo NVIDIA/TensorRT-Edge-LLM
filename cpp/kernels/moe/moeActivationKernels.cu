@@ -340,9 +340,9 @@ void moeActivation(rt::Tensor const& input, rt::Tensor& output, int64_t numToken
     check::check(outputShape[1] == intermediateDim,
         fmtstr("output second dimension must be intermediateDim = %ld", intermediateDim));
 
-    nvinfer1::DataType const dataType = input.getDataType();
-    check::check(
-        dataType == nvinfer1::DataType::kHALF || dataType == nvinfer1::DataType::kBF16, "input must be FP16 or BF16");
+    trt_edgellm::DataType const dataType = input.getDataType();
+    check::check(dataType == trt_edgellm::DataType::kHALF || dataType == trt_edgellm::DataType::kBF16,
+        "input must be FP16 or BF16");
     check::check(output.getDataType() == dataType, "input and output data types must match");
     check::check(input.getDeviceType() == rt::DeviceType::kGPU, "input must be on GPU");
     check::check(output.getDeviceType() == rt::DeviceType::kGPU, "output must be on GPU");
@@ -350,7 +350,7 @@ void moeActivation(rt::Tensor const& input, rt::Tensor& output, int64_t numToken
     check::check(intermediateDim % kElemPerVec == 0,
         fmtstr("intermediateDim (%ld) must be a multiple of %d for vectorized access", intermediateDim, kElemPerVec));
 
-    if (dataType == nvinfer1::DataType::kHALF)
+    if (dataType == trt_edgellm::DataType::kHALF)
     {
         launchMoeActivation<half>(input, output, numTokens, intermediateDim, activationType, "input", stream);
     }
@@ -398,7 +398,7 @@ void moeScaledGatedActivation(rt::Tensor const& input, rt::Tensor& output, rt::T
             && projectionGlobalScales.getShape()[1] > 0,
         "scaled gated activation requires [2, num_experts] global scales");
     check::check(
-        expertIndices.getShape().volume() == numTokens && expertIndices.getDataType() == nvinfer1::DataType::kINT32,
+        expertIndices.getShape().volume() == numTokens && expertIndices.getDataType() == trt_edgellm::DataType::kINT32,
         "scaled gated activation expert indices mismatch");
     check::check(
         input.getDataType() == output.getDataType() && input.getDataType() == projectionGlobalScales.getDataType(),
@@ -410,14 +410,15 @@ void moeScaledGatedActivation(rt::Tensor const& input, rt::Tensor& output, rt::T
     check::check(intermediateDim % kElemPerVec == 0,
         fmtstr("intermediateDim (%ld) must be a multiple of %d", intermediateDim, kElemPerVec));
 
-    if (input.getDataType() == nvinfer1::DataType::kHALF)
+    if (input.getDataType() == trt_edgellm::DataType::kHALF)
     {
         launchScaledGatedActivation<half>(
             input, output, projectionGlobalScales, expertIndices, numTokens, intermediateDim, activationType, stream);
     }
     else
     {
-        check::check(input.getDataType() == nvinfer1::DataType::kBF16, "scaled gated activation supports FP16 or BF16");
+        check::check(
+            input.getDataType() == trt_edgellm::DataType::kBF16, "scaled gated activation supports FP16 or BF16");
         launchScaledGatedActivation<__nv_bfloat16>(
             input, output, projectionGlobalScales, expertIndices, numTokens, intermediateDim, activationType, stream);
     }

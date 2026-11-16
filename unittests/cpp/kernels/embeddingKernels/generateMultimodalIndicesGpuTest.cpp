@@ -28,7 +28,6 @@
 #include <vector>
 
 using namespace trt_edgellm;
-using namespace nvinfer1;
 
 namespace
 {

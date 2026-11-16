@@ -93,8 +93,9 @@ public:
     //! @param stream CUDA stream for the device-to-device copy
     //! @param features Additional [tokens, hidden] outputs, cached and evicted together with the embedding
     //! @param tokenOffset First source row for this media item in each additional output
-    void storeSlice(Hash128 key, void const* devicePtr, int64_t numTokens, int64_t hiddenSize, nvinfer1::DataType dtype,
-        cudaStream_t stream, std::vector<std::reference_wrapper<Tensor>> const& features = {}, int64_t tokenOffset = 0);
+    void storeSlice(Hash128 key, void const* devicePtr, int64_t numTokens, int64_t hiddenSize,
+        trt_edgellm::DataType dtype, cudaStream_t stream,
+        std::vector<std::reference_wrapper<Tensor>> const& features = {}, int64_t tokenOffset = 0);
 
     //! Remove all entries and free GPU memory.
     void clear();

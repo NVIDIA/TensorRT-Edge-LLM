@@ -17,11 +17,13 @@
 
 #pragma once
 
-#include "common/trtUtils.h"
 #include <array>
 #include <cstddef>
 #include <string>
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include "common/trtUtils.h"
+#else
+#include <dlfcn.h>
 #include <limits.h>
 #include <unistd.h>
 #endif
@@ -31,8 +33,8 @@ namespace trt_edgellm
 namespace test
 {
 
-//! The plugin links into the build tree's root while the test executables sit in
-//! subdirectories, so a path derived from /proc/self/exe looks in the wrong place.
+//! The plugin and test executables use separate lib and bin/unitTests folders,
+//! so a path derived from /proc/self/exe looks in the wrong place.
 //! EDGELLM_PLUGIN_PATH is the linker's own answer, passed down by
 //! unittests/CMakeLists.txt. The executable-relative form stays as the fallback
 //! for a binary run outside that build.
@@ -84,9 +86,8 @@ inline void* loadPluginLibrary() noexcept
         if (module == nullptr)
         {
             pluginLoadErrorStorage() = "Windows error " + std::to_string(GetLastError());
-            return module;
         }
-        loadedEdgellmPluginHandle() = module;
+        // getLoadedEdgellmPluginSymbol() finds the loaded plugin module by its file name.
         return module;
 #else
         void* const module = dlopen(pluginLibraryPath().c_str(), RTLD_NOW | RTLD_GLOBAL);

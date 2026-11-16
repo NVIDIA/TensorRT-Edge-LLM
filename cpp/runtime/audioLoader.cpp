@@ -76,7 +76,7 @@ struct DecodedPcm
     explicit DecodedPcm(std::vector<float> samples)
         : storage(std::move(samples))
         , view(storage.data(), Coords{static_cast<int64_t>(storage.size())}, DeviceType::kCPU,
-              nvinfer1::DataType::kFLOAT, "decodedPcm")
+              trt_edgellm::DataType::kFLOAT, "decodedPcm")
     {
     }
 

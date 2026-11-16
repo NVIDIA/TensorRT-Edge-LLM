@@ -40,9 +40,9 @@ constexpr int64_t kMAX_KV_POOL_PAGES{std::numeric_limits<int32_t>::max() / 2};
 //! Largest token capacity whose page-aligned padded value still fits int32.
 constexpr int32_t kMAX_KV_CACHE_CAPACITY = (std::numeric_limits<int32_t>::max() / kTOKENS_PER_PAGE) * kTOKENS_PER_PAGE;
 
-//! Bounded SWA reservation constants. The retained image includes a page-boundary allowance; chunk transitions may
-//! temporarily hold the old and new images until execution completes.
-constexpr int32_t kSWA_BOUNDARY_HEADROOM_PAGES{1};
+//! Bounded SWA reservation constants. A complete page before the latest publishable endpoint supports exact-input
+//! replay. Chunk transitions may temporarily hold both the old and new retained images until execution completes.
+constexpr int32_t kSWA_REPLAY_HALO_PAGES{1};
 constexpr int32_t kSWA_REPLACEMENT_PAGES{1};
 
 //! Number of pages a single slot's padded token capacity spans.
@@ -77,13 +77,27 @@ inline bool isReducedKvCacheCapacity(int32_t kvCacheCapacity, int32_t maxKVCache
     return resolveKvCacheCapacity(kvCacheCapacity, maxKVCacheCapacity) < maxKVCacheCapacity;
 }
 
+//! Maximum pages in one live retained image: the W-sized history, one complete replay page, and the current partial
+//! page beyond the latest publishable full-page endpoint.
+inline int64_t computeSwaMaxRetainedPages(int64_t slidingWindowCapacity, int64_t tokensPerPage)
+{
+    if (slidingWindowCapacity <= 0 || tokensPerPage <= 0)
+    {
+        throw std::invalid_argument("SWA window capacity and page size must be positive");
+    }
+    return (slidingWindowCapacity + tokensPerPage - 1) / tokensPerPage + kSWA_REPLAY_HALO_PAGES + 1;
+}
+
 //! Active private reservation for one admitted SWA slot. Two bounded retained images permit chunk transitions while
 //! stale pages remain live until execution completes, and replacement pages keep decode advancement writable.
 inline int64_t computeSwaPrivatePagesPerSlot(
     int64_t slidingWindowCapacity, int64_t tokensPerPage, int64_t replacementPageCount)
 {
-    int64_t const retainedPages
-        = (slidingWindowCapacity + tokensPerPage - 1) / tokensPerPage + kSWA_BOUNDARY_HEADROOM_PAGES;
+    if (replacementPageCount <= 0)
+    {
+        throw std::invalid_argument("SWA replacement page count must be positive");
+    }
+    int64_t const retainedPages = computeSwaMaxRetainedPages(slidingWindowCapacity, tokensPerPage);
     return 2 * retainedPages + replacementPageCount;
 }
 

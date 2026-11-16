@@ -19,12 +19,13 @@
 
 #include "common/tensor.h"
 #include "runtime/config/llmEngineConfig.h"
+#include "runtime/config/pleRuntimeConfig.h"
 #include "runtime/exec/tensorMap.h"
 
 #include <cstdint>
 #include <cuda_runtime.h>
 #include <filesystem>
-#include <optional>
+#include <memory>
 #include <vector>
 
 namespace trt_edgellm
@@ -32,32 +33,59 @@ namespace trt_edgellm
 namespace rt
 {
 
+class PleIoBudget;
+
 //! Runtime preprocessor for Gemma4 E-model per-layer embeddings (PLE).
 //!
-//! Loads the token-identity PLE table from ple_embedding.safetensors, gathers
-//! one [physical_tokens, ple_hidden_size] tensor per decoder layer from token
-//! IDs, and binds those tensors as ple_token_embeds_{layer_idx} engine inputs.
+//! Owns a resident/cached pool and a token-to-slot map shared by all PLE layers.
+//! The supplied stream outlives the preprocessor and is used by all engine consumers.
 class Gemma4EmbeddingPreprocessor
 {
 public:
-    Gemma4EmbeddingPreprocessor(std::filesystem::path const& engineDir, LLMEngineConfig const& config,
-        int32_t maxBatchSize, int32_t maxSeqLen, TensorMap& tensorMap, cudaStream_t stream,
-        std::optional<Tensor> checkpointTable = std::nullopt);
+    Gemma4EmbeddingPreprocessor(LLMEngineConfig const& config, int32_t maxBatchSize, int32_t maxSeqLen,
+        TensorMap& tensorMap, cudaStream_t stream, PleRuntimeConfig const& pleConfig = {},
+        std::filesystem::path const& checkpointDir = {}, std::shared_ptr<PleIoBudget> pleIoBudget = nullptr);
+    ~Gemma4EmbeddingPreprocessor() noexcept;
 
     //! Gather PLE tensors for the current token-id tensor shape.
-    void embed(Tensor const& tokenIds, cudaStream_t stream);
+    //! Device query lengths mask entry padding and must remain valid through queued work.
+    //! Cached residency requires matching host lengths and a CPU INT32 token snapshot in physical row order.
+    //! The host snapshot is read synchronously; resident mode can use GPU-only inputs.
+    void embed(Tensor const& tokenIds, cudaStream_t stream, std::vector<int32_t> const& queryLengths = {},
+        Tensor const* deviceQueryLengths = nullptr, Tensor const* hostTokenIds = nullptr);
+
+    //! Gather PLE tensors for a packed token-major step whose every token ID is a real token (no row padding).
+    //! The token count may exceed one request's maximum sequence length, up to the allocated map capacity.
+    //! Cached residency requires a CPU INT32 snapshot of the same token IDs.
+    void embedPacked(Tensor const& tokenIds, cudaStream_t stream, Tensor const* hostTokenIds);
 
     //! Reshape already-bound token-major outputs for an execution or CUDA-graph capture shape.
     void reshapeOutputsTokenMajor(int64_t physicalTokens);
 
-private:
-    LLMEngineConfig mConfig{};
-    Tensor mPleTable{};
-    Tensor mPleOutputBuffer{}; //!< Unified owned backing buffer for all PLE layer outputs.
-    //! Non-owned tensor views into mPleOutputBuffer. TensorMap stores pointers to these stable objects.
-    std::vector<Tensor> mPleOutputViews{};
+    //! Whether embed needs host token IDs, which only cached residency does.
+    bool needsHostTokens() const noexcept;
 
-    Tensor makeTokenMajorOutputViewForLayer(int32_t layerIdx, int64_t physicalTokens);
+    //! The most distinct table rows one gather can map: every table row under resident storage, the
+    //! cache slots less the reserved zero slot under cached storage.
+    int64_t distinctRowCapacity() const noexcept
+    {
+        return mDistinctRowCapacity;
+    }
+
+private:
+    struct PooledResources;
+    bool drainPooled() noexcept;
+    void releasePooledLeases();
+    void embedPooled(Tensor const& tokenIds, Coords const& shape, std::vector<int32_t> const& queryLengths,
+        Tensor const* deviceQueryLengths, Tensor const* hostTokenIds);
+
+    LLMEngineConfig mConfig{};
+    std::unique_ptr<PooledResources> mPooled;
+    cudaStream_t mStream{};
+    int32_t mMaxBatchSize{};
+    int32_t mMaxSeqLen{};
+    int64_t mDistinctRowCapacity{};
+    bool mPoisoned{false};
 };
 
 } // namespace rt

@@ -17,7 +17,9 @@
 
 // Block-diffusion decoding assembled around a substitute engine.
 
+#include "profiling/timer.h"
 #include "substituteEngine.h"
+#include <tuple>
 
 using namespace trt_edgellm;
 using namespace substitute_engine;
@@ -71,12 +73,12 @@ protected:
 
 // Given a base config whose engine role is dllm
 // When the runtime is assembled
-// Then the registry picks the diffusion decoder and the round's ceiling is the canvas, not draftingStep + 1
+// Then the registry picks the diffusion decoder and the round's ceiling is the canvas, not draftSteps + 1
 TEST_F(BlockDiffusionAssemblyTest, SelectsTheDiffusionStrategyAndSizesTheRoundToTheCanvas)
 {
     auto artifacts = makeVanillaArtifacts(mModelDir, makeEngine(), mStream);
 
-    // The canvas is the unit of progress here, the way `draftingStep + 1` is for the chain decoders. Reading it
+    // The canvas is the unit of progress here, the way `draftSteps + 1` is for the chain decoders. Reading it
     // from the deployment rather than restating the constant keeps this honest if the resolution changes.
     ASSERT_EQ(artifacts.deployment.maxAcceptedTokensPerRound(), kCanvasLength);
     ASSERT_TRUE(artifacts.deployment.base.isDiffusionBackbone);
@@ -132,4 +134,112 @@ TEST_F(BlockDiffusionAssemblyTest, FillsACanvasInFewerForwardsThanTokens)
     ASSERT_EQ(response.outputIds.size(), 1U);
     EXPECT_GT(response.outputIds[0].size(), 1U) << "a canvas round should commit more than one token";
 }
+
+TEST_F(BlockDiffusionAssemblyTest, FixedRoundProfilingFitsTheRequestedDenoisingWork)
+{
+    // Given a 300-step diffusion canvas and a one-round experiment, when profiling is enabled,
+    // then the whole canvas and all denoising observations survive the preallocated timer pool.
+    constexpr int32_t kDenoisingSteps = 300;
+    Json config = makeDiffusionConfig();
+    config["diffusion_config"]["max_denoising_steps"] = kDenoisingSteps;
+    std::ofstream(mModelDir / "config.json") << config.dump();
+    auto engine = makeEngine();
+    ON_CALL(*engine, execute(::testing::_)).WillByDefault(emit(agreedLogitsRows(kAgreedToken)));
+    auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
+    rt::DeploymentOptions options{};
+    options.engineDir = mModelDir.string();
+    options.benchmark.maxDecodeRounds = 1;
+    rt::LLMInferenceRuntime runtime{std::move(artifacts), options, mStream};
+    auto request = makeGreedyRequest("a", kCanvasLength);
+    request.diffusionMaxDenoisingSteps = kDenoisingSteps;
+    request.ignoreEos = true;
+    struct RestoreProfiling
+    {
+        bool previous;
+        ~RestoreProfiling()
+        {
+            setProfilingEnabled(previous);
+        }
+    } restoreProfiling{getProfilingEnabled()};
+    setProfilingEnabled(true);
+
+    rt::LLMGenerationResponse response;
+    bool const success = runtime.handleRequest(request, response, mStream);
+    auto const denoise = gTimer.getTimingData(metrics::StageNames::kBLOCK_DIFFUSION_DENOISE);
+    EXPECT_EQ(std::make_tuple(success, response.outputIds, response.decodeRoundCounts,
+                  denoise ? denoise->getTotalRuns() : int64_t{0}),
+        std::make_tuple(true, std::vector<std::vector<int32_t>>{std::vector<int32_t>(kCanvasLength, kAgreedToken)},
+            std::vector<int32_t>{1}, int64_t{kDenoisingSteps}));
+}
+
+//! Forces effectiveMaxDenoisingSteps() to take forceAccept on the very first (and only) step, sidestepping the
+//! probabilistic entropy-threshold/stability-window accept path entirely -- which pins the happy-path argmax
+//! accept call shape without needing to model that machinery.
+constexpr int32_t kOneStepCanvasLength{2};
+
+Json makeOneStepDiffusionConfig()
+{
+    Json config = makeDiffusionConfig();
+    config["diffusion_config"]["canvas_length"] = kOneStepCanvasLength;
+    config["diffusion_config"]["max_denoising_steps"] = 1;
+    return config;
+}
+
+class OneStepBlockDiffusionAssemblyTest : public ModelDirTest
+{
+protected:
+    std::filesystem::path stageModelDir() override
+    {
+        return writeModelDir("oneStepBlockDiffusionAssemblyTests", makeOneStepDiffusionConfig());
+    }
+};
+
+// Given max_denoising_steps=1 (forcing an immediate argmax accept) and every canvas position genuinely agreeing
+// on the same argmax token
+// When one round completes
+// Then decodeStep()'s forward-call sequence is exactly one denoise forward followed by one commit forward, and
+// the whole canvas is accepted and committed
+//
+// denoiseDims() and diffusionCommitDims() share kDecodeProfile and the same selectLen==canvasLen, so profile and
+// selectLen alone cannot tell a denoise forward from a commit forward -- contextMaskSelectorLen is the only
+// InferenceDims field that differs between them (denoiseDims() sets it to `batch`, diffusionCommitDims() sets it
+// to 0). Found by mutation testing a denoise-loop boundary change that skipped denoising but forced an extra round
+// (still ending in one commit call): invisible to profile/selectLen/call-count assertions alone, caught only once
+// this field was added.
+TEST_F(OneStepBlockDiffusionAssemblyTest, DenoisesOnceThenCommitsOnceWhenEveryPositionGenuinelyAgrees)
+{
+    using ::testing::_;
+
+    auto engine = makeEngine();
+    auto& mock = *engine;
+    std::vector<int32_t> contextMaskSelectorLens;
+    ON_CALL(mock, prepare(_, _, _, _))
+        .WillByDefault(
+            [&, this](int32_t profile, rt::InferenceDims const& dims, rt::TensorMap const& map, cudaStream_t) {
+                mLogits = map.get(binding_names::kLogits);
+                contextMaskSelectorLens.push_back(dims.contextMaskSelectorLen);
+                return true;
+            });
+    ON_CALL(mock, execute(_)).WillByDefault(emit(agreedLogitsRows(kAgreedToken)));
+
+    auto artifacts = makeVanillaArtifacts(mModelDir, std::move(engine), mStream);
+    auto runtime = makeRuntime(std::move(artifacts));
+
+    auto const request = makeGreedyRequest("a", kOneStepCanvasLength);
+    rt::LLMGenerationResponse response;
+    ASSERT_TRUE(runtime.handleRequest(request, response, mStream));
+
+    ASSERT_EQ(contextMaskSelectorLens.size(), 3U) << "prefill, one denoise, one commit";
+    EXPECT_GT(contextMaskSelectorLens[1], 0) << "denoiseDims() sets contextMaskSelectorLen=batch";
+    EXPECT_EQ(contextMaskSelectorLens[2], 0) << "diffusionCommitDims() sets contextMaskSelectorLen=0";
+
+    expectResponseCoversEverySlot(response, 1);
+    ASSERT_EQ(response.outputIds.size(), 1U);
+    EXPECT_THAT(
+        response.outputIds[0], ::testing::AllOf(::testing::SizeIs(kOneStepCanvasLength), ::testing::Each(kAgreedToken)))
+        << "every canvas position genuinely agrees on the same argmax token, so the forced-accept step should "
+           "commit the whole canvas";
+    EXPECT_EQ(response.finishReasons[0], rt::FinishReason::kLength);
+}
+
 } // namespace

@@ -25,12 +25,11 @@
 #include "kernels/contextAttentionKernels/utilKernels.h"
 #include "kernels/embeddingKernels/embeddingKernels.h"
 #include "kernels/gdnKernels/gdnTreeChunkKernels.h"
+#include "kernels/nvfp4A16BlackwellGemm/nvfp4A16BlackwellGemmRunner.h"
 #include "kernels/speculative/ddtreeKernels.h"
 #include "kernels/speculative/dflashRuntimeKernels.h"
 #include "kernels/speculative/dsparkKernels.h"
-#include "kernels/speculative/eagleAcceptKernels.h"
-#include "kernels/speculative/eagleUtilKernels.h"
-#include "kernels/speculative/speculativeSampling.h"
+#include "kernels/speculative/speculativeKernels.h"
 #include "profiling/metrics.h"
 #include "profiling/nvtx_wrapper.h"
 #include "profiling/timer.h"
@@ -38,13 +37,18 @@
 #include "runtime/decoding/decoderUtils.h"
 #include "runtime/decoding/guidedDecoder.h"
 #include "runtime/decoding/logitBias.h"
+#include "runtime/decoding/specDecodeUtils.h"
 #include "sampler/sampling.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
-#include <cstdlib>
+#include <cuda_fp16.h>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -71,9 +75,11 @@ uint64_t dsparkRandomRoundOffset(int32_t generationRound, int32_t maxBatchSize, 
     return static_cast<uint64_t>(generationRound) * uniformsPerRound;
 }
 
-int32_t dsparkDraftProfileForRound(int32_t generationRound)
+//! A delta covering prompt positions (the first forward of a request, or a seated row's) runs on the prefill
+//! profile; an accepted span runs on the decode one.
+int32_t dsparkDraftProfile(bool prefillDelta)
 {
-    return generationRound == 0 ? kPrefillProfile : kDecodeProfile;
+    return prefillDelta ? kPrefillProfile : kDecodeProfile;
 }
 
 Tensor takeRequiredTensor(std::vector<Tensor>& tensors, std::string const& name)
@@ -88,7 +94,7 @@ Tensor takeRequiredTensor(std::vector<Tensor>& tensors, std::string const& name)
 
 void validateMatrix(Tensor const& tensor, std::string const& name, int64_t rows, int64_t cols)
 {
-    check::check(tensor.getDataType() == nvinfer1::DataType::kHALF, name + " must be FP16");
+    check::check(tensor.getDataType() == trt_edgellm::DataType::kHALF, name + " must be FP16");
     check::check(tensor.getShape().getNumDims() == 2, name + " must be rank-2");
     check::check(tensor.getShape()[0] == rows,
         name + " row count mismatch: expected " + std::to_string(rows) + ", got "
@@ -101,8 +107,7 @@ void validateMatrix(Tensor const& tensor, std::string const& name, int64_t rows,
 } // namespace
 
 DSparkDecoder::DSparkDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
-    SpecDecodeDraftingConfig const& draftingConfig, std::unique_ptr<EngineExecutor> draftExecutor,
-    ExternalWeightManager draftWeights, cudaStream_t stream)
+    std::unique_ptr<EngineExecutor> draftExecutor, ExternalWeightManager draftWeights, cudaStream_t stream)
     : mRuntime(runtime)
     , mDraftCacheManager(*runtime.base.sharedResources.cacheManagers[1])
     , mDraftExecutor(std::move(draftExecutor))
@@ -122,34 +127,38 @@ DSparkDecoder::DSparkDecoder(DecodingRuntimeContext& runtime, std::filesystem::p
     ELLM_CHECK(draftCfg.dsparkMarkovRank > 0, "DSparkDecoder requires dspark_config.markov_rank > 0.");
 
     mCausalProposalMask = draftCfg.specDraftCausalHead;
-    mUseTree = draftingConfig.draftingTopK > 1;
-    mVerifyLen = deployment.specConfig->verifySize;
+    mUseTree = mRuntime.deployment.specConfig->draftTopK > 1;
+    mVerifyLen = deployment.specConfig->verifyTokenCount;
     mProposalLen = mUseTree ? draftCfg.specDraftBlockSize : mVerifyLen - 1;
     mCurrentProposalLen = mProposalLen;
     mDraftSlotOffset = draftCfg.dsparkSampleFromAnchor ? 0 : 1;
     mDraftBlockLen = mProposalLen + mDraftSlotOffset;
     mCurrentVerifyLen = mVerifyLen;
-    ELLM_CHECK(mProposalLen > 0, "DSparkDecoder requires verifySize >= 2.");
+    ELLM_CHECK(mProposalLen > 0, "DSparkDecoder requires verifyTokenCount >= 2.");
     ELLM_CHECK(
         mProposalLen <= draftCfg.specDraftBlockSize, "DSparkDecoder proposal length exceeds dspark_config.block_size.");
     mMaskTokenId = draftCfg.specDraftMaskTokenId > 0 ? draftCfg.specDraftMaskTokenId : baseCfg.specDraftMaskTokenId;
     mDraftHiddenSize = deployment.specConfig->draftHiddenSize;
     mBaseOutputHiddenDim = deployment.specConfig->baseOutputHiddenDim;
     mDraftVocabSize = draftCfg.outputVocabSize;
-    ELLM_CHECK(mMaskTokenId >= 0 && mMaskTokenId < mDraftVocabSize,
-        "DSparkDecoder: mask token id (" + std::to_string(mMaskTokenId) + ") out of draft vocab range [0, "
-            + std::to_string(mDraftVocabSize) + ").");
-    ELLM_CHECK(baseCfg.outputVocabSize == mDraftVocabSize,
-        "DSparkDecoder requires base and draft output vocab sizes to match for exact stochastic verification.");
+    mTargetVocabSize = baseCfg.outputVocabSize;
+    ELLM_CHECK(mMaskTokenId >= 0 && mMaskTokenId < mTargetVocabSize,
+        "DSparkDecoder: mask token id (" + std::to_string(mMaskTokenId) + ") out of target vocab range [0, "
+            + std::to_string(mTargetVocabSize) + ").");
+    if (draftCfg.reducedVocabSize == 0)
+    {
+        ELLM_CHECK(mTargetVocabSize == mDraftVocabSize,
+            "DSparkDecoder requires matching base and draft vocab sizes when no draft vocab map is configured.");
+    }
     mMarkovRank = draftCfg.dsparkMarkovRank;
     mHasConfidenceHead = draftCfg.dsparkEnableConfidenceHead;
     mConfidenceHeadWithMarkov = draftCfg.dsparkConfidenceHeadWithMarkov;
-    mSchedulerMode = draftingConfig.dsparkSchedulerMode;
-    mConfidenceThreshold = draftingConfig.dsparkConfidenceThreshold;
-    mMinScheduledProposalLen = std::max(1, draftingConfig.dsparkMinProposalLen);
-    mMaxScheduledProposalLen = draftingConfig.dsparkMaxProposalLen <= 0
+    mSchedulerMode = mRuntime.deployment.specConfig->dsparkSchedulerMode;
+    mConfidenceThreshold = mRuntime.deployment.specConfig->dsparkConfidenceThreshold;
+    mMinScheduledProposalLen = std::max(1, mRuntime.deployment.specConfig->dsparkMinProposalLen);
+    mMaxScheduledProposalLen = mRuntime.deployment.specConfig->dsparkMaxProposalLen <= 0
         ? mProposalLen
-        : std::min(mProposalLen, draftingConfig.dsparkMaxProposalLen);
+        : std::min(mProposalLen, mRuntime.deployment.specConfig->dsparkMaxProposalLen);
     ELLM_CHECK(mMinScheduledProposalLen <= mMaxScheduledProposalLen,
         "DSpark scheduler min proposal length exceeds max proposal length.");
     ELLM_CHECK(mSchedulerMode == DSparkSchedulerMode::kOff || mHasConfidenceHead,
@@ -162,31 +171,31 @@ DSparkDecoder::DSparkDecoder(DecodingRuntimeContext& runtime, std::filesystem::p
     ELLM_CHECK(mDraftExecutor != nullptr, "DSpark decoding requires a validated draft engine.");
 
     mDraftInputsEmbeds = Tensor({maxBatch, mDraftBlockLen, mDraftHiddenSize}, DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "DSpark::draftInputsEmbeds");
+        trt_edgellm::DataType::kHALF, "DSpark::draftInputsEmbeds");
     mDraftTargetHidden = Tensor({maxBatch, maxSeqForDraft, mBaseOutputHiddenDim}, DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "DSpark::draftTargetHidden");
+        trt_edgellm::DataType::kHALF, "DSpark::draftTargetHidden");
     mDraftOutputLogits = Tensor({maxBatch, mDraftBlockLen, mDraftVocabSize}, DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "DSpark::draftOutputLogits");
+        trt_edgellm::DataType::kFLOAT, "DSpark::draftOutputLogits");
     mDraftHiddenStates = Tensor({maxBatch, mDraftBlockLen, mDraftHiddenSize}, DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "DSpark::draftHiddenStates");
+        trt_edgellm::DataType::kHALF, "DSpark::draftHiddenStates");
 
     int32_t const packedMaskLen = divUp(mDraftBlockLen, 32);
     mDraftPackedAttentionMask = Tensor({maxBatch, mDraftBlockLen, packedMaskLen}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "DSpark::draftPackedMask");
+        trt_edgellm::DataType::kINT32, "DSpark::draftPackedMask");
     mDraftAttentionPosId = Tensor(
-        {maxBatch, mDraftBlockLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::draftAttentionPosId");
+        {maxBatch, mDraftBlockLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::draftAttentionPosId");
     mDraftContextLengths
-        = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::draftContextLengths");
+        = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::draftContextLengths");
     mDraftDeltaLenCommit
-        = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::draftDeltaLenCommit");
-    mDraftDeltaLens = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::draftDeltaLens");
+        = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::draftDeltaLenCommit");
+    mDraftDeltaLens = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::draftDeltaLens");
     int64_t const maxDeltaTokens = static_cast<int64_t>(maxBatch) * maxSeqForDraft;
-    mDraftDeltaRopeCosSin = Tensor({maxDeltaTokens, draftCfg.rotaryDim}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT,
-        "DSpark::draftDeltaRopeCosSin");
+    mDraftDeltaRopeCosSin = Tensor({maxDeltaTokens, draftCfg.rotaryDim}, DeviceType::kGPU,
+        trt_edgellm::DataType::kFLOAT, "DSpark::draftDeltaRopeCosSin");
     mDraftDeltaPositions
-        = Tensor({maxDeltaTokens}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::draftDeltaPositions");
-    mDraftDeltaTokenToSequence
-        = Tensor({maxDeltaTokens}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::draftDeltaTokenToSequence");
+        = Tensor({maxDeltaTokens}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::draftDeltaPositions");
+    mDraftDeltaTokenToSequence = Tensor(
+        {maxDeltaTokens}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::draftDeltaTokenToSequence");
 
     mDraftTensorMap.set(binding_names::kInputsEmbeds, mDraftInputsEmbeds);
     mDraftTensorMap.set(binding_names::kDFlashTargetHiddenConcat, mDraftTargetHidden);
@@ -232,79 +241,89 @@ DSparkDecoder::DSparkDecoder(DecodingRuntimeContext& runtime, std::filesystem::p
     mDraftExternalWeightManager = std::move(draftWeights);
     mDraftExternalWeightManager.registerTensorMapEntries(mDraftTensorMap);
 
+    // A jump-forward grafting round verifies jumpVerifyTokenCount rows and accepts up to jumpMaxPathLength tokens.
+    auto const& specConfig = *deployment.specConfig;
+    int32_t const acceptCapacity = std::max(mVerifyLen, specConfig.jumpMaxPathLength);
+    mAcceptCapacity = acceptCapacity;
     mDraftTokenIds
-        = Tensor({maxBatch, mProposalLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::draftTokenIds");
+        = Tensor({maxBatch, mProposalLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::draftTokenIds");
     mVerifyTokenIds
-        = Tensor({maxBatch, mVerifyLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::verifyTokenIds");
+        = Tensor({maxBatch, mVerifyLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::verifyTokenIds");
     mAcceptedTokenIds
-        = Tensor({maxBatch, mVerifyLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::acceptedIds");
-    mAcceptLength = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::acceptLength");
-    mHostAcceptLengths = Tensor({maxBatch}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "DSpark::hostAcceptLengths");
-    mHostAcceptedTokenIds
-        = Tensor({maxBatch, mVerifyLen}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "DSpark::hostAcceptedIds");
-    mHostDraftInputIds
-        = Tensor({maxBatch, mDraftBlockLen}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "DSpark::hostDraftInputIds");
+        = Tensor({maxBatch, acceptCapacity}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::acceptedIds");
+    mAcceptLength = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::acceptLength");
+    mCommonStateTracker.reserve(maxBatch);
+    mAcceptedHiddenStates = Tensor({static_cast<int64_t>(maxBatch) * acceptCapacity, mBaseOutputHiddenDim},
+        DeviceType::kGPU, trt_edgellm::DataType::kHALF, "DSpark::acceptedHidden");
+    mHostAcceptLengths
+        = Tensor({maxBatch}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "DSpark::hostAcceptLengths");
+    mHostSeatStaging
+        = Tensor({maxBatch, 2}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "DSpark::hostSeatStaging");
+    mHostAcceptedTokenIds = Tensor(
+        {maxBatch, acceptCapacity}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "DSpark::hostAcceptedIds");
+    mHostDraftInputIds = Tensor(
+        {maxBatch, mDraftBlockLen}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "DSpark::hostDraftInputIds");
     mHostLastAcceptedTokens
-        = Tensor({maxBatch}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "DSpark::hostLastAcceptedTokens");
-    mHostDeltaLens = Tensor({maxBatch}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "DSpark::hostDeltaLens");
+        = Tensor({maxBatch}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "DSpark::hostLastAcceptedTokens");
+    mHostDeltaLens = Tensor({maxBatch}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "DSpark::hostDeltaLens");
     mHostProposalLengths
-        = Tensor({maxBatch}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "DSpark::hostProposalLengths");
+        = Tensor({maxBatch}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "DSpark::hostProposalLengths");
     mDraftProbabilities = Tensor({maxBatch, mProposalLen, mDraftVocabSize}, DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "DSpark::draftProbabilities");
+        trt_edgellm::DataType::kFLOAT, "DSpark::draftProbabilities");
     mDraftStepLogits
-        = Tensor({maxBatch, mDraftVocabSize}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "DSpark::stepLogits");
-    mMarkovGreedySlots
-        = Tensor({maxBatch, mProposalLen}, DeviceType::kGPU, nvinfer1::DataType::kINT64, "DSpark::markovGreedySlots");
+        = Tensor({maxBatch, mDraftVocabSize}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "DSpark::stepLogits");
+    mMarkovGreedySlots = Tensor(
+        {maxBatch, mProposalLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT64, "DSpark::markovGreedySlots");
     mDraftStepProbabilities = Tensor(
-        {maxBatch, mDraftVocabSize}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "DSpark::stepProbabilities");
+        {maxBatch, mDraftVocabSize}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "DSpark::stepProbabilities");
     mDraftStepTopKValues = Tensor(
-        {maxBatch, kDSparkMaxSparseTopK}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "DSpark::stepTopKValues");
+        {maxBatch, kDSparkMaxSparseTopK}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "DSpark::stepTopKValues");
     mDraftStepTopKIndices = Tensor(
-        {maxBatch, kDSparkMaxSparseTopK}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::stepTopKIndices");
+        {maxBatch, kDSparkMaxSparseTopK}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::stepTopKIndices");
     mDraftTopKProbabilities = Tensor({maxBatch, mProposalLen, kDSparkMaxSparseTopK}, DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "DSpark::draftTopKProbabilities");
+        trt_edgellm::DataType::kFLOAT, "DSpark::draftTopKProbabilities");
     mDraftTopKIndices = Tensor({maxBatch, mProposalLen, kDSparkMaxSparseTopK}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "DSpark::draftTopKIndices");
+        trt_edgellm::DataType::kINT32, "DSpark::draftTopKIndices");
     mTargetProbabilities = Tensor({maxBatch, mVerifyLen, baseCfg.outputVocabSize}, DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "DSpark::targetProbabilities");
+        trt_edgellm::DataType::kFLOAT, "DSpark::targetProbabilities");
     mTargetTopKValues = Tensor({maxBatch * mVerifyLen, kDSparkMaxSparseTopK}, DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "DSpark::targetTopKValues");
+        trt_edgellm::DataType::kFLOAT, "DSpark::targetTopKValues");
     mTargetTopKIndices = Tensor({maxBatch * mVerifyLen, kDSparkMaxSparseTopK}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "DSpark::targetTopKIndices");
+        trt_edgellm::DataType::kINT32, "DSpark::targetTopKIndices");
     mTargetTopKProbabilities = Tensor({maxBatch * mVerifyLen, kDSparkMaxSparseTopK}, DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "DSpark::targetTopKProbabilities");
+        trt_edgellm::DataType::kFLOAT, "DSpark::targetTopKProbabilities");
     mDraftUniforms
-        = Tensor({maxBatch, mProposalLen}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "DSpark::draftUniforms");
+        = Tensor({maxBatch, mProposalLen}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "DSpark::draftUniforms");
     mAcceptUniforms = Tensor(
-        {maxBatch, 2 * mProposalLen + 1}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "DSpark::acceptUniforms");
+        {maxBatch, 2 * mProposalLen + 1}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "DSpark::acceptUniforms");
     mConfidenceScores
-        = Tensor({maxBatch, mProposalLen}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "DSpark::confidenceScores");
-    mProposalLengths = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::proposalLengths");
+        = Tensor({maxBatch, mProposalLen}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "DSpark::confidenceScores");
+    mProposalLengths = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::proposalLengths");
+    mAcceptValidTokenCounts
+        = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::acceptValidTokenCounts");
     mArgmaxScratch
-        = Tensor({maxBatch * mVerifyLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::argmaxScratch");
+        = Tensor({maxBatch * mVerifyLen}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::argmaxScratch");
     mLastAcceptedTokens
-        = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::lastAcceptedTokens");
+        = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::lastAcceptedTokens");
 
     if (mUseTree)
     {
         int32_t const proposalDepthSize = mProposalLen + 1;
         mStackedMarkovLogits = Tensor({maxBatch, proposalDepthSize, mDraftVocabSize}, DeviceType::kGPU,
-            nvinfer1::DataType::kFLOAT, "DSpark::stackedMarkovLogits");
-        mTreeTokenIds
-            = Tensor({maxBatch, mVerifyLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::treeTokenIds");
+            trt_edgellm::DataType::kFLOAT, "DSpark::stackedMarkovLogits");
+        mTreeTokenIds = Tensor({maxBatch, specConfig.jumpVerifyTokenCount}, DeviceType::kGPU,
+            trt_edgellm::DataType::kINT32, "DSpark::treeTokenIds");
         mTreeNodeScores
-            = Tensor({maxBatch, mVerifyLen}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "DSpark::treeNodeScores");
-        int32_t const candidateTopK = mRuntime.deployment.specConfig->draftingTopK;
-        mValidCounts = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::validCounts");
-        mVerifyTreeMask = Tensor(
-            {maxBatch, mVerifyLen, mVerifyLen}, DeviceType::kGPU, nvinfer1::DataType::kINT8, "DSpark::verifyTreeMask");
-        mAcceptedTokenIndices = Tensor(
-            {maxBatch, mVerifyLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "DSpark::acceptedTokenIndices");
+            = Tensor({maxBatch, mVerifyLen}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "DSpark::treeNodeScores");
+        int32_t const candidateTopK = mRuntime.deployment.specConfig->draftTopK;
+        mValidCounts = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "DSpark::validCounts");
+        mAcceptedTokenIndices = Tensor({maxBatch, acceptCapacity}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
+            "DSpark::acceptedTokenIndices");
         size_t const buildWorkspaceSize = kernel::getDDTreeBuildWorkspaceSize(
             maxBatch, proposalDepthSize, mVerifyLen, mDraftVocabSize, candidateTopK);
         ELLM_CHECK(buildWorkspaceSize > 0, "DSparkDecoder: invalid tree-build workspace size.");
         mTreeBuildWorkspace = Tensor({static_cast<int64_t>(buildWorkspaceSize)}, DeviceType::kGPU,
-            nvinfer1::DataType::kUINT8, "DSpark::treeBuildWorkspace");
+            trt_edgellm::DataType::kUINT8, "DSpark::treeBuildWorkspace");
         CUDA_CHECK(
             cudaMemsetAsync(mStackedMarkovLogits.rawPointer(), 0, mStackedMarkovLogits.getMemoryCapacity(), stream));
         CUDA_CHECK(cudaMemsetAsync(mDraftOutputLogits.rawPointer(), 0, mDraftOutputLogits.getMemoryCapacity(), stream));
@@ -312,6 +331,22 @@ DSparkDecoder::DSparkDecoder(DecodingRuntimeContext& runtime, std::filesystem::p
             cudaMemsetAsync(mLastAcceptedTokens.rawPointer(), 0, mLastAcceptedTokens.getMemoryCapacity(), stream));
     }
 
+    if (specConfig.maxJumpTokens > 0)
+    {
+        // The next draft forward takes a grafting round's accepted path as its target-hidden delta.
+        ELLM_CHECK(specConfig.jumpMaxPathLength <= mProposalLen + 1,
+            "DSpark jump-forward accepted path exceeds the draft's target-hidden delta profile.");
+        // A tree takes forced chains under any node; a chain takes one, which replaces the draft after its node.
+        mJump.initialize(mRuntime.tokenizer, mRuntime.guidedDecoder, maxBatch,
+            mUseTree ? JumpGraftGeometry::kTree : JumpGraftGeometry::kChain, specConfig, mVerifyLen);
+        if (!mUseTree)
+        {
+            mAcceptedTokenIndices = Tensor({maxBatch, acceptCapacity}, DeviceType::kGPU, trt_edgellm::DataType::kINT32,
+                "DSpark::acceptedTokenIndices");
+        }
+    }
+
+    loadDraftVocabMap(engineDir, stream);
     loadHeadSidecars(engineDir, stream);
 
     LOG_INFO(
@@ -321,11 +356,38 @@ DSparkDecoder::DSparkDecoder(DecodingRuntimeContext& runtime, std::filesystem::p
         mMarkovRank, mHasConfidenceHead ? "true" : "false");
 }
 
-DecodingKvHeadroom DSparkDecoder::requiredKvHeadroom() const
+DecodingKvHeadroomPolicy DSparkDecoder::kvHeadroom() const
 {
-    // The draft query block and the next target-hidden delta share the speculative headroom.
+    // The draft query block and the next target-hidden delta share the speculative headroom. A grafting round verifies
+    // jumpVerifyTokenCount rows, and its accepted path is the next delta; a chain's equals the plain round's.
+    auto const& specConfig = *mRuntime.deployment.specConfig;
     int32_t const maxAcceptedLength = std::min(mProposalLen + 1, mVerifyLen);
-    return {mVerifyLen, std::max(mDraftBlockLen, maxAcceptedLength)};
+    return {/*.plain=*/{mVerifyLen, std::max(mDraftBlockLen, maxAcceptedLength)},
+        /*.jumpForward=*/{specConfig.jumpVerifyTokenCount, std::max(mDraftBlockLen, specConfig.jumpMaxPathLength)}};
+}
+
+void DSparkDecoder::loadDraftVocabMap(std::filesystem::path const& engineDir, cudaStream_t stream)
+{
+    auto const& draftCfg = *mRuntime.deployment.draft;
+    if (draftCfg.reducedVocabSize == 0)
+    {
+        return;
+    }
+
+    auto const mapPath = engineDir / binding_names::kDraftVocabMapFileName;
+    ELLM_CHECK(std::filesystem::exists(mapPath),
+        "DSpark draft declares reduced_vocab_size > 0 but " + std::string(binding_names::kDraftVocabMapFileName)
+            + " is missing from the engine directory.");
+    std::vector<Tensor> tensors;
+    ELLM_CHECK(safetensors::loadSafetensors(mapPath, tensors, stream),
+        "Failed to load DSpark draft vocabulary map from " + mapPath.string());
+    check::check(tensors.size() == 1, "DSpark draft vocabulary map must contain exactly one tensor");
+    check::check(
+        tensors[0].getDataType() == trt_edgellm::DataType::kINT32, "DSpark draft vocabulary map must be INT32");
+    check::check(tensors[0].getShape().getNumDims() == 1 && tensors[0].getShape()[0] == mDraftVocabSize,
+        "DSpark draft vocabulary map length must match the draft output vocabulary");
+    mDraftVocabMappingTable = std::move(tensors[0]);
+    mHasDraftVocabMap = true;
 }
 
 void DSparkDecoder::loadHeadSidecars(std::filesystem::path const& engineDir, cudaStream_t stream)
@@ -341,33 +403,15 @@ void DSparkDecoder::loadHeadSidecars(std::filesystem::path const& engineDir, cud
         "Failed to load DSpark heads sidecar from " + headsPath.string());
 
     mMarkovW1 = takeRequiredTensor(tensors, "markov_w1");
-    mMarkovW2 = takeRequiredTensor(tensors, "markov_w2");
-    validateMatrix(mMarkovW1, "markov_w1", mDraftVocabSize, mMarkovRank);
-    validateMatrix(mMarkovW2, "markov_w2", mDraftVocabSize, mMarkovRank);
-
-    char const* fp8Env = std::getenv("EDGELLM_DSPARK_W2_FP8");
-    if (fp8Env != nullptr && std::string(fp8Env) == "1")
-    {
-        int32_t const lanesPerToken = mMarkovRank / 16;
-        ELLM_CHECK(mMarkovRank % 16 == 0 && kernel::dsparkFusedGreedySupported(mMarkovRank)
-                && (lanesPerToken & (lanesPerToken - 1)) == 0,
-            "EDGELLM_DSPARK_W2_FP8 requires markov_rank == 16 * 2^k and markov_rank <= 512");
-        mMarkovW2Fp8 = Tensor(
-            {mDraftVocabSize, mMarkovRank}, DeviceType::kGPU, nvinfer1::DataType::kUINT8, "DSpark::markovW2Fp8");
-        mMarkovW2RowScales
-            = Tensor({mDraftVocabSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF, "DSpark::markovW2RowScales");
-        kernel::dsparkQuantizeMarkovW2Fp8(
-            mMarkovW2, mMarkovW2Fp8, mMarkovW2RowScales, mDraftVocabSize, mMarkovRank, stream);
-        mUseFp8W2 = true;
-        LOG_INFO("DSparkDecoder: markov_w2 converted to FP8 E4M3 (per-row scales).");
-    }
+    validateMatrix(mMarkovW1, "markov_w1", mTargetVocabSize, mMarkovRank);
+    loadW2(engineDir, headsFile, tensors, stream);
 
     if (mHasConfidenceHead)
     {
         mConfidenceWeight = takeRequiredTensor(tensors, "confidence_weight");
         mConfidenceBias = takeRequiredTensor(tensors, "confidence_bias");
-        check::check(mConfidenceWeight.getDataType() == nvinfer1::DataType::kHALF, "confidence_weight must be FP16");
-        check::check(mConfidenceBias.getDataType() == nvinfer1::DataType::kHALF, "confidence_bias must be FP16");
+        check::check(mConfidenceWeight.getDataType() == trt_edgellm::DataType::kHALF, "confidence_weight must be FP16");
+        check::check(mConfidenceBias.getDataType() == trt_edgellm::DataType::kHALF, "confidence_bias must be FP16");
         check::check(mConfidenceWeight.getShape().getNumDims() == 1, "confidence_weight must be rank-1");
         int64_t const expectedConfidenceDim = static_cast<int64_t>(mDraftHiddenSize)
             + (mConfidenceHeadWithMarkov ? static_cast<int64_t>(mMarkovRank) : 0);
@@ -379,19 +423,173 @@ void DSparkDecoder::loadHeadSidecars(std::filesystem::path const& engineDir, cud
     }
 }
 
+void DSparkDecoder::loadW2(std::filesystem::path const& engineDir, std::string const& headsFile,
+    std::vector<Tensor>& tensors, cudaStream_t stream)
+{
+    bool const hasDenseW2 = std::any_of(
+        tensors.begin(), tensors.end(), [](Tensor const& tensor) { return tensor.getName() == "markov_w2"; });
+    if (hasDenseW2)
+    {
+        mMarkovW2 = takeRequiredTensor(tensors, "markov_w2");
+        validateMatrix(mMarkovW2, "markov_w2", mDraftVocabSize, mMarkovRank);
+    }
+    auto const requested = mRuntime.deployment.specConfig->dsparkW2Backend;
+    auto const& draftCfg = *mRuntime.deployment.draft;
+    auto const infoPath = engineDir
+        / (draftCfg.dsparkHeadsInfoFile.empty() ? std::string(binding_names::kDSparkHeadsInfoFileName)
+                                                : draftCfg.dsparkHeadsInfoFile);
+    std::string format;
+    if (std::filesystem::exists(infoPath))
+    {
+        std::ifstream input(infoPath);
+        ELLM_CHECK(input.good(), "Cannot read DSpark heads metadata: " + infoPath.string());
+        format = nlohmann::json::parse(input).value("w2_format", std::string{});
+        ELLM_CHECK(format.empty() || format == "fp16" || format == "nvfp4", "Invalid DSpark w2_format");
+    }
+    bool const packedExists = std::filesystem::exists(engineDir / binding_names::kDSparkW2Nvfp4FileName);
+    ELLM_CHECK(format != "fp16" || hasDenseW2, "DSpark metadata declares FP16 but markov_w2 is missing");
+    ELLM_CHECK(format != "nvfp4" || packedExists, "DSpark metadata declares NVFP4 but packed W2 is missing");
+    bool const hasPackedW2 = format == "nvfp4"
+        || (format.empty() && packedExists && (!hasDenseW2 || requested == DSparkW2Backend::kW4A16));
+    ELLM_CHECK(hasDenseW2 || hasPackedW2, "DSpark W2 weights are missing");
+    if (hasPackedW2)
+    {
+        ELLM_CHECK(
+            headsFile == binding_names::kDSparkHeadsFileName, "NVFP4 W2 requires the default DSpark heads sidecar");
+        ELLM_CHECK(mMarkovRank > 0 && mMarkovRank % 16 == 0, "NVFP4 W2 requires rank divisible by 16");
+        std::vector<Tensor> packed;
+        ELLM_CHECK(safetensors::loadSafetensors(engineDir / binding_names::kDSparkW2Nvfp4FileName, packed, stream),
+            "Failed to load packed NVFP4 W2 sidecar");
+        Tensor packedWeight = takeRequiredTensor(packed, "packed_weight");
+        Tensor blockScales = takeRequiredTensor(packed, "block_scales");
+        mMarkovW2GlobalScale = takeRequiredTensor(packed, "global_scale");
+        auto validateBytes = [](Tensor const& tensor, int64_t rows, int64_t cols) {
+            ELLM_CHECK(tensor.getDataType() == trt_edgellm::DataType::kUINT8 && tensor.getShape().getNumDims() == 2
+                    && tensor.getShape()[0] == rows && tensor.getShape()[1] == cols,
+                "Invalid NVFP4 W2 packed tensor");
+        };
+        validateBytes(packedWeight, mDraftVocabSize, mMarkovRank / 2);
+        validateBytes(blockScales, mDraftVocabSize, mMarkovRank / 16);
+        ELLM_CHECK(mMarkovW2GlobalScale.getDataType() == trt_edgellm::DataType::kFLOAT
+                && mMarkovW2GlobalScale.getShape().getNumDims() == 1 && mMarkovW2GlobalScale.getShape()[0] == 1,
+            "Invalid NVFP4 W2 global scale");
+        Tensor hostGlobalScale({1}, DeviceType::kCPU, trt_edgellm::DataType::kFLOAT);
+        CUDA_CHECK(cudaMemcpyAsync(hostGlobalScale.rawPointer(), mMarkovW2GlobalScale.rawPointer(), sizeof(float),
+            cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        float const globalScale = *static_cast<float const*>(hostGlobalScale.rawPointer());
+        ELLM_CHECK(
+            std::isfinite(globalScale) && globalScale > 0.0F, "NVFP4 W2 global scale must be finite and positive");
+        if (!hasDenseW2)
+        {
+            mMarkovW2 = Tensor({mDraftVocabSize, mMarkovRank}, DeviceType::kGPU, trt_edgellm::DataType::kHALF,
+                "DSpark::markovW2Fallback");
+            kernel::dsparkDequantizeW2(packedWeight, blockScales, mMarkovW2GlobalScale, mMarkovW2, stream);
+        }
+        using namespace trt_edgellm::kernels;
+        int32_t const maxBatch = mRuntime.deployment.maxRuntimeBatchSize();
+        float const kernelGlobalScale = __half2float(__float2half_rn(globalScale));
+        bool supported = !mHasDraftVocabMap && getSMVersion() == 110 && mMarkovRank == 512 && mDraftVocabSize % 128 == 0
+            && std::isfinite(kernelGlobalScale) && kernelGlobalScale > 0.0F;
+        for (int32_t batch = 1; supported && batch <= maxBatch; ++batch)
+        {
+            supported = Nvfp4A16BlackwellGemmRunner::isSupported(
+                110, Nvfp4A16BlackwellDtype::kFp16, batch, mDraftVocabSize, mMarkovRank);
+        }
+        mW2Backend = resolveDSparkW2Backend(requested, true, supported);
+        if (mW2Backend == DSparkW2Backend::kW4A16)
+        {
+            prepareW4A16(packedWeight, blockScales, stream);
+        }
+        else
+        {
+            LOG_INFO("DSparkDecoder: native NVFP4 W2 uses dense fallback on this configuration.");
+        }
+        // Packed source tensors must outlive fallback materialization and layout conversion.
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+
+    else
+    {
+        mW2Backend = resolveDSparkW2Backend(requested, false, false);
+    }
+
+    if (mW2Backend == DSparkW2Backend::kFp8)
+    {
+        int32_t const lanesPerToken = mMarkovRank / 16;
+        ELLM_CHECK(mMarkovRank % 16 == 0 && kernel::dsparkFusedGreedySupported(mMarkovRank)
+                && (lanesPerToken & (lanesPerToken - 1)) == 0,
+            "FP8 W2 requires markov_rank == 16 * 2^k and markov_rank <= 512");
+        mMarkovW2Fp8 = Tensor(
+            {mDraftVocabSize, mMarkovRank}, DeviceType::kGPU, trt_edgellm::DataType::kUINT8, "DSpark::markovW2Fp8");
+        mMarkovW2RowScales
+            = Tensor({mDraftVocabSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF, "DSpark::markovW2RowScales");
+        kernel::dsparkQuantizeMarkovW2Fp8(
+            mMarkovW2, mMarkovW2Fp8, mMarkovW2RowScales, mDraftVocabSize, mMarkovRank, stream);
+        LOG_INFO("DSparkDecoder: markov_w2 converted to FP8 E4M3 (per-row scales).");
+    }
+    LOG_INFO("DSpark W2: storage=%s, requested=%s, selected=%s", hasPackedW2 ? "nvfp4" : "fp16",
+        dsparkW2BackendName(requested), dsparkW2BackendName(mW2Backend));
+    if (requested == DSparkW2Backend::kAuto && hasPackedW2 && mW2Backend == DSparkW2Backend::kFp16)
+    {
+        LOG_INFO(
+            "DSpark W2: W4A16 requires SM110, rank 512, aligned vocabulary, supported scales and AOT variants; "
+            "using FP16 fallback (SM%d, rank=%d, vocab=%d, reduced_vocab=%d).",
+            getSMVersion(), mMarkovRank, mDraftVocabSize, mHasDraftVocabMap);
+    }
+}
+
+void DSparkDecoder::prepareW4A16(Tensor const& packedWeight, Tensor const& blockScales, cudaStream_t stream)
+{
+    using namespace trt_edgellm::kernels;
+    int32_t const maxBatch = mRuntime.deployment.maxRuntimeBatchSize();
+    mMarkovW2Opaque = Tensor({mDraftVocabSize / 128, mMarkovRank / 64, 128, 32}, DeviceType::kGPU,
+        trt_edgellm::DataType::kUINT8, "DSpark::markovW2Opaque");
+    mMarkovW2OpaqueScales = Tensor({mDraftVocabSize / 128, mMarkovRank / 64, 128, 4}, DeviceType::kGPU,
+        trt_edgellm::DataType::kUINT8, "DSpark::markovW2OpaqueScales");
+    mMarkovTcgen5Activation = Tensor(
+        {maxBatch, mMarkovRank}, DeviceType::kGPU, trt_edgellm::DataType::kHALF, "DSpark::markovTcgen5Activation");
+    mMarkovTcgen5Correction = Tensor(
+        {maxBatch, mDraftVocabSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF, "DSpark::markovTcgen5Correction");
+    kernel::dsparkRepackW2Tcgen5(
+        packedWeight, blockScales, mMarkovW2Opaque, mMarkovW2OpaqueScales, mDraftVocabSize, mMarkovRank, stream);
+    for (int32_t batch = 1; batch <= maxBatch; ++batch)
+    {
+        ELLM_CHECK(Nvfp4A16BlackwellGemmRunner::isSupported(
+                       110, Nvfp4A16BlackwellDtype::kFp16, batch, mDraftVocabSize, mMarkovRank),
+            "Missing TCGen5 W2 AOT variant");
+        CUDA_CHECK(Nvfp4A16BlackwellGemmRunner::prepare(
+            Nvfp4A16BlackwellDtype::kFp16, batch, mDraftVocabSize, mMarkovRank, stream));
+    }
+    Nvfp4A16BlackwellGemmParams const params{mMarkovTcgen5Activation.rawPointer(), mMarkovW2Opaque.rawPointer(),
+        mMarkovW2OpaqueScales.rawPointer(), static_cast<float const*>(mMarkovW2GlobalScale.rawPointer()),
+        mMarkovTcgen5Correction.rawPointer(), maxBatch, mDraftVocabSize, mMarkovRank, Nvfp4A16BlackwellDtype::kFp16};
+    ELLM_CHECK(Nvfp4A16BlackwellGemmRunner::getWorkspaceSize(params) == 0, "Unexpected TCGen5 W2 workspace");
+    LOG_INFO("DSparkDecoder: NVFP4 W2 TCGen5 W4A16 backend enabled.");
+}
+
 bool DSparkDecoder::decodeStep(DecodingInferenceContext& context)
 {
     NVTX_SCOPED_RANGE(nvtx_dspark_decode, "DSparkDecoder::decodeStep", nvtx_colors::GREEN);
     cudaGetLastError();
 
     bool const usePendingPrefillProposal = mCommonStateTracker.shouldUsePendingPrefillProposal(context.generationRound);
-    if (!usePendingPrefillProposal && !runDraftForward(context))
+    if (!usePendingPrefillProposal && !runDraftForward(context, /*prefillDelta=*/!mDraftPrimed))
     {
         LOG_ERROR("DSparkDecoder: draft forward failed.");
         return false;
     }
-    mCommonStateTracker.materializePending(context.generationRound, context.activeBatchSize);
+    mCommonStateTracker.materializePending(context.activeBatchSize);
     mCommonStateTracker.consumeDraftPrefillOutputs();
+
+    // The first round's draft is built before prefill-completed slots are evicted, and the grafter's per-slot state
+    // does not follow that compaction, so the walk runs here, on the batch the round verifies.
+    mJump.reset();
+    if (mJump.active(context) || mCaptureDeferred)
+    {
+        finishVerifyInput(context);
+    }
+    mCaptureDeferred = false;
 
     if (!runBaseVerification(context))
     {
@@ -405,15 +603,69 @@ bool DSparkDecoder::decodeStep(DecodingInferenceContext& context)
 
 bool DSparkDecoder::initializeForGeneration(DecodingInferenceContext& context)
 {
+    if (context.speculativeDraftPrefillComplete)
+    {
+        return true;
+    }
     mCommonStateTracker.initialize(context);
 
-    if (!runDraftForward(context))
+    if (!runDraftForward(context, /*prefillDelta=*/true))
     {
         LOG_ERROR("DSparkDecoder: failed to initialize draft state for generation.");
         return false;
     }
     mCommonStateTracker.markDraftPrefillOutputsPending();
+    context.speculativeDraftPrefillComplete = true;
     return true;
+}
+
+void DSparkDecoder::beginBatch() noexcept
+{
+    mDraftPrimed = false;
+}
+
+void DSparkDecoder::appendRow(int32_t executionRow) noexcept
+{
+    // Within capacity by construction: the session appends no row past the runtime batch.
+    check::check(mAcceptLength.reshape({executionRow + 1}) && mHostAcceptLengths.reshape({executionRow + 1}),
+        "Tensor reshape failed");
+    mCommonStateTracker.appendRow(executionRow);
+}
+
+bool DSparkDecoder::seatRow(DecodingInferenceContext& context, int32_t executionRow)
+{
+    int32_t const prefillTokens = context.effectivePrefillLengths[0];
+    // The draft takes the target's prompt hidden states as a delta but the last one, which the next decode step
+    // carries beside every resident's accepted span; the proposal this forward makes is not used.
+    // Under Hybrid+spec endpoint reuse the checkpoint needs draft state at every prompt position, so the prefill
+    // writes the last one too and then rolls the draft length back by one; the next decode step rewrites it.
+    bool const writesLastPosition = context.hybridSpecEndpointReuse;
+    int32_t const heldBackTokens = writesLastPosition ? 0 : 1;
+    if (prefillTokens > heldBackTokens && !runDraftForward(context, /*prefillDelta=*/true, heldBackTokens))
+    {
+        LOG_ERROR("DSparkDecoder: failed to prefill the draft for a seated row.");
+        return false;
+    }
+    if (writesLastPosition)
+    {
+        mDraftCacheManager.commitSequenceLength(-1, context.stream);
+    }
+    check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape({prefillTokens, mBaseOutputHiddenDim}),
+        "Tensor reshape failed");
+    // The pending delta is the last prompt position, as for a resident whose verification accepted one token.
+    decoder_utils::seatAcceptedSpan(context, executionRow, mAcceptedTokenIds, mAcceptLength, mHostSeatStaging,
+        mAcceptedHiddenStates, mAcceptCapacity, mRuntime.base.pipelineIO.baseHiddenStates, context.stream);
+    mHostAcceptLengths.dataPointer<int32_t>()[executionRow] = 1;
+    // Both models now hold the prompt but its last position, which the next decode step's draft pass takes.
+    mCommonStateTracker.seatRow(
+        executionRow, static_cast<int32_t>(context.rawBatchedInputIds[0].size()) - 1, /*pendingLength=*/1);
+    mDraftPrimed = true;
+    return true;
+}
+
+bool DSparkDecoder::prefillSeatedChunk(DecodingInferenceContext& context)
+{
+    return runDraftForward(context, /*prefillDelta=*/true);
 }
 
 std::vector<int32_t> const& DSparkDecoder::commonMaterializedStateLengths() const noexcept
@@ -467,6 +719,7 @@ void DSparkDecoder::dsparkBiasMarkovGreedy(
 void DSparkDecoder::dsparkBiasMarkovSample(
     DecodingInferenceContext& context, int32_t activeBatchSize, int32_t proposalLen)
 {
+    RowSamplingParams const sampling = context.uniformSamplingParams();
     int32_t const logitsStride = mDraftBlockLen;
     check::check(mDraftStepLogits.reshape({activeBatchSize, mDraftVocabSize}), "Tensor reshape failed");
     check::check(mDraftStepProbabilities.reshape({activeBatchSize, mDraftVocabSize}), "Tensor reshape failed");
@@ -477,7 +730,7 @@ void DSparkDecoder::dsparkBiasMarkovSample(
             logitsStride, mDraftSlotOffset);
         applyLogitBias(mRuntime.logitBias, mDraftStepLogits, context, context.stream);
         kernel::dsparkLogitsToProbabilities(mDraftStepLogits, mDraftStepProbabilities, activeBatchSize, mDraftVocabSize,
-            context.temperature, static_cast<int32_t>(context.topK), context.topP, context.stream);
+            sampling.temperature, static_cast<int32_t>(sampling.topK), sampling.topP, context.stream);
         kernel::dsparkSampleProbabilityRows(mDraftStepProbabilities, mDraftUniforms, mDraftTokenIds, activeBatchSize,
             step, proposalLen, mDraftVocabSize, context.stream);
         kernel::dsparkStoreDraftStepProbabilities(mDraftStepProbabilities, mDraftProbabilities, activeBatchSize, step,
@@ -486,15 +739,14 @@ void DSparkDecoder::dsparkBiasMarkovSample(
 }
 // GCOVR_EXCL_STOP
 
-bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
+bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context, bool prefillDelta, int32_t heldBackTokens)
 {
     TIME_STAGE(metrics::StageNames::kSPEC_DECODE_DRAFT_PROPOSAL, context.stream);
     NVTX_SCOPED_RANGE(nvtx_dspark_draft, "DSparkDecoder::runDraftForward", nvtx_colors::DARK_ORANGE);
 
-    if (mUseTree && ::trt_edgellm::shouldUseNonGreedySampling(context.temperature, context.topK, context.topP))
+    if (mUseTree && ::trt_edgellm::shouldUseNonGreedySampling(context.uniformSamplingParams()))
     {
-        LOG_ERROR(
-            "DSparkDecoder: tree drafting supports greedy decoding only; disable sampling or use draftingTopK=1.");
+        LOG_ERROR("DSparkDecoder: tree drafting supports greedy decoding only; disable sampling or use draftTopK=1.");
         return false;
     }
     if (!mDraftExecutor)
@@ -510,6 +762,8 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
     check::check(mRuntime.preprocess.idsInput.reshape({activeBatchSize, blockLen}), "Tensor reshape failed");
     check::check(mHostDraftInputIds.reshape({activeBatchSize, blockLen}), "Tensor reshape failed");
     check::check(mHostLastAcceptedTokens.reshape({activeBatchSize}), "Tensor reshape failed");
+    check::check(mLastAcceptedTokens.reshape({activeBatchSize}), "Tensor reshape failed");
+    mHostStagingFence.wait();
     int32_t* hostDraftInputIds = mHostDraftInputIds.dataPointer<int32_t>();
     int32_t* hostLastAccepted = mHostLastAcceptedTokens.dataPointer<int32_t>();
     for (int32_t b = 0; b < activeBatchSize; ++b)
@@ -528,28 +782,35 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
 
     check::check(mDraftInputsEmbeds.reshape({activeBatchSize, blockLen, mDraftHiddenSize}), "Tensor reshape failed");
     kernel::embeddingLookup(mRuntime.preprocess.idsInput, mRuntime.preprocess.embedding.table,
-        mRuntime.preprocess.embedding.scalesAsOptional(), mDraftInputsEmbeds, context.stream);
+        mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.preprocess.embedding.descriptor, mDraftInputsEmbeds,
+        context.stream);
 
+    // The first forward of a request (and a seated row's) takes the target's prefill hidden states as its delta;
+    // later rounds take the accepted span the decoder carried from the last verification.
+    check::check(heldBackTokens == 0 || (prefillDelta && activeBatchSize == 1),
+        "Only a seated row's draft prefill holds positions back");
     int64_t maxDeltaLen;
     int64_t sourceSeqLen;
     check::check(mHostDeltaLens.reshape({activeBatchSize}), "Tensor reshape failed");
     int32_t* hostDeltaLens = mHostDeltaLens.dataPointer<int32_t>();
 
-    if (context.generationRound == 0)
+    if (prefillDelta)
     {
-        sourceSeqLen
-            = *std::max_element(context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.end());
+        // Over the active batch: a seated row's prefill runs as a batch of one while the per-slot vectors keep every
+        // resident's entry.
+        sourceSeqLen = *std::max_element(
+            context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.begin() + activeBatchSize);
         maxDeltaLen = 0;
         for (int32_t b = 0; b < activeBatchSize; ++b)
         {
-            int32_t const prefillLen = context.effectivePrefillLengths[b];
+            int32_t const prefillLen = context.effectivePrefillLengths[b] - heldBackTokens;
             hostDeltaLens[b] = prefillLen;
             maxDeltaLen = std::max(maxDeltaLen, static_cast<int64_t>(prefillLen));
         }
     }
     else
     {
-        sourceSeqLen = mLastBaseVerifyHiddenStride > 0 ? mLastBaseVerifyHiddenStride : mVerifyLen;
+        sourceSeqLen = mAcceptCapacity;
         int32_t const* hostAccLens = mHostAcceptLengths.dataPointer<int32_t>();
         maxDeltaLen = 0;
         for (int32_t b = 0; b < activeBatchSize; ++b)
@@ -571,9 +832,9 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
         size_t const dstPitch = static_cast<size_t>(maxDeltaLen) * rowBytes;
         size_t const srcPitch = static_cast<size_t>(sourceSeqLen) * rowBytes;
         size_t const widthBytes = static_cast<size_t>(maxDeltaLen) * rowBytes;
-        CUDA_CHECK(cudaMemcpy2DAsync(mDraftTargetHidden.rawPointer(), dstPitch,
-            mRuntime.base.pipelineIO.baseHiddenStates.rawPointer(), srcPitch, widthBytes, activeBatchSize,
-            cudaMemcpyDeviceToDevice, context.stream));
+        Tensor const& hiddenSource = prefillDelta ? mRuntime.base.pipelineIO.baseHiddenStates : mAcceptedHiddenStates;
+        CUDA_CHECK(cudaMemcpy2DAsync(mDraftTargetHidden.rawPointer(), dstPitch, hiddenSource.rawPointer(), srcPitch,
+            widthBytes, activeBatchSize, cudaMemcpyDeviceToDevice, context.stream));
     }
 
     int32_t const pmLen = divUp(blockLen, 32);
@@ -609,18 +870,25 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
         /*.contextMaskSelectorLen=*/0,
         /*.startIndexLen=*/activeBatchSize,
         /*.executionPhaseLen=*/static_cast<int64_t>(ExecutionPhase::kSpecDraftProposal),
-        /*.skipSoftmaxScaleLen=*/0,
+        /*.specVerifyLayoutLen=*/0,
+        /*.skipSoftmaxPrefillScaleLen=*/0,
+        /*.skipSoftmaxDecodeScaleLen=*/0,
         /*.swaKVCacheModeLen=*/0,
         /*.queryOffsetLen=*/activeBatchSize + 1,
         /*.contextSequenceCount=*/0,
     };
 
     cudaGetLastError();
-    bool draftSuccess = mDraftExecutor->prepare(
-        dsparkDraftProfileForRound(context.generationRound), draftDims, mDraftTensorMap, context.stream);
-    if (draftSuccess)
+    bool draftSuccess;
     {
-        draftSuccess = mDraftExecutor->execute(context.stream);
+        auto forward
+            = gTimer.startForward("draft", draftDims.batch, draftDims.seqLen, draftDims.selectLen, context.stream);
+        draftSuccess
+            = mDraftExecutor->prepare(dsparkDraftProfile(prefillDelta), draftDims, mDraftTensorMap, context.stream);
+        if (draftSuccess)
+        {
+            draftSuccess = mDraftExecutor->execute(context.stream);
+        }
     }
     if (!draftSuccess)
     {
@@ -628,7 +896,7 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
         return false;
     }
 
-    if (context.generationRound == 0)
+    if (prefillDelta)
     {
         check::check(mDraftDeltaLenCommit.reshape({activeBatchSize}), "Tensor reshape failed");
         CUDA_CHECK(cudaMemcpyAsync(mDraftDeltaLenCommit.rawPointer(), mHostDeltaLens.rawPointer(),
@@ -640,17 +908,27 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
         check::check(mAcceptLength.reshape({activeBatchSize}), "Tensor reshape failed");
         mDraftCacheManager.commitSequenceLength(mAcceptLength, context.stream);
     }
+    mHostStagingFence.record(context.stream);
+    mDraftPrimed = true;
 
     check::check(mDraftTokenIds.reshape({activeBatchSize, proposalLen}), "Tensor reshape failed");
-    bool const stochasticSampling
-        = ::trt_edgellm::shouldUseNonGreedySampling(context.temperature, context.topK, context.topP);
+    RowSamplingParams const sampling = context.uniformSamplingParams();
+    bool const stochasticSampling = ::trt_edgellm::shouldUseNonGreedySampling(sampling);
+    mDraftDistribution = DraftDistribution::kNone;
+    if (stochasticSampling && mHasDraftVocabMap)
+    {
+        LOG_ERROR(
+            "DSparkDecoder: reduced-vocabulary DSpark supports greedy decoding only; stochastic verification "
+            "requires a full-vocabulary draft probability distribution.");
+        return false;
+    }
     if (stochasticSampling)
     {
         if (mUseTree)
         {
             LOG_ERROR(
                 "DSparkDecoder: DDTree drafting supports greedy decoding only; disable sampling or use "
-                "draftingTopK=1.");
+                "draftTopK=1.");
             return false;
         }
         check::check(
@@ -661,9 +939,10 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
         kernel::dsparkFillUniforms(
             mDraftUniforms, activeBatchSize * proposalLen, kDSparkSamplingSeed, randomOffset, context.stream);
         check::check(mDraftStepLogits.reshape({activeBatchSize, mDraftVocabSize}), "Tensor reshape failed");
-        if (dsparkCanUseTopKFastPath(context.topK, context.topP))
+        if (dsparkCanUseTopKFastPath(sampling.topK, sampling.topP))
         {
-            int32_t const samplingTopK = static_cast<int32_t>(context.topK);
+            mDraftDistribution = DraftDistribution::kTopK;
+            int32_t const samplingTopK = static_cast<int32_t>(sampling.topK);
             check::check(mDraftStepTopKValues.reshape({activeBatchSize, samplingTopK}), "Tensor reshape failed");
             check::check(mDraftStepTopKIndices.reshape({activeBatchSize, samplingTopK}), "Tensor reshape failed");
             check::check(
@@ -685,11 +964,12 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
                     mRuntime.sampling.workspace, context.stream);
                 kernel::dsparkSampleTopKRowsAndStore(mDraftStepTopKValues, mDraftStepTopKIndices, mDraftUniforms,
                     mDraftTokenIds, mDraftTopKProbabilities, mDraftTopKIndices, activeBatchSize, step, proposalLen,
-                    samplingTopK, context.temperature, context.stream);
+                    samplingTopK, sampling.temperature, context.stream);
             }
         }
         else
         {
+            mDraftDistribution = DraftDistribution::kDense;
             // GCOVR_EXCL_START
             if (context.hasLogitBias)
             {
@@ -700,8 +980,8 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
             {
                 kernel::dsparkVanillaMarkovSample(mDraftOutputLogits, mMarkovW1, mMarkovW2, mLastAcceptedTokens,
                     mDraftUniforms, mDraftTokenIds, mDraftProbabilities, mDraftStepLogits, mDraftStepProbabilities,
-                    activeBatchSize, proposalLen, mDraftVocabSize, mMarkovRank, context.temperature,
-                    static_cast<int32_t>(context.topK), context.topP, context.stream, blockLen, mDraftSlotOffset);
+                    activeBatchSize, proposalLen, mDraftVocabSize, mMarkovRank, sampling.temperature,
+                    static_cast<int32_t>(sampling.topK), sampling.topP, context.stream, blockLen, mDraftSlotOffset);
             }
         }
     }
@@ -715,29 +995,35 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
         // GCOVR_EXCL_STOP
         else
         {
-            if (kernel::dsparkFusedGreedySupported(mMarkovRank))
+            if (!mHasDraftVocabMap && kernel::dsparkFusedGreedySupported(mMarkovRank))
             {
                 check::check(mMarkovGreedySlots.reshape({activeBatchSize, proposalLen}), "Tensor reshape failed");
                 CUDA_CHECK(cudaMemsetAsync(mMarkovGreedySlots.rawPointer(), 0,
                     static_cast<size_t>(activeBatchSize) * proposalLen * sizeof(uint64_t), context.stream));
-                if (mUseFp8W2)
+                for (int32_t step = 0; step < proposalLen; ++step)
                 {
-                    for (int32_t step = 0; step < proposalLen; ++step)
+                    switch (mW2Backend)
                     {
+                    case DSparkW2Backend::kW4A16:
+                        kernel::dsparkMarkovGreedyStepTcgen5(mDraftOutputLogits, mMarkovW1, mMarkovW2Opaque,
+                            mMarkovW2OpaqueScales, mMarkovW2GlobalScale, mLastAcceptedTokens, mMarkovGreedySlots,
+                            mMarkovTcgen5Activation, mMarkovTcgen5Correction,
+                            mUseTree ? &mStackedMarkovLogits : nullptr, step + 1, activeBatchSize, step, proposalLen,
+                            mDraftVocabSize, mMarkovRank, context.stream, blockLen, mDraftSlotOffset);
+                        break;
+                    case DSparkW2Backend::kFp8:
                         kernel::dsparkMarkovGreedyFusedStepFp8(mDraftOutputLogits, mMarkovW1, mMarkovW2Fp8,
                             mMarkovW2RowScales, mLastAcceptedTokens, mMarkovGreedySlots,
                             mUseTree ? &mStackedMarkovLogits : nullptr, step + 1, activeBatchSize, step, proposalLen,
                             mDraftVocabSize, mMarkovRank, context.stream, blockLen, mDraftSlotOffset);
-                    }
-                }
-                else
-                {
-                    for (int32_t step = 0; step < proposalLen; ++step)
-                    {
+                        break;
+                    case DSparkW2Backend::kFp16:
                         kernel::dsparkMarkovGreedyFusedStep(mDraftOutputLogits, mMarkovW1, mMarkovW2,
                             mLastAcceptedTokens, mMarkovGreedySlots, mUseTree ? &mStackedMarkovLogits : nullptr,
                             step + 1, activeBatchSize, step, proposalLen, mDraftVocabSize, mMarkovRank, context.stream,
                             blockLen, mDraftSlotOffset);
+                        break;
+                    default: throw std::logic_error("Unresolved DSpark W2 backend");
                     }
                 }
                 kernel::dsparkFinalizeGreedyDraftTokens(
@@ -769,6 +1055,10 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
                     }
                     selectAllTopK(mDraftStepLogits, std::ref(mDraftStepTopKValues), mDraftStepTopKIndices, /*topK=*/1,
                         mRuntime.sampling.workspace, context.stream);
+                    if (mHasDraftVocabMap)
+                    {
+                        mapReducedVocabToFullVocab(mDraftStepTopKIndices, mDraftVocabMappingTable, context.stream);
+                    }
                     CUDA_CHECK(cudaMemcpy2DAsync(
                         static_cast<char*>(mDraftTokenIds.rawPointer()) + static_cast<size_t>(step) * sizeof(int32_t),
                         static_cast<size_t>(proposalLen) * sizeof(int32_t), mDraftStepTopKIndices.rawPointer(),
@@ -836,65 +1126,123 @@ bool DSparkDecoder::runDraftForward(DecodingInferenceContext& context)
         {
             return false;
         }
-        if (context.hasGuidedDecoding)
+        // A jump-forward round captures its tree once grafted (finishVerifyInput).
+        mCaptureDeferred = context.hasGuidedDecoding && mJump.active(context);
+        if (context.hasGuidedDecoding && !mJump.active(context))
         {
             // Graph capture builds placeholder tree tensors, so capture only the populated runtime tree.
-            mRuntime.guidedDecoder.captureDraftTree(mTreeTokenIds, mRuntime.base.pipelineIO.specTreeParentIds,
-                std::ref(mValidCounts), activeBatchSize, mCurrentVerifyLen, context.stream);
+            mRuntime.guidedDecoder.captureDraft(
+                {mTreeTokenIds, &mValidCounts, &mRuntime.base.pipelineIO.specTreeParentIds, nullptr, activeBatchSize,
+                    mCurrentVerifyLen, mRuntime.deployment.specConfig->maxPathLength, SpecVerifyLayout::kTree},
+                context.stream);
         }
         return true;
+    }
+    // A grafted chain may run past a slot's scheduled length, so a jump-forward request verifies the whole proposal;
+    // each slot keeps its scheduled length as its node count.
+    if (mJump.active(context))
+    {
+        mCurrentProposalLen = proposalLen;
     }
     mCurrentVerifyLen = mCurrentProposalLen + 1;
 
     check::check(mVerifyTokenIds.reshape({activeBatchSize, mCurrentVerifyLen}), "Tensor reshape failed");
-    kernel::dsparkBuildVerifyTokens(mLastAcceptedTokens, mDraftTokenIds, mVerifyTokenIds, activeBatchSize, mProposalLen,
-        mCurrentProposalLen, context.stream);
+    check::check(mAcceptValidTokenCounts.reshape({activeBatchSize}), "Tensor reshape failed");
+    kernel::dsparkBuildVerifyTokens(mLastAcceptedTokens, mDraftTokenIds, mProposalLengths, mVerifyTokenIds,
+        mAcceptValidTokenCounts, activeBatchSize, mProposalLen, mCurrentProposalLen, context.stream);
 
-    if (context.hasGuidedDecoding)
+    // A jump-forward round captures its chain once grafted (finishVerifyInput).
+    mCaptureDeferred = context.hasGuidedDecoding && mJump.active(context);
+    if (context.hasGuidedDecoding && !mJump.active(context))
     {
         // The chain scheduler can shorten the proposal, so the row count is this step's verify
         // length rather than the deployment's verify size.
-        mRuntime.guidedDecoder.captureDraftChains(mVerifyTokenIds, activeBatchSize, mCurrentVerifyLen, context.stream);
+        mRuntime.guidedDecoder.captureDraft(
+            {mVerifyTokenIds, nullptr, nullptr, nullptr, activeBatchSize, mCurrentVerifyLen,
+                mRuntime.deployment.specConfig->maxPathLength, SpecVerifyLayout::kChain},
+            context.stream);
     }
 
     return true;
 }
 
+void DSparkDecoder::finishVerifyInput(DecodingInferenceContext& context)
+{
+    auto const& specConfig = *mRuntime.deployment.specConfig;
+    auto& io = mRuntime.base.pipelineIO;
+    int32_t const activeBatchSize = context.activeBatchSize;
+    Tensor& ids = mUseTree ? mTreeTokenIds : mVerifyTokenIds;
+    Tensor* const parents = mUseTree ? &io.specTreeParentIds : nullptr;
+    // A scheduled chain's node counts are its slots' scheduled lengths; an unscheduled chain's are all V.
+    bool const scheduledChain = !mUseTree && !mScheduledProposalLengths.empty();
+    Tensor const* const draftCounts = mUseTree ? &mValidCounts : (scheduledChain ? &mAcceptValidTokenCounts : nullptr);
+    SpecVerifyInputs const drafted{ids, draftCounts, parents, nullptr, activeBatchSize, mCurrentVerifyLen,
+        specConfig.maxPathLength, specConfig.verifyLayout};
+
+    // A slot that may jump has its draft walked on the host before verification. A tree that takes chains verifies at
+    // the grafting width and pads the other slots; a chain takes its chain in place. Either way a grafting round's node
+    // counts are the grafted lengths, so draft rows a graft cut are padding, not nodes.
+    using Walk = JumpGraftSession::Walk;
+    Walk const walk = mJump.walk(context, drafted);
+    if (mJump.wide())
+    {
+        mJump.grafter().upload(ids, parents, mUseTree ? &io.specTreeDepths : nullptr, context.stream);
+        if (mUseTree)
+        {
+            mJump.prepareGraftedTreeDescriptors(
+                io, mRuntime.base.cacheManager.getKVCacheLengths(), activeBatchSize, context.stream);
+            mCurrentVerifyLen = specConfig.jumpVerifyTokenCount;
+        }
+    }
+
+    // After a walk that grafted nothing the guided decoder already holds the draft; a grafting round captures the
+    // grafted input with its node counts, which end each slot's mask walk, and its forced flags.
+    if (context.hasGuidedDecoding && walk != Walk::kNoChain)
+    {
+        mRuntime.guidedDecoder.captureDraft(mJump.wide()
+                ? SpecVerifyInputs{ids, mJump.grafter().validCounts(), parents, nullptr, activeBatchSize,
+                      mCurrentVerifyLen, specConfig.maxPathLength, specConfig.verifyLayout, false,
+                      mJump.grafter().forcedFlags()}
+                : drafted,
+            context.stream);
+    }
+}
+
 bool DSparkDecoder::buildTreeVerifyInputs(int32_t activeBatchSize, cudaStream_t stream, bool useConfidence)
 {
     NVTX_SCOPED_RANGE(nvtx_dspark_tree_build, "DSparkDecoder::buildTreeVerifyInputs", nvtx_colors::LIGHT_ORANGE);
-    int32_t const verifySize = mVerifyLen;
+    int32_t const verifyTokenCount = mVerifyLen;
     check::check(mLastAcceptedTokens.reshape({activeBatchSize}), "Tensor reshape failed");
-    check::check(mTreeTokenIds.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
+    check::check(mTreeTokenIds.reshape({activeBatchSize, verifyTokenCount}), "Tensor reshape failed");
     check::check(
-        mRuntime.base.pipelineIO.specTreeDepths.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
-    check::check(
-        mRuntime.base.pipelineIO.specTreeParentIds.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
-    check::check(mTreeNodeScores.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
-    check::check(mValidCounts.reshape({activeBatchSize}), "Tensor reshape failed");
-    check::check(mRuntime.preprocess.idsInput.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
-    check::check(
-        mRuntime.base.pipelineIO.specDecodePositionIds.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
-                     {activeBatchSize, verifySize, static_cast<int64_t>(divUp(verifySize, 32))}),
+        mRuntime.base.pipelineIO.specTreeDepths.reshape({activeBatchSize, verifyTokenCount}), "Tensor reshape failed");
+    check::check(mRuntime.base.pipelineIO.specTreeParentIds.reshape({activeBatchSize, verifyTokenCount}),
         "Tensor reshape failed");
-    check::check(mVerifyTreeMask.reshape({activeBatchSize, verifySize, verifySize}), "Tensor reshape failed");
+    check::check(mTreeNodeScores.reshape({activeBatchSize, verifyTokenCount}), "Tensor reshape failed");
+    check::check(mValidCounts.reshape({activeBatchSize}), "Tensor reshape failed");
+    check::check(mRuntime.preprocess.idsInput.reshape({activeBatchSize, verifyTokenCount}), "Tensor reshape failed");
+    check::check(mRuntime.base.pipelineIO.specDecodePositionIds.reshape({activeBatchSize, verifyTokenCount}),
+        "Tensor reshape failed");
+    check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
+                     {activeBatchSize, verifyTokenCount, static_cast<int64_t>(divUp(verifyTokenCount, 32))}),
+        "Tensor reshape failed");
     check::check(mRuntime.base.pipelineIO.contextLengths.reshape({activeBatchSize}), "Tensor reshape failed");
-    check::check(
-        mRuntime.base.pipelineIO.selectTokenIndices.reshape({activeBatchSize, verifySize}), "Tensor reshape failed");
+    check::check(mRuntime.base.pipelineIO.selectTokenIndices.reshape({activeBatchSize, verifyTokenCount}),
+        "Tensor reshape failed");
 
     Tensor const& baseKVCacheLengths = mRuntime.base.cacheManager.getKVCacheLengths();
     kernel::DDTreeBuildOutputs const outputs{mTreeTokenIds, mRuntime.base.pipelineIO.specTreeDepths,
         mRuntime.base.pipelineIO.specTreeParentIds, mTreeNodeScores, mValidCounts, mRuntime.preprocess.idsInput,
-        mRuntime.base.pipelineIO.specDecodePositionIds, mRuntime.base.pipelineIO.packedAttentionMask, mVerifyTreeMask,
+        mRuntime.base.pipelineIO.specDecodePositionIds, mRuntime.base.pipelineIO.packedAttentionMask,
         mRuntime.base.pipelineIO.contextLengths, mRuntime.base.pipelineIO.selectTokenIndices};
     int32_t const proposalDepthSize = mProposalLen + 1;
     check::check(
         mStackedMarkovLogits.reshape({activeBatchSize, proposalDepthSize, mDraftVocabSize}), "Tensor reshape failed");
     kernel::DDTreeBuildParams const buildParams{
-        {mStackedMarkovLogits, mLastAcceptedTokens, baseKVCacheLengths, nullptr,
-            useConfidence ? &mConfidenceScores : nullptr, useConfidence ? mConfidenceThreshold : 0.0F},
-        outputs, mRuntime.deployment.specConfig->draftingTopK, mTreeBuildWorkspace.rawPointer(),
+        {mStackedMarkovLogits, mLastAcceptedTokens, baseKVCacheLengths,
+            mHasDraftVocabMap ? &mDraftVocabMappingTable : nullptr, useConfidence ? &mConfidenceScores : nullptr,
+            useConfidence ? mConfidenceThreshold : 0.0F},
+        outputs, mRuntime.deployment.specConfig->draftTopK, mTreeBuildWorkspace.rawPointer(),
         static_cast<size_t>(mTreeBuildWorkspace.getMemoryCapacity()), stream};
     kernel::ddtreeBuild(buildParams);
 
@@ -950,83 +1298,36 @@ bool DSparkDecoder::runBaseVerification(DecodingInferenceContext& context)
 
     int32_t const activeBatchSize = context.activeBatchSize;
     int32_t const verifyLen = mCurrentVerifyLen;
-
-    check::check(mRuntime.preprocess.idsInput.reshape({activeBatchSize, verifyLen}), "Tensor reshape failed");
-    if (!mUseTree)
+    // A grafting round verifies the grafted input: its node counts end each slot's rows, and acceptance takes its
+    // forced nodes whatever the base predicts. The layout stays the deployment's.
+    Tensor const* verifyCounts = mUseTree ? &mValidCounts : nullptr;
+    Tensor const* forcedFlags = nullptr;
+    if (mJump.wide())
     {
-        // Chain mode copies the linear verification block assembled by the draft path.
-        CUDA_CHECK(cudaMemcpyAsync(mRuntime.preprocess.idsInput.rawPointer(), mVerifyTokenIds.rawPointer(),
-            activeBatchSize * verifyLen * sizeof(int32_t), cudaMemcpyDeviceToDevice, context.stream));
+        verifyCounts = mJump.grafter().validCounts();
+        forcedFlags = mJump.grafter().forcedFlags();
     }
 
-    check::check(mRuntime.base.pipelineIO.inputsEmbeds.reshape(
-                     {activeBatchSize, verifyLen, mRuntime.deployment.base.hiddenSize}),
-        "Tensor reshape failed");
-    kernel::embeddingLookup(mRuntime.preprocess.idsInput, mRuntime.preprocess.embedding.table,
-        mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.base.pipelineIO.inputsEmbeds, context.stream);
-
-    int32_t const selectTokenSize = activeBatchSize * verifyLen;
-    check::check(
-        mRuntime.base.pipelineIO.outputLogits.reshape({selectTokenSize, mRuntime.deployment.base.outputVocabSize}),
-        "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape({selectTokenSize, mBaseOutputHiddenDim}),
-        "Tensor reshape failed");
-
-    int32_t const pmLen = divUp(verifyLen, 32);
-    check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape({activeBatchSize, verifyLen, pmLen}),
-        "Tensor reshape failed");
-    check::check(
-        mRuntime.base.pipelineIO.selectTokenIndices.reshape({activeBatchSize, verifyLen}), "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.contextLengths.reshape({activeBatchSize}), "Tensor reshape failed");
-    check::check(
-        mRuntime.base.pipelineIO.specDecodePositionIds.reshape({activeBatchSize, verifyLen}), "Tensor reshape failed");
-
-    if (!mUseTree)
-    {
-        // Chain mode prepares linear attention metadata; tree mode emitted it during tree construction.
-        Tensor const& baseKVCacheLengths = mRuntime.base.cacheManager.getKVCacheLengths();
-        kernel::launchDFlashPrepareBaseVerifyInputs(baseKVCacheLengths.dataPointer<int32_t>(), verifyLen,
-            mRuntime.base.pipelineIO.packedAttentionMask.dataPointer<int32_t>(),
-            mRuntime.base.pipelineIO.specDecodePositionIds.dataPointer<int32_t>(),
-            mRuntime.base.pipelineIO.selectTokenIndices.dataPointer<int64_t>(),
-            mRuntime.base.pipelineIO.contextLengths.dataPointer<int32_t>(), activeBatchSize, context.stream);
-    }
-    Tensor const* validCounts = mUseTree ? &mValidCounts : nullptr;
-    decoder_utils::prepareSpecRaggedBindings(mRuntime, mRuntime.deployment.base, 0,
-        mRuntime.base.pipelineIO.specDecodePositionIds, mRuntime.base.cacheManager.getKVCacheLengths(), validCounts,
-        mRuntime.base.pipelineIO.selectTokenIndices, activeBatchSize * verifyLen, &context.residentRefs,
-        activeBatchSize, verifyLen, mRuntime.deployment.base.specVerifyDims(activeBatchSize, verifyLen),
-        context.stream);
-    check::check(mRuntime.base.pipelineIO.inputsEmbeds.reshape(
-                     {activeBatchSize * verifyLen, mRuntime.deployment.base.hiddenSize}),
-        "Tensor reshape failed");
-    check::check(
-        mRuntime.base.pipelineIO.specDecodePositionIds.reshape({activeBatchSize * verifyLen}), "Tensor reshape failed");
-    check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
-                     {activeBatchSize * verifyLen, static_cast<int64_t>(divUp(verifyLen, 32))}),
-        "Tensor reshape failed");
-    if (mUseTree)
-    {
-        check::check(
-            mRuntime.base.pipelineIO.specTreeParentIds.reshape({activeBatchSize * verifyLen}), "Tensor reshape failed");
-        check::check(
-            mRuntime.base.pipelineIO.specTreeDepths.reshape({activeBatchSize * verifyLen}), "Tensor reshape failed");
-    }
-
-    if (mRuntime.preprocess.deepstack)
-    {
-        mRuntime.preprocess.deepstack->useZeroTarget(mRuntime.base.tensorMap);
-    }
-
-    mRuntime.base.cacheManager.getMambaCacheManager().reshapeIntermediateStates(activeBatchSize, verifyLen);
+    SpecVerifyInputs const verify{mUseTree ? mTreeTokenIds : mVerifyTokenIds, verifyCounts,
+        mUseTree ? &mRuntime.base.pipelineIO.specTreeParentIds : nullptr,
+        mUseTree ? &mRuntime.base.pipelineIO.specTreeDepths : nullptr, activeBatchSize, verifyLen,
+        std::min(verifyLen, mRuntime.deployment.specConfig->maxPathLength),
+        mRuntime.deployment.specConfig->verifyLayout, mUseTree};
+    spec_decode::prepareTargetVerifyInputs(verify, mRuntime, context, 0);
 
     cudaGetLastError();
-    auto const verifyDims = mRuntime.deployment.base.specVerifyDims(activeBatchSize, verifyLen);
-    bool verifySuccess
-        = mRuntime.base.executor.prepare(kDecodeProfile, verifyDims, mRuntime.base.tensorMap, context.stream);
-    if (verifySuccess)
+    auto const verifyDims = mRuntime.deployment.base.specVerifyDims(
+        activeBatchSize, verifyLen, mRuntime.deployment.specConfig->verifyLayout);
+    bool verifySuccess;
     {
-        verifySuccess = mRuntime.base.executor.execute(context.stream);
+        auto forward
+            = gTimer.startForward("base", verifyDims.batch, verifyDims.seqLen, verifyDims.selectLen, context.stream);
+        verifySuccess
+            = mRuntime.base.executor.prepare(kDecodeProfile, verifyDims, mRuntime.base.tensorMap, context.stream);
+        if (verifySuccess)
+        {
+            verifySuccess = mRuntime.base.executor.execute(context.stream);
+        }
     }
     if (!verifySuccess)
     {
@@ -1034,7 +1335,6 @@ bool DSparkDecoder::runBaseVerification(DecodingInferenceContext& context)
         return false;
     }
 
-    check::check(mAcceptedTokenIds.reshape({activeBatchSize, verifyLen}), "Tensor reshape failed");
     check::check(mAcceptLength.reshape({activeBatchSize}), "Tensor reshape failed");
     int32_t const baseVocabSize = mRuntime.deployment.base.outputVocabSize;
     check::check(mRuntime.base.pipelineIO.outputLogits.reshape({activeBatchSize, verifyLen, baseVocabSize}),
@@ -1057,21 +1357,28 @@ bool DSparkDecoder::runBaseVerification(DecodingInferenceContext& context)
     if (mUseTree)
     {
         NVTX_SCOPED_RANGE(nvtx_dspark_tree_accept, "DSparkDecoder::acceptAndCommitTree", nvtx_colors::LIGHT_BLUE);
-        int32_t const maxAcceptLength = std::min(mProposalLen + 1, verifyLen);
+        int32_t const maxAcceptLength = mJump.acceptDepth(std::min(mProposalLen + 1, verifyLen));
         check::check(mAcceptedTokenIds.reshape({activeBatchSize, maxAcceptLength}), "Tensor reshape failed");
         check::check(mAcceptedTokenIndices.reshape({activeBatchSize, maxAcceptLength}), "Tensor reshape failed");
         check::check(mRuntime.base.pipelineIO.outputLogits.reshape({activeBatchSize * verifyLen, baseVocabSize}),
             "Tensor reshape failed");
-        kernel::eagleAccept(mRuntime.base.pipelineIO.outputLogits, mTreeTokenIds, mVerifyTreeMask, mAcceptedTokenIds,
-            mAcceptedTokenIndices, mAcceptLength, std::nullopt, mRuntime.sampling.workspace.rawPointer(),
-            mRuntime.sampling.workspace.getMemoryCapacity(), context.stream);
+        Tensor const targetTokenIds = kernel::selectSpecTargetTokens(mRuntime.base.pipelineIO.outputLogits,
+            std::nullopt, mRuntime.sampling.workspace, activeBatchSize, verifyLen, context.stream);
+        SpecVerifyInputs const verify{mTreeTokenIds, verifyCounts, &mRuntime.base.pipelineIO.specTreeParentIds,
+            &mRuntime.base.pipelineIO.specTreeDepths, activeBatchSize, verifyLen, maxAcceptLength,
+            SpecVerifyLayout::kTree, true};
+        spec_decode::accept(GreedyAcceptInputs{verify, targetTokenIds, verifyCounts, forcedFlags}, mAcceptedTokenIds,
+            mAcceptLength, &mAcceptedTokenIndices, context.stream,
+            decoder_utils::forcedAcceptanceLength(mRuntime, context));
 
         decoder_utils::clampAcceptLengthsToRemainingGeneration(context, mAcceptLength, context.stream);
         commitAcceptedTreePath(context, verifyLen, maxAcceptLength);
         // The hidden compaction leaves rows at stride maxAcceptLength, not verifyLen.
-        mLastBaseVerifyHiddenStride = maxAcceptLength;
+        decoder_utils::copyHiddenRowsStrided(mAcceptedHiddenStates, mAcceptCapacity,
+            mRuntime.base.pipelineIO.baseHiddenStates, maxAcceptLength, activeBatchSize, mBaseOutputHiddenDim,
+            context.stream);
 
-        if (context.numLogprobs > 0)
+        if (context.maxNumLogprobs() > 0)
         {
             int32_t const gatheredRows = activeBatchSize * maxAcceptLength;
             check::check(
@@ -1080,12 +1387,15 @@ bool DSparkDecoder::runBaseVerification(DecodingInferenceContext& context)
                 mRuntime.logprobs.gatheredLogits, activeBatchSize, verifyLen, maxAcceptLength, baseVocabSize,
                 context.stream);
             decoder_utils::enqueueLogprobsD2H(
-                mRuntime.logprobs.gatheredLogits, gatheredRows, mRuntime, context.numLogprobs, context.stream);
+                mRuntime.logprobs.gatheredLogits, gatheredRows, mRuntime, context.maxNumLogprobs(), context.stream);
         }
 
-        // Tree convention: every non-root node in the verify tree is a proposal, matching DFlash DDTree.
+        std::optional<decoder_utils::ForcedPathInfo> forcedPath = mJump.forcedPath(mAcceptedTokenIndices);
+        // Tree convention: every non-root node in the verify tree is a proposal, matching DFlash DDTree. A grafting
+        // round proposes the plain round's drafts; its forced tokens are neither drafts nor bonus.
         decoder_utils::appendAcceptedTokens(context, mHostAcceptLengths, mHostAcceptedTokenIds, mAcceptLength,
-            mAcceptedTokenIds, maxAcceptLength, mRuntime.tokenizer, context.stream, verifyLen - 1);
+            mAcceptedTokenIds, maxAcceptLength, mRuntime.tokenizer, context.stream, mVerifyLen - 1, nullptr,
+            decoder_utils::forcedAcceptanceLength(mRuntime, context), false, forcedPath ? &*forcedPath : nullptr);
 
         if (context.hasGuidedDecoding)
         {
@@ -1093,20 +1403,23 @@ bool DSparkDecoder::runBaseVerification(DecodingInferenceContext& context)
                 mHostAcceptedTokenIds.dataPointer<int32_t>(), mHostAcceptLengths.dataPointer<int32_t>(),
                 maxAcceptLength, activeBatchSize);
         }
-        if (context.numLogprobs > 0)
+        if (context.maxNumLogprobs() > 0)
         {
             decoder_utils::collectSpecLogprobsFromHost(mRuntime, context, activeBatchSize, maxAcceptLength,
-                mHostAcceptLengths.dataPointer<int32_t>(), context.numLogprobs);
+                mHostAcceptLengths.dataPointer<int32_t>(), context.maxNumLogprobs());
         }
+        mJump.account(context, mHostAcceptLengths.dataPointer<int32_t>(), mHostAcceptedTokenIds.dataPointer<int32_t>(),
+            maxAcceptLength);
         return true;
     }
+    check::check(mAcceptedTokenIds.reshape({activeBatchSize, verifyLen}), "Tensor reshape failed");
 
-    bool const stochasticSampling
-        = ::trt_edgellm::shouldUseNonGreedySampling(context.temperature, context.topK, context.topP);
+    RowSamplingParams const sampling = context.uniformSamplingParams();
+    bool const stochasticSampling = ::trt_edgellm::shouldUseNonGreedySampling(sampling);
     if (stochasticSampling)
     {
-        bool const sparseTopK = dsparkCanUseTopKFastPath(context.topK, context.topP);
-        int32_t const samplingTopK = sparseTopK ? static_cast<int32_t>(context.topK) : 0;
+        bool const sparseTopK = dsparkCanUseTopKFastPath(sampling.topK, sampling.topP);
+        int32_t const samplingTopK = sparseTopK ? static_cast<int32_t>(sampling.topK) : 0;
         if (sparseTopK)
         {
             int32_t const targetRows = activeBatchSize * verifyLen;
@@ -1118,7 +1431,7 @@ bool DSparkDecoder::runBaseVerification(DecodingInferenceContext& context)
             selectAllTopK(mRuntime.base.pipelineIO.outputLogits, std::ref(mTargetTopKValues), mTargetTopKIndices,
                 samplingTopK, mRuntime.sampling.workspace, context.stream);
             kernel::dsparkNormalizeTopKRows(mTargetTopKValues, mTargetTopKProbabilities, targetRows, samplingTopK,
-                context.temperature, context.stream);
+                sampling.temperature, context.stream);
             check::check(
                 mTargetTopKProbabilities.reshape({activeBatchSize, verifyLen, samplingTopK}), "Tensor reshape failed");
             check::check(
@@ -1129,8 +1442,8 @@ bool DSparkDecoder::runBaseVerification(DecodingInferenceContext& context)
             check::check(
                 mTargetProbabilities.reshape({activeBatchSize, verifyLen, baseVocabSize}), "Tensor reshape failed");
             kernel::dsparkLogitsToProbabilities(mRuntime.base.pipelineIO.outputLogits, mTargetProbabilities,
-                activeBatchSize * verifyLen, baseVocabSize, context.temperature, static_cast<int32_t>(context.topK),
-                context.topP, context.stream);
+                activeBatchSize * verifyLen, baseVocabSize, sampling.temperature, static_cast<int32_t>(sampling.topK),
+                sampling.topP, context.stream);
         }
 
         int32_t const acceptUniformStride = 2 * mProposalLen + 1;
@@ -1142,115 +1455,96 @@ bool DSparkDecoder::runBaseVerification(DecodingInferenceContext& context)
             mAcceptUniforms, activeBatchSize * acceptUniformStride, kDSparkSamplingSeed, randomOffset, context.stream);
         if (sparseTopK)
         {
-            kernel::speculativeSparseAccept(mTargetTopKProbabilities, mTargetTopKIndices, mDraftTopKProbabilities,
-                mDraftTopKIndices, mDraftTokenIds, mProposalLengths, mAcceptUniforms, mAcceptedTokenIds, mAcceptLength,
-                nullptr, context.stream);
+            spec_decode::accept(
+                SparseProbabilityAcceptInputs{mTargetTopKProbabilities, mTargetTopKIndices, mDraftTopKProbabilities,
+                    mDraftTopKIndices, mDraftTokenIds, mProposalLengths, mAcceptUniforms, nullptr},
+                mAcceptedTokenIds, mAcceptLength, nullptr, context.stream,
+                decoder_utils::forcedAcceptanceLength(mRuntime, context));
         }
         else
         {
-            kernel::dsparkProbabilisticAccept(mTargetProbabilities, mDraftProbabilities, mDraftTokenIds,
-                mProposalLengths, mAcceptUniforms, mAcceptedTokenIds, mAcceptLength, activeBatchSize, mProposalLen,
-                mCurrentProposalLen, baseVocabSize, context.stream);
+            spec_decode::accept(DenseProbabilityAcceptInputs{mTargetProbabilities, mDraftProbabilities, mDraftTokenIds,
+                                    mProposalLengths, mAcceptUniforms, activeBatchSize, mProposalLen,
+                                    mCurrentProposalLen, baseVocabSize},
+                mAcceptedTokenIds, mAcceptLength, context.stream,
+                decoder_utils::forcedAcceptanceLength(mRuntime, context));
         }
     }
     else
     {
-        kernel::dsparkGreedyAccept(mRuntime.base.pipelineIO.outputLogits, mDraftTokenIds, mProposalLengths,
-            mAcceptedTokenIds, mAcceptLength, mArgmaxScratch, activeBatchSize, mProposalLen, mCurrentProposalLen,
-            baseVocabSize, context.stream);
+        check::check(mArgmaxScratch.reshape({activeBatchSize, verifyLen}), "Tensor reshape failed");
+        kernel::dsparkSelectTargetTokens(mRuntime.base.pipelineIO.outputLogits, mArgmaxScratch, activeBatchSize,
+            verifyLen, baseVocabSize, context.stream);
+        SpecVerifyInputs const verify{mVerifyTokenIds, nullptr, nullptr, nullptr, activeBatchSize, verifyLen, verifyLen,
+            SpecVerifyLayout::kChain, false};
+        // A grafting round's accepted rows tell its forced positions apart.
+        Tensor* const acceptedRows = mJump.wide() ? &mAcceptedTokenIndices : nullptr;
+        if (acceptedRows != nullptr)
+        {
+            check::check(acceptedRows->reshape({activeBatchSize, verifyLen}), "Tensor reshape failed");
+        }
+        spec_decode::accept(GreedyAcceptInputs{verify, mArgmaxScratch,
+                                mJump.wide() ? verifyCounts : &mAcceptValidTokenCounts, forcedFlags},
+            mAcceptedTokenIds, mAcceptLength, acceptedRows, context.stream,
+            decoder_utils::forcedAcceptanceLength(mRuntime, context));
     }
 
     decoder_utils::clampAcceptLengthsToRemainingGeneration(context, mAcceptLength, context.stream);
-    mRuntime.base.cacheManager.commitSequenceLength(mAcceptLength, context.stream);
+    spec_decode::commitAcceptedTargetPath(
+        mRuntime, context, SpecAcceptResult{mAcceptedTokenIds, mAcceptLength, nullptr, verifyLen}, verifyLen);
+    decoder_utils::copyHiddenRowsStrided(mAcceptedHiddenStates, mAcceptCapacity,
+        mRuntime.base.pipelineIO.baseHiddenStates, verifyLen, activeBatchSize, mBaseOutputHiddenDim, context.stream);
 
-    check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape({activeBatchSize, verifyLen, mBaseOutputHiddenDim}),
-        "Tensor reshape failed");
-    mLastBaseVerifyHiddenStride = verifyLen;
-
-    mRuntime.base.cacheManager.getMambaCacheManager().scatterAcceptedLinearStates(
-        mAcceptLength, mRuntime.base.pipelineIO.stateIndices, context.stream);
-
-    if (context.numLogprobs > 0)
+    if (context.maxNumLogprobs() > 0)
     {
         check::check(mRuntime.base.pipelineIO.outputLogits.reshape({activeBatchSize * verifyLen, baseVocabSize}),
             "Tensor reshape failed");
         decoder_utils::enqueueLogprobsD2H(mRuntime.base.pipelineIO.outputLogits, activeBatchSize * verifyLen, mRuntime,
-            context.numLogprobs, context.stream);
+            context.maxNumLogprobs(), context.stream);
     }
 
+    std::optional<decoder_utils::ForcedPathInfo> forcedPath = mJump.forcedPath(mAcceptedTokenIndices);
     decoder_utils::appendAcceptedTokens(context, mHostAcceptLengths, mHostAcceptedTokenIds, mAcceptLength,
         mAcceptedTokenIds, verifyLen, mRuntime.tokenizer, context.stream, mCurrentProposalLen,
-        mScheduledProposalLengths.empty() ? nullptr : mScheduledProposalLengths.data());
+        mScheduledProposalLengths.empty() ? nullptr : mScheduledProposalLengths.data(),
+        decoder_utils::forcedAcceptanceLength(mRuntime, context), true, forcedPath ? &*forcedPath : nullptr);
 
     if (context.hasGuidedDecoding)
     {
         advanceGuidedDecodingForCommitted(mRuntime.guidedDecoder, context, mHostAcceptedTokenIds.dataPointer<int32_t>(),
             mHostAcceptLengths.dataPointer<int32_t>(), verifyLen, activeBatchSize);
     }
-    if (context.numLogprobs > 0)
+    if (context.maxNumLogprobs() > 0)
     {
         decoder_utils::collectSpecLogprobsFromHost(mRuntime, context, activeBatchSize, verifyLen,
-            mHostAcceptLengths.dataPointer<int32_t>(), context.numLogprobs);
+            mHostAcceptLengths.dataPointer<int32_t>(), context.maxNumLogprobs());
     }
+    mJump.account(
+        context, mHostAcceptLengths.dataPointer<int32_t>(), mHostAcceptedTokenIds.dataPointer<int32_t>(), verifyLen);
 
     return true;
 }
 
 void DSparkDecoder::commitAcceptedTreePath(
-    DecodingInferenceContext& context, int32_t verifySize, int32_t maxAcceptLength)
+    DecodingInferenceContext& context, int32_t verifyTokenCount, int32_t maxAcceptLength)
 {
     NVTX_SCOPED_RANGE(nvtx_dspark_tree_commit, "DSparkDecoder::commitAcceptedTreePath", nvtx_colors::LIGHT_GREEN);
-    int32_t const activeBatchSize = context.activeBatchSize;
-    auto& cacheMgrBase = mRuntime.base.cacheManager;
-    Tensor const& kvCacheLengths = cacheMgrBase.getKVCacheLengths();
-    auto& kvMgrBase = cacheMgrBase.getKVCacheManager();
-    auto const kvHeadDimGroups = cacheMgrBase.getKVHeadDimGroups();
-    auto const kvCacheType = kvMgrBase.getConfig().kvCacheType;
-    auto const& basePageTable = *mRuntime.base.sharedResources.kvPageTables[0];
-    int32_t const* basePageTablePtr = basePageTable.kernelView().dataPointer<int32_t>();
-    int32_t const baseNumPages = kvMgrBase.numPages();
-    int32_t const baseMaxPagesPerSeq = basePageTable.maxPagesPerSeq();
-    auto& mambaMgr = cacheMgrBase.getMambaCacheManager();
-    bool const hasHybridStates = mambaMgr.hasIntermediateRecurrentStates() || mambaMgr.hasIntermediateConvStates();
-
-    check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape({activeBatchSize, verifySize, mBaseOutputHiddenDim}),
-        "Tensor reshape failed");
-    // Branching-tree accept can skip nodes, so commit compacts accepted KV rows using accepted verify indices.
-    for (auto const& group : kvHeadDimGroups)
-    {
-        kernel::eagleBaseCommitKVCache(mAcceptedTokenIndices, mAcceptLength, kvCacheLengths,
-            mRuntime.base.pipelineIO.stateIndices, group.deviceLayerInfos, group.numLayers, group.headDim,
-            group.maxKVHeads, activeBatchSize, mRuntime.deployment.base.recurrentPoolRows, maxAcceptLength, kvCacheType,
-            context.stream, basePageTablePtr, baseNumPages, baseMaxPagesPerSeq);
-    }
-    kernel::eagleBaseAssembleHiddenState(
-        mAcceptedTokenIndices, mAcceptLength, mRuntime.base.pipelineIO.baseHiddenStates, context.stream);
-    cacheMgrBase.commitSequenceLength(mAcceptLength, context.stream);
-    if (hasHybridStates)
-    {
-        // Mamba always commits through its replay stash. GDN uses replay only
-        // while the chunk-form tree kernel covers the verify size.
-        if (mambaMgr.recurrentUsesReplay() || kernel::gdnTreeChunkVerifyEnabled(verifySize))
-        {
-            mambaMgr.replayCommitAcceptedTreeStates(
-                mAcceptedTokenIndices, mAcceptLength, mRuntime.base.pipelineIO.stateIndices, context.stream);
-        }
-        else
-        {
-            mambaMgr.scatterAcceptedTreeStates(
-                mAcceptedTokenIndices, mAcceptLength, mRuntime.base.pipelineIO.stateIndices, context.stream);
-        }
-    }
-
-    check::check(
-        mRuntime.base.pipelineIO.baseHiddenStates.reshape({activeBatchSize, maxAcceptLength, mBaseOutputHiddenDim}),
-        "Tensor reshape failed");
+    spec_decode::commitAcceptedTargetPath(mRuntime, context,
+        SpecAcceptResult{mAcceptedTokenIds, mAcceptLength, &mAcceptedTokenIndices, maxAcceptLength}, verifyTokenCount);
 }
 
 bool DSparkDecoder::captureCudaGraphs(cudaStream_t stream)
 {
     bool draftProposalCaptureStatus{true};
     bool baseVerificationCaptureStatus{true};
+
+    DecodingInferenceContext captureContext;
+    captureContext.stream = stream;
+    captureContext.residentRefs.resize(mRuntime.maxRuntimeBatchSize);
+    for (int32_t slot = 0; slot < mRuntime.maxRuntimeBatchSize; ++slot)
+    {
+        captureContext.residentRefs[slot].slot = slot;
+    }
 
     static constexpr int32_t kSimulateCacheLength{128};
     int32_t const proposalLen = mProposalLen;
@@ -1270,7 +1564,7 @@ bool DSparkDecoder::captureCudaGraphs(cudaStream_t stream)
     } stateGuard{[&]() noexcept {
         std::vector<int32_t> zeroCacheLens(mRuntime.maxRuntimeBatchSize, 0);
         Tensor zeroCacheLensTensor(
-            zeroCacheLens.data(), {mRuntime.maxRuntimeBatchSize}, DeviceType::kCPU, nvinfer1::DataType::kINT32);
+            zeroCacheLens.data(), {mRuntime.maxRuntimeBatchSize}, DeviceType::kCPU, trt_edgellm::DataType::kINT32);
         mRuntime.base.cacheManager.resetForNewSequences(zeroCacheLensTensor, stream);
         mDraftCacheManager.resetForNewSequences(zeroCacheLensTensor, stream);
         if (!mRuntime.base.executor.prepare(
@@ -1283,15 +1577,16 @@ bool DSparkDecoder::captureCudaGraphs(cudaStream_t stream)
     for (int32_t batchSize = 1; batchSize <= mRuntime.maxRuntimeBatchSize; ++batchSize)
     {
         std::vector<int32_t> simCacheLens(batchSize, kSimulateCacheLength);
-        Tensor simCacheLensTensor(simCacheLens.data(), {batchSize}, DeviceType::kCPU, nvinfer1::DataType::kINT32);
+        Tensor simCacheLensTensor(simCacheLens.data(), {batchSize}, DeviceType::kCPU, trt_edgellm::DataType::kINT32);
         mRuntime.base.cacheManager.resetForNewSequences(simCacheLensTensor, stream);
         mDraftCacheManager.resetForNewSequences(simCacheLensTensor, stream);
 
         int32_t const blockLen = mDraftBlockLen;
         int32_t const draftPmLen = divUp(blockLen, 32);
         // Delta = last round's accept length; capped by the draft profile (block + 1),
-        // which tree-mode verifyLen (node budget) can exceed.
-        int32_t const maxSimDeltaLen = std::min(proposalLen + 1, verifyLen);
+        // which tree-mode verifyLen (node budget) can exceed. A grafting round may accept up to jumpMaxPathLength.
+        int32_t const maxSimDeltaLen
+            = std::max(std::min(proposalLen + 1, verifyLen), mRuntime.deployment.specConfig->jumpMaxPathLength);
         for (int32_t simDeltaLen = 1; simDeltaLen <= maxSimDeltaLen; ++simDeltaLen)
         {
             check::check(mDraftInputsEmbeds.reshape({batchSize, blockLen, mDraftHiddenSize}), "Tensor reshape failed");
@@ -1332,7 +1627,9 @@ bool DSparkDecoder::captureCudaGraphs(cudaStream_t stream)
                 /*.contextMaskSelectorLen=*/0,
                 /*.startIndexLen=*/batchSize,
                 /*.executionPhaseLen=*/static_cast<int64_t>(ExecutionPhase::kSpecDraftProposal),
-                /*.skipSoftmaxScaleLen=*/0,
+                /*.specVerifyLayoutLen=*/0,
+                /*.skipSoftmaxPrefillScaleLen=*/0,
+                /*.skipSoftmaxDecodeScaleLen=*/0,
                 /*.swaKVCacheModeLen=*/0,
                 /*.queryOffsetLen=*/batchSize + 1,
                 /*.contextSequenceCount=*/0,
@@ -1354,24 +1651,6 @@ bool DSparkDecoder::captureCudaGraphs(cudaStream_t stream)
         int32_t const minSimVerifyLen = mUseTree ? verifyLen : 2;
         for (int32_t simVerifyLen = minSimVerifyLen; simVerifyLen <= verifyLen; ++simVerifyLen)
         {
-            int32_t const selectTokenSize = batchSize * simVerifyLen;
-            check::check(mRuntime.base.pipelineIO.outputLogits.reshape(
-                             {selectTokenSize, mRuntime.deployment.base.outputVocabSize}),
-                "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.baseHiddenStates.reshape({selectTokenSize, mBaseOutputHiddenDim}),
-                "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.inputsEmbeds.reshape(
-                             {batchSize, simVerifyLen, mRuntime.deployment.base.hiddenSize}),
-                "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
-                             {batchSize, simVerifyLen, static_cast<int64_t>(divUp(simVerifyLen, 32))}),
-                "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.selectTokenIndices.reshape({batchSize, simVerifyLen}),
-                "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.contextLengths.reshape({batchSize}), "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.specDecodePositionIds.reshape({batchSize, simVerifyLen}),
-                "Tensor reshape failed");
-
             if (mUseTree)
             {
                 CUDA_CHECK(cudaMemsetAsync(
@@ -1380,36 +1659,43 @@ bool DSparkDecoder::captureCudaGraphs(cudaStream_t stream)
             }
             else
             {
-                Tensor const& baseKVCacheLengths = mRuntime.base.cacheManager.getKVCacheLengths();
-                kernel::launchDFlashPrepareBaseVerifyInputs(baseKVCacheLengths.dataPointer<int32_t>(), simVerifyLen,
-                    mRuntime.base.pipelineIO.packedAttentionMask.dataPointer<int32_t>(),
-                    mRuntime.base.pipelineIO.specDecodePositionIds.dataPointer<int32_t>(),
-                    mRuntime.base.pipelineIO.selectTokenIndices.dataPointer<int64_t>(),
-                    mRuntime.base.pipelineIO.contextLengths.dataPointer<int32_t>(), batchSize, stream);
+                check::check(mVerifyTokenIds.reshape({batchSize, simVerifyLen}), "Tensor reshape failed");
+                CUDA_CHECK(cudaMemsetAsync(
+                    mVerifyTokenIds.rawPointer(), 0, batchSize * simVerifyLen * sizeof(int32_t), stream));
             }
+            captureContext.activeBatchSize = batchSize;
+            SpecVerifyInputs const verify{mUseTree ? mTreeTokenIds : mVerifyTokenIds,
+                mUseTree ? &mValidCounts : nullptr, mUseTree ? &mRuntime.base.pipelineIO.specTreeParentIds : nullptr,
+                mUseTree ? &mRuntime.base.pipelineIO.specTreeDepths : nullptr, batchSize, simVerifyLen,
+                std::min(simVerifyLen, mRuntime.deployment.specConfig->maxPathLength),
+                mRuntime.deployment.specConfig->verifyLayout, mUseTree};
+            spec_decode::prepareTargetVerifyInputs(verify, mRuntime, captureContext, 0);
+            auto const verifyDims = mRuntime.deployment.base.specVerifyDims(batchSize, simVerifyLen, verify.layout);
+            baseVerificationCaptureStatus &= mRuntime.base.captureGraph(verifyDims, stream);
+        }
 
-            Tensor const* validCounts = mUseTree ? &mValidCounts : nullptr;
-            decoder_utils::prepareSpecRaggedBindings(mRuntime, mRuntime.deployment.base, 0,
-                mRuntime.base.pipelineIO.specDecodePositionIds, mRuntime.base.cacheManager.getKVCacheLengths(),
-                validCounts, mRuntime.base.pipelineIO.selectTokenIndices, selectTokenSize, nullptr, batchSize,
-                simVerifyLen, mRuntime.deployment.base.specVerifyDims(batchSize, simVerifyLen), stream);
-            check::check(
-                mRuntime.base.pipelineIO.inputsEmbeds.reshape({selectTokenSize, mRuntime.deployment.base.hiddenSize}),
-                "Tensor reshape failed");
-            check::check(
-                mRuntime.base.pipelineIO.specDecodePositionIds.reshape({selectTokenSize}), "Tensor reshape failed");
-            check::check(mRuntime.base.pipelineIO.packedAttentionMask.reshape(
-                             {selectTokenSize, static_cast<int64_t>(divUp(simVerifyLen, 32))}),
-                "Tensor reshape failed");
-
-            if (mRuntime.preprocess.deepstack)
-            {
-                mRuntime.preprocess.deepstack->useZeroTarget(mRuntime.base.tensorMap);
-            }
-
-            mRuntime.base.cacheManager.getMambaCacheManager().reshapeIntermediateStates(batchSize, simVerifyLen);
-
-            auto const verifyDims = mRuntime.deployment.base.specVerifyDims(batchSize, simVerifyLen);
+        // A tree that can jump also verifies grafting rounds of jumpVerifyTokenCount rows.
+        int32_t const jumpVerifyLen = mRuntime.deployment.specConfig->jumpVerifyTokenCount;
+        if (mUseTree && jumpVerifyLen > verifyLen)
+        {
+            auto& io = mRuntime.base.pipelineIO;
+            check::check(mTreeTokenIds.reshape({batchSize, jumpVerifyLen}), "Tensor reshape failed");
+            CUDA_CHECK(cudaMemsetAsync(mTreeTokenIds.rawPointer(), 0,
+                static_cast<size_t>(batchSize) * jumpVerifyLen * sizeof(int32_t), stream));
+            Tensor& mask = mJump.grafter().mask();
+            check::check(mask.reshape({batchSize, jumpVerifyLen, jumpVerifyLen}), "Tensor reshape failed");
+            CUDA_CHECK(cudaMemsetAsync(
+                mask.rawPointer(), 0, static_cast<size_t>(batchSize) * jumpVerifyLen * jumpVerifyLen, stream));
+            check::check(io.specTreeParentIds.reshape({batchSize, jumpVerifyLen}), "Tensor reshape failed");
+            check::check(io.specTreeDepths.reshape({batchSize, jumpVerifyLen}), "Tensor reshape failed");
+            mJump.prepareGraftedTreeDescriptors(
+                mRuntime.base.pipelineIO, mRuntime.base.cacheManager.getKVCacheLengths(), batchSize, stream);
+            captureContext.activeBatchSize = batchSize;
+            SpecVerifyInputs const verify{mTreeTokenIds, nullptr, &io.specTreeParentIds, &io.specTreeDepths, batchSize,
+                jumpVerifyLen, std::min(jumpVerifyLen, mRuntime.deployment.specConfig->maxPathLength),
+                mRuntime.deployment.specConfig->verifyLayout, true};
+            spec_decode::prepareTargetVerifyInputs(verify, mRuntime, captureContext, 0);
+            auto const verifyDims = mRuntime.deployment.base.specVerifyDims(batchSize, jumpVerifyLen, verify.layout);
             baseVerificationCaptureStatus &= mRuntime.base.captureGraph(verifyDims, stream);
         }
     }
@@ -1433,120 +1719,11 @@ void DSparkDecoder::setContextMemory(Tensor& memory)
     }
 }
 
-bool DSparkDecoder::hasSystemPromptKVCache(SystemPromptCacheKey const& key) const
-{
-    return mSystemPromptKVCacheDraft.find(key) != mSystemPromptKVCacheDraft.end();
-}
-
-void DSparkDecoder::restoreSystemPromptKVCache(
-    SystemPromptCacheKey const& key, int32_t residentSlot, cudaStream_t stream)
-{
-    check::check(mSystemPromptKVCacheDraft.count(key) > 0, "DSpark system prompt cache missing for draft model");
-    mDraftCacheManager.restoreKVCache(mSystemPromptKVCacheDraft[key].kvCacheLayers, residentSlot, stream);
-}
-
-bool DSparkDecoder::runSystemPromptPrefill(DecodingInferenceContext& context)
-{
-    int32_t const activeBatchSize = context.activeBatchSize;
-    int64_t const prefillLen
-        = *std::max_element(context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.end());
-    int32_t const blockLen = mDraftBlockLen;
-
-    check::check(mRuntime.preprocess.idsInput.reshape({activeBatchSize, blockLen}), "Tensor reshape failed");
-    check::check(mHostDraftInputIds.reshape({activeBatchSize, blockLen}), "Tensor reshape failed");
-    int32_t* hostDraftInputIds = mHostDraftInputIds.dataPointer<int32_t>();
-    for (int32_t b = 0; b < activeBatchSize; ++b)
-    {
-        hostDraftInputIds[b * blockLen] = context.tokenIds[b].back();
-        for (int32_t j = 1; j < blockLen; ++j)
-        {
-            hostDraftInputIds[b * blockLen + j] = mMaskTokenId;
-        }
-    }
-    CUDA_CHECK(cudaMemcpyAsync(mRuntime.preprocess.idsInput.rawPointer(), mHostDraftInputIds.rawPointer(),
-        activeBatchSize * blockLen * sizeof(int32_t), cudaMemcpyHostToDevice, context.stream));
-
-    check::check(mDraftInputsEmbeds.reshape({activeBatchSize, blockLen, mDraftHiddenSize}), "Tensor reshape failed");
-    kernel::embeddingLookup(mRuntime.preprocess.idsInput, mRuntime.preprocess.embedding.table,
-        mRuntime.preprocess.embedding.scalesAsOptional(), mDraftInputsEmbeds, context.stream);
-
-    check::check(
-        mDraftTargetHidden.reshape({activeBatchSize, prefillLen, mBaseOutputHiddenDim}), "Tensor reshape failed");
-    size_t const targetHiddenBytes = static_cast<size_t>(activeBatchSize) * prefillLen * mBaseOutputHiddenDim
-        * utils::getTypeSize(mDraftTargetHidden.getDataType());
-    CUDA_CHECK(cudaMemcpyAsync(mDraftTargetHidden.rawPointer(), mRuntime.base.pipelineIO.baseHiddenStates.rawPointer(),
-        targetHiddenBytes, cudaMemcpyDeviceToDevice, context.stream));
-
-    check::check(mHostDeltaLens.reshape({activeBatchSize}), "Tensor reshape failed");
-    int32_t* hostDeltaLens = mHostDeltaLens.dataPointer<int32_t>();
-    std::fill_n(hostDeltaLens, activeBatchSize, static_cast<int32_t>(prefillLen));
-    check::check(mDraftDeltaLens.reshape({activeBatchSize}), "Tensor reshape failed");
-    CUDA_CHECK(cudaMemcpyAsync(mDraftDeltaLens.rawPointer(), mHostDeltaLens.rawPointer(),
-        activeBatchSize * sizeof(int32_t), cudaMemcpyHostToDevice, context.stream));
-
-    int32_t const pmLen = divUp(blockLen, 32);
-    check::check(mDraftPackedAttentionMask.reshape({activeBatchSize, blockLen, pmLen}), "Tensor reshape failed");
-    check::check(mDraftAttentionPosId.reshape({activeBatchSize, blockLen}), "Tensor reshape failed");
-    check::check(mDraftContextLengths.reshape({activeBatchSize}), "Tensor reshape failed");
-
-    Tensor const& draftCacheLengths = mDraftCacheManager.getKVCacheLengths();
-    kernel::launchDFlashPrepareProposalInputs(draftCacheLengths.dataPointer<int32_t>(),
-        mDraftDeltaLens.dataPointer<int32_t>(), blockLen, mDraftPackedAttentionMask.dataPointer<int32_t>(),
-        mDraftAttentionPosId.dataPointer<int32_t>(), mDraftContextLengths.dataPointer<int32_t>(),
-        mRuntime.base.pipelineIO.positions.dataPointer<int32_t>(),
-        mRuntime.base.pipelineIO.queryStartOffsets.dataPointer<int32_t>(),
-        mRuntime.base.pipelineIO.queryLengths.dataPointer<int32_t>(),
-        mRuntime.base.pipelineIO.pastLengths.dataPointer<int32_t>(),
-        mRuntime.base.pipelineIO.attentionSequenceLengths.dataPointer<int32_t>(),
-        mRuntime.base.pipelineIO.stateIndices.dataPointer<int32_t>(), mCausalProposalMask, activeBatchSize,
-        context.stream);
-    prepareDraftRaggedBindings(
-        activeBatchSize, blockLen, static_cast<int32_t>(prefillLen), context.stream, &context.residentRefs);
-
-    check::check(mDraftOutputLogits.reshape({activeBatchSize, blockLen, mDraftVocabSize}), "Tensor reshape failed");
-    check::check(mDraftHiddenStates.reshape({activeBatchSize, blockLen, mDraftHiddenSize}), "Tensor reshape failed");
-
-    int32_t const draftKVCapacity = mRuntime.deployment.draft->maxKVCacheCapacity;
-    InferenceDims const draftDims{activeBatchSize, activeBatchSize * blockLen, draftKVCapacity,
-        activeBatchSize * prefillLen, activeBatchSize * blockLen, 1, static_cast<int64_t>(pmLen), 0, activeBatchSize,
-        static_cast<int64_t>(ExecutionPhase::kSpecDraftProposal), 0, 0, activeBatchSize + 1, 0};
-
-    cudaGetLastError();
-    bool ok = mDraftExecutor->prepare(kPrefillProfile, draftDims, mDraftTensorMap, context.stream);
-    if (ok)
-    {
-        ok = mDraftExecutor->execute(context.stream);
-    }
-    if (!ok)
-    {
-        LOG_ERROR("DSpark: system prompt draft prefill failed.");
-        return false;
-    }
-
-    check::check(mDraftDeltaLenCommit.reshape({activeBatchSize}), "Tensor reshape failed");
-    CUDA_CHECK(cudaMemcpyAsync(mDraftDeltaLenCommit.rawPointer(), mDraftDeltaLens.rawPointer(),
-        activeBatchSize * sizeof(int32_t), cudaMemcpyDeviceToDevice, context.stream));
-    mDraftCacheManager.commitSequenceLength(mDraftDeltaLenCommit, context.stream);
-
-    return true;
-}
-
-void DSparkDecoder::saveSystemPromptKVCache(SystemPromptCacheKey const& key, std::string const& prompt,
-    std::vector<tokenizer::Rank> const& tokenizedPrompt, int32_t promptIdsLength, cudaStream_t stream)
-{
-    constexpr int32_t CACHE_BATCH_IDX{0};
-    SystemPromptKVCache savedCache;
-    savedCache.systemPrompt = prompt;
-    savedCache.tokenizedPrompt = tokenizedPrompt;
-    savedCache.kvCacheLayers = mDraftCacheManager.captureKVCache(CACHE_BATCH_IDX, promptIdsLength, stream);
-    mSystemPromptKVCacheDraft.insert({key, std::move(savedCache)});
-}
-
 void DSparkDecoder::resetForNewSequences(Tensor& reuseLengths, cudaStream_t stream)
 {
     mDraftCacheManager.resetForNewSequences(reuseLengths, stream);
     mCommonStateTracker.reset();
-    mLastBaseVerifyHiddenStride = 0;
+    mDraftPrimed = false;
 }
 
 void DSparkDecoder::onBatchEvict(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch,
@@ -1557,6 +1734,7 @@ void DSparkDecoder::onBatchEvict(std::vector<int32_t> const& batchMapping, int32
     mCommonStateTracker.compact(batchMapping, oldActiveBatch, newActiveBatch);
     if (newActiveBatch == 0)
     {
+        mDraftPrimed = false;
         return;
     }
 
@@ -1587,34 +1765,71 @@ void DSparkDecoder::onBatchEvict(std::vector<int32_t> const& batchMapping, int32
         }
         kernel::compactExecutionTensorBatch(tensor, deviceBatchMapping, oldActiveBatch, newActiveBatch, stream);
     };
-    compactDeviceTensor(mRuntime.base.pipelineIO.baseHiddenStates);
+    if (mDraftPrimed)
+    {
+        // Between rounds the carried span is the decoder's own copy; the pipeline buffer is scratch.
+        check::check(mAcceptedHiddenStates.reshape(
+                         {static_cast<int64_t>(oldActiveBatch) * mAcceptCapacity, mBaseOutputHiddenDim}),
+            "Tensor reshape failed");
+        compactDeviceTensor(mAcceptedHiddenStates);
+    }
+    else
+    {
+        // Before the first draft forward (the blocking path's round zero), the pipeline buffer holds the target's
+        // prefill hidden states that forward still has to read.
+        compactDeviceTensor(mRuntime.base.pipelineIO.baseHiddenStates);
+    }
     if (mCommonStateTracker.draftPrefillOutputsPending())
     {
-        compactDeviceTensor(mDraftOutputLogits);
-        compactDeviceTensor(mDraftHiddenStates);
-        compactDeviceTensor(mDraftTokenIds);
-        compactDeviceTensor(mVerifyTokenIds);
-        compactDeviceTensor(mDraftProbabilities);
-        compactDeviceTensor(mDraftTopKProbabilities);
-        compactDeviceTensor(mDraftTopKIndices);
-        compactDeviceTensor(mConfidenceScores);
-        compactDeviceTensor(mProposalLengths);
-        compactDeviceTensor(mLastAcceptedTokens);
-        compactDeviceTensor(mStackedMarkovLogits);
-        compactDeviceTensor(mTreeTokenIds);
-        compactDeviceTensor(mRuntime.base.pipelineIO.specTreeDepths);
-        compactDeviceTensor(mRuntime.base.pipelineIO.specTreeParentIds);
-        compactDeviceTensor(mTreeNodeScores);
-        compactDeviceTensor(mValidCounts);
-        compactDeviceTensor(mVerifyTreeMask);
-        compactDeviceTensor(mRuntime.preprocess.idsInput);
-        compactDeviceTensor(mRuntime.base.pipelineIO.specDecodePositionIds);
-        compactDeviceTensor(mRuntime.base.pipelineIO.packedAttentionMask);
-        compactDeviceTensor(mRuntime.base.pipelineIO.contextLengths);
+        // Only what the pending proposal's draft forward wrote holds this batch's rows; other buffers keep an earlier
+        // batch's shape.
+        auto compactPendingTensor = [&](Tensor& tensor) {
+            ELLM_CHECK(tensor.getShape().getNumDims() > 0 && tensor.getShape()[0] == oldActiveBatch,
+                "DSpark pending proposal tensor " + tensor.getName() + " does not hold the batch being compacted");
+            kernel::compactExecutionTensorBatch(tensor, deviceBatchMapping, oldActiveBatch, newActiveBatch, stream);
+        };
+        compactPendingTensor(mDraftOutputLogits);
+        compactPendingTensor(mDraftHiddenStates);
+        compactPendingTensor(mDraftTokenIds);
+        compactPendingTensor(mProposalLengths);
+        compactPendingTensor(mLastAcceptedTokens);
+        compactPendingTensor(mRuntime.preprocess.idsInput);
+        if (mSchedulerMode != DSparkSchedulerMode::kOff)
+        {
+            compactPendingTensor(mConfidenceScores);
+        }
+        switch (mDraftDistribution)
+        {
+        case DraftDistribution::kNone: break;
+        case DraftDistribution::kDense: compactPendingTensor(mDraftProbabilities); break;
+        case DraftDistribution::kTopK:
+            compactPendingTensor(mDraftTopKProbabilities);
+            compactPendingTensor(mDraftTopKIndices);
+            break;
+        }
         if (mUseTree)
         {
+            // The tree build also writes the target's verification inputs; a chain's are written at verification.
+            compactPendingTensor(mStackedMarkovLogits);
+            compactPendingTensor(mTreeTokenIds);
+            compactPendingTensor(mRuntime.base.pipelineIO.specTreeDepths);
+            compactPendingTensor(mRuntime.base.pipelineIO.specTreeParentIds);
+            compactPendingTensor(mTreeNodeScores);
+            compactPendingTensor(mValidCounts);
+            compactPendingTensor(mRuntime.base.pipelineIO.specDecodePositionIds);
+            compactPendingTensor(mRuntime.base.pipelineIO.packedAttentionMask);
+            compactPendingTensor(mRuntime.base.pipelineIO.contextLengths);
             kernel::compactExecutionRowIndices(mRuntime.base.pipelineIO.selectTokenIndices, deviceBatchMapping,
                 oldActiveBatch, newActiveBatch, mCurrentVerifyLen, stream);
+        }
+        else
+        {
+            compactPendingTensor(mVerifyTokenIds);
+            compactPendingTensor(mAcceptValidTokenCounts);
+            if (!mScheduledProposalLengths.empty())
+            {
+                compactVector(batchMapping, mScheduledProposalLengths);
+            }
         }
     }
     else

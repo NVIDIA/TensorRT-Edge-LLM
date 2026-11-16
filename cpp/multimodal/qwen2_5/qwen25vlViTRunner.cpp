@@ -18,6 +18,7 @@
 #include "multimodal/qwen2_5/qwen25vlViTRunner.h"
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
+#include "common/trtInterop.h"
 #include <algorithm>
 #include <numeric>
 
@@ -44,18 +45,18 @@ bool Qwen25VLViTRunner::allocateExtraBuffers(int64_t maxImageTokens)
     bool setTensorAddressStatus{true};
     // Use maxImageTokens as a safe upper bound for cumulative window sequence lengths.
     mCuWindowSeqlens = rt::Tensor(
-        {maxImageTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "Qwen25VLViTRunner::mCuWindowSeqlens");
+        {maxImageTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "Qwen25VLViTRunner::mCuWindowSeqlens");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kCuWindowSeqlens, mCuWindowSeqlens.rawPointer());
-    mCuWindowSeqlensHost = rt::Tensor(
-        {maxImageTokens}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "Qwen25VLViTRunner::mCuWindowSeqlensHost");
+    mCuWindowSeqlensHost = rt::Tensor({maxImageTokens}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32,
+        "Qwen25VLViTRunner::mCuWindowSeqlensHost");
 
     if (mUseTrtNativeVitAttn)
     {
         mHasKvLengthsWindow = isEngineInput(*mVisualEngine, binding_names::kKvLengthsWindow);
         if (mHasKvLengthsWindow)
         {
-            mKvLengthsWindow = rt::Tensor({maxImageTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32,
+            mKvLengthsWindow = rt::Tensor({maxImageTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32,
                 "Qwen25VLViTRunner::mKvLengthsWindow");
             setTensorAddressStatus
                 &= mVisualContext->setTensorAddress(binding_names::kKvLengthsWindow, mKvLengthsWindow.rawPointer());
@@ -63,15 +64,15 @@ bool Qwen25VLViTRunner::allocateExtraBuffers(int64_t maxImageTokens)
     }
 
     mWindowIndexHost = rt::Tensor(
-        {maxImageTokens}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "Qwen25VLViTRunner::mWindowIndexHost");
+        {maxImageTokens}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64, "Qwen25VLViTRunner::mWindowIndexHost");
     mWindowIndexDevice = rt::Tensor(
-        {maxImageTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "Qwen25VLViTRunner::mWindowIndexDevice");
+        {maxImageTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "Qwen25VLViTRunner::mWindowIndexDevice");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kWindowIndex, mWindowIndexDevice.rawPointer());
 
-    mReverseWindowIndexHost = rt::Tensor({maxImageTokens}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64,
+    mReverseWindowIndexHost = rt::Tensor({maxImageTokens}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
         "Qwen25VLViTRunner::mReverseWindowIndexHost");
-    mReverseWindowIndexDevice = rt::Tensor({maxImageTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64,
+    mReverseWindowIndexDevice = rt::Tensor({maxImageTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64,
         "Qwen25VLViTRunner::mReverseWindowIndexDevice");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kReverseWindowIndex, mReverseWindowIndexDevice.rawPointer());
@@ -101,16 +102,16 @@ bool Qwen25VLViTRunner::bindExtraInputShapes()
 {
     bool setEngineIOStatus{true};
     setEngineIOStatus
-        &= mVisualContext->setInputShape(binding_names::kCuWindowSeqlens, mCuWindowSeqlens.getShape().getTRTDims());
+        &= mVisualContext->setInputShape(binding_names::kCuWindowSeqlens, toTrtDims(mCuWindowSeqlens.getShape()));
     if (mUseTrtNativeVitAttn && mHasKvLengthsWindow)
     {
         setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kKvLengthsWindow, mKvLengthsWindow.getShape().getTRTDims());
+            &= mVisualContext->setInputShape(binding_names::kKvLengthsWindow, toTrtDims(mKvLengthsWindow.getShape()));
     }
     setEngineIOStatus
-        &= mVisualContext->setInputShape(binding_names::kWindowIndex, mWindowIndexDevice.getShape().getTRTDims());
+        &= mVisualContext->setInputShape(binding_names::kWindowIndex, toTrtDims(mWindowIndexDevice.getShape()));
     setEngineIOStatus &= mVisualContext->setInputShape(
-        binding_names::kReverseWindowIndex, mReverseWindowIndexDevice.getShape().getTRTDims());
+        binding_names::kReverseWindowIndex, toTrtDims(mReverseWindowIndexDevice.getShape()));
     return setEngineIOStatus;
 }
 

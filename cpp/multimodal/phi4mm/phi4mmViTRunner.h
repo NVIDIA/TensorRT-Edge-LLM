@@ -63,9 +63,10 @@ public:
     //! \brief Constructor for Phi4MMViTRunner
     //! \param[in] engineDir Directory containing the TensorRT engine files
     //! \param[in] stream CUDA stream for execution
+    //! \param[in] checkpointDir HF checkpoint directory used by runtime weight loading
     //! \throws std::runtime_error if engineDir does not contain valid engine files
     //! \throws std::runtime_error if buffer allocation fails
-    Phi4MMViTRunner(std::string const& engineDir, cudaStream_t stream);
+    Phi4MMViTRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
     ~Phi4MMViTRunner() noexcept = default;
 
     //! \brief Preprocess multimodal input including images and text

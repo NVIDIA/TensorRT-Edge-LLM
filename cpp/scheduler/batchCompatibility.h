@@ -30,10 +30,10 @@ namespace scheduler
 
 //! Whether two requests may occupy the same forward pass.
 //!
-//! Some request fields configure the engine for the whole step rather than for one sequence: a
-//! single temperature is applied to the batch, one set of LoRA weights is bound, one decoder is
-//! selected. Two requests that disagree on any of those cannot be batched, and admitting them
-//! together would silently give one of them the other's settings.
+//! Some request fields configure the engine for the whole step rather than for one sequence: one
+//! set of LoRA weights is bound, one decoder is selected, one thinking mode shapes the prompts.
+//! Two requests that disagree on any of those cannot be batched, and admitting them together
+//! would silently give one of them the other's settings.
 //!
 //! The classification is closed by convention: every field of LLMGenerationRequest is either in
 //! the compared list or in the exempt list beside it, and a new field must be placed in one of the
@@ -42,11 +42,22 @@ namespace scheduler
 //! classifies is a check that keeps passing while one request quietly generates with another's
 //! settings.
 //!
-//! Exempt fields fall into two groups, and nothing else is exempt:
-//!   - per-sequence payload: the prompts themselves, their pre-tokenized form, and the stream each
-//!     result is delivered on;
+//! Exempt fields fall into four groups, and nothing else is exempt:
+//!   - per-sequence payload: the prompts themselves (messages), their pre-tokenized form, the
+//!     formatted requests, the stream each result is delivered on, and each slot's
+//!     guided-decoding constraint including its jump-forward flag;
+//!   - per-sequence decoding settings the runtime applies row by row: temperature, top-p, top-k,
+//!     the sampling seed (request-level and per item), the generate budget (maxGenerateLength,
+//!     which each resident's stop check and KV-capacity bound read), the logprobs width and the
+//!     EOS policy (ignoreEos);
 //!   - preprocessing that has already happened by the time a request is admitted, so it cannot
-//!     affect a shared step: chat templating and generation-prompt insertion.
+//!     affect a shared step: chat templating (applyChatTemplate, addGenerationPrompt) and what the
+//!     template alone consumes -- reasoningEffort, tools, toolChoice and parallelToolCalls (see
+//!     chat_template::ChatTemplate::optionsFrom; nothing past the tokenizer reads them);
+//!   - scheduling hints that order admission but never reach a step: priority.
+//! The per-item fields of LLMGenerationRequest::Request are per sequence by construction: stopStrings
+//! and logitBias are per-slot tables, the item's contextCacheLookupPolicy rides into its own lease,
+//! and guidedDecoding is served alone by the session (requiresExclusiveAdmission), not by this gate.
 //! Audio generation and hidden-state capture are NOT exempt: they are compared (see the list in
 //! batchCompatibility.cpp), so enabling one never silently shares a step with a request that has
 //! not.
@@ -62,6 +73,14 @@ public:
     //! twenty fields it got wrong.
     static std::string firstDifference(
         LLMGenerationRequest const& resident, LLMGenerationRequest const& candidate) noexcept;
+
+    //! @brief True if @p candidate samples like @p resident: the same temperature, top-p and top-k.
+    //!
+    //! Sampling is per sequence on the default decoder and exempt from compatible(), but a speculative decoder
+    //! takes one set of sampling parameters per batch; the caller asks this only for requests the session runs
+    //! on such a decoder (RuntimeSession::requiresUniformSampling). Requests that sample alike also select the
+    //! same decoder.
+    static bool samplingAgrees(LLMGenerationRequest const& resident, LLMGenerationRequest const& candidate) noexcept;
 };
 
 } // namespace scheduler

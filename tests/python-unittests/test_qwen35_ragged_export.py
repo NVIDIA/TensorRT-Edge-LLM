@@ -29,6 +29,8 @@ from tensorrt_edgellm.models.ops import (attention_plugin, gated_delta_net,
                                          set_int4_gemm_plugin_version)
 from tensorrt_edgellm.models.qwen3_5.modeling_qwen3_5_text import (
     Qwen3_5CausalLM, Qwen3_5DecoderLayer)
+from tensorrt_edgellm.models.qwen3_moe.modeling_qwen3_moe import \
+    Qwen3MoeCausalLM
 from tensorrt_edgellm.models.qwen3_omni_next.modeling_qwen3_omni_next_code_predictor import \
     Qwen3OmniNextCodePredictorCausalLM
 from tensorrt_edgellm.models.qwen3_omni_next.modeling_qwen3_omni_next_moe_text import \
@@ -64,7 +66,8 @@ def _config() -> ModelConfig:
                                          num_value_heads=2,
                                          key_head_dim=8,
                                          value_head_dim=8,
-                                         conv_kernel=4),
+                                         conv_kernel=4,
+                                         output_gate_type="silu"),
                        attn_output_gate=True)
 
 
@@ -220,8 +223,9 @@ def test_attention_plugin_signature_freezes_stage1_contract():
         for parameter in _attention_plugin_schema.inputs
     }
     assert schema_types["query_lengths"] == "tensor(int32)"
-    assert schema_types["skip_softmax_scale"] == "tensor(int8)"
-    assert schema_types["swa_kv_cache_mode"] == "tensor(int8)"
+    assert schema_types["skip_softmax_prefill_scale"] == "tensor(int32)"
+    assert schema_types["skip_softmax_decode_scale"] == "tensor(int32)"
+    assert schema_types["swa_kv_cache_mode"] == "tensor(int32)"
     assert schema_types["context_sequence_count_carrier"] == "tensor(int32)"
 
 
@@ -265,6 +269,37 @@ def test_qwen35_mtp_base_tiny_onnx_supports_linear_verify(tmp_path):
         assert attributes.get("use_ddtree", 0) == 0
 
 
+def test_recurrent_base_onnx_has_fixed_layout_abi(tmp_path):
+    # Given MTP target export without a topology option, when lowering ONNX,
+    # then conv consumes the marker, GDN only ancestry, and attention keeps its ABI.
+    config = _config()
+    config.mtp_base = True
+    output = tmp_path / "unified-mtp.onnx"
+    _export_model(Qwen3_5CausalLM(config), str(output), optimize=False)
+    graph = onnx.load(str(output), load_external_data=False).graph
+    inputs = {value.name: value for value in graph.input}
+    assert "spec_verify_layout" in inputs
+    marker = inputs["spec_verify_layout"].type.tensor_type
+    assert (marker.elem_type,
+            len(marker.shape.dim)) == (onnx.TensorProto.INT32, 1)
+    for node in graph.node:
+        if node.op_type in {"causal_conv1d", "gated_delta_net"}:
+            fields = {
+                attr.name: onnx.helper.get_attribute_value(attr)
+                for attr in node.attribute
+            }
+            ancestry = ["tree_parent_ids", "tree_depths"]
+            common_count = 13 if node.op_type == "gated_delta_net" else 9
+            if node.op_type == "causal_conv1d":
+                ancestry.append("spec_verify_layout")
+            assert (list(node.input)[common_count:], len(node.output),
+                    fields["plugin_version"],
+                    fields.get("use_spec_verify_state"), "use_ddtree"
+                    in fields) == (ancestry, 3, b"1", 1, False)
+        elif node.op_type == "AttentionPlugin":
+            assert "spec_verify_layout" not in node.input
+
+
 def test_qwen35_awq_v1_decoder_linears_are_token_major(tmp_path):
     config = _config()
     config.hidden_size = 128
@@ -277,7 +312,8 @@ def test_qwen35_awq_v1_decoder_linears_are_token_major(tmp_path):
                                num_value_heads=2,
                                key_head_dim=64,
                                value_head_dim=64,
-                               conv_kernel=4)
+                               conv_kernel=4,
+                               output_gate_type="silu")
     config.quant = QuantConfig(quant_type=QUANT_INT4_AWQ,
                                group_size=128,
                                excluded=["lm_head"])
@@ -324,8 +360,7 @@ def test_qwen35_awq_v1_decoder_linears_are_token_major(tmp_path):
     assert len(values[qkv_concat.output[0]].type.tensor_type.shape.dim) == 2
 
 
-def test_qwen35_dflash_linear_base_keeps_tree_attention_without_metadata(
-        tmp_path):
+def test_qwen35_dflash_base_keeps_attention_and_recurrent_metadata(tmp_path):
     config = _config()
     config.dflash_base = True
     output = tmp_path / "qwen35-dflash-base.onnx"
@@ -335,7 +370,10 @@ def test_qwen35_dflash_linear_base_keeps_tree_attention_without_metadata(
     graph = onnx.load(str(output), load_external_data=False).graph
     inputs = {tensor.name for tensor in graph.input}
     assert {"attention_position_ids", "packed_attention_mask"} <= inputs
-    assert not {"tree_parent_ids", "tree_depths", "valid_tree_counts"} & inputs
+    assert {
+        "tree_parent_ids", "tree_depths", "valid_tree_counts",
+        "spec_verify_layout"
+    } <= inputs
     attention = next(node for node in graph.node
                      if node.op_type == "AttentionPlugin")
     attributes = {
@@ -362,6 +400,21 @@ def test_qwen35_jetspec_base_emits_target_hidden():
     assert outputs[1].shape == (spec.args[0].shape[0], 2 * config.hidden_size)
 
 
+def test_qwen3_moe_speculative_base_uses_ragged_tree_contract():
+    config = _attention_config()
+    config.dflash_base = True
+    config.dflash_target_layer_ids = [0]
+
+    spec = Qwen3MoeCausalLM(config).onnx_export_spec()
+    args = dict(zip(spec.input_names, spec.args))
+    outputs = spec.wrapped(*spec.args)
+
+    assert "query_start_offsets" in args
+    assert "packed_attention_mask" in args
+    assert spec.output_names[1] == "hidden_states"
+    assert outputs[1].shape == (spec.args[0].shape[0], config.hidden_size)
+
+
 def test_target_hidden_concat_preserves_provider_order():
     layer_zero = torch.zeros((2, 3), dtype=torch.float16)
     layer_one = torch.ones((2, 3), dtype=torch.float16)
@@ -378,7 +431,6 @@ def test_target_hidden_concat_preserves_provider_order():
 def test_qwen35_mtp_tree_base_exports_tree_state_metadata():
     config = _config()
     config.mtp_base = True
-    config.mtp_tree_base = True
 
     spec = Qwen3_5CausalLM(config).onnx_export_spec()
     args = dict(zip(spec.input_names, spec.args))
@@ -393,7 +445,6 @@ def test_qwen35_mtp_tree_tiny_onnx_keeps_tree_metadata_out_of_attention(
         tmp_path):
     config = _config()
     config.mtp_base = True
-    config.mtp_tree_base = True
     output = tmp_path / "qwen35-mtp-tree-base.onnx"
 
     _export_model(Qwen3_5CausalLM(config), str(output), optimize=False)

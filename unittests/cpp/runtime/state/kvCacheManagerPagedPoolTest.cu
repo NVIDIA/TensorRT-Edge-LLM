@@ -26,6 +26,7 @@
 #include "common/pagedKvTypes.h"
 #include "common/tensor.h"
 #include "runtime/kvCacheManager.h"
+#include <cuda_runtime_api.h>
 #include <gtest/gtest.h>
 #include <limits>
 
@@ -35,7 +36,6 @@
 #include <vector>
 
 using namespace trt_edgellm;
-using namespace nvinfer1;
 
 namespace
 {
@@ -51,6 +51,18 @@ rt::KVCacheManager::Config makeHeteroConfig(
 {
     std::vector<rt::KVLayerConfig> layers{rt::KVLayerConfig{h0, d0}, rt::KVLayerConfig{h1, d1}};
     return rt::KVCacheManager::Config{/*numAttentionLayers=*/2, maxBatch, maxSeq, layers, dtype};
+}
+
+bool hasCudaDevice()
+{
+    int32_t deviceCount{0};
+    cudaError_t const status = cudaGetDeviceCount(&deviceCount);
+    if (status != cudaSuccess)
+    {
+        static_cast<void>(cudaGetLastError());
+        return false;
+    }
+    return deviceCount > 0;
 }
 
 } // namespace
@@ -73,14 +85,14 @@ TEST(KvCacheManagerPagedPoolTest, RejectsOverflowGeometryBeforeAllocation)
 TEST(KvCacheManagerPagedPoolTest, SwaPageSizingCoversWindowPageBoundaries)
 {
     int32_t const batch = 3;
-    EXPECT_EQ(rt::computeSwaPrivatePagesPerSlot(64, rt::kTOKENS_PER_PAGE, rt::kSWA_REPLACEMENT_PAGES), 5);
-    EXPECT_EQ(rt::computeSwaPrivatePagesPerSlot(128, rt::kTOKENS_PER_PAGE, rt::kSWA_REPLACEMENT_PAGES), 5);
-    EXPECT_EQ(rt::computeSwaPrivatePagesPerSlot(256, rt::kTOKENS_PER_PAGE, rt::kSWA_REPLACEMENT_PAGES), 7);
-    EXPECT_EQ(rt::computeSwaPrivatePagesPerSlot(257, rt::kTOKENS_PER_PAGE, rt::kSWA_REPLACEMENT_PAGES), 9);
+    EXPECT_EQ(rt::computeSwaPrivatePagesPerSlot(64, rt::kTOKENS_PER_PAGE, rt::kSWA_REPLACEMENT_PAGES), 7);
+    EXPECT_EQ(rt::computeSwaPrivatePagesPerSlot(128, rt::kTOKENS_PER_PAGE, rt::kSWA_REPLACEMENT_PAGES), 7);
+    EXPECT_EQ(rt::computeSwaPrivatePagesPerSlot(256, rt::kTOKENS_PER_PAGE, rt::kSWA_REPLACEMENT_PAGES), 9);
+    EXPECT_EQ(rt::computeSwaPrivatePagesPerSlot(257, rt::kTOKENS_PER_PAGE, rt::kSWA_REPLACEMENT_PAGES), 11);
     EXPECT_EQ(rt::computeSwaPrivatePagesPerSlot(
                   /*slidingWindowCapacity=*/5, /*tokensPerPage=*/4, /*replacementPageCount=*/3),
-        9);
-    EXPECT_EQ(rt::computeMinimumSwaPoolPages(batch, 257), batch * 9);
+        11);
+    EXPECT_EQ(rt::computeMinimumSwaPoolPages(batch, 257), batch * 11);
 }
 
 // maxSeq below (200) is deliberately NOT a multiple of 128 so the page count accounts for padding (-> 256).
@@ -320,20 +332,73 @@ TEST(KvCacheManagerPagedPoolTest, MixedReducedWindowsAreRejected)
     EXPECT_THROW(rt::KVCacheManager mgr(config, stream), std::exception);
 }
 
-TEST(KvCacheManagerPagedPoolTest, ReducedFp8PoolIsRejected)
+TEST(KvCacheManagerPagedPoolTest, ReducedFp8PoolUsesBoundedGeometryAndOneByteOffsets)
 {
-    cudaStream_t stream{nullptr};
-    std::vector<rt::KVLayerConfig> layers{
-        rt::KVLayerConfig{/*numKVHeads=*/1, /*headDim=*/8, /*kvCacheCapacity=*/64},
-    };
-    rt::KVCacheManager::Config config{/*numAttentionLayers=*/1, /*maxBatchSize=*/1,
-        /*maxSequenceLength=*/512, layers, DataType::kFP8};
-    EXPECT_THROW(rt::KVCacheManager mgr(config, stream), std::exception);
+    if (!hasCudaDevice())
+    {
+        GTEST_SKIP() << "CUDA device required for FP8 bounded KV allocation geometry.";
+    }
 
-    config.numSwaPages
-        = static_cast<int32_t>(rt::computeMinimumSwaPoolPages(/*maxBatchSize=*/1, /*slidingWindowCapacity=*/64));
+    cudaStream_t stream{nullptr};
+    constexpr int32_t kMAX_BATCH_SIZE = 2;
+    constexpr int32_t kMAX_SEQUENCE_LENGTH = 8192;
+    constexpr int32_t kSWA_WINDOW_SIZE = 129;
+    constexpr int32_t kNUM_KV_HEADS = 1;
+    constexpr int32_t kHEAD_DIM = 8;
+
+    std::vector<rt::KVLayerConfig> layers{
+        rt::KVLayerConfig{/*numKVHeads=*/kNUM_KV_HEADS, /*headDim=*/kHEAD_DIM},
+        rt::KVLayerConfig{/*numKVHeads=*/kNUM_KV_HEADS, /*headDim=*/kHEAD_DIM,
+            /*kvCacheCapacity=*/kSWA_WINDOW_SIZE},
+    };
+    rt::KVCacheManager::Config config{
+        /*numAttentionLayers=*/2, kMAX_BATCH_SIZE, kMAX_SEQUENCE_LENGTH, layers, DataType::kFP8};
+    config.numSwaPages = static_cast<int32_t>(rt::computeMinimumSwaPoolPages(kMAX_BATCH_SIZE, kSWA_WINDOW_SIZE));
+    int32_t const fullPages
+        = static_cast<int32_t>(rt::computeMinimumKvPoolPages(kMAX_BATCH_SIZE, kMAX_SEQUENCE_LENGTH));
+    int32_t const boundedCapPadded = static_cast<int32_t>(
+        rt::computeSwaPrivatePagesPerSlot(kSWA_WINDOW_SIZE, rt::kTOKENS_PER_PAGE, rt::kSWA_REPLACEMENT_PAGES)
+        * rt::kTOKENS_PER_PAGE);
+
+    rt::KVCacheManager boundedMgr(config, stream);
+    EXPECT_TRUE(boundedMgr.hasReducedKVCache());
+    ASSERT_TRUE(boundedMgr.reducedKVCacheCapacity().has_value());
+    EXPECT_EQ(*boundedMgr.reducedKVCacheCapacity(), kSWA_WINDOW_SIZE);
+    EXPECT_EQ(boundedMgr.numPages(0), fullPages);
+    EXPECT_EQ(boundedMgr.numPages(1), config.numSwaPages);
+    EXPECT_EQ(boundedMgr.maxCapPadded(0), kMAX_SEQUENCE_LENGTH);
+    EXPECT_EQ(boundedMgr.maxCapPadded(1), boundedCapPadded);
+    EXPECT_EQ(boundedMgr.getCombinedKVCache(1).getDataType(), DataType::kFP8);
+
+    auto const [boundedK, boundedV] = boundedMgr.getSeparateKVCache(1);
+    EXPECT_EQ(boundedK.getDataType(), DataType::kFP8);
+    EXPECT_EQ(boundedV.getDataType(), DataType::kFP8);
+    EXPECT_EQ(boundedK.getShape()[0], config.numSwaPages);
+    EXPECT_EQ(boundedK.getShape()[1], rt::kTOKENS_PER_PAGE);
+    EXPECT_EQ(boundedV.getShape()[0], config.numSwaPages);
+    size_t const fp8ElemSize = rt::utils::getTypeSize(DataType::kFP8);
+    EXPECT_EQ(fp8ElemSize, 1U);
+    int64_t const boundedPlaneElements
+        = static_cast<int64_t>(config.numSwaPages) * rt::kTOKENS_PER_PAGE * kNUM_KV_HEADS * kHEAD_DIM;
+    auto const* expectedBoundedV
+        = static_cast<char const*>(boundedMgr.kPoolPtr(1)) + boundedPlaneElements * static_cast<int64_t>(fp8ElemSize);
+    EXPECT_EQ(boundedMgr.vPoolPtr(1), static_cast<void const*>(expectedBoundedV));
+
     config.useBoundedSwaKVCache = false;
-    EXPECT_THROW(rt::KVCacheManager mgr(config, stream), std::exception);
+    rt::KVCacheManager fullModeMgr(config, stream);
+    EXPECT_FALSE(fullModeMgr.hasReducedKVCache());
+    EXPECT_EQ(fullModeMgr.getLayerConfig(1).kvCacheCapacity, kSWA_WINDOW_SIZE);
+    EXPECT_EQ(fullModeMgr.numPages(1), fullPages);
+    EXPECT_EQ(fullModeMgr.getCombinedKVCache(1).getDataType(), DataType::kFP8);
+    auto const [fullModeK, fullModeV] = fullModeMgr.getSeparateKVCache(1);
+    EXPECT_EQ(fullModeK.getShape()[0], kMAX_BATCH_SIZE);
+    EXPECT_EQ(fullModeK.getShape()[1], kMAX_SEQUENCE_LENGTH);
+    EXPECT_EQ(fullModeV.getShape()[0], kMAX_BATCH_SIZE);
+    int64_t const fullModePlaneElements
+        = static_cast<int64_t>(fullPages) * rt::kTOKENS_PER_PAGE * kNUM_KV_HEADS * kHEAD_DIM;
+    auto const* expectedFullModeV
+        = static_cast<char const*>(fullModeMgr.kPoolPtr(1)) + fullModePlaneElements * static_cast<int64_t>(fp8ElemSize);
+    EXPECT_EQ(fullModeMgr.vPoolPtr(1), static_cast<void const*>(expectedFullModeV));
 }
 
 TEST(KvCacheManagerPagedPoolTest, ReducedPoolRequiresExplicitSwaPageBudget)

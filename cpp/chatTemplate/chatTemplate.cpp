@@ -453,8 +453,7 @@ Json messageToJson(rt::Message const& message, std::optional<size_t> const& traj
         Json toolCalls = Json::array();
         for (auto const& call : message.toolCalls)
         {
-            Json function = makeInjaObject({{"name", call.name},
-                {"arguments", call.argumentsIsString ? Json(call.arguments) : parseJsonOrString(call.arguments)}});
+            Json function = makeInjaObject({{"name", call.name}, {"arguments", parseJsonOrString(call.arguments)}});
             toolCalls.push_back(
                 makeInjaObject({{"id", call.id}, {"type", call.type}, {"function", std::move(function)}}));
         }
@@ -531,8 +530,9 @@ std::string renderManual(std::string const& family, std::vector<rt::Message> con
     std::string result;
     if (family == "alpamayo")
     {
-        for (auto const& message : messages)
+        for (size_t index = 0; index < messages.size(); ++index)
         {
+            auto const& message = messages[index];
             result += "<|im_start|>" + message.role + "\n";
             for (auto const& item : message.contents)
             {
@@ -547,7 +547,10 @@ std::string renderManual(std::string const& family, std::vector<rt::Message> con
                 else
                     throw std::runtime_error("alpamayo does not accept " + item.type + " message content");
             }
-            result += "<|im_end|>\n";
+            if (index + 1 < messages.size() || message.role != "assistant" || addGenerationPrompt)
+            {
+                result += "<|im_end|>\n";
+            }
         }
     }
     else if (family == "qwen3_asr")

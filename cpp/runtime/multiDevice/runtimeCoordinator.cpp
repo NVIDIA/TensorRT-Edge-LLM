@@ -25,11 +25,13 @@
 #include "common/stringUtils.h"
 #include "profiling/timer.h"
 #include "runtime/config/llmEngineConfig.h"
+#include "runtime/contextCacheRequest.h"
+#include "runtime/embedding/pleIoBudget.h"
 #include "runtime/llmRankRuntime.h"
 #include "runtime/multiDevice/collectiveGroup.h"
 #include "runtime/multiDevice/multiDevicePluginResourceFactory.h"
 #include "runtime/multiDevice/multiDevicePluginResources.h"
-#include "runtime/runtimeStepper.h"
+#include "runtime/runtimeSession.h"
 #include "tokenizer/tokenizer.h"
 
 #include <algorithm>
@@ -48,11 +50,12 @@ namespace rt
 
 RuntimeCoordinator::RuntimeCoordinator(Config config)
     : mConfig(std::move(config))
-    , mParallelConfig(mConfig.parallelConfig)
+    , mParallelConfig(mConfig.deployment.parallelConfig)
     , mWorldSize(parallelWorldSize(mParallelConfig))
-    , mOwnsStreams(mConfig.ownsLocalStreams)
+    , mOwnsStreams(mConfig.resources.ownsLocalStreams)
+    , mPleIoBudget(std::make_shared<PleIoBudget>())
 {
-    if (mConfig.localRanks.empty())
+    if (mConfig.resources.localRanks.empty())
     {
         mLocalRanks.reserve(mWorldSize);
         for (int32_t rank = 0; rank < mWorldSize; ++rank)
@@ -62,7 +65,7 @@ RuntimeCoordinator::RuntimeCoordinator(Config config)
     }
     else
     {
-        mLocalRanks = mConfig.localRanks;
+        mLocalRanks = mConfig.resources.localRanks;
     }
 
     mInlineSingleRank = isInlineSingleRank(mParallelConfig.launchMode, mWorldSize, mLocalRanks.size());
@@ -127,13 +130,13 @@ void RuntimeCoordinator::validateParallelPlan()
     ELLM_CHECK(!mLocalRanks.empty(), "RuntimeCoordinator requires at least one local rank.");
     ELLM_CHECK(mConfig.modelArtifacts == nullptr || (mWorldSize == 1 && mLocalRanks.size() == 1 && mLocalRanks[0] == 0),
         "Injected model artifacts require inline single-rank execution.");
-    ELLM_CHECK(mWorldSize == 1 || !mConfig.draftingConfig.has_value(),
+    ELLM_CHECK(mWorldSize == 1 || !mConfig.deployment.draftingConfig.has_value(),
         "Tensor-parallel speculative decoding is not supported.");
-    ELLM_CHECK(mWorldSize == 1 || !mConfig.contextCacheConfig.enabled,
+    ELLM_CHECK(mWorldSize == 1 || !mConfig.deployment.contextCacheConfig.enabled,
         "Tensor-parallel context reuse is not supported in the current multi-device runtime.");
     if (mWorldSize > 1)
     {
-        for (ParallelBackendHandles const& backendHandles : mConfig.backendHandles)
+        for (ParallelBackendHandles const& backendHandles : mConfig.resources.backendHandles)
         {
             bool const activeMultiRankGroup = parallelGroupSize(mParallelConfig, backendHandles.type) > 1;
             ELLM_CHECK(backendHandles.handles.empty() || !activeMultiRankGroup || backendHandles.ownsHandles,
@@ -142,7 +145,7 @@ void RuntimeCoordinator::validateParallelPlan()
         }
     }
 
-    for (auto const& localRankDevice : mConfig.localRankDevices)
+    for (auto const& localRankDevice : mConfig.resources.localRankDevices)
     {
         int32_t const rank = localRankDevice.first;
         if (std::find(mLocalRanks.begin(), mLocalRanks.end(), rank) == mLocalRanks.end())
@@ -236,16 +239,16 @@ void RuntimeCoordinator::initializeCollectiveResources()
 void RuntimeCoordinator::initializeRankStreams()
 {
     mStreams.assign(mWorldSize, nullptr);
-    if (!mConfig.localStreams.empty())
+    if (!mConfig.resources.localStreams.empty())
     {
-        if (mConfig.localStreams.size() != mLocalRanks.size())
+        if (mConfig.resources.localStreams.size() != mLocalRanks.size())
         {
             throw std::runtime_error("RuntimeCoordinator localStreams must match localRanks when provided.");
         }
         for (size_t i = 0; i < mLocalRanks.size(); ++i)
         {
             int32_t const rank = mLocalRanks[i];
-            mStreams[rank] = mConfig.localStreams[i];
+            mStreams[rank] = mConfig.resources.localStreams[i];
         }
         return;
     }
@@ -266,17 +269,17 @@ void RuntimeCoordinator::initializeTokenizer()
     }
 
     mTokenizer = std::make_unique<tokenizer::Tokenizer>();
-    LOG_INFO("Start loading tokenizer from model directory: %s", mConfig.engineDir.c_str());
-    ELLM_CHECK(mTokenizer->loadFromHF(mConfig.engineDir),
-        "Failed to load tokenizer from model directory: " + mConfig.engineDir);
-    LOG_INFO("Tokenizer successfully loaded from model directory: %s", mConfig.engineDir.c_str());
+    LOG_INFO("Start loading tokenizer from model directory: %s", mConfig.deployment.engineDir.c_str());
+    ELLM_CHECK(mTokenizer->loadFromHF(mConfig.deployment.engineDir),
+        "Failed to load tokenizer from model directory: " + mConfig.deployment.engineDir);
+    LOG_INFO("Tokenizer successfully loaded from model directory: %s", mConfig.deployment.engineDir.c_str());
 
     // The tokenizer is shared by all rank runtimes. Configure additional EOS IDs
     // once, before the rank initialization threads start, to avoid concurrent writes.
     parallel_artifacts::RankArtifactContext const artifactContext{mWorldSize, /*globalRank=*/0};
-    std::filesystem::path const configPath = mConfig.draftingConfig.has_value()
-        ? std::filesystem::path(mConfig.engineDir) / "base_config.json"
-        : std::filesystem::path(mConfig.engineDir) / parallel_artifacts::configFileName(artifactContext);
+    std::filesystem::path const configPath = mConfig.deployment.draftingConfig.has_value()
+        ? std::filesystem::path(mConfig.deployment.engineDir) / "base_config.json"
+        : std::filesystem::path(mConfig.deployment.engineDir) / parallel_artifacts::configFileName(artifactContext);
     LLMEngineConfig const tokenizerConfig = parseEngineConfig(configPath, /*rank=*/0, mWorldSize);
     if (!tokenizerConfig.eosTokenIds.empty())
     {
@@ -294,9 +297,9 @@ void RuntimeCoordinator::initializeChatTemplate()
     auto const tokenPiece = [this](tokenizer::Rank tokenId) {
         return tokenId >= 0 ? mTokenizer->idToPiece(tokenId, false) : std::string{};
     };
-    ELLM_CHECK(
-        mChatTemplate->load(mConfig.engineDir, tokenPiece(mTokenizer->getBosId()), tokenPiece(mTokenizer->getEosId())),
-        "Failed to load the model-owned chat template from: " + mConfig.engineDir);
+    ELLM_CHECK(mChatTemplate->load(mConfig.deployment.engineDir, tokenPiece(mTokenizer->getBosId()),
+                   tokenPiece(mTokenizer->getEosId())),
+        "Failed to load the model-owned chat template from: " + mConfig.deployment.engineDir);
 }
 
 void RuntimeCoordinator::initializeRankRuntimes()
@@ -340,11 +343,13 @@ void RuntimeCoordinator::initializeRankRuntimes()
 void RuntimeCoordinator::initializeRequestSynchronization()
 {
     mTokenSyncFns.resize(mWorldSize);
+    mVisionGatherFns.resize(mWorldSize);
     if (mWorldSize <= 1)
     {
         for (int32_t const rank : mLocalRanks)
         {
             mTokenSyncFns[rank] = [](void*, int32_t, cudaStream_t) { return true; };
+            mVisionGatherFns[rank] = nullptr;
         }
         return;
     }
@@ -361,6 +366,29 @@ void RuntimeCoordinator::initializeRequestSynchronization()
         mTokenSyncFns[rank] = [this, groupRank](void* buffer, int32_t count, cudaStream_t stream) {
             CollectiveGroup const* group = collectiveGroup(ParallelType::kTensor);
             return group != nullptr && group->broadcastInt32(groupRank, buffer, count, /*rootRank=*/0, stream);
+        };
+        mRuntimes[rank]->setActionKvAllGather([this, groupRank](void const* sendBuffer, void* recvBuffer,
+                                                  int32_t sendCount, cudaStream_t stream) {
+            CollectiveGroup const* group = collectiveGroup(ParallelType::kTensor);
+            return group != nullptr
+                && group->allGather(groupRank, sendBuffer, recvBuffer, sendCount, CollectiveDataType::kFloat16, stream);
+        });
+        mVisionGatherFns[rank] = [this, groupRank](
+                                     void* buffer, int32_t rank0Count, int32_t rank1Count, cudaStream_t stream) {
+            CollectiveGroup const* group = collectiveGroup(ParallelType::kTensor);
+            if (group == nullptr)
+            {
+                return false;
+            }
+            return gatherVisionShards(
+                buffer, rank0Count, rank1Count, groupRank,
+                [group, groupRank](void const* send, void* recv, int32_t count, cudaStream_t callStream) {
+                    return group->allGather(groupRank, send, recv, count, CollectiveDataType::kFloat16, callStream);
+                },
+                [group, groupRank](void* data, int32_t count, int32_t root, cudaStream_t callStream) {
+                    return group->broadcast(groupRank, data, count, CollectiveDataType::kFloat16, root, callStream);
+                },
+                stream);
         };
     }
 }
@@ -470,7 +498,7 @@ void RuntimeCoordinator::startWorkers()
                         bool const succeeded
                             = mRuntimes[rank]->handleRequest(mWorkerTask.requests[rank], mWorkerTask.responses[rank],
                                 executionStream, mWorkerTask.outputThinkerEmbeddings && rank == 0, mTokenSyncFns[rank],
-                                runtimeRankFor(rank));
+                                mVisionGatherFns[rank], runtimeRankFor(rank));
                         mWorkerTask.statuses[rank] = succeeded ? 1 : 0;
                         if (!succeeded)
                         {
@@ -656,7 +684,7 @@ bool RuntimeCoordinator::captureDecodingCUDAGraph(cudaStream_t stream)
         return true;
     }
 
-    if (mWorkerFailed.load(std::memory_order_acquire))
+    if (!unavailableReason().empty())
     {
         LOG_ERROR("Runtime coordinator has failed; refusing decoding CUDA graph capture.");
         return false;
@@ -723,73 +751,6 @@ bool RuntimeCoordinator::captureDecodingCUDAGraph(cudaStream_t stream)
     return decodingCaptured;
 }
 
-bool RuntimeCoordinator::genAndSaveSystemPromptKVCache(
-    std::string const& prompt, std::string const& loraWeightsName, cudaStream_t stream)
-{
-    if (mInlineSingleRank)
-    {
-        int32_t const rank = mLocalRanks.front();
-        CUDA_CHECK(cudaSetDevice(deviceForRank(rank)));
-        cudaStream_t const executionStream = stream != nullptr ? stream : mStreams[rank];
-        return rootRuntime().genAndSaveSystemPromptKVCache(prompt, loraWeightsName, executionStream);
-    }
-    if (mWorkerFailed.load(std::memory_order_acquire))
-    {
-        LOG_ERROR("Runtime coordinator has failed; refusing system-prompt KV-cache generation.");
-        return false;
-    }
-
-    std::vector<int32_t> results(mWorldSize, 0);
-    std::vector<std::string> errors(mWorldSize);
-    std::vector<std::thread> threads;
-    threads.reserve(mLocalRanks.size());
-    for (int32_t const rank : mLocalRanks)
-    {
-        threads.emplace_back([this, rank, stream, &prompt, &loraWeightsName, &results, &errors]() {
-            try
-            {
-                CUDA_CHECK(cudaSetDevice(deviceForRank(rank)));
-                cudaStream_t const executionStream
-                    = stream != nullptr && mLocalRanks.size() == 1 ? stream : mStreams[rank];
-                bool const succeeded
-                    = mRuntimes[rank]->genAndSaveSystemPromptKVCache(prompt, loraWeightsName, executionStream);
-                results[rank] = succeeded ? 1 : 0;
-                if (!succeeded)
-                {
-                    errors[rank] = "system-prompt KV-cache generation returned failure";
-                    recordWorkerFailure(rank, errors[rank]);
-                }
-            }
-            catch (std::exception const& e)
-            {
-                errors[rank] = e.what();
-                recordWorkerFailure(rank, errors[rank]);
-            }
-            catch (...)
-            {
-                errors[rank] = "unknown system-prompt KV-cache generation failure";
-                recordWorkerFailure(rank, errors[rank]);
-            }
-        });
-    }
-    for (auto& thread : threads)
-    {
-        thread.join();
-    }
-
-    bool succeeded = !mWorkerFailed.load(std::memory_order_acquire);
-    for (int32_t const rank : mLocalRanks)
-    {
-        if (results[rank] == 0)
-        {
-            LOG_ERROR("[parallel rank %d/%d] System-prompt KV-cache generation failed: %s", rank, mWorldSize,
-                errors[rank].empty() ? "unknown failure" : errors[rank].c_str());
-            succeeded = false;
-        }
-    }
-    return succeeded;
-}
-
 void RuntimeCoordinator::setVisualPrunerConfig(VisualPrunerConfig const& config)
 {
     ELLM_CHECK(mWorldSize == 1, "Visual-token pruning is not supported with multi-device execution.");
@@ -798,29 +759,17 @@ void RuntimeCoordinator::setVisualPrunerConfig(VisualPrunerConfig const& config)
     rootRuntime().setVisualPrunerConfig(config);
 }
 
-bool RuntimeCoordinator::supportsBoundaryScheduling() const noexcept
+bool RuntimeCoordinator::dispatchRequest(
+    LLMGenerationRequest const& request, bool enableProfiling, bool outputThinkerEmbeddings, cudaStream_t stream)
 {
-    return mInlineSingleRank;
-}
-
-bool RuntimeCoordinator::dispatchRequest(LLMGenerationRequest const& request, bool enableProfiling,
-    bool outputThinkerEmbeddings, cudaStream_t stream, GenerationBoundaryHook const& boundaryHook)
-{
+    if (auto const reason = unavailableReason(); !reason.empty())
+    {
+        LOG_ERROR("Runtime unavailable: %s", reason.c_str());
+        return false;
+    }
     if (mInlineSingleRank)
     {
-        return runInline(request, enableProfiling, outputThinkerEmbeddings, stream, boundaryHook);
-    }
-
-    // The boundary-hook control plane never crosses ranks anymore: the stepped command stream
-    // (beginStepped) is how a scheduler drives a multi-rank runtime. A hooked dispatch here would
-    // silently run without admissions on the followers, so it is refused loudly instead.
-    ELLM_CHECK(!boundaryHook,
-        "Boundary hooks are single-rank only; multi-rank scheduling goes through the stepped command stream.");
-
-    if (mWorkerFailed.load(std::memory_order_acquire))
-    {
-        LOG_ERROR("Runtime coordinator has a failed worker; refusing to dispatch a new request.");
-        return false;
+        return runInline(request, enableProfiling, outputThinkerEmbeddings, stream);
     }
 
     LLMGenerationRequest preparedRequest;
@@ -897,43 +846,38 @@ bool RuntimeCoordinator::dispatchRequest(LLMGenerationRequest const& request, bo
 
 bool RuntimeCoordinator::supportsSteppedExecution() const noexcept
 {
-    // Single rank only in this release: the stepped step decisions are not yet carried to the
+    // Single rank only in this release: the session's step decisions are not yet carried to the
     // other ranks of a tensor-parallel deployment.
     return mInlineSingleRank;
 }
 
-std::unique_ptr<SteppedExecution> RuntimeCoordinator::beginStepped(
-    LLMGenerationRequest const& request, RequestId requestId, bool enableProfiling, cudaStream_t stream)
+std::string RuntimeCoordinator::unavailableReason() const
 {
-    ELLM_CHECK(requestId != 0, "Stepped execution requires a nonzero request ID.");
-    if (mInlineSingleRank)
+    for (int32_t const rank : mLocalRanks)
     {
-        int32_t const rank = mLocalRanks.front();
-        CUDA_CHECK(cudaSetDevice(deviceForRank(rank)));
-        setProfilingEnabled(enableProfiling);
-        cudaStream_t const executionStream = stream != nullptr ? stream : mStreams[rank];
-
-        LLMGenerationRequest prepared;
-        try
+        if (auto const reason = mRuntimes[rank]->unavailableReason(); !reason.empty())
         {
-            prepared = prepareRequestState(request);
+            return reason;
         }
-        catch (std::exception const& e)
-        {
-            LOG_ERROR("[stepped] Failed to prepare request: %s", e.what());
-            return nullptr;
-        }
-        return SteppedRequest::begin(*mRuntimes[rank], std::move(prepared), requestId, executionStream);
     }
-
-    ELLM_CHECK(false,
-        "Stepped execution is inline single-rank in this change; the thread-parallel command "
-        "stream arrives with the integration part of this series.");
-    return nullptr;
+    return mWorkerFailed.load(std::memory_order_acquire) ? "Runtime worker failed; restart the process" : "";
 }
 
-bool RuntimeCoordinator::runInline(LLMGenerationRequest const& request, bool enableProfiling,
-    bool outputThinkerEmbeddings, cudaStream_t stream, GenerationBoundaryHook const& boundaryHook)
+std::unique_ptr<RuntimeSession> RuntimeCoordinator::openSession(
+    bool enableProfiling, cudaStream_t stream, SessionOptions options)
+{
+    ELLM_CHECK(unavailableReason().empty(), unavailableReason());
+    ELLM_CHECK(mInlineSingleRank,
+        "A runtime session runs inline on a single rank; tensor-parallel deployments stay on the blocking path.");
+    int32_t const rank = mLocalRanks.front();
+    CUDA_CHECK(cudaSetDevice(deviceForRank(rank)));
+    setProfilingEnabled(enableProfiling);
+    cudaStream_t const executionStream = stream != nullptr ? stream : mStreams[rank];
+    return mRuntimes[rank]->openSession(executionStream, options);
+}
+
+bool RuntimeCoordinator::runInline(
+    LLMGenerationRequest const& request, bool enableProfiling, bool outputThinkerEmbeddings, cudaStream_t stream)
 {
     int32_t const rank = mLocalRanks.front();
     CUDA_CHECK(cudaSetDevice(deviceForRank(rank)));
@@ -959,7 +903,8 @@ bool RuntimeCoordinator::runInline(LLMGenerationRequest const& request, bool ena
         // parallelRank=-1 keeps streaming and audio callbacks on that thread.
         mWorkerTask.statuses[rank] = mRuntimes[rank]->handleRequest(mWorkerTask.requests[rank],
                                          mWorkerTask.responses[rank], executionStream, outputThinkerEmbeddings,
-                                         /*tokenBroadcast=*/nullptr, /*parallelRank=*/-1, boundaryHook)
+                                         /*tokenBroadcast=*/nullptr, /*visionGather=*/nullptr,
+                                         /*parallelRank=*/-1)
             ? 1
             : 0;
     }
@@ -991,13 +936,11 @@ std::unique_ptr<LLMRankRuntime> RuntimeCoordinator::createRankRuntime(int32_t gl
         ELLM_CHECK(
             globalRank == 0 && mWorldSize == 1, "Injected model artifacts require global rank 0 of world size 1.");
         auto artifacts = std::move(mConfig.modelArtifacts);
-        return std::make_unique<LLMRankRuntime>(std::move(*artifacts), mConfig.engineDir, mConfig.multimodalEngineDir,
-            mConfig.loraWeightsMap, mConfig.draftingConfig, mStreams[globalRank], mapping, *mTokenizer, *mChatTemplate,
-            mConfig.contextCacheConfig);
+        return std::make_unique<LLMRankRuntime>(std::move(*artifacts), mConfig.deployment, mStreams[globalRank],
+            mapping, *mTokenizer, *mChatTemplate, mPleIoBudget);
     }
-    return std::make_unique<LLMRankRuntime>(mConfig.engineDir, mConfig.multimodalEngineDir, mConfig.loraWeightsMap,
-        mConfig.draftingConfig, mStreams[globalRank], mapping, *mTokenizer, *mChatTemplate, mConfig.contextCacheConfig,
-        mConfig.checkpointDir, mConfig.draftCheckpointDir, mConfig.runtimeCachePath);
+    return std::make_unique<LLMRankRuntime>(
+        mConfig.deployment, mStreams[globalRank], mapping, *mTokenizer, *mChatTemplate, mPleIoBudget);
 }
 
 LLMGenerationRequest RuntimeCoordinator::prepareRequestState(LLMGenerationRequest const& request) const
@@ -1047,12 +990,12 @@ LLMGenerationRequest RuntimeCoordinator::prepareRequestState(LLMGenerationReques
     {
         ELLM_CHECK(
             preparedRequest.contextCacheReplayTailLength == -1, "Context-cache replay-tail sentinel must be -1.");
-        ELLM_CHECK(mConfig.contextCacheConfig.enabled,
+        ELLM_CHECK(mConfig.deployment.contextCacheConfig.enabled,
             "Context-cache replay-tail derivation requires the context cache to be enabled.");
         ELLM_CHECK(activeBatchSize == 1,
             "Context-cache replay-tail derivation requires a batch containing exactly one request.");
-        preparedRequest.contextCacheReplayTailLength
-            = deriveContextCacheReplayTailLength(preparedRequest, preparedRequest.preTokenizedInputIds.front());
+        preparedRequest.contextCacheReplayTailLength = deriveContextCacheReplayTailLength(
+            *mChatTemplate, *mTokenizer, preparedRequest, preparedRequest.preTokenizedInputIds.front());
     }
 
     // Preserve the established request contract: callers may inspect the
@@ -1083,51 +1026,6 @@ std::vector<int32_t> RuntimeCoordinator::countPromptTokens(LLMGenerationRequest 
         counts.push_back(static_cast<int32_t>(tokenIds.size()));
     }
     return counts;
-}
-
-int32_t RuntimeCoordinator::deriveContextCacheReplayTailLength(
-    LLMGenerationRequest const& request, std::vector<int32_t> const& promptTokenIds) const
-{
-    ELLM_CHECK(request.requests.size() == 1,
-        "Context-cache replay-tail derivation requires a batch containing exactly one request.");
-    ELLM_CHECK(request.applyChatTemplate && request.addGenerationPrompt,
-        "Context-cache replay-tail derivation requires the model chat template and generation prompt.");
-    ELLM_CHECK(!promptTokenIds.empty(), "Cannot derive a context-cache replay tail from an empty prompt.");
-
-    LLMGenerationRequest::Request committedRequest = request.requests.front();
-    // A generation prompt may include suffix tokens that change once an
-    // assistant turn is committed. Render that committed state once to find
-    // the stable prefix that Hybrid+MTP context reuse may safely retain.
-    Message assistantProbe;
-    assistantProbe.role = "assistant";
-    assistantProbe.contents.push_back(Message::MessageContent{"text", ""});
-    assistantProbe.reasoningContent = "context reuse probe";
-    assistantProbe.hasReasoningContent = true;
-    committedRequest.messages.push_back(std::move(assistantProbe));
-
-    auto options = chat_template::ChatTemplate::optionsFrom(request);
-    options.addGenerationPrompt = false;
-    LLMGenerationRequest::FormattedRequest committedFormatted;
-    ELLM_CHECK(mChatTemplate->apply(committedRequest, committedFormatted, options),
-        "Failed to render the committed prompt while deriving the context-cache replay tail.");
-    auto const committedTokenIds = mTokenizer->encode(committedFormatted.formattedCompleteRequest, false);
-    ELLM_CHECK(!committedTokenIds.empty(),
-        "Failed to tokenize the committed prompt while deriving the context-cache replay tail.");
-
-    size_t commonPrefixLength = 0;
-    size_t const comparedLength = std::min(promptTokenIds.size(), committedTokenIds.size());
-    while (commonPrefixLength < comparedLength
-        && promptTokenIds[commonPrefixLength] == committedTokenIds[commonPrefixLength])
-    {
-        ++commonPrefixLength;
-    }
-    ELLM_CHECK(commonPrefixLength > 0, "Chat template has no stable token prefix for context reuse.");
-
-    // MTP needs one stable successor token after the captured predecessor.
-    size_t const replayTailLength = promptTokenIds.size() - commonPrefixLength + 1;
-    ELLM_CHECK(replayTailLength <= static_cast<size_t>(std::numeric_limits<int32_t>::max()),
-        "Context-cache replay tail exceeds the int32 range.");
-    return static_cast<int32_t>(replayTailLength);
 }
 
 void RuntimeCoordinator::prepareRankRequests(LLMGenerationRequest const& request)
@@ -1203,7 +1101,7 @@ ParallelGroupConfig const& RuntimeCoordinator::groupForRank(int32_t globalRank, 
 
 ParallelBackendHandles const* RuntimeCoordinator::backendHandlesFor(ParallelType type) const noexcept
 {
-    for (ParallelBackendHandles const& handles : mConfig.backendHandles)
+    for (ParallelBackendHandles const& handles : mConfig.resources.backendHandles)
     {
         if (handles.type == type)
         {
@@ -1267,8 +1165,8 @@ LLMRankRuntime const& RuntimeCoordinator::rootRuntime() const
 int32_t RuntimeCoordinator::deviceForRank(int32_t rank) const
 {
     ELLM_CHECK(rank >= 0 && rank < mWorldSize, "Rank is out of range.");
-    auto const localDevice = mConfig.localRankDevices.find(rank);
-    if (localDevice != mConfig.localRankDevices.end())
+    auto const localDevice = mConfig.resources.localRankDevices.find(rank);
+    if (localDevice != mConfig.resources.localRankDevices.end())
     {
         return localDevice->second;
     }

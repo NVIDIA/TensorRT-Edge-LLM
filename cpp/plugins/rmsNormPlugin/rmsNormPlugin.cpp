@@ -19,6 +19,7 @@
 
 #include "common/cudaUtils.h"
 #include "common/logger.h"
+#include "common/trtInterop.h"
 #include "plugins/utils/pluginUtils.h"
 
 #if defined(CUTE_DSL_RMSNORM_ENABLED)
@@ -39,6 +40,8 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
+
 namespace
 {
 
@@ -414,10 +417,10 @@ int32_t RmsNormPlugin::configurePlugin(DynamicPluginTensorDesc const* inputs, in
         static_cast<void>(flattenRows(inputs[kIN_X].max, false, maxRows));
         int32_t const hiddenSize = inputs[kIN_X].max.d[inputs[kIN_X].max.nbDims - 1];
         int32_t const smVersion = getSMVersion();
-        if (!CuteDslRmsNormRunner::canImplement(maxRows, hiddenSize, smVersion, inputs[kIN_X].desc.type))
+        if (!CuteDslRmsNormRunner::canImplement(maxRows, hiddenSize, smVersion, fromTrt(inputs[kIN_X].desc.type)))
         {
             LOG_ERROR("RmsNormPlugin: no RMSNorm CuTe DSL variant supports rows=%d H=%d dtype=%d on SM%d", maxRows,
-                hiddenSize, static_cast<int32_t>(inputs[kIN_X].desc.type), smVersion);
+                hiddenSize, static_cast<int32_t>(fromTrt(inputs[kIN_X].desc.type)), smVersion);
             return -1;
         }
 #else
@@ -494,7 +497,7 @@ int32_t RmsNormPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
         parameters.hiddenSize = hiddenSize;
         parameters.rmsNormEps = mRmsNormEps;
         parameters.weightBeforeCast = mWeightBeforeCast;
-        parameters.dataType = inputDesc[kIN_X].type;
+        parameters.dataType = fromTrt(inputDesc[kIN_X].type);
         return CuteDslRmsNormRunner::run(parameters, stream);
     }
     catch (std::exception const& error)
@@ -532,7 +535,8 @@ int32_t RmsNormPlugin::onShapeChange(
             return 0;
         }
         int32_t const hiddenSize = inputs[kIN_X].dims.d[inputs[kIN_X].dims.nbDims - 1];
-        return CuteDslRmsNormRunner::canImplement(rows, hiddenSize, getSMVersion(), inputs[kIN_X].type) ? 0 : -1;
+        return CuteDslRmsNormRunner::canImplement(rows, hiddenSize, getSMVersion(), fromTrt(inputs[kIN_X].type)) ? 0
+                                                                                                                 : -1;
 #else
         return -1;
 #endif

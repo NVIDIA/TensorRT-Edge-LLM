@@ -17,20 +17,24 @@
 import asyncio
 import base64
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from experimental.server.api.errors import ServerOverloadedError
-from experimental.server.config import ApiConfig
-from experimental.server.runtime.engine import (CompletionOutput, LogprobEntry,
-                                                SamplingParams, StreamDelta)
+from tensorrt_edgellm.server.api.errors import (PayloadTooLargeError,
+                                                ServerOverloadedError)
+from tensorrt_edgellm.server.config import ApiConfig
+from tensorrt_edgellm.server.runtime.engine import (CompletionOutput,
+                                                    LogprobEntry,
+                                                    SamplingParams,
+                                                    StreamDelta)
 
 
 def _create_app(llm, config=None):
-    from experimental.server.api.app import create_app
-    from experimental.server.runtime.engine_client import EngineClient
+    from tensorrt_edgellm.server.api.app import create_app
+    from tensorrt_edgellm.server.runtime.engine_client import EngineClient
 
     config = config or ApiConfig()
     return create_app(EngineClient(llm, config), config)
@@ -47,12 +51,14 @@ class _FakeLLM:
         self.bundle_dir = str(root / "engines")
         self.model_id = "fake-model"
         self.prepared_messages = None
+        self.prepared_prompt = None
         self.prepare_count = 0
         self.close_count = 0
         self.last_audio_params = None
         self.last_sampling_params = None
         self.last_request_options = None
         self.next_text = "answer"
+        self.next_reused = None
         Path(self.model_dir).mkdir(parents=True)
         visual = Path(self.bundle_dir) / "visual"
         visual.mkdir(parents=True)
@@ -79,13 +85,20 @@ class _FakeLLM:
             directory = Path(self.bundle_dir) / component
             directory.mkdir()
             (directory / engine).touch()
-        from experimental.server.runtime.engine_layout import inspect_bundle
+        from tensorrt_edgellm.server.runtime.engine_layout import \
+            inspect_bundle
         self.bundle_layout = inspect_bundle(self.bundle_dir)
 
     def _make_generation_request(self, messages, params, **kwargs):
         self.prepared_messages = messages
         self.last_sampling_params = params
         self.last_request_options = kwargs
+        self.prepare_count += 1
+        return object()
+
+    def _make_completion_request(self, prompt, params):
+        self.prepared_prompt = prompt
+        self.last_sampling_params = params
         self.prepare_count += 1
         return object()
 
@@ -98,6 +111,7 @@ class _FakeLLM:
             return CompletionOutput(
                 token_ids=[1, 2],
                 prompt_tokens=7,
+                reused_prompt_tokens=self.next_reused,
                 finish_reason="tool_calls",
                 tool_calls=[{
                     "id": "call_1",
@@ -112,13 +126,15 @@ class _FakeLLM:
                                 reasoning="plan",
                                 token_ids=[1, 2, 3],
                                 prompt_tokens=7,
+                                reused_prompt_tokens=self.next_reused,
                                 finish_reason="stop")
 
     def generate_stream(self, _messages, _params, *, tools=None, **_kwargs):
         if tools:
             yield StreamDelta(text="Before<tool_",
                               token_ids=[1],
-                              prompt_tokens=7)
+                              prompt_tokens=7,
+                              reused_prompt_tokens=self.next_reused)
             yield StreamDelta(text=('call>{"name":"get_weather",'
                                     '"arguments":{"city":"Paris"}}'
                                     '</tool_call>'),
@@ -130,6 +146,7 @@ class _FakeLLM:
         yield StreamDelta(text="hello",
                           token_ids=[1, 2],
                           prompt_tokens=7,
+                          reused_prompt_tokens=self.next_reused,
                           finished=True,
                           finish_reason="stop")
 
@@ -138,6 +155,7 @@ class _FakeLLM:
         yield StreamDelta(text="spoken",
                           token_ids=[1],
                           prompt_tokens=7,
+                          reused_prompt_tokens=self.next_reused,
                           audio_bytes=b"\x01\x00")
         yield StreamDelta(audio_bytes=b"\x02\x00",
                           prompt_tokens=7,
@@ -156,8 +174,23 @@ class _FakeLLM:
 
 
 def _engine():
-    from experimental.server.runtime import engine
+    from tensorrt_edgellm.server.runtime import engine
     return engine
+
+
+@pytest.mark.parametrize(("model_type", "family"), [
+    ("qwen3_vl", "qwen"),
+    ("cosmos3_edge_vision", "qwen"),
+    ("internvl_chat", "internvl"),
+    ("muse_glimmer_vision", "muse"),
+    ("nemotron_omni_vision_encoder", "nemotron"),
+    ("qwen3_omni_audio_encoder", None),
+    ("unsupported_vision", None),
+])
+def test_visual_model_family(model_type, family):
+    """Visual model types map to their preprocessing family; audio-side and
+    unknown types map to None."""
+    assert _engine()._visual_model_family(model_type) == family
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +265,7 @@ def test_cosmos3_reasoner_routes_native_video_file(monkeypatch, tmp_path):
         captured.update(item=item, family=family)
         return _FakeVideoBuffer(item["video_url"]["url"], frames=8), 0, 0, 0
 
-    import experimental.server.media.video_sampling as vs_mod
+    import tensorrt_edgellm.server.media.video_sampling as vs_mod
     monkeypatch.setattr(vs_mod, "load_video_buffer", fake_load_video_buffer)
     buffers = eng._load_image_buffers(None, [{
         "role":
@@ -283,6 +316,51 @@ def test_cosmos3_reasoner_uses_single_frame_temporal_patches(tmp_path):
     assert llm._video_frame_limits()["temporal_patch_size"] == 1
 
 
+def test_load_image_buffers_rejects_image_only_request_over_profile(
+        monkeypatch, tmp_path):
+    """Image-only requests whose summed estimate exceeds max_image_tokens are
+    rejected with the estimate and limit, without video routing."""
+    eng = _engine()
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.touch()
+    second.touch()
+    limits = {
+        "model_type": "cosmos3_edge_vision",
+        "min_image_tokens": 1,
+        "max_image_tokens": 1000,
+        "max_image_tokens_per_image": 600,
+    }
+
+    from tensorrt_edgellm.server.media import video_sampling as vs_mod
+    monkeypatch.setattr(vs_mod, "estimate_image_tokens",
+                        lambda *_args, **_kwargs: 600)
+
+    class Runtime:
+
+        @staticmethod
+        def load_image_from_path(_path):
+            return SimpleNamespace()
+
+    with pytest.raises(
+            vs_mod.VisualProfileCapacityError,
+            match=r"estimated 1200 visual tokens.*max_image_tokens=1000"):
+        eng._load_image_buffers(
+            Runtime, [{
+                "role":
+                "user",
+                "content": [{
+                    "type": "image",
+                    "image": str(first)
+                }, {
+                    "type": "image",
+                    "image": str(second)
+                }],
+            }], lambda: pytest.fail(
+                "image-only requests must not use video routing"),
+            lambda: limits)
+
+
 def test_load_image_buffers_nemotron_minimum():
     # A Nemotron video buffer is built and its EVS token estimate is honored
     # against the request-wide engine minimum (no cu_seqlens binding).
@@ -308,7 +386,7 @@ def test_load_image_buffers_nemotron_minimum():
         # 8 frames = 4 tubelets (T=2), 4*256 EVS tokens, no cu_seqlens groups.
         return _FakeVideoBuffer(item["video"], frames=8), 4 * 256, 0, 0
 
-    import experimental.server.media.video_sampling as vs_mod
+    import tensorrt_edgellm.server.media.video_sampling as vs_mod
     orig = vs_mod.load_video_buffer
     vs_mod.load_video_buffer = fake_load_video_buffer
     try:
@@ -351,7 +429,7 @@ def test_load_image_buffers_nemotron_minimum_uses_raw_tubelets():
         # 8 frames = 4 tubelets: raw 1024 >= min, but EVS(0.7) prunes to ~307.
         return _FakeVideoBuffer(item["video"], frames=8), 307, 0, 0
 
-    import experimental.server.media.video_sampling as vs_mod
+    import tensorrt_edgellm.server.media.video_sampling as vs_mod
     orig = vs_mod.load_video_buffer
     vs_mod.load_video_buffer = fake_load_video_buffer
     try:
@@ -434,8 +512,8 @@ def _sse_payloads(response):
 
 
 def test_engine_client_releases_single_runtime_slot(tmp_path):
-    from experimental.server.runtime.engine import SamplingParams
-    from experimental.server.runtime.engine_client import EngineClient
+    from tensorrt_edgellm.server.runtime.engine import SamplingParams
+    from tensorrt_edgellm.server.runtime.engine_client import EngineClient
 
     async def exercise():
         client = EngineClient(_FakeLLM(tmp_path),
@@ -465,8 +543,8 @@ def test_engine_client_releases_single_runtime_slot(tmp_path):
 def test_stream_lease_is_held_until_iterator_cleanup_finishes(tmp_path):
     import threading
 
-    from experimental.server.runtime.engine import SamplingParams
-    from experimental.server.runtime.engine_client import EngineClient
+    from tensorrt_edgellm.server.runtime.engine import SamplingParams
+    from tensorrt_edgellm.server.runtime.engine_client import EngineClient
 
     llm = _FakeLLM(tmp_path)
     cleanup_entered = threading.Event()
@@ -523,6 +601,322 @@ def test_app_shutdown_closes_runtime_exactly_once(tmp_path):
 
     asyncio.run(app.state.engine_client.close())
     assert llm.close_count == 1
+
+
+_REFUSED = "a plugin refused compact execution at runtime"
+_STOPPED = "ifbSchedulingMode=mixed requires compact execution, and " + _REFUSED
+
+_POLICY = dict(
+    scheduling_policy="priority",
+    preemption="none",
+    max_num_tokens=0,
+    max_chunk_tokens=0,
+    priority_reserved_slots=1,
+    max_pause_steps=0,
+    warnings=[
+        "preemption=pause is not applied: auto resolved to prefillFirst"
+    ])
+
+
+def _engine_holder(serving, unavailable=None):
+    """An LLM over a native engine stand-in that serves or has stopped with ``unavailable``."""
+    from tensorrt_edgellm.server.runtime.engine import LLM
+
+    holder = LLM.__new__(LLM)
+    # yapf: disable
+    holder._engine = SimpleNamespace(
+        status=lambda: SimpleNamespace(serving=serving, unavailable_reason=unavailable or "",
+                                       compact_unavailable_reason=_REFUSED),
+        resolved_policy=SimpleNamespace(mode="prefillFirst", mode_source="auto", execution="single-cohort",
+                                        reason=_REFUSED, **_POLICY))
+    # yapf: enable
+    return holder
+
+
+@pytest.mark.parametrize("serving", [None, False],
+                         ids=["blocking_path", "engine_stopped"])
+def test_health_reports_whether_the_engine_still_serves(tmp_path, serving):
+    """/health answers 200 "healthy" with no engine block on the blocking path, and 503 "unhealthy" with the
+    engine's policy in effect and its reason once it fails every request; /health/ready answers 200 "ready" and 503
+    "unavailable" with the reason alike."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    llm = _FakeLLM(tmp_path)
+    unavailable = _STOPPED if serving is False else None
+    if serving is not None:
+        llm.get_engine_status = _engine_holder(serving,
+                                               unavailable).get_engine_status
+    # yapf: disable
+    engine = None if serving is None else dict(
+        serving=serving, unavailable_reason=unavailable, scheduling_mode="prefillFirst", scheduling_mode_source="auto",
+        scheduling_reason=_REFUSED, execution="single-cohort", compact_unavailable_reason=_REFUSED, **_POLICY)
+    # yapf: enable
+    client = TestClient(_create_app(llm))
+
+    response = client.get("/health")
+    ready = client.get("/health/ready")
+
+    body = response.json()
+    assert response.status_code == (503 if serving is False else 200)
+    assert body["status"] == ("unhealthy" if serving is False else "healthy")
+    assert body["engine"] == engine
+    assert body.get("reason") == unavailable
+    assert body["model"] == "fake-model"
+    assert ready.status_code == (503 if serving is False else 200)
+    assert ready.json()["status"] == ("unavailable"
+                                      if serving is False else "ready")
+    assert ready.json().get("reason") == unavailable
+
+
+# yapf: disable
+@pytest.mark.parametrize("path, body", [
+    ("/v1/chat/completions", {"messages": [{"role": "user", "content": "Hello"}]}),
+    ("/v1/completions", {"prompt": "Hello"}),
+], ids=["chat", "completion"])
+# yapf: enable
+def test_a_stopped_engine_refuses_requests_with_503_before_preparing_them(
+        tmp_path, path, body):
+    """Once the engine no longer serves, a request gets HTTP 503 of type engine_unavailable naming the engine's
+    reason, without Retry-After, and no native request is built for it."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    llm = _FakeLLM(tmp_path)
+    llm.engine_unavailable_reason = _engine_holder(
+        False, _STOPPED).engine_unavailable_reason
+    response = TestClient(_create_app(llm)).post(path, json=body)
+
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["type"] == "engine_unavailable"
+    assert _STOPPED in response.json()["error"]["message"]
+    assert "retry-after" not in response.headers
+    assert llm.prepare_count == 0
+
+
+# yapf: disable
+@pytest.mark.parametrize("kind, status, error_type, retry_after", [
+    ("COMPACT_STEP_REFUSED", 503, "compact_step_refused", "1"),
+    ("ENGINE_STOPPED", 503, "engine_unavailable", None),
+    ("OTHER", 500, "engine_error", None),
+    (None, 500, "engine_error", None),
+], ids=["refused_step_retryable", "engine_stopped", "other_failure", "no_kind"])
+# yapf: enable
+def test_engine_failures_map_to_the_status_a_client_can_act_on(
+        tmp_path, kind, status, error_type, retry_after):
+    """A request the engine failed with RequestFailureKind COMPACT_STEP_REFUSED gets HTTP 503 of type
+    compact_step_refused with Retry-After: 1, and a streamed one an error of that type; ENGINE_STOPPED gets 503
+    engine_unavailable without Retry-After; any other failure, with or without a kind, stays 500 engine_error. The
+    message is the engine's. /v1/messages answers with the same status and Retry-After and the Anthropic api_error
+    type."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from tensorrt_edgellm.server.runtime.engine import _import_runtime
+
+    rt = _import_runtime()
+    llm = _FakeLLM(tmp_path)
+    llm._rt = rt
+    message = "Request 3 failed: the runtime session failed: x"
+
+    def fail(*_args, **_kwargs):
+        error = rt.RequestFailedError(message)
+        if kind is not None:
+            error.kind = getattr(rt.RequestFailureKind, kind)
+        raise error
+        yield  # pragma: no cover - makes the streaming stand-in a generator
+
+    llm._complete_prepared_request = lambda *_args, **_kwargs: next(fail())
+    llm.generate_stream = fail
+    client = TestClient(_create_app(llm))
+    chat = {"messages": [{"role": "user", "content": "Hello"}]}
+
+    response = client.post("/v1/chat/completions", json=chat)
+    streamed = client.post("/v1/chat/completions",
+                           json={
+                               **chat, "stream": True
+                           })
+
+    assert response.status_code == status, response.text
+    assert response.json()["error"]["type"] == error_type
+    assert response.json()["error"]["message"] == message
+    assert response.headers.get("retry-after") == retry_after
+    assert error_type in streamed.text, streamed.text
+
+    messages = client.post("/v1/messages",
+                           json={
+                               "model": "fake-model",
+                               "max_tokens": 8,
+                               **chat
+                           })
+    assert messages.status_code == status, messages.text
+    assert messages.json()["error"]["type"] == "api_error"
+    assert messages.headers.get("retry-after") == retry_after
+
+
+_TOO_LONG = ("EDGELLM_INPUT_TOO_LONG: prefill length 90000 exceeds engine "
+             "max_input_len 81920")
+_FINISH_REASONS = dict(NOT_FINISHED=0,
+                       END_ID=1,
+                       LENGTH=2,
+                       CANCELLED=3,
+                       ERROR=4,
+                       STOP_WORDS=5)
+
+
+class _NativeChannel:
+    """A StreamChannel: the chunks one native request pushed, and its end."""
+
+    def __init__(self):
+        self.chunks = []
+        self.finished = False
+        self.cancelled = False
+
+    def set_skip_special_tokens(self, _enabled):
+        pass
+
+    def wait_pop(self, timeout_ms=0):
+        if not (self.chunks or self.finished or self.cancelled):
+            time.sleep(0.001)
+        return self.try_pop()
+
+    def try_pop(self):
+        return self.chunks.pop(0) if self.chunks else None
+
+    def is_finished(self):
+        return self.finished
+
+    def is_cancelled(self):
+        return self.cancelled
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def _native_chunk(text="", token_ids=(), finished=False):
+    return SimpleNamespace(
+        text=text,
+        token_ids=list(token_ids),
+        prompt_token_count=7,
+        finished=finished,
+        reason=_FINISH_REASONS["ERROR"] if finished else None,
+        logprobs=[])
+
+
+def _serve_native(llm, server_path, play):
+    """Serve ``llm`` through the real LLM.generate_stream over a native stand-in: on the blocking path a worker
+    runs the request, under in-flight batching an engine does and its outcome reports a failure.
+    ``play(channel)`` is one request: it pushes chunks, then returns or raises."""
+    from fastapi.testclient import TestClient
+
+    from tensorrt_edgellm.server.runtime.engine import LLM
+
+    native = LLM.__new__(LLM)
+    native._closed = False
+    native._rt = SimpleNamespace(
+        FinishReason=SimpleNamespace(**_FINISH_REASONS),
+        StreamChannel=SimpleNamespace(
+            create=lambda collect_metrics=False: _NativeChannel()))
+    if server_path == "blocking":
+        native._runtime = object()
+        native._handle_request = lambda request: play(request.stream_channels[
+            0])
+    else:
+
+        def submit(request):
+            channel = request.stream_channels[0]
+            failure = None
+            try:
+                play(channel)
+            except Exception as error:  # noqa: BLE001 - the outcome reports it
+                failure = error
+            channel.finished = True
+
+            def outcome():
+                if failure is not None:
+                    raise failure
+
+            return SimpleNamespace(ready=lambda: True,
+                                   cancel=channel.cancel,
+                                   get=outcome)
+
+        native._runtime = None
+        native._engine = SimpleNamespace(submit=submit)
+        llm._engine = native._engine
+    llm.generate_stream = native.generate_stream
+    llm._make_generation_request = lambda *_args, **_kwargs: SimpleNamespace()
+    llm._make_completion_request = lambda *_args, **_kwargs: SimpleNamespace()
+    llm._complete_prepared_request = lambda request, *_args, **_kwargs: list(
+        native.generate_stream([], prebuilt_request=request))
+    return TestClient(_create_app(llm,
+                                  ApiConfig(enable_auto_tool_choice=True)))
+
+
+# yapf: disable
+_STREAMED = [
+    ("/v1/chat/completions", {"messages": [{"role": "user", "content": "Hello"}]}),
+    ("/v1/chat/completions", {"messages": [{"role": "user", "content": "Weather?"}], "tools": [_tool()],
+                              "tool_choice": "auto"}),
+    ("/v1/completions", {"prompt": "Hello"}),
+    ("/v1/messages", {"model": "fake-model", "max_tokens": 8, "messages": [{"role": "user", "content": "Hello"}]}),
+    ("/v1/responses", {"input": "Hello"}),
+]
+_STREAMED_IDS = ["chat", "chat_tools", "completion", "messages", "responses"]
+
+
+@pytest.mark.parametrize("server_path, error, status, terminal_chunk", [
+    ("blocking", lambda: RuntimeError(_TOO_LONG), 413, False),
+    ("blocking", lambda: RuntimeError(_TOO_LONG), 413, True),
+    ("in_flight_batching", lambda: RuntimeError(_TOO_LONG), 413, False),
+    ("blocking", lambda: ValueError("invalid sampling argument"), 400, False),
+], ids=["blocking", "blocking_after_empty_terminal_chunk", "in_flight_batching", "blocking_invalid_argument"])
+@pytest.mark.parametrize("path, body", _STREAMED, ids=_STREAMED_IDS)
+# yapf: enable
+def test_stream_failing_before_its_first_token_answers_with_the_http_status(
+        tmp_path, server_path, error, status, terminal_chunk, path, body):
+    """A streamed request that fails before its first token, with or without an empty terminal chunk ahead of the
+    failure, gets the HTTP status and JSON error the same request gets without streaming, on every streaming
+    endpoint and both server paths."""
+    pytest.importorskip("fastapi")
+
+    def play(channel):
+        if terminal_chunk:
+            channel.chunks.append(_native_chunk(finished=True))
+        raise error()
+
+    client = _serve_native(_FakeLLM(tmp_path), server_path, play)
+    plain = client.post(path, json=body)
+    streamed = client.post(path, json={**body, "stream": True})
+
+    assert plain.status_code == status, plain.text
+    assert streamed.status_code == status, streamed.text
+    assert streamed.headers["content-type"].startswith("application/json")
+    assert streamed.json()["error"].items() >= plain.json()["error"].items()
+
+
+# yapf: disable
+@pytest.mark.parametrize("server_path", ["blocking", "in_flight_batching"])
+@pytest.mark.parametrize("path, body", _STREAMED, ids=_STREAMED_IDS)
+# yapf: enable
+def test_stream_failing_after_its_first_token_reports_the_error_in_band(
+        tmp_path, server_path, path, body):
+    """A streamed request that fails after its first token keeps HTTP 200 and reports the failure as an error
+    event after the text it produced."""
+    pytest.importorskip("fastapi")
+
+    def play(channel):
+        # Two words: a tool parser holds back the last one until more text arrives.
+        channel.chunks.append(_native_chunk(text="partial ", token_ids=[1]))
+        channel.chunks.append(_native_chunk(text="answer ", token_ids=[2]))
+        raise RuntimeError(_TOO_LONG)
+
+    client = _serve_native(_FakeLLM(tmp_path), server_path, play)
+    streamed = client.post(path, json={**body, "stream": True})
+
+    assert streamed.status_code == 200, streamed.text
+    assert streamed.headers["content-type"].startswith("text/event-stream")
+    assert 0 <= streamed.text.find("partial") < streamed.text.find(_TOO_LONG)
 
 
 def test_stream_disconnect_before_headers_releases_admission(tmp_path):
@@ -582,6 +976,59 @@ def test_stream_disconnect_before_headers_releases_admission(tmp_path):
     assert client.queued_requests == 0
 
 
+def test_stream_disconnect_before_its_first_token_cancels_and_completes_the_exchange(
+        tmp_path):
+    """A client that disconnects while its streamed request waits for the first token cancels the native request
+    and releases admission, and the exchange still ends with a response, not an application error."""
+    import threading
+
+    from tensorrt_edgellm.server.runtime.engine import CancellableIterator
+
+    llm = _FakeLLM(tmp_path)
+    reading = threading.Event()
+    cancelled = threading.Event()
+
+    def native_stream(*_args, **_kwargs):
+
+        def iterate():
+            reading.set()
+            cancelled.wait()
+            return
+            yield  # pragma: no cover - makes iterate() a generator
+
+        return CancellableIterator(iterate(), cancelled.set)
+
+    llm.generate_stream = native_stream
+    app = _create_app(llm)
+    # yapf: disable
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}], "stream": True}).encode()
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",
+             "method": "POST", "path": "/v1/chat/completions", "raw_path": b"/v1/chat/completions", "root_path": "",
+             "scheme": "http", "query_string": b"", "client": ("test", 1), "server": ("test", 80),
+             "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]}
+    # yapf: enable
+    received = False
+    sent = []
+
+    async def receive():
+        nonlocal received
+        if not received:
+            received = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await asyncio.to_thread(reading.wait, 1.0)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(app(scope, receive, send))
+
+    assert cancelled.is_set()
+    assert app.state.engine_client.active_requests == 0
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 499
+
+
 @pytest.mark.parametrize("path,anthropic", [
     ("/v1/chat/completions", False),
     ("/v1/messages", True),
@@ -637,6 +1084,153 @@ def test_chat_prepares_multimodal_request_once(client_and_llm):
     assert llm.prepare_count == 1
 
 
+def test_text_completion_preserves_raw_prompt(client_and_llm):
+    client, llm = client_and_llm
+    response = client.post("/v1/completions",
+                           json={
+                               "model": "fake-model",
+                               "prompt": "raw prompt",
+                               "max_tokens": 8,
+                               "temperature": 0.25,
+                               "top_p": 0.8,
+                               "top_k": 7,
+                               "stop": ["END"],
+                               "disable_spec_decode": True,
+                               "ignore_eos": True,
+                               "reuse_context": False,
+                               "cache_generated_tokens": False,
+                           })
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["choices"][0]["text"] == "answer"
+    assert body["usage"] == {
+        "prompt_tokens": 7,
+        "completion_tokens": 3,
+        "total_tokens": 10,
+    }
+    assert llm.prepared_prompt == "raw prompt"
+    assert llm.prepare_count == 1
+    params = llm.last_sampling_params
+    assert params.max_tokens == 8
+    assert params.temperature == pytest.approx(0.25)
+    assert params.top_p == pytest.approx(0.8)
+    assert params.top_k == 7
+    assert params.stop == ["END"]
+    assert params.disable_spec_decode
+    assert params.ignore_eos
+    assert not params.reuse_context
+    assert not params.cache_generated_tokens
+    assert params.skip_special_tokens
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("path, payload", [
+    ("/v1/completions", {
+        "prompt": [11, 12, 13]
+    }),
+    ("/v1/chat/completions", {
+        "messages": [{
+            "role": "user",
+            "content": "hi"
+        }]
+    }),
+    ("/v1/chat/completions", {
+        "messages": [{
+            "role": "user",
+            "content": "Weather?"
+        }],
+        "tools": [_tool()],
+        "tool_choice": "required",
+    }),
+    ("/v1/chat/completions", {
+        "messages": [{
+            "role": "user",
+            "content": "Say hello"
+        }],
+        "modalities": ["text", "audio"],
+        "audio": {
+            "voice": "Ryan",
+            "format": "pcm16"
+        },
+    }),
+])
+def test_usage_reports_the_prompt_tokens_the_runtime_reused(
+        client_and_llm, path, payload, stream):
+    """Given a runtime that served part of the prompt from reused state, when a
+    completion, chat, tool-calling chat or spoken chat response reports usage,
+    streamed or not, then prompt_tokens_details.cached_tokens is that count."""
+    client, llm = client_and_llm
+    llm.next_reused = 5
+    body = dict(payload, model="fake-model", max_tokens=8)
+    if stream:
+        body.update(stream=True, stream_options={"include_usage": True})
+
+    response = client.post(path, json=body)
+
+    assert response.status_code == 200, response.text
+    if stream:
+        usage = next(payload["usage"] for payload in _sse_payloads(response)
+                     if payload.get("usage"))
+    else:
+        usage = response.json()["usage"]
+    assert usage["prompt_tokens_details"] == {"cached_tokens": 5}
+
+
+def test_health_reports_context_cache_counters(client_and_llm):
+    """Given a runtime that reports context-cache counters, when /health is
+    read, then they appear under context_cache."""
+    client, llm = client_and_llm
+    counters = {"hit_sequences": 3, "reused_tokens": 384}
+    llm.get_context_cache_counters = lambda: counters
+
+    response = client.get("/health")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["context_cache"] == counters
+
+
+def test_token_completion_streams_exact_usage(client_and_llm):
+    client, llm = client_and_llm
+    response = client.post("/v1/completions",
+                           json={
+                               "prompt": [11, 12, 13],
+                               "stream": True,
+                               "stream_options": {
+                                   "include_usage": True
+                               },
+                               "max_tokens": 8,
+                           })
+
+    assert response.status_code == 200, response.text
+    payloads = _sse_payloads(response)
+    text = "".join(payload["choices"][0]["text"] for payload in payloads
+                   if payload["choices"])
+    usage = next(payload["usage"] for payload in payloads
+                 if payload.get("usage"))
+    assert text == "hello"
+    assert usage == {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+    }
+    params = llm.last_sampling_params
+    assert params.temperature == pytest.approx(1.0)
+    assert params.top_p == pytest.approx(1.0)
+    assert params.top_k == 0
+    assert llm.prepared_prompt == [11, 12, 13]
+    assert response.text.rstrip().endswith("data: [DONE]")
+
+
+@pytest.mark.parametrize("prompt", [[], [-1], [[1, 2]]])
+def test_completion_rejects_invalid_token_prompts(client_and_llm, prompt):
+    client, llm = client_and_llm
+    response = client.post("/v1/completions", json={"prompt": prompt})
+
+    assert response.status_code == 400
+    assert llm.prepare_count == 0
+
+
 def test_chat_forwards_context_cache_request_policies(client_and_llm):
     client, llm = client_and_llm
     response = client.post("/v1/chat/completions",
@@ -656,6 +1250,52 @@ def test_chat_forwards_context_cache_request_policies(client_and_llm):
     assert response.status_code == 200, response.text
     assert not llm.last_sampling_params.reuse_context
     assert not llm.last_sampling_params.cache_generated_tokens
+
+
+@pytest.mark.parametrize("path, payload", [
+    ("/v1/chat/completions", {
+        "messages": [{
+            "role": "user",
+            "content": "hi"
+        }]
+    }),
+    ("/v1/completions", {
+        "prompt": "hi"
+    }),
+])
+def test_hybrid_speculative_reuse_defaults_to_prefill_state(
+        client_and_llm, path, payload):
+    """On a deployment that publishes only prefill state, an omitted commit
+    policy is accepted and an explicit generated-token commit is a 400."""
+    client, llm = client_and_llm
+    llm.publishes_prefill_state_only = True
+
+    response = client.post(path, json=payload)
+    assert response.status_code == 200, response.text
+    assert llm.last_sampling_params.cache_generated_tokens is None
+
+    response = client.post(path,
+                           json={
+                               **payload, "cache_generated_tokens": True
+                           })
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["param"] == "cache_generated_tokens"
+
+
+def test_chat_forwards_ignore_eos(client_and_llm):
+    """Chat accepts ignore_eos, which fixed-length load clients send."""
+    client, llm = client_and_llm
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "hi"
+                               }],
+                               "ignore_eos": True,
+                           })
+
+    assert response.status_code == 200, response.text
+    assert llm.last_sampling_params.ignore_eos
 
 
 def test_chat_normalizes_unsupported_sampling_fields_and_forwards_seed(
@@ -849,10 +1489,11 @@ def test_streaming_tool_call_and_usage_share_one_contract(client_and_llm):
 
 
 def test_tool_call_delta_does_not_wait_for_native_stream_end(tmp_path):
-    from experimental.server.api.protocol import ChatCompletionRequest
-    from experimental.server.api.serving_chat import (OpenAIServingChat,
-                                                      PreparedChatRequest)
-    from experimental.server.parsing.tool_calling import validate_tool_request
+    from tensorrt_edgellm.server.api.protocol import ChatCompletionRequest
+    from tensorrt_edgellm.server.api.serving_chat import (OpenAIServingChat,
+                                                          PreparedChatRequest)
+    from tensorrt_edgellm.server.parsing.tool_calling import \
+        validate_tool_request
 
     release_finish = asyncio.Event()
 
@@ -890,7 +1531,8 @@ def test_tool_call_delta_does_not_wait_for_native_stream_end(tmp_path):
         handler = OpenAIServingChat(BlockingClient(),
                                     ApiConfig(enable_auto_tool_choice=True))
         chunks = handler._stream_tools(request, prepared, "chatcmpl-test", 0,
-                                       False, None)
+                                       False,
+                                       BlockingClient().stream())
         first = await anext(chunks)
         assert not release_finish.is_set()
         payload = json.loads(first.removeprefix("data: "))
@@ -1536,7 +2178,7 @@ def test_transcription_text_response_and_validation(client_and_llm):
 def test_transcription_requires_asr_bundle(tmp_path):
     from fastapi.testclient import TestClient
 
-    from experimental.server.runtime.engine_layout import inspect_bundle
+    from tensorrt_edgellm.server.runtime.engine_layout import inspect_bundle
 
     llm = _FakeLLM(tmp_path)
     audio_config = Path(llm.bundle_dir) / "audio" / "config.json"
@@ -1695,7 +2337,7 @@ def _media_messages(item):
     },
 ])
 def test_local_media_policy_checks_every_loader_spelling(item):
-    from experimental.server.media.media_source import \
+    from tensorrt_edgellm.server.media.media_source import \
         enforce_local_media_policy
 
     with pytest.raises(PermissionError):
@@ -1703,7 +2345,7 @@ def test_local_media_policy_checks_every_loader_spelling(item):
 
 
 def test_local_media_policy_allows_root_and_rejects_traversal(tmp_path):
-    from experimental.server.media.media_source import \
+    from tensorrt_edgellm.server.media.media_source import \
         enforce_local_media_policy
 
     root = tmp_path / "media"
@@ -1731,7 +2373,7 @@ def test_local_media_policy_allows_root_and_rejects_traversal(tmp_path):
 
 
 def test_remote_and_data_media_do_not_require_local_root():
-    from experimental.server.media.media_source import \
+    from tensorrt_edgellm.server.media.media_source import \
         enforce_local_media_policy
 
     for ref in ("https://example.com/image.png",
@@ -1793,6 +2435,35 @@ def test_native_errors_map_to_protocol_status(client_and_llm, marker, status):
     assert response.json()["error"]["type"] == expected_type
 
 
+def test_visual_profile_capacity_error_maps_to_413(tmp_path):
+    """A visual profile overflow during request preparation becomes HTTP 413
+    and releases the admission lease."""
+    from tensorrt_edgellm.server.media import video_sampling
+    from tensorrt_edgellm.server.runtime.engine_client import EngineClient
+
+    llm = _FakeLLM(tmp_path)
+
+    def fail(*_args, **_kwargs):
+        raise video_sampling.VisualProfileCapacityError(
+            "visual engine profile exceeded")
+
+    llm._make_generation_request = fail
+    client = EngineClient(llm, ApiConfig())
+
+    async def exercise():
+        with pytest.raises(PayloadTooLargeError) as error:
+            await client.prepare_request([{
+                "role": "user",
+                "content": "too many images"
+            }], SamplingParams())
+        assert error.value.status_code == 413
+        assert error.value.param == "messages"
+        assert "visual engine profile exceeded" in str(error.value)
+        assert client.active_requests == 0
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("field,value", [
     ("top_k", 1.5),
     ("max_tokens", 2.5),
@@ -1849,7 +2520,7 @@ def test_stream_include_usage_requires_boolean(client_and_llm):
 
 
 def test_request_body_limit_counts_received_bytes(client_and_llm, monkeypatch):
-    from experimental.server.api import app as app_module
+    from tensorrt_edgellm.server.api import app as app_module
 
     client, _ = client_and_llm
     monkeypatch.setattr(app_module, "MAX_REQUEST_BODY_BYTES", 256)
@@ -1870,7 +2541,7 @@ def test_request_body_limit_counts_received_bytes(client_and_llm, monkeypatch):
     ("10, 20", -1),
 ])
 def test_content_length_parsing(value, expected):
-    from experimental.server.api.app import _content_length
+    from tensorrt_edgellm.server.api.app import _content_length
 
     assert _content_length(value) == expected
 
@@ -1887,7 +2558,7 @@ def test_app_reports_package_version(tmp_path):
 def test_media_is_rejected_by_the_loaded_model_contract(tmp_path):
     from fastapi.testclient import TestClient
 
-    from experimental.server.runtime.engine_layout import inspect_bundle
+    from tensorrt_edgellm.server.runtime.engine_layout import inspect_bundle
 
     llm = _FakeLLM(tmp_path)
     (Path(llm.bundle_dir) / "visual" / "visual.engine").unlink()
@@ -1914,7 +2585,7 @@ def test_media_is_rejected_by_the_loaded_model_contract(tmp_path):
 
 
 def test_remote_media_fetch_is_size_bounded(monkeypatch):
-    from experimental.server.media import media_source
+    from tensorrt_edgellm.server.media import media_source
 
     class Response:
 
@@ -1946,8 +2617,9 @@ def test_remote_media_fetch_is_size_bounded(monkeypatch):
                                         "image", 4)
 
 
-def test_image_data_url_reaches_bytes_loader():
-    from experimental.server.runtime.engine import _load_image_buffers
+def test_image_data_url_reaches_bytes_loader(monkeypatch):
+    from tensorrt_edgellm.server.media import video_sampling
+    from tensorrt_edgellm.server.runtime.engine import _load_image_buffers
 
     class Image:
         do_resize = True
@@ -1960,16 +2632,434 @@ def test_image_data_url_reaches_bytes_loader():
             cls.loaded = data
             return Image()
 
+    captured = {}
+
+    def estimate(source, family, limits, do_resize=True):
+        captured.update(source=source,
+                        family=family,
+                        limits=limits,
+                        do_resize=do_resize)
+        return 4
+
+    monkeypatch.setattr(video_sampling, "estimate_image_tokens", estimate)
+    limits = {
+        "model_type": "muse_glimmer_vision",
+        "min_image_tokens": 1,
+        "max_image_tokens": 8,
+        "max_image_tokens_per_image": 8,
+    }
     payload = base64.b64encode(b"encoded-image").decode()
-    buffers = _load_image_buffers(Runtime, [{
-        "role":
-        "user",
-        "content": [{
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/png;base64,{payload}"
-            },
-        }],
-    }])
+    buffers = _load_image_buffers(
+        Runtime, [{
+            "role":
+            "user",
+            "content": [{
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{payload}"
+                },
+            }],
+        }], lambda: pytest.fail("image-only request used video routing"),
+        lambda: limits)
     assert len(buffers) == 1
     assert Runtime.loaded == b"encoded-image"
+    assert captured == {
+        "source": b"encoded-image",
+        "family": "muse",
+        "limits": limits,
+        "do_resize": True,
+    }
+
+
+@pytest.mark.parametrize("stream_kind", ["normal", "audio"])
+def test_disconnect_during_a_native_read_holds_lease_until_cleanup(
+        tmp_path, stream_kind):
+    """A cancelled native read retains admission until its cleanup returns."""
+    # The common disconnect: the client leaves while next() is waiting in a
+    # worker thread for the next token. Starlette re-cancels the response task
+    # at every await; the lease must still outlive native teardown.
+    import threading
+
+    pytest.importorskip("fastapi")
+    from tensorrt_edgellm.server.api.protocol import ChatCompletionRequest
+    from tensorrt_edgellm.server.api.routes import _ReleasingStreamingResponse
+    from tensorrt_edgellm.server.api.serving_chat import OpenAIServingChat
+    from tensorrt_edgellm.server.runtime.engine import CancellableIterator
+    from tensorrt_edgellm.server.runtime.engine_client import EngineClient
+
+    llm = _FakeLLM(tmp_path)
+    cancelled = threading.Event()
+    in_native_read = threading.Event()
+    cleanup_entered = threading.Event()
+    cleanup_may_finish = threading.Event()
+
+    def native_stream(*_args, **_kwargs):
+
+        def iterate():
+            try:
+                yield StreamDelta(text="first", token_ids=[1], prompt_tokens=7)
+                # Like channel.wait_pop(): inside next() until a token arrives
+                # or the stream is cancelled.
+                in_native_read.set()
+                cancelled.wait()
+            finally:
+                # Like worker.join(): native handleRequest is still unwinding.
+                cleanup_entered.set()
+                cleanup_may_finish.wait()
+
+        return CancellableIterator(iterate(), cancelled.set)
+
+    if stream_kind == "audio":
+        llm.generate_stream_with_audio = native_stream
+    else:
+        llm.generate_stream = native_stream
+
+    async def exercise():
+        config = ApiConfig(max_queued_requests=0)
+        client = EngineClient(llm, config)
+        serving = OpenAIServingChat(client, config)
+        request_kwargs = {}
+        if stream_kind == "audio":
+            request_kwargs.update({
+                "modalities": ["text", "audio"],
+                "audio": {
+                    "voice": "Ryan",
+                    "format": "pcm16",
+                },
+            })
+        request = ChatCompletionRequest(messages=[{
+            "role": "user",
+            "content": "first"
+        }],
+                                        stream=True,
+                                        **request_kwargs)
+        prepared_chat = serving.prepare_request(request)
+        engine_request = await serving.prepare_engine_request(
+            request, prepared_chat)
+        response = _ReleasingStreamingResponse(
+            serving.stream_chat_completion(request, prepared_chat,
+                                           engine_request),
+            prepared_stream=engine_request,
+            media_type="text/event-stream",
+        )
+
+        async def send(_message):
+            pass
+
+        async def receive():
+            await asyncio.to_thread(in_native_read.wait)
+            return {"type": "http.disconnect"}
+
+        scope = {
+            "type": "http",
+            "asgi": {
+                "version": "3.0",
+                "spec_version": "2.3",
+            },
+        }
+        response_task = asyncio.create_task(response(scope, receive, send))
+        unexpected_request = None
+        try:
+            assert await asyncio.to_thread(cleanup_entered.wait, 1.0)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(response_task), 0.1)
+            assert client.active_requests == 1
+            try:
+                unexpected_request = await client.prepare_request(
+                    [{
+                        "role": "user",
+                        "content": "second"
+                    }], prepared_chat.sampling)
+            except ServerOverloadedError:
+                pass
+            else:
+                pytest.fail(
+                    "disconnect released admission before native cleanup finished"
+                )
+        finally:
+            if unexpected_request is not None:
+                unexpected_request.release()
+            cleanup_may_finish.set()
+            await response_task
+        assert client.active_requests == 0
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("stream_kind", ["audio", "speech"])
+def test_audio_close_in_cancelled_scope_keeps_lease_until_cleanup(
+        tmp_path, stream_kind):
+    """Audio and speech closure wait for native cleanup before releasing admission."""
+    import threading
+
+    import anyio
+
+    from tensorrt_edgellm.server.runtime.engine import AudioParams
+    from tensorrt_edgellm.server.runtime.engine_client import EngineClient
+
+    llm = _FakeLLM(tmp_path)
+    cleanup_entered = threading.Event()
+    cleanup_may_finish = threading.Event()
+    cleanup_finished = threading.Event()
+
+    def native_stream(*_args, **_kwargs):
+        try:
+            yield StreamDelta(text="first",
+                              token_ids=[1],
+                              prompt_tokens=7,
+                              audio_bytes=b"\x01\x00")
+        finally:
+            cleanup_entered.set()
+            try:
+                if not cleanup_may_finish.wait(5):
+                    raise RuntimeError("test did not release native cleanup")
+            finally:
+                cleanup_finished.set()
+
+    llm.generate_stream_with_audio = native_stream
+    llm.generate_speech_stream = native_stream
+
+    async def exercise():
+        client = EngineClient(llm, ApiConfig(max_queued_requests=0))
+        messages = [{"role": "user", "content": "first"}]
+        sampling = SamplingParams()
+        owned = await client.prepare_request(messages, sampling)
+        if stream_kind == "audio":
+            stream = client.stream_with_audio(messages,
+                                              sampling,
+                                              AudioParams(),
+                                              prepared=owned)
+        else:
+            stream = client.stream_speech("first",
+                                          AudioParams(),
+                                          prepared=owned.lease)
+        await stream.__anext__()
+
+        async def close_under_cancellation():
+            with anyio.CancelScope() as scope:
+                scope.cancel()
+                await stream.aclose()
+
+        close_task = asyncio.create_task(close_under_cancellation())
+        unexpected = None
+        try:
+            if not await asyncio.to_thread(cleanup_entered.wait, 1):
+                pytest.fail("native cleanup did not start")
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(close_task), 0.05)
+            assert client.active_requests == 1
+            try:
+                unexpected = await client.prepare_request(messages, sampling)
+            except ServerOverloadedError:
+                pass
+            else:
+                pytest.fail(
+                    "audio close released admission during native cleanup")
+        finally:
+            if unexpected is not None:
+                unexpected.release()
+            cleanup_may_finish.set()
+            await close_task
+            await asyncio.to_thread(cleanup_finished.wait, 1)
+        assert client.active_requests == 0
+
+    asyncio.run(exercise())
+
+
+def test_blocking_cuda_failure_reports_unavailable_and_rejects_waiters(
+        tmp_path):
+    """A fatal drain rejects queued and new requests before preparation and makes both health endpoints fail."""
+    from fastapi.testclient import TestClient
+
+    from tensorrt_edgellm.server.api.errors import EngineUnavailableError
+    from tensorrt_edgellm.server.runtime.engine import LLM
+    from tensorrt_edgellm.server.runtime.engine_client import EngineClient
+
+    llm = _FakeLLM(tmp_path)
+    holder = LLM.__new__(LLM)
+    holder._runtime = SimpleNamespace(unavailable_reason="")
+    llm.engine_unavailable_reason = holder.engine_unavailable_reason
+    llm.get_engine_status = holder.get_engine_status
+    reason = "cudaErrorIllegalAddress (700): CUDA request cleanup failed; restart the process"
+
+    async def exercise():
+        client = EngineClient(llm, ApiConfig(max_queued_requests=1))
+        first = await client.prepare_completion("first", SamplingParams())
+        waiting = asyncio.create_task(
+            client.prepare_completion("waiting", SamplingParams()))
+        while client.queued_requests == 0:
+            await asyncio.sleep(0)
+        holder._runtime.unavailable_reason = reason
+        first.release()
+        with pytest.raises(EngineUnavailableError,
+                           match="cudaErrorIllegalAddress"):
+            await waiting
+        with pytest.raises(EngineUnavailableError,
+                           match="cudaErrorIllegalAddress"):
+            await client.prepare_completion("new", SamplingParams())
+        assert llm.prepare_count == 1
+        assert client.active_requests == 0
+
+    asyncio.run(exercise())
+    client = TestClient(_create_app(llm))
+    for path in ("/health", "/health/ready"):
+        response = client.get(path)
+        assert response.status_code == 503
+        assert response.json()["reason"] == reason
+
+
+@pytest.mark.parametrize("failure_phase", ["before", "queued", "queue_full"])
+def test_speech_rejects_failed_runtime_before_headers(tmp_path, failure_phase):
+    """Failed speech requests return 503 before headers or native work, even after queueing."""
+    import httpx
+
+    from tensorrt_edgellm.server.runtime.engine import LLM
+
+    llm = _FakeLLM(tmp_path)
+    holder = LLM.__new__(LLM)
+    holder._runtime = SimpleNamespace(unavailable_reason="")
+    llm.engine_unavailable_reason = holder.engine_unavailable_reason
+    reason = "cudaErrorIllegalAddress (700): restart the process"
+    app = _create_app(
+        llm,
+        ApiConfig(
+            max_queued_requests=0 if failure_phase == "queue_full" else 1))
+    client = app.state.engine_client
+
+    async def exercise():
+        first = None
+        pending = None
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as http:
+            try:
+                if failure_phase != "before":
+                    first = await client.prepare_completion(
+                        "first", SamplingParams())
+                if failure_phase != "queued":
+                    holder._runtime.unavailable_reason = reason
+                pending = asyncio.create_task(
+                    http.post("/v1/audio/speech",
+                              json={
+                                  "input": "Hello",
+                                  "voice": "Ryan",
+                                  "response_format": "pcm"
+                              }))
+                if failure_phase == "queued":
+
+                    async def wait_for_queue():
+                        while client.queued_requests == 0:
+                            await asyncio.sleep(0)
+
+                    await asyncio.wait_for(wait_for_queue(), 1)
+                    holder._runtime.unavailable_reason = reason
+                    first.release()
+                response = await asyncio.wait_for(pending, 1)
+                assert response.status_code == 503
+                assert response.json()["error"]["type"] == "engine_unavailable"
+                assert reason in response.json()["error"]["message"]
+                assert llm.last_audio_params is None
+            finally:
+                if first is not None:
+                    first.release()
+                if pending is not None and not pending.done():
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+        assert client.active_requests == 0
+        assert client.queued_requests == 0
+
+    asyncio.run(exercise())
+
+
+def test_direct_speech_rejects_failed_runtime_and_waiters(tmp_path):
+    """Direct speech streams reject both queued and new work after a fatal failure."""
+    from tensorrt_edgellm.server.api.errors import EngineUnavailableError
+    from tensorrt_edgellm.server.runtime.engine import LLM, AudioParams
+    from tensorrt_edgellm.server.runtime.engine_client import EngineClient
+
+    llm = _FakeLLM(tmp_path)
+    holder = LLM.__new__(LLM)
+    holder._runtime = SimpleNamespace(unavailable_reason="")
+    llm.engine_unavailable_reason = holder.engine_unavailable_reason
+
+    async def exercise():
+        client = EngineClient(llm, ApiConfig(max_queued_requests=1))
+        first = await client.prepare_completion("first", SamplingParams())
+        stream = client.stream_speech("waiting", AudioParams())
+        pending = asyncio.create_task(anext(stream))
+        try:
+
+            async def wait_for_queue():
+                while client.queued_requests == 0:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(wait_for_queue(), 1)
+            holder._runtime.unavailable_reason = "cudaErrorIllegalAddress"
+            first.release()
+            with pytest.raises(EngineUnavailableError,
+                               match="cudaErrorIllegalAddress"):
+                await asyncio.wait_for(pending, 1)
+            with pytest.raises(EngineUnavailableError,
+                               match="cudaErrorIllegalAddress"):
+                await anext(client.stream_speech("new", AudioParams()))
+            assert llm.last_audio_params is None
+            assert client.active_requests == 0
+            assert client.queued_requests == 0
+        finally:
+            first.release()
+            if not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            await stream.aclose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("disconnect_at", ["headers", "body"])
+def test_speech_response_closes_before_releasing_admission(
+        tmp_path, disconnect_at):
+    """Speech disconnects release admission only after closing any started native stream."""
+    from tensorrt_edgellm.server.api.protocol import SpeechRequest
+    from tensorrt_edgellm.server.api.routes import audio_speech
+
+    llm = _FakeLLM(tmp_path)
+    app = _create_app(llm, ApiConfig(max_queued_requests=0))
+    client = app.state.engine_client
+    cleanup_active = []
+
+    def native_stream(*_args, **_kwargs):
+        try:
+            yield StreamDelta(audio_bytes=b"\x01\x00")
+        finally:
+            cleanup_active.append(client.active_requests)
+
+    llm.generate_speech_stream = native_stream
+
+    async def exercise():
+        response = await audio_speech(SpeechRequest(input="Hello"),
+                                      SimpleNamespace(app=app))
+        assert client.active_requests == 1
+
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            if disconnect_at == "headers" or message[
+                    "type"] == "http.response.body":
+                raise OSError("client disconnected")
+
+        from starlette.requests import ClientDisconnect
+        try:
+            with pytest.raises(ClientDisconnect):
+                await response(
+                    {
+                        "type": "http",
+                        "asgi": {
+                            "spec_version": "2.4"
+                        }
+                    }, receive, send)
+            assert client.active_requests == 0
+            assert cleanup_active == ([1] if disconnect_at == "body" else [])
+        finally:
+            await response.body_iterator.aclose()
+
+    asyncio.run(exercise())

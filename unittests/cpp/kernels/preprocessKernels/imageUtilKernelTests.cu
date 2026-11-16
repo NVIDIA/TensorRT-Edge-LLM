@@ -25,9 +25,11 @@
 #include <memory>
 #include <random>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 #include "common/cudaUtils.h"
+#include "common/identityHash.h"
 #include "kernels/preprocessKernels/imageUtilKernels.h"
 #include "multimodal/common/imageUtils.h"
 #include "references.h"
@@ -35,7 +37,6 @@
 #include "testUtils.h"
 
 using namespace trt_edgellm;
-using namespace nvinfer1;
 
 // Helper to build Phi-4MM batched inputs and golden output for postprocess kernel tests.
 // hwBlocks: vector of (hBlocks, wBlocks) per image
@@ -204,7 +205,7 @@ void TestTransposeToPatchQwenViT(int32_t const height, int32_t const width, int3
         patchSize, mergeSize, temporalFirst, channelLast);
 
     // GPU tensors
-    rt::Tensor originalImageDevice({T, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor originalImageDevice({T, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(cudaMemcpyAsync(originalImageDevice.rawPointer(), originalImage.data(),
         originalImage.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
 
@@ -213,7 +214,7 @@ void TestTransposeToPatchQwenViT(int32_t const height, int32_t const width, int3
     int32_t const gridW = width / (mergeSize * patchSize);
     int32_t const totalSeqLength = gridT * gridH * gridW * mergeSize * mergeSize;
     int32_t const inputDim = channels * temporalPatchSize * patchSize * patchSize;
-    rt::Tensor inputPatchesDevice({totalSeqLength, inputDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor inputPatchesDevice({totalSeqLength, inputDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     kernel::transposeToPatchQwenViT(originalImageDevice, inputPatchesDevice, 0, temporalPatchSize, patchSize, mergeSize,
         temporalFirst, channelLast, stream);
@@ -265,7 +266,7 @@ void BenchmarkTransposeToPatchQwenViT(int32_t const height, int32_t const width,
     std::vector<half> originalImage(T * height * width * channels);
     uniformFloatInitialization<half>(originalImage, 0, 1);
 
-    rt::Tensor originalImageDevice({T, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor originalImageDevice({T, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(cudaMemcpyAsync(originalImageDevice.rawPointer(), originalImage.data(),
         originalImage.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
 
@@ -274,7 +275,7 @@ void BenchmarkTransposeToPatchQwenViT(int32_t const height, int32_t const width,
     int32_t const gridW = width / (mergeSize * patchSize);
     int32_t const totalSeqLength = gridT * gridH * gridW * mergeSize * mergeSize;
     int32_t const inputDim = channels * temporalPatchSize * patchSize * patchSize;
-    rt::Tensor inputPatchesDevice({totalSeqLength, inputDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor inputPatchesDevice({totalSeqLength, inputDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     auto launch = [&]() {
         kernel::transposeToPatchQwenViT(
@@ -331,7 +332,7 @@ void TestInitRotaryPosEmbQwenViT(int32_t const vitPosEmbDim = 40, int32_t const 
         rotaryPosEmb, imageGridTHWs, totalSeqLength, vitPosEmbDim, mergeSize, rotaryBaseFrequency, scale);
 
     // GPU kernel
-    rt::Tensor rotaryPosEmbDevice({totalSeqLength, vitPosEmbDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor rotaryPosEmbDevice({totalSeqLength, vitPosEmbDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     for (int64_t i = 0; i < imageGridTHWs.size(); ++i)
     {
         kernel::initRotaryPosEmbQwenViT(
@@ -365,7 +366,7 @@ void BenchmarkInitRotaryPosEmbQwenViT(int32_t const vitPosEmbDim = 40, int32_t c
 
     std::vector<int64_t> imageGridTHW{1, 32, 32};
     int64_t totalSeqLength = imageGridTHW[0] * imageGridTHW[1] * imageGridTHW[2];
-    rt::Tensor rotaryPosEmbDevice({totalSeqLength, vitPosEmbDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor rotaryPosEmbDevice({totalSeqLength, vitPosEmbDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
 
     auto launch = [&]() {
         kernel::initRotaryPosEmbQwenViT(
@@ -416,7 +417,7 @@ void TestTransposeToPatchInternVL(int32_t const height, int32_t const width, int
         originalImage, inputPatchesRef, 0, height, width, channels, blockSizeH, blockSizeW);
 
     // GPU
-    rt::Tensor originalImageDevice({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor originalImageDevice({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(cudaMemcpyAsync(originalImageDevice.rawPointer(), originalImage.data(),
         originalImage.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
 
@@ -424,7 +425,7 @@ void TestTransposeToPatchInternVL(int32_t const height, int32_t const width, int
     int32_t const gridW = width / blockSizeW;
     int32_t const numBlocks = gridH * gridW;
     rt::Tensor inputPatchesDevice(
-        {numBlocks, channels, blockSizeH, blockSizeW}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        {numBlocks, channels, blockSizeH, blockSizeW}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     kernel::transposeToPatchInternVLPhi4MM(originalImageDevice, inputPatchesDevice, 0, stream);
 
     std::vector<half> inputPatches(height * width * channels);
@@ -454,7 +455,7 @@ void BenchmarkTransposeToPatchInternVL(int32_t const height, int32_t const width
     std::vector<half> originalImage(height * width * channels);
     uniformFloatInitialization<half>(originalImage, 0, 1);
 
-    rt::Tensor originalImageDevice({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor originalImageDevice({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(cudaMemcpyAsync(originalImageDevice.rawPointer(), originalImage.data(),
         originalImage.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
 
@@ -462,7 +463,7 @@ void BenchmarkTransposeToPatchInternVL(int32_t const height, int32_t const width
     int32_t const gridW = width / blockSizeW;
     int32_t const numBlocks = gridH * gridW;
     rt::Tensor inputPatchesDevice(
-        {numBlocks, channels, blockSizeH, blockSizeW}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        {numBlocks, channels, blockSizeH, blockSizeW}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     auto launch = [&]() { kernel::transposeToPatchInternVLPhi4MM(originalImageDevice, inputPatchesDevice, 0, stream); };
 
@@ -517,8 +518,8 @@ void TestInitFastPosEmbedQwenViT(int64_t const mergeSize = 2, int64_t const numG
         imageGridTHWs, cuSeqlens, fastPosEmbedIdxRef, fastPosEmbedWeightRef, mergeSize, numGridPerSide);
 
     // GPU tensors
-    rt::Tensor fastPosEmbedIdxDevice({4, totalSeqLength}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
-    rt::Tensor fastPosEmbedWeightDevice({4, totalSeqLength}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor fastPosEmbedIdxDevice({4, totalSeqLength}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
+    rt::Tensor fastPosEmbedWeightDevice({4, totalSeqLength}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Call CUDA kernel
     for (int64_t i = 0; i < imageGridTHWs.size(); ++i)
@@ -624,8 +625,8 @@ TEST(InitFastPosEmbedCosmos3ViT, AlignCornersFalseAccuracy)
         }
     }
 
-    rt::Tensor actualIdx({4, totalSeqLength}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
-    rt::Tensor actualWeight({4, totalSeqLength}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor actualIdx({4, totalSeqLength}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
+    rt::Tensor actualWeight({4, totalSeqLength}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     for (size_t image = 0; image < grids.size(); ++image)
     {
         kernel::initFastPosEmbedCosmos3ViT(
@@ -663,16 +664,16 @@ TEST(phi4mmPostprocessVisionTokens, Accuracy)
     int64_t const totalOutTokens = static_cast<int64_t>(dstRef.size()) / hidden;
 
     // Device tensors
-    rt::Tensor srcEmbedding({totalRawTokens, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor srcEmbedding({totalRawTokens, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(cudaMemcpyAsync(
         srcEmbedding.rawPointer(), srcEmbeds.data(), srcEmbeds.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
-    rt::Tensor dstEmbedding({totalOutTokens, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor hBlocksDev({numImages}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor wBlocksDev({numImages}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor srcGlbStartDev({numImages}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
-    rt::Tensor srcSubStartDev({numImages}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
-    rt::Tensor dstOutStartDev({numImages}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
-    rt::Tensor subOutLenDev({numImages}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64);
+    rt::Tensor dstEmbedding({totalOutTokens, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor hBlocksDev({numImages}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor wBlocksDev({numImages}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor srcGlbStartDev({numImages}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
+    rt::Tensor srcSubStartDev({numImages}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
+    rt::Tensor dstOutStartDev({numImages}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
+    rt::Tensor subOutLenDev({numImages}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64);
     CUDA_CHECK(cudaMemcpyAsync(
         hBlocksDev.rawPointer(), hBlocksHost.data(), numImages * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(
@@ -686,8 +687,8 @@ TEST(phi4mmPostprocessVisionTokens, Accuracy)
     CUDA_CHECK(cudaMemcpyAsync(
         subOutLenDev.rawPointer(), subOutLenHost.data(), numImages * sizeof(int64_t), cudaMemcpyHostToDevice, stream));
 
-    rt::Tensor subGNDev({hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor glbGNDev({hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor subGNDev({hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor glbGNDev({hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(cudaMemcpyAsync(
         subGNDev.rawPointer(), subGNHost.data(), hidden * sizeof(half), cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(
@@ -777,7 +778,7 @@ constexpr std::array<float, 3> kUnitStd{1.0F, 1.0F, 1.0F};
 rt::imageUtils::ImageData MakePinnedRgbImage(
     std::vector<unsigned char> const& pixels, int64_t const frames, int64_t const height, int64_t const width)
 {
-    rt::Tensor tensor({frames, height, width, 3}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8);
+    rt::Tensor tensor({frames, height, width, 3}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8);
     std::memcpy(tensor.rawPointer(), pixels.data(), pixels.size());
     return rt::imageUtils::ImageData(std::move(tensor));
 }
@@ -856,12 +857,12 @@ void TestFusedResizeRgb(int32_t const inHeight, int32_t const inWidth, int32_t c
     FillResizeInput(input, inHeight, inWidth, channels, pattern);
 
     rt::imageUtils::ImageData inputImage = MakePinnedRgbImage(input, 1, inHeight, inWidth);
-    rt::Tensor refTensor({1, outHeight, outWidth, channels}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8);
+    rt::Tensor refTensor({1, outHeight, outWidth, channels}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8);
     rt::imageUtils::ImageData resizedRef(std::move(refTensor));
     auto const& resizedRefView = rt::imageUtils::resizeImage(
         inputImage, resizedRef, outWidth, outHeight, rt::imageUtils::InterpolationMode::kBICUBIC);
 
-    rt::Tensor dst({1, outHeight, outWidth, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, outHeight, outWidth, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(inputImage, 0, 1, imageMean, imageStd, dst, outHeight, outWidth, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -922,7 +923,7 @@ void BenchmarkFusedResizeRgb(
     std::vector<unsigned char> input(static_cast<size_t>(inHeight) * inWidth * channels);
     uniformIntInitialization<unsigned char>(input, 0, 255);
     rt::imageUtils::ImageData inputImage = MakePinnedRgbImage(input, 1, inHeight, inWidth);
-    rt::Tensor dst({1, outHeight, outWidth, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, outHeight, outWidth, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     float const elapsedTime = TimePerCall(stream, [&]() {
         rt::imageUtils::resizeAndNormalizeToRgb(
@@ -943,8 +944,8 @@ void BenchmarkFusedResizeRgbVideo(int32_t const inHeight, int32_t const inWidth,
     std::vector<unsigned char> input(static_cast<size_t>(frames) * inHeight * inWidth * channels);
     uniformIntInitialization<unsigned char>(input, 0, 255);
     rt::imageUtils::ImageData video = MakePinnedRgbImage(input, frames, inHeight, inWidth);
-    rt::Tensor dst({frames, outHeight, outWidth, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor slot({1, outHeight, outWidth, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({frames, outHeight, outWidth, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor slot({1, outHeight, outWidth, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     float const batched = TimePerCall(stream, [&]() {
         rt::imageUtils::resizeAndNormalizeToRgb(
@@ -1056,7 +1057,7 @@ TEST(FusedPreprocessRgb, IdentitySizeReproducesSource)
     FillResizeInput(input, height, width, channels, ResizeFillPattern::kRANDOM);
     rt::imageUtils::ImageData image = MakePinnedRgbImage(input, 1, height, width);
 
-    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, height, width, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -1088,7 +1089,7 @@ TEST(FusedPreprocessRgb, MultiFrameSlotsAreIndependent)
     }
     rt::imageUtils::ImageData video = MakePinnedRgbImage(input, numFrames, inHeight, inWidth);
 
-    rt::Tensor batched({numFrames, outHeight, outWidth, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor batched({numFrames, outHeight, outWidth, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(
         video, 0, numFrames, kUnitMean, kUnitStd, batched, outHeight, outWidth, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -1098,7 +1099,7 @@ TEST(FusedPreprocessRgb, MultiFrameSlotsAreIndependent)
         rt::imageUtils::ImageData single = MakePinnedRgbImage(
             std::vector<unsigned char>(input.begin() + f * inFrameElems, input.begin() + (f + 1) * inFrameElems), 1,
             inHeight, inWidth);
-        rt::Tensor isolated({1, outHeight, outWidth, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor isolated({1, outHeight, outWidth, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
         rt::imageUtils::resizeAndNormalizeToRgb(
             single, 0, 1, kUnitMean, kUnitStd, isolated, outHeight, outWidth, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -1129,7 +1130,7 @@ TEST(FusedPreprocessRgb, FrameRangeSelectsSource)
     }
     rt::imageUtils::ImageData video = MakePinnedRgbImage(input, numFrames, height, width);
 
-    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(video, 2, 1, kUnitMean, kUnitStd, dst, height, width, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -1140,7 +1141,7 @@ TEST(FusedPreprocessRgb, FrameRangeSelectsSource)
     }
 
     // A multi-frame range is one batched launch, so the offset applies to its first frame only.
-    rt::Tensor pair({2, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor pair({2, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(video, 1, 2, kUnitMean, kUnitStd, pair, height, width, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -1167,7 +1168,7 @@ TEST(FusedPreprocessRgb, NormalisationMatchesTheSeparateStep)
     FillResizeInput(input, height, width, channels, ResizeFillPattern::kRANDOM);
     rt::imageUtils::ImageData image = MakePinnedRgbImage(input, 1, height, width);
 
-    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, mean, stdDev, dst, height, width, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -1195,7 +1196,7 @@ TEST(FusedPreprocessRgb, Fp16RoundingAtExtremes)
     FillResizeInput(input, height, width, channels, ResizeFillPattern::kGRADIENT);
     rt::imageUtils::ImageData image = MakePinnedRgbImage(input, 1, height, width);
 
-    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, mean, stdDev, dst, height, width, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -1214,7 +1215,7 @@ TEST(FusedPreprocessRgb, RejectsNonPositiveDims)
     int32_t const height = 32, width = 32, channels = 3;
     std::vector<unsigned char> input(static_cast<size_t>(height) * width * channels, 7);
     rt::imageUtils::ImageData image = MakePinnedRgbImage(input, 1, height, width);
-    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     EXPECT_THROW(rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, 0, width, stream),
         std::runtime_error);
@@ -1228,7 +1229,7 @@ TEST(FusedPreprocessRgb, RejectsFrameRangeOutsideTheImage)
     int32_t const height = 32, width = 32, channels = 3, numFrames = 2;
     std::vector<unsigned char> input(static_cast<size_t>(numFrames) * height * width * channels, 7);
     rt::imageUtils::ImageData video = MakePinnedRgbImage(input, numFrames, height, width);
-    rt::Tensor dst({numFrames, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({numFrames, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     EXPECT_THROW(rt::imageUtils::resizeAndNormalizeToRgb(video, 1, 2, kUnitMean, kUnitStd, dst, height, width, stream),
         std::runtime_error);
@@ -1245,17 +1246,17 @@ TEST(FusedPreprocessRgb, RejectsBadDestination)
     std::vector<unsigned char> input(static_cast<size_t>(height) * width * channels, 7);
     rt::imageUtils::ImageData image = MakePinnedRgbImage(input, 1, height, width);
 
-    rt::Tensor hostDst({1, height, width, channels}, rt::DeviceType::kCPU, nvinfer1::DataType::kHALF);
+    rt::Tensor hostDst({1, height, width, channels}, rt::DeviceType::kCPU, trt_edgellm::DataType::kHALF);
     EXPECT_THROW(
         rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, hostDst, height, width, stream),
         std::runtime_error);
 
-    rt::Tensor u8Dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8);
+    rt::Tensor u8Dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8);
     EXPECT_THROW(
         rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, u8Dst, height, width, stream),
         std::runtime_error);
 
-    rt::Tensor smallDst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor smallDst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     EXPECT_THROW(rt::imageUtils::resizeAndNormalizeToRgb(
                      image, 0, 1, kUnitMean, kUnitStd, smallDst, height * 2, width * 2, stream),
         std::runtime_error);
@@ -1268,7 +1269,7 @@ TEST(FusedPreprocessRgb, RejectsZeroStd)
     int32_t const height = 16, width = 16, channels = 3;
     std::vector<unsigned char> input(static_cast<size_t>(height) * width * channels, 7);
     rt::imageUtils::ImageData image = MakePinnedRgbImage(input, 1, height, width);
-    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     std::array<float, 3> const zeroStd{1.0F, 0.0F, 1.0F};
     EXPECT_THROW(rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, zeroStd, dst, height, width, stream),
@@ -1284,7 +1285,7 @@ TEST(FusedPreprocessRgb, RejectsPitchBelowRowWidth)
     std::vector<unsigned char> input(static_cast<size_t>(height) * width * channels, 7);
     rt::imageUtils::ImageData image = MakePinnedRgbImage(input, 1, height, width);
     image.layout.pitchBytes[0] = width * channels - 1;
-    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     EXPECT_THROW(rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, height, width, stream),
         std::runtime_error);
@@ -1299,7 +1300,7 @@ TEST(FusedPreprocessRgb, RejectsBlockLinearWithoutTexturePlanes)
     std::vector<unsigned char> input(static_cast<size_t>(height) * width * channels, 7);
     rt::imageUtils::ImageData image = MakePinnedRgbImage(input, 1, height, width);
     image.layout.format = rt::imageUtils::ImageFormat::kNV12BL;
-    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     EXPECT_THROW(rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, height, width, stream),
         std::runtime_error);
@@ -1314,7 +1315,7 @@ TEST(FusedPreprocessRgb, RejectsALayoutReachingPastTheBuffer)
     int32_t const height = 32, width = 32, channels = 3;
     std::vector<unsigned char> input(static_cast<size_t>(height) * width * channels, 7);
     rt::imageUtils::ImageData image = MakePinnedRgbImage(input, 1, height, width);
-    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     image.height = height * 2;
     EXPECT_THROW(rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, height, width, stream),
@@ -1332,7 +1333,7 @@ TEST(FusedPreprocessRgb, StreamIsDrainedBeforeAnExceptionLeaves)
     int32_t const height = 2160, width = 3840, channels = 3;
     std::vector<unsigned char> input(static_cast<size_t>(height) * width * channels, 7);
     rt::imageUtils::ImageData image = MakePinnedRgbImage(input, 1, height, width);
-    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, channels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, height, width, stream);
     EXPECT_THROW(rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, 0, width, stream),
@@ -1498,7 +1499,7 @@ rt::imageUtils::ImageData MakePinnedNv12Image(std::vector<unsigned char> const& 
     int64_t const frameBytes = yBytes + uvBytes;
 
     auto buffer = std::make_shared<rt::Tensor>(
-        rt::Tensor({frames * frameBytes}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8));
+        rt::Tensor({frames * frameBytes}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8));
     auto* const base = static_cast<unsigned char*>(buffer->rawPointer());
     std::memset(base, 0, static_cast<size_t>(frames * frameBytes));
     for (int64_t f = 0; f < frames; ++f)
@@ -1572,7 +1573,7 @@ void TestFusedNv12(int64_t const inHeight, int64_t const inWidth, int64_t const 
     rt::imageUtils::ImageData image = MakePinnedNv12Image(
         y, uv, inHeight, inWidth, inWidth + yPadBytes, chromaRowBytes + uvPadBytes, standard, range);
 
-    rt::Tensor dst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, imageMean, imageStd, dst, outHeight, outWidth, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -1632,7 +1633,7 @@ TEST(FusedPreprocessNv12, ChromaSitingPhaseIsAQuarterSample)
 
     rt::imageUtils::ImageData image
         = MakePinnedNv12Image(y, uv, kExtent, kExtent, kExtent, chromaExtent * 2, kStandard, kRange);
-    rt::Tensor dst({1, kExtent, kExtent, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, kExtent, kExtent, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     cudaStream_t stream{nullptr};
     rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, kExtent, kExtent, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -1700,7 +1701,7 @@ TEST(FusedPreprocessNv12, MultiFrameSlotsAreIndependent)
 
     rt::imageUtils::ImageData video
         = MakePinnedNv12Image(y, uv, inHeight, inWidth, inWidth, chromaRowBytes, standard, range, numFrames);
-    rt::Tensor batched({numFrames, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor batched({numFrames, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(
         video, 0, numFrames, kUnitMean, kUnitStd, batched, outHeight, outWidth, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -1713,7 +1714,7 @@ TEST(FusedPreprocessNv12, MultiFrameSlotsAreIndependent)
             = MakePinnedNv12Image(std::vector<unsigned char>(y.begin() + yAt, y.begin() + yAt + yElems),
                 std::vector<unsigned char>(uv.begin() + uvAt, uv.begin() + uvAt + uvElems), inHeight, inWidth, inWidth,
                 chromaRowBytes, standard, range);
-        rt::Tensor isolated({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor isolated({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
         rt::imageUtils::resizeAndNormalizeToRgb(
             single, 0, 1, kUnitMean, kUnitStd, isolated, outHeight, outWidth, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -1755,7 +1756,7 @@ TEST(FusedPreprocessNv12, RejectsUnspecifiedColourMetadata)
         rt::imageUtils::ColorStandard::kBt709, rt::imageUtils::ColorRange::kLimited);
     image.layout.colorStandard = rt::imageUtils::ColorStandard::kUnspecified;
 
-    rt::Tensor dst({1, height, width, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     EXPECT_THROW(rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, height, width, stream),
         std::runtime_error);
 }
@@ -1770,7 +1771,7 @@ TEST(FusedPreprocessNv12, RejectsFrameStrideBelowOneFrame)
     int64_t const frameBytes = yBytes + chromaRowBytes * chromaRows;
 
     auto buffer = std::make_shared<rt::Tensor>(
-        rt::Tensor({frames * frameBytes}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8));
+        rt::Tensor({frames * frameBytes}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8));
     rt::imageUtils::ImageLayout layout{};
     layout.format = rt::imageUtils::ImageFormat::kNV12PL;
     layout.colorStandard = rt::imageUtils::ColorStandard::kBt709;
@@ -1796,7 +1797,7 @@ TEST(FusedPreprocessNv12, RejectsChromaPitchBeyond32Bits)
         rt::imageUtils::ColorStandard::kBt709, rt::imageUtils::ColorRange::kLimited);
     image.layout.pitchBytes[1] = static_cast<int64_t>(std::numeric_limits<int>::max()) + 1;
 
-    rt::Tensor dst({1, height, width, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, height, width, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     EXPECT_THROW(rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, height, width, stream),
         std::runtime_error);
 }
@@ -1812,7 +1813,7 @@ TEST(FusedPreprocessNv12, RejectsPageableHostBuffer)
 
     std::vector<unsigned char> pageable(static_cast<size_t>(yBytes + uvBytes), 128);
     auto buffer = std::make_shared<rt::Tensor>(rt::Tensor(
-        pageable.data(), {yBytes + uvBytes}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8, "pageableNv12"));
+        pageable.data(), {yBytes + uvBytes}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8, "pageableNv12"));
 
     rt::imageUtils::ImageLayout layout{};
     layout.format = rt::imageUtils::ImageFormat::kNV12PL;
@@ -1844,14 +1845,14 @@ TEST(FusedPreprocessNv12, MappedHostMatchesDeviceResident)
         rt::imageUtils::ColorStandard::kBt709, rt::imageUtils::ColorRange::kLimited);
 
     auto deviceBuffer = std::make_shared<rt::Tensor>(
-        rt::Tensor({yBytes + uvBytes}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8));
+        rt::Tensor({yBytes + uvBytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8));
     CUDA_CHECK(cudaMemcpy(deviceBuffer->rawPointer(), hostImage.buffer->rawPointer(),
         static_cast<size_t>(yBytes + uvBytes), cudaMemcpyHostToDevice));
     rt::imageUtils::ImageData deviceImage
         = rt::imageUtils::wrapImageBuffer(deviceBuffer, hostImage.layout, width, height, 1);
 
-    rt::Tensor hostDst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor deviceDst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor hostDst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor deviceDst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(hostImage, 0, 1, kUnitMean, kUnitStd, hostDst, outHeight, outWidth, stream);
     rt::imageUtils::resizeAndNormalizeToRgb(
         deviceImage, 0, 1, kUnitMean, kUnitStd, deviceDst, outHeight, outWidth, stream);
@@ -1997,8 +1998,8 @@ void TestNv12BlockLinearMatchesPitchLinear(int64_t const inHeight, int64_t const
     rt::imageUtils::ImageData const blockLinear = rt::imageUtils::wrapImageTexture(
         frame.luma.texture, frame.chroma.texture, standard, range, inWidth, inHeight);
 
-    rt::Tensor plDst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor blDst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor plDst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor blDst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(pitchLinear, 0, 1, imageMean, imageStd, plDst, outHeight, outWidth, stream);
     rt::imageUtils::resizeAndNormalizeToRgb(blockLinear, 0, 1, imageMean, imageStd, blDst, outHeight, outWidth, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -2097,7 +2098,7 @@ TEST(FusedPreprocessNv12Bl, AddressModeDoesNotReachTheResult)
 
         rt::imageUtils::ImageData const image = rt::imageUtils::wrapImageTexture(luma.texture, chroma.texture,
             rt::imageUtils::ColorStandard::kBt709, rt::imageUtils::ColorRange::kLimited, width, height);
-        rt::Tensor dst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor dst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
         rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, dst, outHeight, outWidth, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -2476,8 +2477,8 @@ TEST(FusedPreprocessVitGeometry, NormalisationDoesNotReachTheResample)
         auto const [outHeight, outWidth] = family.target(inHeight, inWidth);
         size_t const elems = static_cast<size_t>(outHeight * outWidth * 3);
 
-        rt::Tensor normalised({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-        rt::Tensor unit({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor normalised({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        rt::Tensor unit({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
         rt::imageUtils::resizeAndNormalizeToRgb(
             image, 0, 1, family.imageMean, family.imageStd, normalised, outHeight, outWidth, stream);
         rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, unit, outHeight, outWidth, stream);
@@ -2529,9 +2530,9 @@ TEST(FusedPreprocessNv12, SecondCallOnTheSameFrameIsIndependent)
     rt::imageUtils::ImageData image
         = MakePinnedNv12Image(y, uv, inHeight, inWidth, inWidth, chromaRowBytes, standard, range);
 
-    rt::Tensor mainGrid({1, mainHeight, mainWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor thumb({1, thumbHeight, thumbWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor thumbAlone({1, thumbHeight, thumbWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor mainGrid({1, mainHeight, mainWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor thumb({1, thumbHeight, thumbWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor thumbAlone({1, thumbHeight, thumbWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, mainGrid, mainHeight, mainWidth, stream);
     rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, kUnitMean, kUnitStd, thumb, thumbHeight, thumbWidth, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -2576,7 +2577,7 @@ TEST(FusedPreprocessNv12Bl, SuccessiveFramesDoNotBleed)
         = rt::imageUtils::wrapImageTexture(second.luma.texture, second.chroma.texture,
             rt::imageUtils::ColorStandard::kBt709, rt::imageUtils::ColorRange::kLimited, inWidth, inHeight);
 
-    rt::Tensor dst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor dst({1, outHeight, outWidth, 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     rt::imageUtils::resizeAndNormalizeToRgb(frameA, 0, 1, kUnitMean, kUnitStd, dst, outHeight, outWidth, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
     std::vector<unsigned char> const firstPass = ReadBackAsU8(dst, elems);
@@ -2619,8 +2620,8 @@ void checkNemotronTranspose(int64_t T)
     {
         src[i] = __float2half(static_cast<float>(i));
     }
-    rt::Tensor blockPixels({numFrames, C, H, W}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor inputPatches({rows, rowWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor blockPixels({numFrames, C, H, W}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor inputPatches({rows, rowWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(cudaMemcpyAsync(
         blockPixels.rawPointer(), src.data(), src.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
     kernel::transposeToPatchNemotronViT(blockPixels, inputPatches, T, P, stream);
@@ -2673,8 +2674,8 @@ TEST(TransposeToPatchNemotron, RejectsNonPositiveDivisors)
 {
     cudaStream_t stream;
     CUDA_CHECK(cudaStreamCreate(&stream));
-    rt::Tensor blockPixels({2, 2, 4, 6}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor inputPatches({6, 8}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor blockPixels({2, 2, 4, 6}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor inputPatches({6, 8}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     EXPECT_ANY_THROW(kernel::transposeToPatchNemotronViT(blockPixels, inputPatches, 0, 2, stream));
     EXPECT_ANY_THROW(kernel::transposeToPatchNemotronViT(blockPixels, inputPatches, 2, 0, stream));
     CUDA_CHECK(cudaStreamDestroy(stream));
@@ -2695,8 +2696,8 @@ TEST(AddPosEmbedNemotron, BroadcastOverBlocks)
     {
         pos[i] = __float2half(static_cast<float>(i) + 1.0F);
     }
-    rt::Tensor patchEmbeds({numBlocks, numPatches, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor posEmbed({numPatches, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor patchEmbeds({numBlocks, numPatches, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor posEmbed({numPatches, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     CUDA_CHECK(cudaMemcpyAsync(
         patchEmbeds.rawPointer(), embeds.data(), embeds.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(
@@ -2732,8 +2733,8 @@ TEST(EvsScoresNemotron, SentinelAndCosineDissimilarity)
     {
         embeds[i] = __float2half(static_cast<float>((i * 7) % 5) + 0.25F);
     }
-    rt::Tensor embedsDev({numTokens, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor scoresDev({numTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor embedsDev({numTokens, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor scoresDev({numTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     CUDA_CHECK(cudaMemcpyAsync(
         embedsDev.rawPointer(), embeds.data(), embeds.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
     kernel::evsScoresNemotronViT(embedsDev, scoresDev, tokensPerGroup, stream);
@@ -2772,8 +2773,669 @@ TEST(EvsScoresNemotron, RejectsNonPositiveTokensPerGroup)
 {
     cudaStream_t stream;
     CUDA_CHECK(cudaStreamCreate(&stream));
-    rt::Tensor embedsDev({4, 4}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor scoresDev({4}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor embedsDev({4, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor scoresDev({4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     EXPECT_ANY_THROW(kernel::evsScoresNemotronViT(embedsDev, scoresDev, 0, stream));
     CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+// ---------------------------------------------------------------------------
+// Content digest
+// ---------------------------------------------------------------------------
+
+namespace
+{
+//! Scratch generous enough for every image these tests hash (at most 32x32 NV12, 48 rows).
+rt::Tensor MakeContentDigestScratch()
+{
+    return rt::Tensor({64, static_cast<int64_t>(sizeof(kernel::ImageRowDigest))}, rt::DeviceType::kCPU,
+        trt_edgellm::DataType::kUINT8);
+}
+
+//! One image's identity: `launchImageContentDigest`, drain `stream`, then `finishImageContentDigest`.
+rt::Hash128 DigestOne(rt::imageUtils::ImageData const& image, rt::Tensor& rowDigests, cudaStream_t stream)
+{
+    rt::imageUtils::ImageDigestLaunch const launch
+        = rt::imageUtils::launchImageContentDigest(image, rowDigests, 0, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    return rt::imageUtils::finishImageContentDigest(launch, rowDigests);
+}
+} // namespace
+
+// For every enumerated format, admission turns on whether the storage it reads from is present, not on
+// where the pixels live.
+TEST(ContentDigest, AdmitsEveryPixelForm)
+{
+    int64_t const height = 32, width = 32;
+    int64_t const chromaRowBytes = 2 * ((width + 1) / 2);
+    int64_t const yBytes = width * height;
+    int64_t const uvBytes = chromaRowBytes * ((height + 1) / 2);
+    cudaStream_t stream{nullptr};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    rt::Tensor scratch = MakeContentDigestScratch();
+
+    std::vector<unsigned char> pixels(static_cast<size_t>(height * width * 3), 7);
+    EXPECT_NO_THROW(DigestOne(MakePinnedRgbImage(pixels, 1, height, width), scratch, stream));
+
+    std::vector<unsigned char> y(static_cast<size_t>(yBytes), 128);
+    std::vector<unsigned char> uv(static_cast<size_t>(uvBytes), 128);
+    rt::imageUtils::ImageData const hostNv12 = MakePinnedNv12Image(y, uv, height, width, width, chromaRowBytes,
+        rt::imageUtils::ColorStandard::kBt709, rt::imageUtils::ColorRange::kLimited);
+    EXPECT_NO_THROW(DigestOne(hostNv12, scratch, stream));
+
+    auto deviceBuffer = std::make_shared<rt::Tensor>(
+        rt::Tensor({yBytes + uvBytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8));
+    CUDA_CHECK(cudaMemcpy(deviceBuffer->rawPointer(), hostNv12.buffer->rawPointer(),
+        static_cast<size_t>(yBytes + uvBytes), cudaMemcpyHostToDevice));
+    EXPECT_NO_THROW(
+        DigestOne(rt::imageUtils::wrapImageBuffer(deviceBuffer, hostNv12.layout, width, height, 1), scratch, stream));
+
+    TexturePlane luma;
+    TexturePlane chroma;
+    CUDA_CHECK(MakeTexturePlane(luma, y.data(), width, height, 0));
+    CUDA_CHECK(MakeTexturePlane(chroma, uv.data(), (width + 1) / 2, (height + 1) / 2, 8));
+    EXPECT_NO_THROW(
+        DigestOne(rt::imageUtils::wrapImageTexture(luma.texture, chroma.texture, rt::imageUtils::ColorStandard::kBt709,
+                      rt::imageUtils::ColorRange::kLimited, width, height),
+            scratch, stream));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+// The wrap entry points reject each of these, but ImageData is an open aggregate a caller can also
+// fill in field by field.
+TEST(ContentDigest, RejectsAnImageWithoutPixels)
+{
+    int64_t const height = 32, width = 32;
+    cudaStream_t stream{nullptr};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    rt::Tensor scratch = MakeContentDigestScratch();
+
+    std::vector<unsigned char> const pixels(static_cast<size_t>(height * width * 3), 7);
+    rt::imageUtils::ImageData const rgb = MakePinnedRgbImage(pixels, 1, height, width);
+    ASSERT_NO_THROW(DigestOne(rgb, scratch, stream));
+
+    EXPECT_ANY_THROW(DigestOne(rt::imageUtils::ImageData{}, scratch, stream));
+
+    rt::imageUtils::ImageData noBuffer = rgb;
+    noBuffer.buffer.reset();
+    EXPECT_ANY_THROW(DigestOne(noBuffer, scratch, stream));
+
+    rt::imageUtils::ImageData emptyBuffer = rgb;
+    emptyBuffer.buffer = std::make_shared<rt::Tensor>();
+    EXPECT_ANY_THROW(DigestOne(emptyBuffer, scratch, stream));
+
+    rt::imageUtils::ImageData noHeight = rgb;
+    noHeight.height = 0;
+    EXPECT_ANY_THROW(DigestOne(noHeight, scratch, stream));
+
+    rt::imageUtils::ImageData noFrames = rgb;
+    noFrames.frames = 0;
+    EXPECT_ANY_THROW(DigestOne(noFrames, scratch, stream));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+// ImageFormat has a fixed underlying type, so a value outside the enumerators is well formed and
+// reaches the fall-through.
+TEST(ContentDigest, RefusesAFormatItDoesNotEnumerate)
+{
+    int64_t const height = 32, width = 32;
+    cudaStream_t stream{nullptr};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    rt::Tensor scratch = MakeContentDigestScratch();
+
+    std::vector<unsigned char> const pixels(static_cast<size_t>(height * width * 3), 7);
+    rt::imageUtils::ImageData unknownFormat = MakePinnedRgbImage(pixels, 1, height, width);
+    ASSERT_NO_THROW(DigestOne(unknownFormat, scratch, stream));
+
+    unknownFormat.layout.format = static_cast<rt::imageUtils::ImageFormat>(99);
+    EXPECT_ANY_THROW(DigestOne(unknownFormat, scratch, stream));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+// A block-linear frame addresses no buffer, so its planes are the only storage there is to check.
+TEST(ContentDigest, RejectsBlockLinearWithAnUnsetPlane)
+{
+    int64_t const height = 32, width = 32;
+    int64_t const chromaW = (width + 1) / 2, chromaH = (height + 1) / 2;
+    Nv12PathPair frame(height, width, /*chromaCheckerboard=*/false);
+    cudaStream_t stream{nullptr};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    rt::Tensor scratch = MakeContentDigestScratch();
+
+    TexturePlane luma;
+    TexturePlane chroma;
+    CUDA_CHECK(MakeTexturePlane(luma, frame.y.data(), width, height, 0));
+    CUDA_CHECK(MakeTexturePlane(chroma, frame.uv.data(), chromaW, chromaH, 8));
+    rt::imageUtils::ImageData const blockLinear = rt::imageUtils::wrapImageTexture(luma.texture, chroma.texture,
+        rt::imageUtils::ColorStandard::kBt709, rt::imageUtils::ColorRange::kLimited, width, height);
+    ASSERT_NO_THROW(DigestOne(blockLinear, scratch, stream));
+
+    rt::imageUtils::ImageData noLuma = blockLinear;
+    noLuma.textures.plane0 = cudaTextureObject_t{};
+    EXPECT_ANY_THROW(DigestOne(noLuma, scratch, stream));
+
+    rt::imageUtils::ImageData noChroma = blockLinear;
+    noChroma.textures.plane1 = cudaTextureObject_t{};
+    EXPECT_ANY_THROW(DigestOne(noChroma, scratch, stream));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+// ---------------------------------------------------------------------------
+// Content digest rows
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+//! Where the pixels sit inside the allocation, so a case can vary the placement alone.
+struct Nv12Placement
+{
+    int64_t lumaPad{0};      //!< Padding bytes after each luma row.
+    int64_t chromaPad{0};    //!< Padding bytes after each chroma row.
+    int64_t planeGap{0};     //!< Unused bytes between the two planes.
+    unsigned char filler{0}; //!< Byte written into that padding and that gap.
+};
+
+//! An NV12 frame stack in device memory, kept next to the valid bytes it was built from.
+struct Nv12Stack
+{
+    std::vector<unsigned char> luma;   //!< Valid luma bytes, tightly packed, frame after frame.
+    std::vector<unsigned char> chroma; //!< Valid chroma bytes, likewise.
+    std::shared_ptr<rt::Tensor> buffer;
+    std::vector<kernel::ImageDigestPlane> planes;
+    int32_t lumaRowBytes{0};
+    int32_t chromaRowBytes{0};
+    int32_t lumaRows{0};
+    int32_t chromaRows{0};
+};
+
+Nv12Stack MakeNv12Stack(int32_t const height, int32_t const width, int32_t const frames, Nv12Placement const& placement,
+    uint32_t const seed)
+{
+    Nv12Stack stack;
+    stack.lumaRowBytes = width;
+    stack.lumaRows = height;
+    stack.chromaRowBytes = 2 * ((width + 1) / 2);
+    stack.chromaRows = (height + 1) / 2;
+
+    stack.luma.resize(static_cast<size_t>(frames) * stack.lumaRows * stack.lumaRowBytes);
+    stack.chroma.resize(static_cast<size_t>(frames) * stack.chromaRows * stack.chromaRowBytes);
+    for (size_t i = 0; i < stack.luma.size(); ++i)
+    {
+        stack.luma[i] = static_cast<unsigned char>((i * 37 + seed) % 251);
+    }
+    for (size_t i = 0; i < stack.chroma.size(); ++i)
+    {
+        stack.chroma[i] = static_cast<unsigned char>((i * 53 + seed) % 241);
+    }
+
+    int64_t const lumaPitch = stack.lumaRowBytes + placement.lumaPad;
+    int64_t const chromaPitch = stack.chromaRowBytes + placement.chromaPad;
+    int64_t const lumaFrameStride = lumaPitch * stack.lumaRows;
+    int64_t const chromaFrameStride = chromaPitch * stack.chromaRows;
+    int64_t const chromaOffset = lumaFrameStride * frames + placement.planeGap;
+    int64_t const totalBytes = chromaOffset + chromaFrameStride * frames;
+
+    std::vector<unsigned char> staged(static_cast<size_t>(totalBytes), placement.filler);
+    for (int32_t t = 0; t < frames; ++t)
+    {
+        for (int32_t r = 0; r < stack.lumaRows; ++r)
+        {
+            std::memcpy(&staged[t * lumaFrameStride + r * lumaPitch],
+                &stack.luma[static_cast<size_t>(t * stack.lumaRows + r) * stack.lumaRowBytes], stack.lumaRowBytes);
+        }
+        for (int32_t r = 0; r < stack.chromaRows; ++r)
+        {
+            std::memcpy(&staged[chromaOffset + t * chromaFrameStride + r * chromaPitch],
+                &stack.chroma[static_cast<size_t>(t * stack.chromaRows + r) * stack.chromaRowBytes],
+                stack.chromaRowBytes);
+        }
+    }
+
+    stack.buffer
+        = std::make_shared<rt::Tensor>(rt::Tensor({totalBytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8));
+    CUDA_CHECK(cudaMemcpy(stack.buffer->rawPointer(), staged.data(), staged.size(), cudaMemcpyHostToDevice));
+
+    auto const* const base = static_cast<unsigned char const*>(stack.buffer->rawPointer());
+    stack.planes = {kernel::ImageDigestPlane{base, 0, kernel::DigestAccess::kPITCH_LINEAR, 0, lumaPitch,
+                        lumaFrameStride, stack.lumaRowBytes, stack.lumaRows},
+        kernel::ImageDigestPlane{base, 0, kernel::DigestAccess::kPITCH_LINEAR, chromaOffset, chromaPitch,
+            chromaFrameStride, stack.chromaRowBytes, stack.chromaRows}};
+    return stack;
+}
+
+//! Digest `planes` and bring the components back.
+std::vector<kernel::ImageRowDigest> RowDigests(
+    std::vector<kernel::ImageDigestPlane> const& planes, int32_t const frames)
+{
+    int32_t rowsPerFrame = 0;
+    for (auto const& plane : planes)
+    {
+        rowsPerFrame += plane.rows;
+    }
+    size_t const count = static_cast<size_t>(frames) * rowsPerFrame;
+    size_t const bytes = count * sizeof(kernel::ImageRowDigest);
+    rt::Tensor destination({static_cast<int64_t>(bytes)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8);
+
+    cudaStream_t stream{nullptr};
+    kernel::hashImageRows(planes.data(), static_cast<int32_t>(planes.size()), frames,
+        static_cast<kernel::ImageRowDigest*>(destination.rawPointer()), stream);
+
+    std::vector<kernel::ImageRowDigest> host(count);
+    CUDA_CHECK(cudaMemcpyAsync(host.data(), destination.rawPointer(), bytes, cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    return host;
+}
+
+//! The host twin of one row component: 32 lanes each run 128-bit FNV-1a over their own stride of the
+//! row, then the lane digests combine through the same butterfly reduction as hashRow in
+//! imageUtilKernels.cu, reading lane 0's result.
+//! Unsigned 128-bit value for the host twin; MSVC has no unsigned __int128.
+struct Fnv
+{
+    uint64_t hi;
+    uint64_t lo;
+};
+
+Fnv fnvShiftLeft(Fnv const value, uint32_t const bits)
+{
+    if (bits == 0)
+    {
+        return value;
+    }
+    if (bits >= 64U)
+    {
+        return {value.lo << (bits - 64U), 0};
+    }
+    return {(value.hi << bits) | (value.lo >> (64U - bits)), value.lo << bits};
+}
+
+Fnv fnvAdd(Fnv const a, Fnv const b)
+{
+    uint64_t const lo = a.lo + b.lo;
+    return {a.hi + b.hi + (lo < a.lo ? 1U : 0U), lo};
+}
+
+//! value * (2^88 + 2^8 + 0x3B) mod 2^128, with 0x3B = 32 + 16 + 8 + 2 + 1.
+Fnv fnvMultiplyPrime(Fnv const value)
+{
+    Fnv result = fnvAdd(fnvShiftLeft(value, 88U), fnvShiftLeft(value, 8U));
+    for (uint32_t const bits : {5U, 4U, 3U, 1U, 0U})
+    {
+        result = fnvAdd(result, fnvShiftLeft(value, bits));
+    }
+    return result;
+}
+
+kernel::ImageRowDigest HostRowDigest(unsigned char const* const row, int32_t const byteCount)
+{
+    constexpr uint32_t kROW_LANES = 32;
+    Fnv const offset{0x6C62272E07BB0142ULL, 0x62B821756295C58DULL};
+
+    auto const fnvByte = [&](Fnv& state, uint8_t const value) {
+        state.lo ^= value;
+        state = fnvMultiplyPrime(state);
+    };
+    auto const fnvU64 = [&](Fnv& state, uint64_t value) {
+        for (uint32_t i = 0; i < sizeof(value); ++i)
+        {
+            fnvByte(state, static_cast<uint8_t>(value));
+            value >>= 8U;
+        }
+    };
+
+    std::array<Fnv, kROW_LANES> combined{};
+    for (uint32_t lane = 0; lane < kROW_LANES; ++lane)
+    {
+        Fnv laneState = offset;
+        for (int32_t index = static_cast<int32_t>(lane); index < byteCount; index += kROW_LANES)
+        {
+            fnvByte(laneState, row[index]);
+        }
+        combined[lane] = laneState;
+    }
+    for (uint32_t shuffleOffset = kROW_LANES / 2; shuffleOffset > 0; shuffleOffset >>= 1)
+    {
+        std::array<Fnv, kROW_LANES> next = combined;
+        for (uint32_t lane = 0; lane < kROW_LANES; ++lane)
+        {
+            Fnv const partner = combined[lane ^ shuffleOffset];
+            fnvU64(next[lane], partner.hi);
+            fnvU64(next[lane], partner.lo);
+        }
+        combined = next;
+    }
+    return {combined[0].hi, combined[0].lo};
+}
+
+void ExpectSameDigest(kernel::ImageRowDigest const& actual, kernel::ImageRowDigest const& expected, size_t const entry)
+{
+    EXPECT_EQ(actual.hi, expected.hi) << "high half differs at entry " << entry;
+    EXPECT_EQ(actual.lo, expected.lo) << "low half differs at entry " << entry;
+}
+
+} // namespace
+
+// The device loop and HostRowDigest are two implementations of one algorithm, held to the same value on
+// every row of a padded three-frame stack.
+TEST(ImageRowDigest, MatchesTheHostHashOfEveryRow)
+{
+    int32_t const height = 34, width = 40, frames = 3;
+    Nv12Stack const stack = MakeNv12Stack(height, width, frames, {5, 7, 96, 0xAB}, 11);
+    std::vector<kernel::ImageRowDigest> const digests = RowDigests(stack.planes, frames);
+
+    ASSERT_EQ(digests.size(), static_cast<size_t>(frames) * (stack.lumaRows + stack.chromaRows));
+    size_t entry = 0;
+    for (int32_t t = 0; t < frames; ++t)
+    {
+        for (int32_t r = 0; r < stack.lumaRows; ++r, ++entry)
+        {
+            size_t const row = static_cast<size_t>(t * stack.lumaRows + r) * stack.lumaRowBytes;
+            ExpectSameDigest(digests[entry], HostRowDigest(&stack.luma[row], stack.lumaRowBytes), entry);
+        }
+        for (int32_t r = 0; r < stack.chromaRows; ++r, ++entry)
+        {
+            size_t const row = static_cast<size_t>(t * stack.chromaRows + r) * stack.chromaRowBytes;
+            ExpectSameDigest(digests[entry], HostRowDigest(&stack.chroma[row], stack.chromaRowBytes), entry);
+        }
+    }
+}
+
+// Pitch and plane placement decide where the bytes sit, not what the picture is.
+TEST(ImageRowDigest, IgnoresPaddingAndPlaneGaps)
+{
+    int32_t const height = 18, width = 22, frames = 2;
+    Nv12Stack const tight = MakeNv12Stack(height, width, frames, {}, 3);
+    Nv12Stack const padded = MakeNv12Stack(height, width, frames, {13, 9, 64, 0xFF}, 3);
+    ASSERT_EQ(tight.luma, padded.luma);
+    ASSERT_EQ(tight.chroma, padded.chroma);
+
+    std::vector<kernel::ImageRowDigest> const fromTight = RowDigests(tight.planes, frames);
+    std::vector<kernel::ImageRowDigest> const fromPadded = RowDigests(padded.planes, frames);
+    ASSERT_EQ(fromTight.size(), fromPadded.size());
+    for (size_t entry = 0; entry < fromTight.size(); ++entry)
+    {
+        ExpectSameDigest(fromPadded[entry], fromTight[entry], entry);
+    }
+}
+
+// The two paths carry one picture, so the cache is only shared between them if they reach the same
+// components.
+TEST(ImageRowDigest, SamplesBlockLinearToTheSameComponents)
+{
+    int32_t const height = 24, width = 30;
+    Nv12Stack const pitchLinear = MakeNv12Stack(height, width, 1, {6, 4, 32, 0x5A}, 17);
+
+    TexturePlane luma;
+    TexturePlane chroma;
+    CUDA_CHECK(MakeTexturePlane(luma, pitchLinear.luma.data(), width, height, 0));
+    CUDA_CHECK(MakeTexturePlane(chroma, pitchLinear.chroma.data(), (width + 1) / 2, (height + 1) / 2, 8));
+
+    std::vector<kernel::ImageDigestPlane> const sampled
+        = {kernel::ImageDigestPlane{nullptr, luma.texture, kernel::DigestAccess::kTEXTURE_LUMA, 0, 0, 0,
+               pitchLinear.lumaRowBytes, pitchLinear.lumaRows},
+            kernel::ImageDigestPlane{nullptr, chroma.texture, kernel::DigestAccess::kTEXTURE_CHROMA, 0, 0, 0,
+                pitchLinear.chromaRowBytes, pitchLinear.chromaRows}};
+
+    std::vector<kernel::ImageRowDigest> const fromBuffer = RowDigests(pitchLinear.planes, 1);
+    std::vector<kernel::ImageRowDigest> const fromTexture = RowDigests(sampled, 1);
+    ASSERT_EQ(fromBuffer.size(), fromTexture.size());
+    for (size_t entry = 0; entry < fromBuffer.size(); ++entry)
+    {
+        ExpectSameDigest(fromTexture[entry], fromBuffer[entry], entry);
+    }
+}
+
+// One warp hashes one row and rows never combine, so a component cannot turn on how many rows were
+// launched with it.
+TEST(ImageRowDigest, DoesNotDependOnTheLaunchConfiguration)
+{
+    int32_t const height = 600, width = 64, row = 137;
+    Nv12Stack const stack = MakeNv12Stack(height, width, 1, {8, 0, 0, 0x11}, 23);
+    std::vector<kernel::ImageRowDigest> const many = RowDigests(stack.planes, 1);
+
+    std::vector<kernel::ImageDigestPlane> single = {stack.planes[0]};
+    single[0].offsetBytes += static_cast<int64_t>(row) * single[0].pitchBytes;
+    single[0].rows = 1;
+    std::vector<kernel::ImageRowDigest> const one = RowDigests(single, 1);
+
+    ASSERT_EQ(one.size(), 1U);
+    ExpectSameDigest(one[0], many[row], row);
+}
+
+// A cache hit stands on the components moving whenever the picture does, and on nothing else moving.
+TEST(ImageRowDigest, SeparatesFramesThatDifferByOneByte)
+{
+    int32_t const height = 16, width = 16, touchedRow = 9, touchedColumn = 3;
+    Nv12Stack const stack = MakeNv12Stack(height, width, 1, {}, 41);
+    std::vector<kernel::ImageRowDigest> const before = RowDigests(stack.planes, 1);
+
+    unsigned char const changed
+        = static_cast<unsigned char>(stack.luma[touchedRow * stack.lumaRowBytes + touchedColumn] ^ 1U);
+    auto* const base = static_cast<unsigned char*>(stack.buffer->rawPointer());
+    CUDA_CHECK(cudaMemcpy(
+        base + touchedRow * stack.planes[0].pitchBytes + touchedColumn, &changed, 1, cudaMemcpyHostToDevice));
+
+    std::vector<kernel::ImageRowDigest> const after = RowDigests(stack.planes, 1);
+    ASSERT_EQ(after.size(), before.size());
+    for (size_t entry = 0; entry < before.size(); ++entry)
+    {
+        bool const unchanged = after[entry].hi == before[entry].hi && after[entry].lo == before[entry].lo;
+        EXPECT_EQ(unchanged, entry != static_cast<size_t>(touchedRow)) << "entry " << entry;
+    }
+}
+
+TEST(ImageRowDigest, RejectsAnUnusableGeometry)
+{
+    Nv12Stack const stack = MakeNv12Stack(8, 8, 1, {}, 5);
+    rt::Tensor destination({64 * static_cast<int64_t>(sizeof(kernel::ImageRowDigest))}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kUINT8);
+    auto* const rowDigests = static_cast<kernel::ImageRowDigest*>(destination.rawPointer());
+    cudaStream_t stream{nullptr};
+
+    EXPECT_ANY_THROW(kernel::hashImageRows(stack.planes.data(), 3, 1, rowDigests, stream));
+    EXPECT_ANY_THROW(kernel::hashImageRows(stack.planes.data(), 2, 0, rowDigests, stream));
+
+    std::vector<kernel::ImageDigestPlane> noRows = stack.planes;
+    noRows[1].rows = 0;
+    EXPECT_ANY_THROW(kernel::hashImageRows(noRows.data(), 2, 1, rowDigests, stream));
+
+    std::vector<kernel::ImageDigestPlane> noBytes = stack.planes;
+    noBytes[0].bytes = nullptr;
+    EXPECT_ANY_THROW(kernel::hashImageRows(noBytes.data(), 2, 1, rowDigests, stream));
+
+    std::vector<kernel::ImageDigestPlane> noTexture = stack.planes;
+    noTexture[0].access = kernel::DigestAccess::kTEXTURE_LUMA;
+    EXPECT_ANY_THROW(kernel::hashImageRows(noTexture.data(), 2, 1, rowDigests, stream));
+
+    std::vector<kernel::ImageDigestPlane> narrowPitch = stack.planes;
+    narrowPitch[0].pitchBytes = narrowPitch[0].validRowBytes - 1;
+    EXPECT_ANY_THROW(kernel::hashImageRows(narrowPitch.data(), 2, 1, rowDigests, stream));
+}
+
+// ---------------------------------------------------------------------------
+// Image content digest
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+//! Rows `DigestOne` walks over `image`, and so the row count its scratch has to hold.
+int64_t DigestRowCount(rt::imageUtils::ImageData const& image)
+{
+    int64_t const rowsPerFrame = image.layout.format == rt::imageUtils::ImageFormat::kRGB8
+        ? image.height
+        : image.height + (image.height + 1) / 2;
+    return image.frames * rowsPerFrame;
+}
+
+//! Digest `image` through scratch sized exactly for it.
+rt::Hash128 ContentDigestOf(rt::imageUtils::ImageData const& image)
+{
+    rt::Tensor scratch({DigestRowCount(image), static_cast<int64_t>(sizeof(kernel::ImageRowDigest))},
+        rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8);
+    cudaStream_t stream{nullptr};
+    return DigestOne(image, scratch, stream);
+}
+
+//! A frame whose luma and chroma both vary, so a walk that drops or repeats a row shows up.
+rt::imageUtils::ImageData MakeNv12Frame(std::vector<unsigned char>& y, std::vector<unsigned char>& uv,
+    int64_t const height, int64_t const width, int64_t const yPitch, int64_t const uvPitch)
+{
+    int64_t const chromaRowBytes = 2 * ((width + 1) / 2);
+    y.resize(static_cast<size_t>(height * width));
+    uv.resize(static_cast<size_t>(((height + 1) / 2) * chromaRowBytes));
+    for (size_t i = 0; i < y.size(); ++i)
+    {
+        y[i] = static_cast<unsigned char>((i * 31 + 7) % 251);
+    }
+    for (size_t i = 0; i < uv.size(); ++i)
+    {
+        uv[i] = static_cast<unsigned char>((i * 47 + 13) % 241);
+    }
+    return MakePinnedNv12Image(y, uv, height, width, yPitch, uvPitch, rt::imageUtils::ColorStandard::kBt709,
+        rt::imageUtils::ColorRange::kLimited);
+}
+
+} // namespace
+
+// The two wrappings carry one picture, and the caches are only shared between them if the identity
+// agrees. A packed RGB8 frame of the same extents is a different picture and must not collide.
+TEST(ImageContentDigest, AgreesAcrossPitchLinearAndBlockLinear)
+{
+    int64_t const height = 28, width = 36;
+    int64_t const chromaW = (width + 1) / 2, chromaH = (height + 1) / 2;
+    Nv12PathPair frame(height, width, /*chromaCheckerboard=*/false);
+    CUDA_CHECK(MakeTexturePlane(frame.luma, frame.y.data(), width, height, 0));
+    CUDA_CHECK(MakeTexturePlane(frame.chroma, frame.uv.data(), chromaW, chromaH, 8));
+
+    rt::imageUtils::ImageData const pitchLinear = MakePinnedNv12Image(frame.y, frame.uv, height, width, width,
+        2 * chromaW, rt::imageUtils::ColorStandard::kBt709, rt::imageUtils::ColorRange::kLimited);
+    rt::imageUtils::ImageData const blockLinear
+        = rt::imageUtils::wrapImageTexture(frame.luma.texture, frame.chroma.texture,
+            rt::imageUtils::ColorStandard::kBt709, rt::imageUtils::ColorRange::kLimited, width, height);
+    EXPECT_EQ(ContentDigestOf(pitchLinear), ContentDigestOf(blockLinear));
+
+    std::vector<unsigned char> const rgb(static_cast<size_t>(height * width * 3), 0x40);
+    EXPECT_NE(ContentDigestOf(pitchLinear), ContentDigestOf(MakePinnedRgbImage(rgb, 1, height, width)));
+}
+
+// Pitch and plane placement decide where the bytes sit, not what the picture is, and residency
+// decides neither.
+TEST(ImageContentDigest, IgnoresPlacementAndResidency)
+{
+    int64_t const height = 20, width = 26;
+    std::vector<unsigned char> y;
+    std::vector<unsigned char> uv;
+    rt::imageUtils::ImageData const tight = MakeNv12Frame(y, uv, height, width, width, 2 * ((width + 1) / 2));
+    rt::imageUtils::ImageData const padded = MakeNv12Frame(y, uv, height, width, width + 17, 2 * ((width + 1) / 2) + 9);
+    rt::Hash128 const expected = ContentDigestOf(tight);
+    EXPECT_EQ(ContentDigestOf(padded), expected);
+
+    auto deviceBuffer = std::make_shared<rt::Tensor>(
+        rt::Tensor({tight.buffer->getMemoryCapacity()}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8));
+    CUDA_CHECK(cudaMemcpy(deviceBuffer->rawPointer(), tight.buffer->rawPointer(),
+        static_cast<size_t>(tight.buffer->getMemoryCapacity()), cudaMemcpyHostToDevice));
+    EXPECT_EQ(ContentDigestOf(rt::imageUtils::wrapImageBuffer(deviceBuffer, tight.layout, width, height, 1)), expected);
+}
+
+// The identity the caches key on has to move when the metadata that says how to read the pixels
+// moves, or the same bytes read two ways collide on one entry.
+TEST(ImageContentDigest, SeparatesTheMetadataThatReadsThePixels)
+{
+    int64_t const height = 18, width = 24;
+    std::vector<unsigned char> y;
+    std::vector<unsigned char> uv;
+    rt::imageUtils::ImageData const base = MakeNv12Frame(y, uv, height, width, width, 2 * ((width + 1) / 2));
+    rt::Hash128 const expected = ContentDigestOf(base);
+
+    auto vary = [&](auto&& change) {
+        rt::imageUtils::ImageData altered = base;
+        change(altered);
+        return ContentDigestOf(altered);
+    };
+
+    EXPECT_NE(vary([](auto& i) { i.layout.colorStandard = rt::imageUtils::ColorStandard::kBt601; }), expected);
+    EXPECT_NE(vary([](auto& i) { i.layout.colorRange = rt::imageUtils::ColorRange::kFull; }), expected);
+    EXPECT_NE(vary([](auto& i) { i.isVideo = true; }), expected);
+    EXPECT_NE(vary([](auto& i) { i.doResize = false; }), expected);
+    EXPECT_NE(vary([](auto& i) { i.fps = 30.0; }), expected);
+    EXPECT_NE(vary([](auto& i) { i.timestamps = {0.5}; }), expected);
+
+    // Reading the same allocation as a shorter frame is a different picture, not a placement change.
+    rt::imageUtils::ImageData shorter = base;
+    shorter.height = height - 2;
+    EXPECT_NE(ContentDigestOf(shorter), expected);
+}
+
+TEST(ImageContentDigest, SeparatesOneChangedPixel)
+{
+    int64_t const height = 16, width = 16;
+    std::vector<unsigned char> y;
+    std::vector<unsigned char> uv;
+    rt::imageUtils::ImageData const image = MakeNv12Frame(y, uv, height, width, width, 2 * ((width + 1) / 2));
+    rt::Hash128 const before = ContentDigestOf(image);
+
+    auto* const luma = static_cast<unsigned char*>(image.buffer->rawPointer());
+    luma[5 * width + 3] = static_cast<unsigned char>(luma[5 * width + 3] ^ 1U);
+    EXPECT_NE(ContentDigestOf(image), before);
+}
+
+// Frames are hashed in order, so a stack is not the sum of its frames.
+TEST(ImageContentDigest, SeparatesFrameOrder)
+{
+    int64_t const height = 12, width = 12, frames = 2;
+    size_t const frameElems = static_cast<size_t>(height * width * 3);
+    std::vector<unsigned char> forward(frames * frameElems);
+    for (size_t i = 0; i < forward.size(); ++i)
+    {
+        forward[i] = static_cast<unsigned char>((i * 29 + 3) % 253);
+    }
+    std::vector<unsigned char> reversed(forward.begin() + frameElems, forward.end());
+    reversed.insert(reversed.end(), forward.begin(), forward.begin() + frameElems);
+
+    EXPECT_NE(ContentDigestOf(MakePinnedRgbImage(forward, frames, height, width)),
+        ContentDigestOf(MakePinnedRgbImage(reversed, frames, height, width)));
+}
+
+TEST(ImageContentDigest, RejectsAnUnusableCall)
+{
+    int64_t const height = 16, width = 16;
+    std::vector<unsigned char> y;
+    std::vector<unsigned char> uv;
+    rt::imageUtils::ImageData const image = MakeNv12Frame(y, uv, height, width, width, 2 * ((width + 1) / 2));
+    int64_t const rows = DigestRowCount(image);
+    int64_t const componentBytes = static_cast<int64_t>(sizeof(kernel::ImageRowDigest));
+    cudaStream_t stream{nullptr};
+
+    rt::Tensor onDevice({rows, componentBytes}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8);
+    EXPECT_ANY_THROW(DigestOne(image, onDevice, stream));
+
+    rt::Tensor tooSmall({rows - 1, componentBytes}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8);
+    EXPECT_ANY_THROW(DigestOne(image, tooSmall, stream));
+
+    rt::Tensor scratch({rows, componentBytes}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8);
+    EXPECT_ANY_THROW(DigestOne(rt::imageUtils::ImageData{}, scratch, stream));
+
+    rt::imageUtils::ImageData noColour = image;
+    noColour.layout.colorStandard = rt::imageUtils::ColorStandard::kUnspecified;
+    EXPECT_ANY_THROW(DigestOne(noColour, scratch, stream));
+
+    rt::imageUtils::ImageData narrowPitch = image;
+    narrowPitch.layout.pitchBytes[0] = width - 1;
+    EXPECT_ANY_THROW(DigestOne(narrowPitch, scratch, stream));
+
+    // Scratch for two frames, so what rejects the two below is the image and not the room to hold it.
+    rt::Tensor twoFrames({2 * rows, componentBytes}, rt::DeviceType::kCPU, trt_edgellm::DataType::kUINT8);
+    rt::imageUtils::ImageData pastTheBuffer = image;
+    pastTheBuffer.frames = 2;
+    EXPECT_ANY_THROW(DigestOne(pastTheBuffer, twoFrames, stream));
+
+    Nv12PathPair frame(height, width, /*chromaCheckerboard=*/false);
+    CUDA_CHECK(MakeTexturePlane(frame.luma, frame.y.data(), width, height, 0));
+    CUDA_CHECK(MakeTexturePlane(frame.chroma, frame.uv.data(), (width + 1) / 2, (height + 1) / 2, 8));
+    rt::imageUtils::ImageData manyFrames = rt::imageUtils::wrapImageTexture(frame.luma.texture, frame.chroma.texture,
+        rt::imageUtils::ColorStandard::kBt709, rt::imageUtils::ColorRange::kLimited, width, height);
+    manyFrames.frames = 2;
+    EXPECT_ANY_THROW(DigestOne(manyFrames, twoFrames, stream));
 }

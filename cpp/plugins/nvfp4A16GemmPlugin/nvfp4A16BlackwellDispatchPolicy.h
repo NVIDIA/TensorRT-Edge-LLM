@@ -73,6 +73,8 @@ inline constexpr Nvfp4A16BlackwellGemvPolicy kSharedUpFp16Policy{{2, 2, 2, 2, 4}
 inline constexpr Nvfp4A16BlackwellGemvPolicy kSharedUpBf16Policy{{2, 2, 2, 2, 4}};
 inline constexpr Nvfp4A16BlackwellGemvPolicy kSharedDownPolicy{{4, 4, 4, 4, 4}};
 inline constexpr Nvfp4A16BlackwellGemvPolicy kLmHeadPolicy{{1, 1, 1, 1, 1}};
+inline constexpr Nvfp4A16BlackwellGemvPolicy kFusedQkvPolicy{{2, 2, 2, 2, 4}};
+inline constexpr Nvfp4A16BlackwellGemvPolicy kAttnOutPolicy{{4, 4, 4, 4, 4}};
 inline constexpr Nvfp4A16BlackwellGemvPolicy kGenericPolicy{{1, 1, 1, 1, 1}};
 
 constexpr bool isSupportedDtype(Nvfp4A16BlackwellDispatchDtype dtype) noexcept
@@ -94,6 +96,25 @@ constexpr Nvfp4A16BlackwellGemvPolicy const& getGemvPolicy(
     if (n == 131072 && k == 2688)
     {
         return kLmHeadPolicy;
+    }
+    // Shapes whose N leaves too few CTAs at split-K=1. One CTA covers kN_TILE
+    // output rows, so split-K is what raises the launch into the same CTA band
+    // the entries above target.
+    if (n == 4096 && k == 2048)
+    {
+        return kFusedQkvPolicy; // fused QKV, 32 tiles x 2 = 64 CTAs
+    }
+    if (n == 2048 && k == 2048)
+    {
+        return kAttnOutPolicy; // o_proj, 16 tiles x 4 = 64 CTAs
+    }
+    if (n == 6144 && k == 2048)
+    {
+        return kSharedUpFp16Policy; // gate/up, 48 tiles x 2 = 96 CTAs
+    }
+    if (n == 2048 && k == 6144)
+    {
+        return kSharedDownPolicy; // down_proj, 16 tiles x 4 = 64 CTAs
     }
     return kGenericPolicy;
 }

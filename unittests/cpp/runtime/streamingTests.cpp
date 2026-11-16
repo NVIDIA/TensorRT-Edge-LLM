@@ -26,7 +26,7 @@
 //                                           SlotStreamState, compactVector)
 //
 // The live-runtime integration scenarios (B*, S*, C*, L* from the plan) run
-// against real engines via examples/llm/llm_stream — see that binary.
+// against real engines via examples/cpp/llm_stream.cpp.
 //
 
 #include "common/utf8.h"
@@ -487,6 +487,37 @@ TEST_F(StreamChannelTest, FinishIsIdempotentFirstWriterWins)
     }
     EXPECT_EQ(count, 1);
     EXPECT_EQ(ch->getReason(), FinishReason::kError);
+}
+
+// Given an eight-token prompt whose stream the finalizer terminates, once before its prefill sampled a token and
+// once after a prefill that executed only three of its tokens
+// When the finalizer pushes the terminal chunk
+// Then the chunk reports -1 reused tokens before the prefill rather than the whole prompt, and five after it
+TEST_F(StreamChannelTest, FinalizerReportsReusedPromptTokensOnlyAfterThePrefill)
+{
+    auto const terminalChunkOf = [](int32_t generatedTokens, int32_t effectivePrefillLength) {
+        auto ch = StreamChannel::create();
+        rt::DecodingInferenceContext ctx;
+        ctx.slotStreams.resize(1);
+        ctx.slotStreams[0].channel = ch;
+        ctx.rawBatchedInputIds = {std::vector<int32_t>(8, 1)};
+        ctx.effectivePrefillLengths = {effectivePrefillLength};
+        ctx.currentGenerateLengths = {generatedTokens};
+        tokenizer::Tokenizer tok;
+        {
+            rt::StreamChannelFinalizer f(ctx, tok);
+        }
+        return ch->tryPop();
+    };
+
+    auto const beforePrefill = terminalChunkOf(/*generatedTokens=*/0, /*effectivePrefillLength=*/0);
+    ASSERT_TRUE(beforePrefill.has_value());
+    EXPECT_EQ(beforePrefill->promptTokenCount, 8);
+    EXPECT_EQ(beforePrefill->reusedPromptTokenCount, -1);
+
+    auto const afterPrefill = terminalChunkOf(/*generatedTokens=*/1, /*effectivePrefillLength=*/3);
+    ASSERT_TRUE(afterPrefill.has_value());
+    EXPECT_EQ(afterPrefill->reusedPromptTokenCount, 5);
 }
 
 TEST_F(StreamChannelTest, ConsumeDeliversAllChunksBeforeExit)

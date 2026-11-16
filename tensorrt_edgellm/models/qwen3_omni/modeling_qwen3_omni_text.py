@@ -184,7 +184,7 @@ class Qwen3OmniLanguageModel(CausalLM):
         deepstack_embeds: Tuple[torch.Tensor, ...] = (),
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
     ) -> Tuple:
         hidden_states, present_key_values, _ = self.model(
             inputs_embeds,

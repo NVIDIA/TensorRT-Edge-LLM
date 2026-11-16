@@ -17,6 +17,7 @@
 
 #include "multimodal/nemotron_omni/nemotronOmniAudioRunner.h"
 #include "common/checkMacros.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 #include "multimodal/common/audioUtils.h"
 #ifdef CUTE_DSL_GEMM_ENABLED
@@ -79,15 +80,17 @@ bool parakeetFbankConfigOk(audio::MelExtractorConfig const& cfg, std::string& re
 
 } // namespace
 
-NemotronOmniAudioRunner::NemotronOmniAudioRunner(std::string const& engineDir, cudaStream_t stream)
+NemotronOmniAudioRunner::NemotronOmniAudioRunner(
+    std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
     : MultimodalRunner()
 {
     // Audio runner does not use the visual engine from base class.
     // Load the audio engine instead.
-    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
 
     std::string const enginePath = engineDir + "/audio_encoder.engine";
     mAudioEngine = deserializeCudaEngineFromFile(*mRuntime, enginePath);
+    prepareEngineWeights(engineDir, checkpointDir, stream, *mAudioEngine);
 
     mAudioContext = std::unique_ptr<nvinfer1::IExecutionContext>(
         mAudioEngine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
@@ -209,7 +212,7 @@ bool NemotronOmniAudioRunner::allocateBuffer([[maybe_unused]] cudaStream_t strea
 {
     bool status{true};
 
-    mInputFeatures = rt::Tensor({1, mMaxSeqLen, mConfig.melBins}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
+    mInputFeatures = rt::Tensor({1, mMaxSeqLen, mConfig.melBins}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
         "NemotronOmniAudioRunner::mInputFeatures");
     status &= mAudioContext->setTensorAddress("input_features", mInputFeatures.rawPointer());
 
@@ -219,7 +222,7 @@ bool NemotronOmniAudioRunner::allocateBuffer([[maybe_unused]] cudaStream_t strea
     // setTensorAddress here.
     int64_t const maxEncodedSeqLen = mMaxSeqLen / mConfig.subsamplingFactor;
     mAudioEmbedding = rt::Tensor({maxEncodedSeqLen, static_cast<int64_t>(mConfig.audioFeatureDim)},
-        rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "NemotronOmniAudioRunner::mAudioEmbedding");
+        rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "NemotronOmniAudioRunner::mAudioEmbedding");
 
     if (!status)
     {
@@ -242,7 +245,7 @@ bool NemotronOmniAudioRunner::resizeEmbeddingForRows(int64_t rows)
     // written yet at this point in preprocess(), so dropping the old buffer
     // is safe.
     mAudioEmbedding = rt::Tensor(
-        {rows, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "NemotronOmniAudioRunner::mAudioEmbedding");
+        {rows, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "NemotronOmniAudioRunner::mAudioEmbedding");
     return true;
 }
 
@@ -273,7 +276,7 @@ bool NemotronOmniAudioRunner::encodeSingleClip(
         = destRowOffset * static_cast<int64_t>(mConfig.audioFeatureDim) * static_cast<int64_t>(sizeof(__half));
 
     bool status{true};
-    status &= mAudioContext->setInputShape("input_features", mInputFeatures.getShape().getTRTDims());
+    status &= mAudioContext->setInputShape("input_features", toTrtDims(mInputFeatures.getShape()));
     status &= mAudioContext->setTensorAddress("last_hidden_state", embeddingBase + destByteOffset);
     if (!status)
     {
@@ -360,27 +363,27 @@ bool NemotronOmniAudioRunner::initFbankResources(cudaStream_t stream)
 
     // ── 4. Allocation block — the ONLY site fbank device tensors are constructed;
     //    every buffer is sized at the kMAX bound, per-clip only reshapes. ──
-    mFbankResourcesParakeet.melFilterFp16Kmajor = rt::Tensor(
-        {nMel, kPad}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "NemotronOmniAudioRunner::melFilterFp16Kmajor");
+    mFbankResourcesParakeet.melFilterFp16Kmajor = rt::Tensor({nMel, kPad}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kHALF, "NemotronOmniAudioRunner::melFilterFp16Kmajor");
     mFbankResourcesParakeet.windowF32
-        = rt::Tensor({nFft}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "NemotronOmniAudioRunner::windowF32");
+        = rt::Tensor({nFft}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "NemotronOmniAudioRunner::windowF32");
     mFbankResourcesParakeet.fftTwiddle = rt::Tensor(
-        {nFft, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "NemotronOmniAudioRunner::fftTwiddle");
+        {nFft, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "NemotronOmniAudioRunner::fftTwiddle");
     mFbankResourcesParakeet.framedF32 = rt::Tensor(
-        {maxFrames, nFft}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "NemotronOmniAudioRunner::framedF32");
+        {maxFrames, nFft}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "NemotronOmniAudioRunner::framedF32");
     mFbankResourcesParakeet.magFp16 = rt::Tensor({static_cast<int64_t>(nPadMax), kPad}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "NemotronOmniAudioRunner::magFp16");
+        trt_edgellm::DataType::kHALF, "NemotronOmniAudioRunner::magFp16");
     mFbankResourcesParakeet.melPowerF32 = rt::Tensor({nMel, static_cast<int64_t>(nPadMax)}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "NemotronOmniAudioRunner::melPowerF32");
+        trt_edgellm::DataType::kFLOAT, "NemotronOmniAudioRunner::melPowerF32");
     mFbankResourcesParakeet.mean
-        = rt::Tensor({nMel}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "NemotronOmniAudioRunner::mean");
+        = rt::Tensor({nMel}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "NemotronOmniAudioRunner::mean");
     mFbankResourcesParakeet.invDenom
-        = rt::Tensor({nMel}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "NemotronOmniAudioRunner::invDenom");
+        = rt::Tensor({nMel}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "NemotronOmniAudioRunner::invDenom");
     mPcmF32Device = rt::Tensor(
-        {maxPcmSamples}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "NemotronOmniAudioRunner::mPcmF32Device");
+        {maxPcmSamples}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "NemotronOmniAudioRunner::mPcmF32Device");
     // Time-first [1, maxFrames, nMel] (parakeet layout; NOT whisper's [1, nMel, T]).
     mMelSpecDevice = rt::Tensor({1, maxFrames, static_cast<int64_t>(nMel)}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "NemotronOmniAudioRunner::mMelSpecDevice");
+        trt_edgellm::DataType::kHALF, "NemotronOmniAudioRunner::mMelSpecDevice");
 
     // ── 5. Fill-only block: H2D the persistent weight / table tensors, and zero
     //    the mag K-pad region once (see the per-clip-memset elimination below). ──
@@ -463,7 +466,7 @@ bool NemotronOmniAudioRunner::runGpuFbankClip(
     // melSpec runs within this encodeAllClips call, inside mMelSpecDevice's lifetime.
     melSpec
         = rt::Tensor(mMelSpecDevice.rawPointer(), {1, numFrames, static_cast<int64_t>(mFbankResourcesParakeet.nMel)},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     return audioUtils::fbankParakeet(mPcmF32Device, mFbankResourcesParakeet, melSpec, stream);
 }
 

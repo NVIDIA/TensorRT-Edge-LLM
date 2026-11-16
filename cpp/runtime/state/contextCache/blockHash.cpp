@@ -18,10 +18,8 @@
 #include "runtime/state/contextCache/blockHash.h"
 
 #include "common/checkMacros.h"
-#include "kernels/contextCacheKernels/blockHashKernel.h"
 
 #include <algorithm>
-#include <cstring>
 
 namespace trt_edgellm
 {
@@ -30,21 +28,9 @@ namespace rt
 namespace
 {
 
-struct FnvValue
-{
-    uint64_t hi;
-    uint64_t lo;
-};
-
-// 128-bit Fowler-Noll-Vo (FNV-1a) starts from the standard offset basis and consumes one byte at a time:
-//     state = (state XOR byte) * FNV_prime modulo 2^128.
-// The two-word unsigned arithmetic below supplies the modulo operation. Integers are serialized least-significant byte
-// first, and field tags plus presence markers make the byte stream unambiguous. FNV-1a is deterministic and inexpensive
-// but is not collision-resistant; BlockHash equality has no secondary token comparison in this layer.
-constexpr uint64_t kFNV_OFFSET_HI = 0x6C62272E07BB0142ULL;
-constexpr uint64_t kFNV_OFFSET_LO = 0x62B821756295C58DULL;
-constexpr FnvValue kFNV_OFFSET{kFNV_OFFSET_HI, kFNV_OFFSET_LO};
-
+// Integers are serialized least-significant byte first, and field tags plus presence markers make the byte stream
+// unambiguous. FNV-1a is deterministic and inexpensive but is not collision-resistant; BlockHash equality has no
+// secondary token comparison in this layer.
 enum class Tag : uint8_t
 {
     kParent = 1,
@@ -64,23 +50,8 @@ enum class Tag : uint8_t
     kIsolationDigest,
     kAbsent,
     kPresent,
-    kOpaqueIdentity,
-    kMediaToken,
+    kMediaToken = 19, // 18 is the opaque-identity tag (common/identityHash.cpp).
 };
-
-void fnvByte(FnvValue& state, uint8_t value) noexcept
-{
-    state.lo ^= static_cast<uint64_t>(value);
-
-    // FNV_prime is 2^88 + 0x13B. Split the low word into 32-bit limbs to compute the carry portably.
-    constexpr uint64_t kFNV_LOW_FACTOR = 0x13B;
-    uint64_t const lowLow = static_cast<uint32_t>(state.lo) * kFNV_LOW_FACTOR;
-    uint64_t const lowHigh = (state.lo >> 32U) * kFNV_LOW_FACTOR;
-    uint64_t const productLow = lowLow + (lowHigh << 32U);
-    uint64_t const carry = (lowHigh >> 32U) + static_cast<uint64_t>(productLow < lowLow);
-    state.hi = state.hi * kFNV_LOW_FACTOR + carry + (state.lo << 24U);
-    state.lo = productLow;
-}
 
 void fnvTag(FnvValue& state, Tag tag) noexcept
 {
@@ -101,16 +72,6 @@ void fnvU32(FnvValue& state, uint32_t value) noexcept
 void fnvI32(FnvValue& state, int32_t value) noexcept
 {
     fnvU32(state, static_cast<uint32_t>(value));
-}
-
-void fnvU64(FnvValue& state, uint64_t value) noexcept
-{
-    constexpr size_t kBYTE_COUNT = sizeof(value);
-    constexpr size_t kBITS_PER_BYTE = 8U;
-    for (size_t index = 0; index < kBYTE_COUNT; ++index)
-    {
-        fnvByte(state, static_cast<uint8_t>(value >> (kBITS_PER_BYTE * index)));
-    }
 }
 
 void fnvHash(FnvValue& state, Hash128 const& hash) noexcept
@@ -134,190 +95,7 @@ void fnvOptionalHash(FnvValue& state, Tag tag, std::optional<Hash128> const& has
     }
 }
 
-BlockHash finishHash(FnvValue state) noexcept
-{
-    return BlockHash{state.hi, state.lo};
-}
-
 } // namespace
-
-Hash128 hashOpaqueIdentityCpu(std::string_view bytes)
-{
-    size_t const totalSize = bytes.size();
-    int32_t const numChunks = kHASH_NUM_CHUNKS;
-    size_t const chunkSize = (totalSize + static_cast<size_t>(numChunks) - 1) / static_cast<size_t>(numChunks);
-
-    // Phase 1: hash each chunk independently.
-    FnvValue partials[kHASH_NUM_CHUNKS];
-    for (int32_t c = 0; c < numChunks; ++c)
-    {
-        size_t const start = static_cast<size_t>(c) * chunkSize;
-        size_t const end = std::min(start + chunkSize, totalSize);
-        FnvValue partial = kFNV_OFFSET;
-        for (size_t i = start; i < end; ++i)
-        {
-            fnvByte(partial, static_cast<uint8_t>(bytes[i]));
-        }
-        partials[c] = partial;
-    }
-
-    // Phase 2: reduce all per-chunk digests into the final hash.
-    FnvValue state = kFNV_OFFSET;
-    fnvTag(state, Tag::kOpaqueIdentity);
-    fnvU64(state, static_cast<uint64_t>(totalSize));
-    for (int32_t c = 0; c < numChunks; ++c)
-    {
-        fnvU64(state, partials[c].hi);
-        fnvU64(state, partials[c].lo);
-    }
-    return finishHash(state);
-}
-
-Hash128 hashOpaqueIdentity(std::string_view bytes, cudaStream_t stream, bool cpuOnly)
-{
-    constexpr size_t kGPU_THRESHOLD = 1024 * 1024;
-    if (cpuOnly || stream == nullptr || bytes.size() < kGPU_THRESHOLD)
-    {
-        return hashOpaqueIdentityCpu(bytes);
-    }
-
-    size_t const totalSize = bytes.size();
-
-    // Determine whether the GPU shares physical memory with the CPU (Tegra/Thor/Orin).
-    // On integrated GPUs, register the host buffer for zero-copy access to avoid the H2D memcpy.
-    uint8_t const* gpuReadPtr = nullptr;
-    uint8_t* deviceAlloc = nullptr;
-    bool hostRegistered = false;
-
-    int device = 0;
-    cudaDeviceProp prop{};
-    cudaGetDevice(&device);
-    cudaGetDeviceProperties(&prop, device);
-
-    if (prop.integrated)
-    {
-        // Unified memory: GPU can read host memory directly via mapped pointer.
-        if (cudaHostRegister(
-                const_cast<void*>(static_cast<void const*>(bytes.data())), totalSize, cudaHostRegisterMapped)
-            == cudaSuccess)
-        {
-            void* devicePtr = nullptr;
-            if (cudaHostGetDevicePointer(&devicePtr, const_cast<void*>(static_cast<void const*>(bytes.data())), 0)
-                == cudaSuccess)
-            {
-                gpuReadPtr = static_cast<uint8_t const*>(devicePtr);
-                hostRegistered = true;
-            }
-            else
-            {
-                cudaHostUnregister(const_cast<void*>(static_cast<void const*>(bytes.data())));
-            }
-        }
-    }
-
-    // Discrete GPU or registration failed: pin the source buffer then async-copy to device.
-    // bytes.data() is pageable — passing it directly to cudaMemcpyAsync causes CUDA to fall back to a
-    // synchronous internal copy. Pinning first enables true async DMA on the provided stream.
-    uint8_t* pinnedStaging = nullptr;
-    if (gpuReadPtr == nullptr)
-    {
-        if (cudaMallocHost(&pinnedStaging, totalSize) != cudaSuccess)
-        {
-            return hashOpaqueIdentityCpu(bytes);
-        }
-        std::memcpy(pinnedStaging, bytes.data(), totalSize);
-
-        if (cudaMallocAsync(&deviceAlloc, totalSize, stream) != cudaSuccess)
-        {
-            cudaFreeHost(pinnedStaging);
-            return hashOpaqueIdentityCpu(bytes);
-        }
-        if (cudaMemcpyAsync(deviceAlloc, pinnedStaging, totalSize, cudaMemcpyHostToDevice, stream) != cudaSuccess)
-        {
-            cudaFreeAsync(deviceAlloc, stream);
-            cudaFreeHost(pinnedStaging);
-            return hashOpaqueIdentityCpu(bytes);
-        }
-        gpuReadPtr = deviceAlloc;
-    }
-
-    // Allocate device buffer for kernel output and pinned host buffer for D2H readback.
-    size_t const partialsBytes = static_cast<size_t>(kHASH_NUM_CHUNKS) * 2 * sizeof(uint64_t);
-    uint64_t* devicePartials = nullptr;
-    uint64_t* pinnedPartials = nullptr;
-
-    if (cudaMallocAsync(&devicePartials, partialsBytes, stream) != cudaSuccess)
-    {
-        if (hostRegistered)
-            cudaHostUnregister(const_cast<void*>(static_cast<void const*>(bytes.data())));
-        if (deviceAlloc)
-            cudaFreeAsync(deviceAlloc, stream);
-        if (pinnedStaging)
-            cudaFreeHost(pinnedStaging);
-        return hashOpaqueIdentityCpu(bytes);
-    }
-    if (cudaMallocHost(&pinnedPartials, partialsBytes) != cudaSuccess)
-    {
-        cudaFreeAsync(devicePartials, stream);
-        if (hostRegistered)
-            cudaHostUnregister(const_cast<void*>(static_cast<void const*>(bytes.data())));
-        if (deviceAlloc)
-            cudaFreeAsync(deviceAlloc, stream);
-        if (pinnedStaging)
-            cudaFreeHost(pinnedStaging);
-        return hashOpaqueIdentityCpu(bytes);
-    }
-
-    launchFnv1aHashChunksKernel(gpuReadPtr, totalSize, kHASH_NUM_CHUNKS, kHASH_NUM_CTAS, devicePartials, stream);
-    cudaError_t launchErr = cudaGetLastError();
-    cudaMemcpyAsync(pinnedPartials, devicePartials, partialsBytes, cudaMemcpyDeviceToHost, stream);
-    cudaError_t syncErr = cudaStreamSynchronize(stream);
-    if (launchErr != cudaSuccess || syncErr != cudaSuccess)
-    {
-        cudaFreeHost(pinnedPartials);
-        cudaFreeAsync(devicePartials, stream);
-        if (hostRegistered)
-        {
-            cudaHostUnregister(const_cast<void*>(static_cast<void const*>(bytes.data())));
-        }
-        if (deviceAlloc)
-        {
-            cudaFreeAsync(deviceAlloc, stream);
-        }
-        if (pinnedStaging)
-        {
-            cudaFreeHost(pinnedStaging);
-        }
-        return hashOpaqueIdentityCpu(bytes);
-    }
-
-    // Phase 2 reduction on CPU: chain all per-chunk 128-bit digests via FNV-1a.
-    FnvValue state = kFNV_OFFSET;
-    fnvTag(state, Tag::kOpaqueIdentity);
-    fnvU64(state, static_cast<uint64_t>(totalSize));
-    for (int32_t c = 0; c < kHASH_NUM_CHUNKS; ++c)
-    {
-        fnvU64(state, pinnedPartials[c * 2]);
-        fnvU64(state, pinnedPartials[c * 2 + 1]);
-    }
-    Hash128 result = finishHash(state);
-
-    cudaFreeHost(pinnedPartials);
-    cudaFreeAsync(devicePartials, stream);
-    if (hostRegistered)
-    {
-        cudaHostUnregister(const_cast<void*>(static_cast<void const*>(bytes.data())));
-    }
-    if (deviceAlloc)
-    {
-        cudaFreeAsync(deviceAlloc, stream);
-    }
-    if (pinnedStaging)
-    {
-        cudaFreeHost(pinnedStaging);
-    }
-    return result;
-}
 
 BlockHash hashBlock(BlockHash parent, int32_t const* tokens, size_t count, BlockKeyExtras const& extras,
     Hash128 const* perPositionMediaHash)

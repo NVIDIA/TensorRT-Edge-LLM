@@ -35,6 +35,10 @@ _LOCK = threading.Lock()
 _MODULE: Optional[ModuleType] = None
 _PLUGIN_HANDLE: Optional[ctypes.CDLL] = None
 _RETAINED_PLUGIN_HANDLES = []
+_EXTENSION_MODULE_NAMES = (
+    "tensorrt_edgellm._edgellm_runtime",
+    "_edgellm_runtime",
+)
 
 
 @dataclass(frozen=True)
@@ -103,15 +107,25 @@ def _set_plugin_path(plugin_path: Path) -> None:
 
 
 def _existing_extension(extension_path: Path) -> Optional[ModuleType]:
-    module_name = "tensorrt_edgellm._edgellm_runtime"
-    existing = sys.modules.get(module_name)
-    if existing is not None:
-        existing_file = getattr(existing, "__file__", None)
+    existing = None
+    for module_name in _EXTENSION_MODULE_NAMES:
+        candidate = sys.modules.get(module_name)
+        if candidate is None:
+            continue
+        existing_file = getattr(candidate, "__file__", None)
         if existing_file is None or Path(
                 existing_file).resolve() != extension_path:
             raise NativeLoadError(
                 f"Python module {module_name} is already loaded from "
                 f"{existing_file!r}, not selected payload {extension_path}.")
+        if existing is not None and candidate is not existing:
+            raise NativeLoadError(
+                "The EdgeLLM runtime extension is loaded more than once under "
+                "different Python module names.")
+        existing = candidate
+    if existing is not None:
+        for module_name in _EXTENSION_MODULE_NAMES:
+            sys.modules[module_name] = existing
     return existing
 
 
@@ -119,19 +133,49 @@ def _import_extension(extension_path: Path) -> ModuleType:
     existing = _existing_extension(extension_path)
     if existing is not None:
         return existing
-    module_name = "tensorrt_edgellm._edgellm_runtime"
+    module_name = _EXTENSION_MODULE_NAMES[0]
     spec = importlib.util.spec_from_file_location(module_name, extension_path)
     if spec is None or spec.loader is None:
         raise NativeLoadError(
             f"Cannot create an import specification for {extension_path}.")
     module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
+    for alias in _EXTENSION_MODULE_NAMES:
+        sys.modules[alias] = module
     try:
         spec.loader.exec_module(module)
     except Exception:
-        sys.modules.pop(module_name, None)
+        for alias in _EXTENSION_MODULE_NAMES:
+            if sys.modules.get(alias) is module:
+                sys.modules.pop(alias)
         raise
     return module
+
+
+def load_runtime_from_path(extension_path: Path) -> ModuleType:
+    """Load one development-build extension without a wheel manifest."""
+    global _MODULE
+    try:
+        resolved = Path(extension_path).resolve(strict=True)
+    except OSError as error:
+        raise NativeLoadError(
+            f"Native runtime extension does not exist: {extension_path}."
+        ) from error
+    if not resolved.is_file():
+        raise NativeLoadError(
+            f"Native runtime extension is not a regular file: {resolved}.")
+
+    with _LOCK:
+        if _MODULE is not None:
+            loaded_path = getattr(_MODULE, "__file__", None)
+            if loaded_path is None or Path(loaded_path).resolve() != resolved:
+                raise NativeLoadError(
+                    "A different EdgeLLM runtime extension is already loaded: "
+                    f"{loaded_path!r} != {resolved}.")
+            for module_name in _EXTENSION_MODULE_NAMES:
+                sys.modules[module_name] = _MODULE
+            return _MODULE
+        _MODULE = _import_extension(resolved)
+        return _MODULE
 
 
 def resolve_payload(
@@ -175,13 +219,15 @@ def load_runtime(
         _existing_extension(payload.extension)
         _set_plugin_path(payload.plugin)
         try:
+            # Import locally before exposing the plugin's overlapping CUDA
+            # registration symbols through RTLD_GLOBAL.
+            module = _import_extension(payload.extension)
             mode = getattr(os, "RTLD_GLOBAL", ctypes.RTLD_GLOBAL)
             mode |= getattr(os, "RTLD_NOW", 0)
             mode |= getattr(os, "RTLD_NODELETE", 0)
             plugin_handle = ctypes.CDLL(str(payload.plugin), mode=mode)
             _PLUGIN_HANDLE = plugin_handle
             _RETAINED_PLUGIN_HANDLES.append(plugin_handle)
-            module = _import_extension(payload.extension)
         except Exception as error:
             raise NativeLoadError(
                 f"Failed to load native payload {payload.variant_id}: {error}"

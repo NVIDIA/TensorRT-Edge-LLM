@@ -45,6 +45,7 @@ def _config(kind: str) -> ModelConfig:
                        num_key_value_heads=1,
                        intermediate_size=32,
                        head_dim=8,
+                       attention_layer_types=["full_attention"],
                        rms_norm_eps=1e-6,
                        vocab_size=32,
                        rope_theta=10_000.0,
@@ -115,6 +116,7 @@ def test_dspark_ragged_attention_preserves_sink_and_contiguous_swa(tmp_path):
     config.attention_sink_bias = True
     config.sliding_window_size = 128
     config.raw_layer_types = ["sliding_attention"]
+    config.attention_layer_types = ["sliding_attention"]
     output = tmp_path / "dspark-sink-swa.onnx"
 
     _export_model(DSparkDraftModel(config), str(output), optimize=False)

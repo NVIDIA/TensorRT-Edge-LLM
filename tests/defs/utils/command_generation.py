@@ -16,8 +16,10 @@
 Centralized command configuration
 """
 
+import ipaddress
 import os
 import shlex
+import uuid
 from typing import Dict, List, Optional, Tuple
 
 from conftest import EnvironmentConfig
@@ -46,7 +48,49 @@ def resolve_lora_model_name(model_name: str) -> Optional[str]:
 
 def _uses_spec_decode(config: TestConfig) -> bool:
     return bool(config.is_eagle or config.is_mtp or config.is_dflash
-                or config.is_jetspec or config.is_dspark)
+                or config.is_jetspec or config.is_domino or config.is_dspark)
+
+
+def _spec_verify_tokens_args(config: TestConfig) -> List[str]:
+    """Runtime ``--specVerifyTokens`` for inference commands.
+
+    ``svt`` is the runtime verify count and defaults to ``mvts``, the base
+    engine's verify capacity, so one engine can serve chain and tree runs and
+    EAGLE jump-forward gets its headroom. A chain run (edtk=1) of MTP/DFlash/
+    JetSpec/Domino/DSpark must not pass it: the runtime requires chain verify
+    tokens to equal proposal+1 and derives that value itself.
+    """
+    chain_derives_verify = (config.is_mtp or config.is_dflash
+                            or config.is_jetspec or config.is_domino
+                            or config.is_dspark)
+    if chain_derives_verify and config.eagle_draft_top_k == 1:
+        return []
+    return [f"--specVerifyTokens={config.spec_verify_tokens}"]
+
+
+def _append_checkpoint_dir_option(cmd: List[str], config: TestConfig) -> None:
+    """Pass --checkpointDir when this host can resolve the model's checkpoint.
+
+    PLE/ngram pool models (Gemma4, Qwen4-exp) embed an export-host-only
+    checkpoint_dir in config.json; gemma4EmbeddingPreprocessor.cpp /
+    qwen4ExpNgramPreprocessor.cpp prefer a non-empty CLI --checkpointDir over
+    that stale value. get_torch_model_dir() resolves the same checkpoint
+    through this host's own env (LLM_MODELS_DIR / EDGELLM_DATA_DIR /
+    QUANT_CHECKPOINT_DIR), same as test_builder_pipeline.py's direct-builder
+    --checkpointDir.
+
+    Scoped to config.is_ple_ngram_pool_model so an unrelated model never
+    pays for this lookup, including an avoidable multi-GB download for a
+    pre-quantized standalone checkpoint with no local copy.
+    """
+    if not config.is_ple_ngram_pool_model:
+        return
+    try:
+        checkpoint_dir = config.get_torch_model_dir()
+    except Exception:
+        return
+    if checkpoint_dir:
+        cmd.append(f"--checkpointDir={checkpoint_dir}")
 
 
 def _append_context_reuse_options(cmd: List[str], config: TestConfig) -> None:
@@ -57,22 +101,83 @@ def _append_context_reuse_options(cmd: List[str], config: TestConfig) -> None:
         "--enableContextReuse",
         f"--profileOutputFile={config.get_profile_json_file()}",
     ])
-    if config.context_cache_recurrent_snapshot_pool_bytes is not None:
-        cmd.append("--contextCacheRecurrentSnapshotPoolBytes="
-                   f"{config.context_cache_recurrent_snapshot_pool_bytes}")
-    if config.context_cache_partial_kv_snapshot_pool_bytes is not None:
-        cmd.append("--contextCachePartialKVSnapshotPoolBytes="
-                   f"{config.context_cache_partial_kv_snapshot_pool_bytes}")
+    if config.context_cache_max_snapshots is not None:
+        cmd.append(
+            f"--contextCacheMaxSnapshots={config.context_cache_max_snapshots}")
+
+
+def _append_visual_prune_options(cmd: List[str], config: TestConfig) -> None:
+    if not config.visual_prune_enabled:
+        return
+
+    cmd.append("--visualPrune")
+    if config.visual_prune_reduction_ratio is not None:
+        cmd.append(
+            f"--dartReductionRatio={config.visual_prune_reduction_ratio}")
 
 
 def _tp_size(config: TestConfig) -> int:
     return config.tp_size or 1
 
 
+# One host per rank for a cross-machine TP run, e.g. "10.99.0.31,10.99.0.41".
+# Empty keeps every rank local.
+def _tp_hosts() -> List[str]:
+    raw = os.environ.get("EDGELLM_TP_HOSTS", "")
+    return [h for h in (part.strip() for part in raw.split(",")) if h]
+
+
+# Carry runtime library locations and the selected NCCL interface to each rank.
+_TP_MPI_ENV = ("LD_LIBRARY_PATH", "EDGELLM_PLUGIN_PATH",
+               "EDGELLM_NCCL_SO_PATH", "NCCL_SOCKET_IFNAME")
+
+
+def _tp_network(hosts: List[str]) -> Optional[str]:
+    """CIDR the TP hosts share, or None when they do not share one.
+
+    Derived from the hosts rather than assumed, so a mis-declared pair spread
+    over two networks is left alone instead of pinned to the wrong one.
+    """
+    try:
+        nets = {ipaddress.ip_network(f"{h}/24", strict=False) for h in hosts}
+    except ValueError:
+        return None  # host names, not addresses
+    return str(nets.pop()) if len(nets) == 1 else None
+
+
+def _mpirun(nproc: int, hosts: List[str]) -> List[str]:
+    """mpirun prefix; cross-host when `hosts` is non-empty."""
+    cmd = ["mpirun", "-n", str(nproc)]
+    if not hosts:
+        return cmd
+    # Open MPI's default single-core binding starves the runtime and NCCL
+    # threads (244.8 vs 4.59 ms/token on dual Spark).
+    cmd += [
+        "--host", ",".join(f"{h}:1" for h in hosts), "--map-by", "ppr:1:node",
+        "--bind-to", "none"
+    ]
+    net = _tp_network(hosts)
+    if net:
+        # Without pinning, MPI_Init wedges on the docker0 bridge both machines
+        # carry.
+        cmd += [
+            "--mca", "btl_tcp_if_include", net, "--mca", "oob_tcp_if_include",
+            net
+        ]
+    for var in _TP_MPI_ENV:
+        cmd += ["-x", var]
+    # Marks the end of launcher options for consumers that split the command.
+    cmd.append("--")
+    return cmd
+
+
 def _append_tp_build_args(cmd: List[str], tp_size: int, tp_rank: int) -> None:
     if tp_size <= 1:
         return
     cmd.extend([f"--tpSize={tp_size}", f"--tpRank={tp_rank}"])
+    if _tp_hosts():
+        # Each machine owns one GPU; both rank engines are built on the primary.
+        cmd.append("--localDevice=0")
 
 
 def _append_tp_inference_args(cmd: List[str], config: TestConfig) -> None:
@@ -80,6 +185,12 @@ def _append_tp_inference_args(cmd: List[str], config: TestConfig) -> None:
     if tp_size <= 1:
         return
     cmd.append(f"--tpSize={tp_size}")
+
+
+def _wrap_md_mpi(config: TestConfig, cmd: List[str]) -> List[str]:
+    if config.md_launch_mode == "mpi":
+        return _mpirun(_tp_size(config), _tp_hosts()) + cmd
+    return cmd
 
 
 def _tensorrt_edgellm_module_shell(module: str, args: List[str]) -> str:
@@ -151,6 +262,13 @@ def _llm_quant_shell(
         args.append(f"--quantization={config.llm_precision}")
     if config.lm_head_precision != "fp16" and needs_weight_quant:
         args.append(f"--lm_head_quantization={config.lm_head_precision}")
+    if config.token_embedding_precision:
+        args.append(
+            f"--token_embedding_quantization={config.token_embedding_precision}"
+        )
+    if config.ple_embedding_precision:
+        args.append(
+            f"--ple_embedding_quantization={config.ple_embedding_precision}")
     if needs_kv_cache_quant:
         args.append("--kv_cache_quantization=fp8")
     if needs_visual_quant:
@@ -173,7 +291,7 @@ def _generate_quantization_commands(
     """Generate quantization commands if needed.
 
     Quantization writes a unified ModelOpt checkpoint that
-    ``tensorrt_edgellm.scripts.export`` knows how to unpack.
+    ``tensorrt_edgellm.onnx.cli`` knows how to unpack.
 
     int4_gptq models are pre-quantized (``is_prequantized()`` returns True)
     so they bypass the weight-quant step here entirely; there are no
@@ -187,11 +305,17 @@ def _generate_quantization_commands(
     # Quantize weights (for non-fp16) and/or KV cache (when fp8_kv_cache is enabled).
     needs_weight_quant = config.llm_precision != "fp16" and not config.is_prequantized(
     )
-    needs_kv_cache_quant = bool(config.fp8_kv_cache)
+    # A checkpoint whose name carries the quantization suffix is already
+    # quantized (weights and KV cache scales). Running the KV-cache pass on the
+    # base checkpoint would produce FP16 weights under the quantized name.
+    needs_kv_cache_quant = bool(
+        config.fp8_kv_cache) and not config.is_prequantized()
     needs_visual_quant = bool(config.visual_precision == "fp8")
     needs_audio_quant = bool(config.audio_precision == "fp8")
+    needs_embedding_quant = bool(config.token_embedding_precision
+                                 or config.ple_embedding_precision)
     if (needs_weight_quant or needs_kv_cache_quant or needs_visual_quant
-            or needs_audio_quant):
+            or needs_audio_quant or needs_embedding_quant):
         # Use the merged checkpoint when a model ships a required LoRA
         # adapter, otherwise use the raw torch checkpoint.
         if config.merge_lora:
@@ -199,7 +323,8 @@ def _generate_quantization_commands(
         else:
             input_model_dir = config.get_base_torch_model_dir()
 
-        if needs_weight_quant or needs_visual_quant or needs_audio_quant:
+        if (needs_weight_quant or needs_visual_quant or needs_audio_quant
+                or needs_embedding_quant):
             output_model_dir = config.get_quantized_model_dir()
         else:
             # KV-cache-only quantization (fp16 weights)
@@ -224,8 +349,12 @@ def _draft_quant_shell(config: TestConfig) -> str:
     base_model_dir = config.get_base_torch_model_dir()
     if config.is_dflash:
         draft_model_dir = config.get_dflash_draft_model_dir()
+    elif config.is_dspark:
+        draft_model_dir = config.get_dspark_draft_model_dir()
     elif config.is_jetspec:
         draft_model_dir = config.get_jetspec_draft_model_dir()
+    elif config.is_domino:
+        draft_model_dir = config.get_domino_draft_model_dir()
     else:
         draft_model_dir = config.get_draft_torch_model_dir()
     quantized_draft_dir = config.get_quantized_draft_model_dir()
@@ -255,15 +384,16 @@ def _draft_quant_shell(config: TestConfig) -> str:
 
 def _generate_draft_quantization_commands(
         config: TestConfig) -> List[Tuple[List[str], int]]:
-    """Generate draft model quantization commands for EAGLE / DFlash / JetSpec.
+    """Generate draft model quantization commands for EAGLE / DFlash / JetSpec / Domino.
 
     Uses ``tensorrt-edgellm-quantize``. Output is a unified ModelOpt
-    ``export_hf_checkpoint`` tree consumable by ``tensorrt_edgellm.scripts.export``.
+    ``export_hf_checkpoint`` tree consumable by ``tensorrt_edgellm.onnx.cli``.
     """
     commands = []
     if config.is_mtp:
         return commands
-    if not (config.is_eagle or config.is_dflash or config.is_jetspec):
+    if not (config.is_eagle or config.is_dflash or config.is_jetspec
+            or config.is_dspark or config.is_domino):
         return commands
 
     if config.draft_llm_precision is None:
@@ -297,7 +427,7 @@ def _generate_tensorrt_edgellm_draft_export_for_vocab_commands(
     existing = os.environ.get("PYTHONPATH", "")
     py_path = f"{edgellm_root}{os.pathsep}{existing}" if existing else edgellm_root
     export_shell = (f"PYTHONPATH={shlex.quote(py_path)} "
-                    "python3 -m tensorrt_edgellm.scripts.export "
+                    "python3 -m tensorrt_edgellm.onnx.cli "
                     f"{shlex.quote(draft_model_dir)} \"$tmp_dir\"")
     shell = ("tmp_dir=$(mktemp -d); "
              "trap 'rm -rf \"$tmp_dir\"' EXIT; "
@@ -349,7 +479,7 @@ def generate_pre_export_commands(
 
     All quantization (base + draft) goes through
     ``tensorrt-edgellm-quantize``, which writes a unified ModelOpt
-    HF checkpoint consumable by ``tensorrt_edgellm.scripts.export``.
+    HF checkpoint consumable by ``tensorrt_edgellm.onnx.cli``.
     """
     commands: List[Tuple[List[str], int]] = []
     # Phi-4-Multimodal needs its required vision LoRA merged before
@@ -427,15 +557,68 @@ def _generate_draft_build_commands(
         f"--maxInputLen={config.max_input_len}",
         f"--maxKVCacheCapacity={config.max_seq_len}",
         f"--maxBatchSize={config.max_batch_size}", "--specDraft",
-        f"--maxDraftTreeSize={config.max_draft_tree_size}"
+        f"--maxSpecDraftTokens={config.max_spec_draft_tokens}"
     ])
 
     if config.max_kv_pool_pages is not None:
         draft_cmd.append(f"--maxKVPoolPages={config.max_kv_pool_pages}")
 
-    commands.append((draft_cmd, 1200))
+    commands.append((draft_cmd, 4800))
 
     return commands
+
+
+_BUILD_TIMEOUT_S = 4800
+
+
+def _with_debug(config: TestConfig, cmd: List[str]) -> Tuple[List[str], int]:
+    if config.debug:
+        cmd.append("--debug")
+    return cmd, _BUILD_TIMEOUT_S
+
+
+def _llm_build_command(config: TestConfig,
+                       executable_files: Dict[str, str],
+                       onnx_dir: str,
+                       engine_dir: str,
+                       with_lora: bool = False) -> Tuple[List[str], int]:
+    cmd = [
+        executable_files['llm_build'],
+        f"--onnxDir={onnx_dir}",
+        f"--engineDir={engine_dir}",
+        f"--maxInputLen={config.max_input_len}",
+        f"--maxKVCacheCapacity={config.max_seq_len}",
+        f"--maxBatchSize={config.max_batch_size}",
+    ]
+    if with_lora and config.max_lora_rank > 0:
+        cmd.append(f"--maxLoraRank={config.max_lora_rank}")
+    return _with_debug(config, cmd)
+
+
+def _visual_build_command(config: TestConfig, executable_files: Dict[str, str],
+                          engine_dir: str) -> Tuple[List[str], int]:
+    cmd = [
+        executable_files['visual_build'],
+        f"--onnxDir={config.get_visual_onnx_dir('fp16')}",
+        f"--engineDir={engine_dir}",
+        f"--minImageTokens={config.min_image_tokens}",
+        f"--maxImageTokens={config.max_image_tokens}",
+        f"--maxImageTokensPerImage={config.max_image_tokens_per_image}",
+    ]
+    return _with_debug(config, cmd)
+
+
+def _audio_build_command(config: TestConfig, executable_files: Dict[str, str],
+                         onnx_dir: str,
+                         engine_dir: str) -> Tuple[List[str], int]:
+    cmd = [
+        executable_files['audio_build'],
+        f"--onnxDir={onnx_dir}",
+        f"--engineDir={engine_dir}",
+        f"--minTimeSteps={config.min_time_steps}",
+        f"--maxTimeSteps={config.max_time_steps}",
+    ]
+    return _with_debug(config, cmd)
 
 
 def generate_build_commands(
@@ -467,7 +650,7 @@ def generate_build_commands(
             if _uses_spec_decode(config):
                 cmd.append("--specBase")
                 cmd.append(
-                    f"--maxVerifyTreeSize={config.max_verify_tree_size}")
+                    f"--maxSpecVerifyTokens={config.max_spec_verify_tokens}")
 
             if config.max_lora_rank > 0:
                 cmd.append(f"--maxLoraRank={config.max_lora_rank}")
@@ -475,31 +658,37 @@ def generate_build_commands(
             if config.debug:
                 cmd.append("--debug")
 
-            commands.append((cmd, 1200))
+            commands.append((cmd, 4800))
 
     elif config.model_type == ModelType.VLM:
-        # VLM LLM build command
-        llm_cmd = [executable_files['llm_build']]
-        llm_cmd.extend([
-            f"--onnxDir={config.get_llm_onnx_dir()}",
-            f"--engineDir={config.get_llm_engine_dir()}",
-            f"--maxInputLen={config.max_input_len}",
-            f"--maxKVCacheCapacity={config.max_seq_len}",
-            f"--maxBatchSize={config.max_batch_size}"
-        ])
+        # Only the language half is sharded; one visual engine serves all ranks.
+        tp_size = _tp_size(config)
+        if tp_size > 1 and _uses_spec_decode(config):
+            raise ValueError("Tensor-parallel speculative decoding is TBD. ")
 
-        if _uses_spec_decode(config):
-            llm_cmd.append("--specBase")
-            llm_cmd.append(
-                f"--maxVerifyTreeSize={config.max_verify_tree_size}")
+        for tp_rank in range(tp_size):
+            llm_cmd = [executable_files['llm_build']]
+            llm_cmd.extend([
+                f"--onnxDir={config.get_llm_onnx_dir()}",
+                f"--engineDir={config.get_llm_engine_dir()}",
+                f"--maxInputLen={config.max_input_len}",
+                f"--maxKVCacheCapacity={config.max_seq_len}",
+                f"--maxBatchSize={config.max_batch_size}"
+            ])
+            _append_tp_build_args(llm_cmd, tp_size, tp_rank)
 
-        if config.max_lora_rank > 0:
-            llm_cmd.append(f"--maxLoraRank={config.max_lora_rank}")
+            if _uses_spec_decode(config):
+                llm_cmd.append("--specBase")
+                llm_cmd.append(
+                    f"--maxSpecVerifyTokens={config.max_spec_verify_tokens}")
 
-        if config.debug:
-            llm_cmd.append("--debug")
+            if config.max_lora_rank > 0:
+                llm_cmd.append(f"--maxLoraRank={config.max_lora_rank}")
 
-        commands.append((llm_cmd, 1200))
+            if config.debug:
+                llm_cmd.append("--debug")
+
+            commands.append((llm_cmd, 4800))
 
         # VLM visual build command
         visual_cmd = [executable_files['visual_build']]
@@ -514,25 +703,28 @@ def generate_build_commands(
         if config.debug:
             visual_cmd.append("--debug")
 
-        commands.append((visual_cmd, 1200))
+        commands.append((visual_cmd, 4800))
 
     elif config.model_type == ModelType.VLA:
         # llm_build, visual_build, action_build share the visual_engine_dir
         # as the parent of visual/ and action/, matching what
         # action_inference --multimodalEngineDir expects.
-        llm_cmd = [executable_files['llm_build']]
-        llm_cmd.extend([
-            f"--onnxDir={config.get_llm_onnx_dir()}",
-            f"--engineDir={config.get_llm_engine_dir()}",
-            f"--maxInputLen={config.max_input_len}",
-            f"--maxBatchSize={config.max_batch_size}",
-        ])
-        if config.max_kv_cache_capacity:
-            llm_cmd.append(
-                f"--maxKVCacheCapacity={config.max_kv_cache_capacity}")
-        if config.debug:
-            llm_cmd.append("--debug")
-        commands.append((llm_cmd, 1200))
+        tp_size = _tp_size(config)
+        for tp_rank in range(tp_size):
+            llm_cmd = [executable_files['llm_build']]
+            llm_cmd.extend([
+                f"--onnxDir={config.get_llm_onnx_dir()}",
+                f"--engineDir={config.get_llm_engine_dir()}",
+                f"--maxInputLen={config.max_input_len}",
+                f"--maxBatchSize={config.max_batch_size}",
+            ])
+            if config.max_kv_cache_capacity:
+                llm_cmd.append(
+                    f"--maxKVCacheCapacity={config.max_kv_cache_capacity}")
+            _append_tp_build_args(llm_cmd, tp_size, tp_rank)
+            if config.debug:
+                llm_cmd.append("--debug")
+            commands.append((llm_cmd, 4800))
 
         visual_cmd = [executable_files['visual_build']]
         visual_cmd.extend([
@@ -544,7 +736,7 @@ def generate_build_commands(
         ])
         if config.debug:
             visual_cmd.append("--debug")
-        commands.append((visual_cmd, 1200))
+        commands.append((visual_cmd, 4800))
 
         action_cmd = [executable_files['action_build']]
         action_cmd.extend([
@@ -554,7 +746,7 @@ def generate_build_commands(
         ])
         if config.debug:
             action_cmd.append("--debug")
-        commands.append((action_cmd, 1200))
+        commands.append((action_cmd, 4800))
 
     elif config.model_type == ModelType.TTS:
         # TTS: build talker + code_predictor LLM engines (under
@@ -576,7 +768,7 @@ def generate_build_commands(
             ])
             if config.debug:
                 cmd.append("--debug")
-            commands.append((cmd, 1200))
+            commands.append((cmd, 4800))
 
         code2wav_onnx = config.get_code2wav_onnx_dir()
         if os.path.isdir(code2wav_onnx):
@@ -587,7 +779,7 @@ def generate_build_commands(
             ])
             if config.debug:
                 audio_cmd.append("--debug")
-            commands.append((audio_cmd, 1200))
+            commands.append((audio_cmd, 4800))
 
         tokenizer_decoder_onnx = os.path.join(config.get_audio_onnx_dir(),
                                               "tokenizer_decoder")
@@ -599,48 +791,46 @@ def generate_build_commands(
             ])
             if config.debug:
                 audio_cmd.append("--debug")
-            commands.append((audio_cmd, 1200))
+            commands.append((audio_cmd, 4800))
 
     elif config.model_type == ModelType.OMNI:
-        # OMNI: shared multimodal engine dir holds both visual + audio engines,
-        # plus a separate base LLM engine.
-        llm_cmd = [executable_files['llm_build']]
-        llm_cmd.extend([
-            f"--onnxDir={config.get_llm_onnx_dir()}",
-            f"--engineDir={config.get_llm_engine_dir()}",
-            f"--maxInputLen={config.max_input_len}",
-            f"--maxKVCacheCapacity={config.max_seq_len}",
-            f"--maxBatchSize={config.max_batch_size}",
-        ])
-        if config.max_lora_rank > 0:
-            llm_cmd.append(f"--maxLoraRank={config.max_lora_rank}")
-        if config.debug:
-            llm_cmd.append("--debug")
-        commands.append((llm_cmd, 1200))
-
         multimodal_engine_dir = config.get_multimodal_engine_dir()
-        visual_cmd = [executable_files['visual_build']]
-        visual_cmd.extend([
-            f"--onnxDir={config.get_visual_onnx_dir('fp16')}",
-            f"--engineDir={multimodal_engine_dir}",
-            f"--minImageTokens={config.min_image_tokens}",
-            f"--maxImageTokens={config.max_image_tokens}",
-            f"--maxImageTokensPerImage={config.max_image_tokens_per_image}",
-        ])
-        if config.debug:
-            visual_cmd.append("--debug")
-        commands.append((visual_cmd, 1200))
+        if config.is_qwen3_omni:
+            # Qwen3-Omni family: thinker (main LLM) + talker (speech-output LLM)
+            # + code_predictor + visual encoder + audio-input encoder.
+            # Nested ONNX layout: llm-<prec>-fp16/{thinker,talker,code_predictor}/
+            commands.append(
+                _llm_build_command(config,
+                                   executable_files,
+                                   config.get_thinker_onnx_dir(),
+                                   config.get_llm_engine_dir(),
+                                   with_lora=True))
+            commands.append(
+                _llm_build_command(config, executable_files,
+                                   config.get_talker_onnx_dir(),
+                                   config.get_talker_engine_dir()))
+            commands.append(
+                _llm_build_command(config, executable_files,
+                                   config.get_code_predictor_onnx_dir(),
+                                   config.get_code_predictor_engine_dir()))
+            audio_onnx_dir = config.get_audio_encoder_onnx_dir()
+        else:
+            # Legacy OMNI: shared multimodal engine dir holds both visual + audio
+            # engines, plus a separate base LLM engine.
+            commands.append(
+                _llm_build_command(config,
+                                   executable_files,
+                                   config.get_llm_onnx_dir(),
+                                   config.get_llm_engine_dir(),
+                                   with_lora=True))
+            audio_onnx_dir = config.get_audio_onnx_dir()
 
-        audio_cmd = [executable_files['audio_build']]
-        audio_cmd.extend([
-            f"--onnxDir={config.get_audio_onnx_dir()}",
-            f"--engineDir={multimodal_engine_dir}",
-            f"--minTimeSteps={config.min_time_steps}",
-            f"--maxTimeSteps={config.max_time_steps}",
-        ])
-        if config.debug:
-            audio_cmd.append("--debug")
-        commands.append((audio_cmd, 1200))
+        commands.append(
+            _visual_build_command(config, executable_files,
+                                  multimodal_engine_dir))
+        commands.append(
+            _audio_build_command(config, executable_files, audio_onnx_dir,
+                                 multimodal_engine_dir))
 
     elif config.model_type == ModelType.ASR:
         # ASR: build LLM engine + audio encoder engine.
@@ -656,7 +846,7 @@ def generate_build_commands(
             llm_cmd.append(f"--maxLoraRank={config.max_lora_rank}")
         if config.debug:
             llm_cmd.append("--debug")
-        commands.append((llm_cmd, 1200))
+        commands.append((llm_cmd, 4800))
 
         audio_cmd = [executable_files['audio_build']]
         audio_cmd.extend([
@@ -667,7 +857,7 @@ def generate_build_commands(
         ])
         if config.debug:
             audio_cmd.append("--debug")
-        commands.append((audio_cmd, 1200))
+        commands.append((audio_cmd, 4800))
 
     # Add draft model build for EAGLE (must be after base model build)
     commands.extend(_generate_draft_build_commands(config, executable_files))
@@ -696,7 +886,7 @@ def generate_inference_commands(
             cmd.append(f"--batchSize={config.batch_size}")
         if config.debug:
             cmd.append("--debug")
-        commands.append((cmd, 6000))
+        commands.append((cmd, 24000))
         return commands
 
     if config.model_type == ModelType.VLA:
@@ -710,9 +900,13 @@ def generate_inference_commands(
         ])
         if config.warmup:
             cmd.append(f"--warmup={config.warmup}")
+        if _tp_size(config) > 1:
+            cmd.append(f"--tpSize={_tp_size(config)}")
+        if config.batch_size is not None:
+            cmd.append(f"--batchSize={config.batch_size}")
         if config.debug:
             cmd.append("--debug")
-        commands.append((cmd, 6000))
+        commands.append((_wrap_md_mpi(config, cmd), 24000))
         return commands
 
     cmd = [executable_files['llm_inference']]
@@ -721,16 +915,20 @@ def generate_inference_commands(
         f"--inputFile={config.get_test_case_file()}",
         f"--outputFile={config.get_output_json_file()}", f"--dumpProfile"
     ])
+    _append_checkpoint_dir_option(cmd, config)
     _append_context_reuse_options(cmd, config)
+    _append_visual_prune_options(cmd, config)
 
     # Add speculative decoding parameters.
     if _uses_spec_decode(config):
         cmd.append("--specDecode")
         cmd.append(f"--specDraftTopK={config.eagle_draft_top_k}")
-        cmd.append(f"--specDraftStep={config.eagle_draft_step}")
-        cmd.append(f"--specVerifySize={config.max_verify_tree_size}")
+        if not (config.is_dflash or config.is_jetspec or config.is_dspark):
+            cmd.append(f"--specDraftStep={config.eagle_draft_step}")
+        cmd.extend(_spec_verify_tokens_args(config))
         if config.is_dspark:
-            cmd.append(f"--dsparkMaxProposalLen={config.max_draft_tree_size}")
+            cmd.append(
+                f"--dsparkMaxProposalLen={config.max_spec_draft_tokens}")
 
     if config.model_type == ModelType.VLM:
         cmd.append(f"--multimodalEngineDir={config.get_visual_engine_dir()}")
@@ -745,18 +943,17 @@ def generate_inference_commands(
         cmd.append(f"--batchSize={config.batch_size}")
     if config.output_seq_len is not None:
         cmd.append(f"--maxGenerateLength={config.output_seq_len}")
+    if config.warmup:
+        cmd.append(f"--warmup={config.warmup}")
 
-    if config.model_type == ModelType.LLM:
+    # llm_inference picks config_world<N>.json from --tpSize.
+    if config.model_type in {ModelType.LLM, ModelType.VLM}:
         _append_tp_inference_args(cmd, config)
 
     if config.debug:
         cmd.append("--debug")
 
-    tp_size = _tp_size(config)
-    if config.model_type == ModelType.LLM and config.md_launch_mode == "mpi":
-        cmd = ["mpirun", "-n", str(tp_size)] + cmd
-
-    commands.append((cmd, 6000))
+    commands.append((_wrap_md_mpi(config, cmd), 24000))
     return commands
 
 
@@ -776,9 +973,13 @@ def generate_e2e_bench_commands(
             "--dumpProfile",
         ])
         cmd.append(f"--warmup={config.warmup or 10}")
+        if _tp_size(config) > 1:
+            cmd.append(f"--tpSize={_tp_size(config)}")
+        if config.batch_size is not None:
+            cmd.append(f"--batchSize={config.batch_size}")
         if config.debug:
             cmd.append("--debug")
-        commands.append((cmd, 6000))
+        commands.append((_wrap_md_mpi(config, cmd), 24000))
         return commands
 
     if config.model_type == ModelType.TTS:
@@ -796,7 +997,7 @@ def generate_e2e_bench_commands(
             cmd.append(f"--batchSize={config.batch_size}")
         if config.debug:
             cmd.append("--debug")
-        commands.append((cmd, 6000))
+        commands.append((cmd, 24000))
         return commands
 
     cmd = [executable_files['llm_inference']]
@@ -805,16 +1006,20 @@ def generate_e2e_bench_commands(
         f"--inputFile={config.get_test_case_file()}",
         f"--outputFile={config.get_output_json_file()}", f"--dumpProfile"
     ])
+    _append_checkpoint_dir_option(cmd, config)
     _append_context_reuse_options(cmd, config)
+    _append_visual_prune_options(cmd, config)
 
     # Add speculative decoding parameters.
     if _uses_spec_decode(config):
         cmd.append("--specDecode")
         cmd.append(f"--specDraftTopK={config.eagle_draft_top_k}")
-        cmd.append(f"--specDraftStep={config.eagle_draft_step}")
-        cmd.append(f"--specVerifySize={config.max_verify_tree_size}")
+        if not (config.is_dflash or config.is_jetspec or config.is_dspark):
+            cmd.append(f"--specDraftStep={config.eagle_draft_step}")
+        cmd.extend(_spec_verify_tokens_args(config))
         if config.is_dspark:
-            cmd.append(f"--dsparkMaxProposalLen={config.max_draft_tree_size}")
+            cmd.append(
+                f"--dsparkMaxProposalLen={config.max_spec_draft_tokens}")
 
     if config.model_type == ModelType.VLM:
         cmd.append(f"--multimodalEngineDir={config.get_visual_engine_dir()}")
@@ -830,7 +1035,7 @@ def generate_e2e_bench_commands(
     if config.output_seq_len is not None:
         cmd.append(f"--maxGenerateLength={config.output_seq_len}")
 
-    if config.model_type == ModelType.LLM:
+    if config.model_type in {ModelType.LLM, ModelType.VLM}:
         _append_tp_inference_args(cmd, config)
 
     # Add warmup if specified
@@ -839,43 +1044,41 @@ def generate_e2e_bench_commands(
     if config.debug:
         cmd.append("--debug")
 
-    tp_size = _tp_size(config)
-    if config.model_type == ModelType.LLM and config.md_launch_mode == "mpi":
-        cmd = ["mpirun", "-n", str(tp_size)] + cmd
-
-    commands.append((cmd, 6000))
+    commands.append((_wrap_md_mpi(config, cmd), 24000))
     return commands
 
 
 def generate_kernel_bench_commands(
         config: TestConfig,
         executable_files: Dict[str, str]) -> List[Tuple[List[str], int]]:
-    """Generate kernel_bench commands - returns list of (command, timeout) tuples"""
-    commands = []
-
-    cmd = [executable_files['llm_bench']]
-    cmd.extend([
+    """Run request-backed benchmarks with a unique, structured result directory."""
+    mode = config.bench_mode or 'fixed_round'
+    if mode not in {'fixed_round', 'generate'
+                    } or config.past_kv_len is not None:
+        raise ValueError(
+            "Use mode_fixed_round/mode_generate and ilN; legacy component modes/pkv are removed"
+        )
+    output_dir = os.path.join(config.test_log_dir, 'bench_' + uuid.uuid4().hex)
+    cmd = [
+        executable_files['llm_bench'],
         f"--engineDir={config.get_llm_engine_dir()}",
         f"--batchSize={config.batch_size or 1}",
-        f"--warmup={config.warmup or 2}",
-        f"--iterations=10",
-        "--profile",
-    ])
-
-    if config.bench_mode:
-        cmd.append(f"--mode={config.bench_mode}")
-
-    if config.input_len:
-        cmd.append(f"--inputLen={config.input_len}")
-
-    if config.past_kv_len:
-        cmd.append(f"--pastKVLen={config.past_kv_len}")
-
+        f"--warmup={config.warmup if config.warmup is not None else 2}",
+        "--iterations=10", f"--mode={mode}",
+        f"--inputLen={config.input_len or 32}", f"--outputDir={output_dir}"
+    ]
+    _append_checkpoint_dir_option(cmd, config)
+    if config.output_seq_len is not None:
+        cmd.append(f"--osl={config.output_seq_len}")
+    if _uses_spec_decode(config):
+        cmd.extend([
+            "--specDecode", f"--specDraftTopK={config.eagle_draft_top_k}",
+            f"--specDraftStep={config.eagle_draft_step}",
+            f"--specVerifyTokens={config.spec_verify_tokens}"
+        ])
     if config.debug:
         cmd.append("--debug")
-
-    commands.append((cmd, 600))
-    return commands
+    return [(cmd, 600)]
 
 
 def generate_vlmevalkit_commands(

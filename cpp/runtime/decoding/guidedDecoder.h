@@ -39,6 +39,7 @@ namespace rt
 using tokenizer::Tokenizer;
 
 struct DecodingInferenceContext;
+struct SpecVerifyInputs;
 
 /*!
  * @brief Grammar-constrained decoding backed by XGrammar.
@@ -104,6 +105,10 @@ public:
     //! a hard error in XGrammar, so callers must gate on this.
     bool isTerminated(int32_t slot) const noexcept;
 
+    //! True when a JSON object or schema has accepted a complete top-level value that admits no
+    //! continuation but a stop token, so the response ends without sampling EOS.
+    bool hasCompletedJson(int32_t slot);
+
     /*!
      * @brief Advance a slot's grammar by one accepted token.
      * @param outputSpaceToken Token index in the engine's output vocabulary, i.e. captured
@@ -127,6 +132,52 @@ public:
     bool advanceCommitted(int32_t slot, int32_t const* committedFullSpace, int32_t count, int8_t& reasoningEnded);
 
     /*!
+     * @brief Text the grammar forces next: the longest string every legal continuation starts with.
+     *
+     * Empty when the slot has no grammar, its matcher is terminated, or its root rule is already
+     * complete. Never contains the stop token. Const for callers: the matcher is queried through the pimpl and
+     * left where it was.
+     */
+    std::string forcedContinuation(int32_t slot) const;
+
+    /*!
+     * @brief Accept forced tokens in order, stopping at the first one the grammar rejects.
+     * @param outputSpaceIds Tokens in the engine's output vocabulary
+     * @return Tokens accepted; the rejected one and those after it were not fed
+     */
+    int32_t acceptForced(int32_t slot, int32_t const* outputSpaceIds, int32_t count);
+
+    //! Undo the last @p count accepted tokens; no-op for count <= 0. Must not exceed the tokens
+    //! accepted since prepareSlot.
+    void rollback(int32_t slot, int32_t count);
+
+    /*!
+     * @brief Whether consuming @p text from the current state ends the root rule, i.e. the stop
+     *        token could follow it.
+     *
+     * False when the grammar rejects the text, the matcher is terminated, or the slot has no
+     * grammar. Const for callers: the text is accepted and rolled back again through the pimpl.
+     */
+    bool completesGrammar(int32_t slot, std::string const& text) const;
+
+    //! Output-space index of a full-vocabulary ID, or -1 when the engine prunes it or it is out of
+    //! range. Identity when the engine does not prune.
+    int32_t toOutputSpace(int32_t fullVocabId) const;
+
+    //! Build the per-vocabulary tables a jump-forward request needs. Idempotent; run it before the first jump so the
+    //! build stays off the decode path.
+    void prepareJumpForward();
+
+    /*!
+     * @brief Whether another output-vocabulary token has this token's piece as a strict prefix,
+     *        so a canonical tokenization of a longer text may merge past it.
+     *
+     * Out-of-range ids count as extendable. Const for callers: the table is built by @ref prepareJumpForward, or on
+     * first use through the pimpl.
+     */
+    bool isExtendable(int32_t outputSpaceId) const;
+
+    /*!
      * @brief Fill and upload one bitmask row per slot, at each slot's current grammar state.
      *
      * Vanilla decode only. Speculative verification needs a different mask per verify row and
@@ -141,47 +192,31 @@ public:
         std::vector<int32_t>& unsatisfiableSlots, cudaStream_t stream);
 
     /*!
-     * @brief Copy this step's draft chains to the host and mark when they are there.
+     * @brief Copy root-inclusive verification tokens, any tree topology, node counts and forced flags to the host.
      *
-     * The matchers live on the host but the chains are produced on the device, so the mask fill
-     * has to wait for them. Recording an event instead of synchronizing the stream is what lets
-     * the caller enqueue the verify forward first and then wait, so the GPU is never idle while
-     * the host walks the grammar.
-     *
-     * @param draftChainIds [activeBatchSize, rowsPerSlot] device tensor of full-vocabulary IDs,
-     *        node 0 being the token the previous step committed
+     * Recording an event lets target verification run while the host waits for the draft
+     * and walks the grammar. Chains carry no parents: parent i - 1 is implicit.
+     * Tree parents precede children; executionValidTokenCounts excludes padded nodes.
      */
-    void captureDraftChains(
-        Tensor const& draftChainIds, int32_t activeBatchSize, int32_t rowsPerSlot, cudaStream_t stream);
+    void captureDraft(SpecVerifyInputs const& inputs, cudaStream_t stream);
 
-    /*!
-     * @brief Copy this step's draft tree, topology included, to the host.
-     *
-     * Same contract as \ref captureDraftChains, plus the shape of the tree. A chain leaves the
-     * topology unset and the walk assumes node `i` descends from node `i - 1`.
-     *
-     * @param nodeTokenIds [activeBatchSize, rowsPerSlot] full-vocabulary IDs, node 0 the root
-     * @param parentIds    [activeBatchSize, rowsPerSlot] parent node index; -1 at the root and
-     *                     in padding. The builder appends a node only once its parent is in the
-     *                     tree, so `parentIds[i] < i` always holds
-     * @param validCounts  [activeBatchSize] nodes actually built; the rest are padding. Absent
-     *                     where the builder always fills the whole tree, as EAGLE's does
-     */
-    void captureDraftTree(Tensor const& nodeTokenIds, Tensor const& parentIds, OptionalInputTensor const& validCounts,
-        int32_t activeBatchSize, int32_t rowsPerSlot, cudaStream_t stream);
-
-    //! Draft tokens captured by \ref captureDraftChains or \ref captureDraftTree, valid after
-    //! \ref waitForDraftTopology. Both geometries share this buffer.
+    //! Captured tokens, valid after \ref waitForDraftTopology.
     int32_t const* hostDraftTokens() const;
 
-    //! Tree topology captured by \ref captureDraftTree; null after \ref captureDraftChains.
+    //! Captured tree parents; null for chains.
     int32_t const* hostDraftParentIds() const;
+    //! Captured node counts; null when the draft carried none.
     int32_t const* hostDraftValidCounts() const;
+    //! Captured forced flags; null when the draft carried none.
+    int8_t const* hostDraftForcedFlags() const;
 
-    //! Block until the copy started by \ref captureDraftChains or \ref captureDraftTree has
+    //! Block until the copy started by \ref captureDraft has
     //! landed. Long is normal: the wait covers the drafting forwards, during which the verify
     //! forward is already running.
     void waitForDraftTopology();
+
+    //! Whether a copy started by \ref captureDraft has not been waited for yet.
+    bool draftCopyPending() const noexcept;
 
     /*!
      * @brief Fill and upload one bitmask row per draft-tree node, for every slot.
@@ -203,17 +238,19 @@ public:
      *        which is the degenerate tree with `parentIds[i] == i - 1`. A non-root node may report
      *        -1 when its parent missed the verify selection; it hangs off nothing, so it is
      *        unreachable and left unmasked
-     * @param validCounts [activeBatchSize] nodes actually built, or null for a chain, where
-     *        every row is a node
+     * @param validCounts [activeBatchSize] nodes actually built, or null when every row is a node
+     * @param forcedFlags [activeBatchSize, rowsPerSlot] 1 on a grafted forced node, or null. A node with a
+     *        forced child gets no mask and only that child is walked: the chain was validated when it was
+     *        planned, and acceptance takes the forced child regardless of the prediction
      * @param slotSuppressed Slots to leave entirely unconstrained this step
      * @param reasoningEndedPerSlot Per-slot reasoning state at the start of the step. Read only:
      *        the flag is latched when the step's tokens are committed, in \ref advanceCommitted
      * @param[out] unsatisfiableSlots Slots whose row 0 came out all-zero
      */
     void fillMasksForDraftTree(int32_t activeBatchSize, int32_t rowsPerSlot, int32_t const* draftTokensFullSpace,
-        int32_t const* parentIds, int32_t const* validCounts, std::vector<int8_t> const& slotSuppressed,
-        std::vector<int8_t> const& reasoningEndedPerSlot, std::vector<int32_t>& unsatisfiableSlots,
-        cudaStream_t stream);
+        int32_t const* parentIds, int32_t const* validCounts, int8_t const* forcedFlags,
+        std::vector<int8_t> const& slotSuppressed, std::vector<int8_t> const& reasoningEndedPerSlot,
+        std::vector<int32_t>& unsatisfiableSlots, cudaStream_t stream);
 
     //! Apply the uploaded bitmask to `logits`, shaped [activeBatchSize, rowsPerSlot, vocab].
     void applyMask(Tensor& logits, int32_t activeBatchSize, int32_t rowsPerSlot, cudaStream_t stream);

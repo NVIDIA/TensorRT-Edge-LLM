@@ -25,7 +25,6 @@
 #include <numeric>
 
 using namespace trt_edgellm;
-using namespace nvinfer1;
 
 struct SeqLensTestCase
 {
@@ -318,7 +317,8 @@ TEST(UtilKernelTest, pagedSwaChunkedPrefillAssemblesSparseScrambledWindow)
 
     cudaStream_t stream{nullptr};
     kernel::assemblePagedSWAChunkedPrefillFMHAKV(poolTensor, pageTableTensor, kInputTensor, vInputTensor,
-        inputSeqLenTensor, startIndicesTensor, kWorkspaceTensor, vWorkspaceTensor, slidingWindowSize, stream);
+        inputSeqLenTensor, startIndicesTensor, kWorkspaceTensor, vWorkspaceTensor, slidingWindowSize, 1.0F, 1.0F,
+        stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
     auto const kOutput = copyDeviceToHost<half>(kWorkspaceTensor);
     auto const vOutput = copyDeviceToHost<half>(vWorkspaceTensor);
@@ -353,8 +353,96 @@ TEST(UtilKernelTest, pagedSwaChunkedPrefillAssemblesSparseScrambledWindow)
     }
 }
 
-// launchBuildVisionBlockRanges: image-run intervals expand per position; text and
-// padding rows get the -1/-1 sentinel (empty interval).
+#if SUPPORTS_FP8
+TEST(UtilKernelTest, pagedSwaChunkedPrefillDequantizesFp8ResidentWindow)
+{
+    int32_t constexpr batchSize = 1;
+    int32_t constexpr numKVHeads = 1;
+    int32_t constexpr headDim = 2;
+    int32_t constexpr slidingWindowSize = 3;
+    int32_t constexpr qSeqLen = 2;
+    int32_t constexpr workspaceSeqLen = slidingWindowSize + qSeqLen;
+    int32_t constexpr maxPagesPerSeq = 1;
+    int32_t constexpr numPages = 2;
+    int32_t constexpr physicalPage = 1;
+    float constexpr kScale = 0.5F;
+    float constexpr vScale = 0.25F;
+    std::vector<int32_t> const pageTable{physicalPage, physicalPage + numPages};
+    std::vector<int32_t> const inputSeqLen{qSeqLen};
+    std::vector<int32_t> const startIndices{slidingWindowSize};
+
+    size_t const pageElements = static_cast<size_t>(rt::kTOKENS_PER_PAGE) * numKVHeads * headDim;
+    std::vector<__nv_fp8_e4m3> pool(static_cast<size_t>(2) * numPages * pageElements, __nv_fp8_e4m3{0.0F});
+    for (int32_t token = 0; token < slidingWindowSize; ++token)
+    {
+        for (int32_t dim = 0; dim < headDim; ++dim)
+        {
+            size_t const elementInPage = static_cast<size_t>(token) * headDim + dim;
+            pool[static_cast<size_t>(physicalPage) * pageElements + elementInPage]
+                = __nv_fp8_e4m3{static_cast<float>(2 + token * headDim + dim)};
+            pool[static_cast<size_t>(physicalPage + numPages) * pageElements + elementInPage]
+                = __nv_fp8_e4m3{static_cast<float>(8 + token * headDim + dim)};
+        }
+    }
+
+    std::vector<half> kInput(static_cast<size_t>(qSeqLen) * numKVHeads * headDim);
+    std::vector<half> vInput(kInput.size());
+    for (int32_t token = 0; token < qSeqLen; ++token)
+    {
+        for (int32_t dim = 0; dim < headDim; ++dim)
+        {
+            size_t const offset = static_cast<size_t>(token) * headDim + dim;
+            kInput[offset] = __float2half(static_cast<float>(20 + token * headDim + dim));
+            vInput[offset] = __float2half(static_cast<float>(30 + token * headDim + dim));
+        }
+    }
+
+    rt::Tensor poolTensor(
+        {2, numPages, rt::kTOKENS_PER_PAGE, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kFP8);
+    rt::Tensor pageTableTensor({batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor kInputTensor({batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor vInputTensor({batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor inputSeqLenTensor({batchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor startIndicesTensor({batchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor kWorkspaceTensor(
+        {batchSize, workspaceSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor vWorkspaceTensor(
+        {batchSize, workspaceSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    copyHostToDevice(poolTensor, pool);
+    copyHostToDevice(pageTableTensor, pageTable);
+    copyHostToDevice(kInputTensor, kInput);
+    copyHostToDevice(vInputTensor, vInput);
+    copyHostToDevice(inputSeqLenTensor, inputSeqLen);
+    copyHostToDevice(startIndicesTensor, startIndices);
+
+    kernel::assemblePagedSWAChunkedPrefillFMHAKV(poolTensor, pageTableTensor, kInputTensor, vInputTensor,
+        inputSeqLenTensor, startIndicesTensor, kWorkspaceTensor, vWorkspaceTensor, slidingWindowSize, kScale, vScale,
+        nullptr);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    auto const kOutput = copyDeviceToHost<half>(kWorkspaceTensor);
+    auto const vOutput = copyDeviceToHost<half>(vWorkspaceTensor);
+
+    for (int32_t token = 0; token < workspaceSeqLen; ++token)
+    {
+        for (int32_t dim = 0; dim < headDim; ++dim)
+        {
+            size_t const offset = static_cast<size_t>(token) * headDim + dim;
+            float const expectedK = token < slidingWindowSize
+                ? static_cast<float>(2 + token * headDim + dim) * kScale
+                : static_cast<float>(20 + (token - slidingWindowSize) * headDim + dim);
+            float const expectedV = token < slidingWindowSize
+                ? static_cast<float>(8 + token * headDim + dim) * vScale
+                : static_cast<float>(30 + (token - slidingWindowSize) * headDim + dim);
+            EXPECT_FLOAT_EQ(__half2float(kOutput[offset]), expectedK);
+            EXPECT_FLOAT_EQ(__half2float(vOutput[offset]), expectedV);
+        }
+    }
+}
+#endif
+
+// Given vision runs, text, and padding with per-sequence valid lengths,
+// when vision ranges are built, then runs retain their inclusive bounds and
+// text/padding rows receive the empty interval (-1, -2).
 TEST(UtilKernelTest, visionBlockRanges_runsSentinelsAndPadding)
 {
     int32_t constexpr batchSize = 2;
@@ -367,8 +455,8 @@ TEST(UtilKernelTest, visionBlockRanges_runsSentinelsAndPadding)
     std::vector<int32_t> const contextLengths{seqLen, 7};
     std::vector<int32_t> const expectedBegin{-1, 1, 1, 1, 1, 1, -1, 7, 7, 7, -1, -1, //
         0, 0, -1, -1, 4, 4, 4, -1, -1, -1, -1, -1};
-    std::vector<int32_t> const expectedEnd{-1, 5, 5, 5, 5, 5, -1, 9, 9, 9, -1, -1, //
-        1, 1, -1, -1, 6, 6, 6, -1, -1, -1, -1, -1};
+    std::vector<int32_t> const expectedEnd{-2, 5, 5, 5, 5, 5, -2, 9, 9, 9, -2, -2, //
+        1, 1, -2, -2, 6, 6, 6, -2, -2, -2, -2, -2};
 
     rt::Tensor idsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, DataType::kINT32);
     rt::Tensor lengthsTensor({batchSize}, rt::DeviceType::kGPU, DataType::kINT32);

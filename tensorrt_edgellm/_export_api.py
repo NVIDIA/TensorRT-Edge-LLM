@@ -45,6 +45,8 @@ from .models.gemma4.modeling_gemma4_text import Gemma4ForCausalLM
 from .models.muse_glimmer.modeling_muse_glimmer_text import \
     MuseGlimmerForCausalLM
 from .models.nemotron_h.modeling_nemotron_h import NemotronHCausalLM
+from .models.nemotron_h.modeling_nemotron_h_puzzle import \
+    NemotronHPuzzleCausalLM
 from .models.qwen3_5.modeling_qwen3_5_text import Qwen3_5CausalLM
 from .models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeCausalLM
 from .models.qwen3_asr.modeling_qwen3_asr_text import Qwen3ASRLanguageModel
@@ -60,6 +62,7 @@ from .models.qwen3_omni_next.modeling_qwen3_omni_next_moe_text import \
     Qwen3OmniNextMoeLanguageModel
 from .models.qwen3_omni_next.modeling_qwen3_omni_next_text import \
     Qwen3OmniNextLanguageModel
+from .models.qwen4_exp.modeling_qwen4_exp_text import Qwen4ExpCausalLM
 from .onnx.export import export_onnx
 
 
@@ -81,6 +84,8 @@ register_model("diffusiongemma", DiffusionGemmaBackbone,
                _identity_attention_scale)
 register_attention_scale_default("gemma4_assistant", _identity_attention_scale)
 register_model("nemotron_h", NemotronHCausalLM, standard_attention_scale)
+register_model("nemotron_h_puzzle", NemotronHPuzzleCausalLM,
+               standard_attention_scale)
 # Muse-Glimmer dense text decoder.
 # attention_scaling (qk_scale_factor/sqrt(head_dim)) is resolved in
 # ModelConfig.from_pretrained, so a standard default scale is fine here.
@@ -129,6 +134,7 @@ register_model("qwen3_omni_next_talker_text", Qwen3OmniNextMoeTalkerCausalLM,
 register_model("qwen3_asr", Qwen3ASRLanguageModel, standard_attention_scale)
 register_model("qwen3_asr_thinker", Qwen3ASRLanguageModel,
                standard_attention_scale)
+register_model("qwen4_exp_text", Qwen4ExpCausalLM, standard_attention_scale)
 
 __all__ = [
     "__version__",

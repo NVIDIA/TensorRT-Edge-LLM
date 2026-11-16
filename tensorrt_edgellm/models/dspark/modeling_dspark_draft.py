@@ -149,6 +149,7 @@ class DSparkCachedAttention(nn.Module):
                                         if self.attention_type
                                         == "sliding_attention" else -1)
         else:
+            self.attention_type = _attention_type_for_layer(config, layer_idx)
             self.attention_k_eq_v = False
             self.num_heads = config.num_attention_heads
             self.num_kv_heads = config.num_key_value_heads
@@ -185,7 +186,7 @@ class DSparkCachedAttention(nn.Module):
         qkv_projections = [self.q_proj, self.k_proj]
         if not self.attention_k_eq_v:
             qkv_projections.append(self.v_proj)
-        self._uses_int4_qkv = any(
+        self._uses_qkv_concat = any(
             is_int4_linear(proj) for proj in qkv_projections)
 
         norm_cls = Gemma4RMSNorm if self.is_gemma4 else RMSNorm
@@ -193,7 +194,7 @@ class DSparkCachedAttention(nn.Module):
         self.k_norm = norm_cls(self.head_dim, eps=config.rms_norm_eps)
         self.v_norm = (Gemma4ValueRMSNorm(self.head_dim, config.rms_norm_eps)
                        if self.is_gemma4 and config.has_value_norm else None)
-        self._uses_int4_qkv = False
+        self._uses_qkv_concat = False
 
         self._attention_sinks_list: list = []
         if config.attention_sink_bias:
@@ -293,7 +294,7 @@ class DSparkCachedAttention(nn.Module):
         # INT4 GEMM plugin outputs must not feed an exposed ONNX Concat: the
         # resulting Myelin fusion corrupts the packed QKV in the built engine.
         attn_4d, present_kv = attention_plugin(
-            (qkv_concat(q, k_self, v_self) if self._uses_int4_qkv else
+            (qkv_concat(q, k_self, v_self) if self._uses_qkv_concat else
              torch.cat([q, k_self, v_self], dim=-1)),
             updated_kv,
             context_lengths,
@@ -309,7 +310,7 @@ class DSparkCachedAttention(nn.Module):
             attention_scale=self.attention_scale,
             enable_context_mask_selector=False,
             enable_vision_block_attention=False,
-            skip_softmax_scale_factor=0.0,
+            skip_softmax_prefill_input=0,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
             qkv_scales=[1.0, 1.0, 1.0],
@@ -494,11 +495,14 @@ class DSparkDraftModel(nn.Module):
             for i in range(config.num_hidden_layers)
         ])
         self.norm = norm_cls(hidden_size, config.rms_norm_eps)
+        output_vocab_size = config.reduced_vocab_size or config.vocab_size
         self.lm_head = make_linear(config,
                                    hidden_size,
-                                   config.vocab_size,
+                                   output_vocab_size,
                                    bias=False,
                                    module_name="lm_head")
+        self.register_buffer("draft_vocab_map",
+                             torch.zeros(output_vocab_size, dtype=torch.int64))
 
     def forward(
         self,

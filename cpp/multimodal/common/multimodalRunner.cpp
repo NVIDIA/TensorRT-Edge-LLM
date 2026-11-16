@@ -17,6 +17,7 @@
 
 #include "multimodal/common/multimodalRunner.h"
 #include "common/checkMacros.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 #include "multimodal/cosmos3/cosmos3EdgeViTRunner.h"
 #include "multimodal/gemma4/gemma4AudioRunner.h"
@@ -33,30 +34,32 @@
 #include "multimodal/qwen3/qwen3vlViTRunner.h"
 #include "multimodal/qwen3_omni/audioRunner.h"
 #include "multimodal/qwen3_omni/qwen3omniViTRunner.h"
-#include "profiling/layerProfiler.h"
 #include "profiling/metrics.h"
 #include "profiling/timer.h"
+#include "runtime/weight/refitWeights.h"
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <utility>
 
 namespace trt_edgellm
 {
 namespace rt
 {
 
-MultimodalRunner::MultimodalRunner(std::string const& engineDir, cudaStream_t stream)
+MultimodalRunner::MultimodalRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
 {
-    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
 
     // Construct engine path from directory (engineDir already points to visual/ subdirectory)
     std::string enginePath = engineDir + "/visual.engine";
 
     // Load engine
     mVisualEngine = deserializeCudaEngineFromFile(*mRuntime, enginePath);
+    prepareEngineWeights(engineDir, checkpointDir, stream, *mVisualEngine);
 
     // Create context with user-managed memory (no device memory allocated here).
     // The context object is needed by subclasses for tensor binding during initialization.
@@ -67,11 +70,26 @@ MultimodalRunner::MultimodalRunner(std::string const& engineDir, cudaStream_t st
     ELLM_CHECK(profileSet, "Failed to set optimization profile for visual engine");
 
     setNonBlockingAuxStreams(mVisualContext.get(), mVisualEngine.get(), mAuxStreams);
+}
 
-    if (trt_edgellm::layerProfiler::LayerProfiler::getInstance().isEnabled())
+void MultimodalRunner::prepareEngineWeights(
+    std::string const& engineDir, std::string const& checkpointDir, cudaStream_t stream, nvinfer1::ICudaEngine& engine)
+{
+    std::filesystem::path const configPath = std::filesystem::path(engineDir) / "config.json";
+    std::unique_ptr<RefitWeightSet> refitWeights;
+    if (std::filesystem::exists(configPath))
     {
-        mVisualContext->setProfiler(&trt_edgellm::layerProfiler::LayerProfiler::getInstance());
+        // Metadata may describe persistent external weights, temporary refit weights, or both.
+        if (!mExternalWeights)
+        {
+            mExternalWeights = std::make_unique<ExternalWeightManager>();
+            mExternalWeights->load(std::filesystem::path(engineDir), configPath, stream, checkpointDir);
+        }
+        // Ordinary engines with metadata have no refit weights and are validated below with a null owner.
+        refitWeights = mExternalWeights->takeRefitWeights();
     }
+    // Populated-weight engines may omit metadata; stripped engines require it and are rejected here.
+    refitEngineIfNeeded(engine, EngineRefitOptions{std::move(refitWeights), stream});
 }
 
 void MultimodalRunner::loadExternalWeights(
@@ -91,11 +109,13 @@ void MultimodalRunner::loadExternalWeights(
         return;
     }
 
-    mExternalWeights = std::make_unique<ExternalWeightManager>();
-    mExternalWeights->load(std::filesystem::path(engineDir), configPath, stream, checkpointDir);
+    if (!mExternalWeights)
+    {
+        mExternalWeights = std::make_unique<ExternalWeightManager>();
+        mExternalWeights->load(std::filesystem::path(engineDir), configPath, stream, checkpointDir);
+    }
     if (mExternalWeights->size() == 0)
     {
-        mExternalWeights.reset();
         return;
     }
     mExternalWeights->bindToContext(*engine, *context, mAudioEngine ? "audio" : "visual");
@@ -140,7 +160,8 @@ template <typename RunnerT>
 std::unique_ptr<RunnerT> makeInitializedQwenViTRunner(std::string const& engineDir, int32_t llmMaxBatchSize,
     int64_t llmMaxPositionEmbeddings, cudaStream_t stream, std::string const& checkpointDir)
 {
-    auto runner = std::make_unique<RunnerT>(engineDir, llmMaxBatchSize, llmMaxPositionEmbeddings, stream);
+    auto runner
+        = std::make_unique<RunnerT>(engineDir, llmMaxBatchSize, llmMaxPositionEmbeddings, stream, checkpointDir);
     runner->loadExternalWeights(engineDir, checkpointDir, stream);
     runner->initialize(stream);
     return runner;
@@ -202,7 +223,7 @@ std::unique_ptr<MultimodalRunner> MultimodalRunner::create(std::string const& mu
     {
         // Qwen3OmniAudioRunner handles both variants (it branches internally on the
         // config model_type for the Next encoder's 8x-downsample front end).
-        multimodalRunner = std::make_unique<Qwen3OmniAudioRunner>(multimodalEngineDir, stream);
+        multimodalRunner = std::make_unique<Qwen3OmniAudioRunner>(multimodalEngineDir, stream, checkpointDir);
     }
     else if (modelType == multimodal::ModelType::QWEN3_OMNI_VISION_ENCODER)
     {
@@ -211,35 +232,35 @@ std::unique_ptr<MultimodalRunner> MultimodalRunner::create(std::string const& mu
     }
     else if (modelType == multimodal::ModelType::INTERNVL)
     {
-        multimodalRunner = std::make_unique<InternViTRunner>(multimodalEngineDir, stream);
+        multimodalRunner = std::make_unique<InternViTRunner>(multimodalEngineDir, stream, checkpointDir);
     }
     else if (modelType == multimodal::ModelType::PHI4MM)
     {
-        multimodalRunner = std::make_unique<Phi4MMViTRunner>(multimodalEngineDir, stream);
+        multimodalRunner = std::make_unique<Phi4MMViTRunner>(multimodalEngineDir, stream, checkpointDir);
     }
     else if (modelType == multimodal::ModelType::GEMMA4_VISION)
     {
-        multimodalRunner = std::make_unique<Gemma4ViTRunner>(multimodalEngineDir, stream);
+        multimodalRunner = std::make_unique<Gemma4ViTRunner>(multimodalEngineDir, stream, checkpointDir);
     }
     else if (modelType == multimodal::ModelType::GEMMA4_UNIFIED_VISION)
     {
-        multimodalRunner = std::make_unique<Gemma4UnifiedVisionRunner>(multimodalEngineDir, stream);
+        multimodalRunner = std::make_unique<Gemma4UnifiedVisionRunner>(multimodalEngineDir, stream, checkpointDir);
     }
     else if (modelType == multimodal::ModelType::GEMMA4_UNIFIED_AUDIO)
     {
-        multimodalRunner = std::make_unique<Gemma4UnifiedAudioRunner>(multimodalEngineDir, stream);
+        multimodalRunner = std::make_unique<Gemma4UnifiedAudioRunner>(multimodalEngineDir, stream, checkpointDir);
     }
     else if (modelType == multimodal::ModelType::NEMOTRON_OMNI_VISION_ENCODER)
     {
-        multimodalRunner = std::make_unique<NemotronOmniViTRunner>(multimodalEngineDir, stream);
+        multimodalRunner = std::make_unique<NemotronOmniViTRunner>(multimodalEngineDir, stream, checkpointDir);
     }
     else if (modelType == multimodal::ModelType::NEMOTRON_OMNI_AUDIO_ENCODER)
     {
-        multimodalRunner = std::make_unique<NemotronOmniAudioRunner>(multimodalEngineDir, stream);
+        multimodalRunner = std::make_unique<NemotronOmniAudioRunner>(multimodalEngineDir, stream, checkpointDir);
     }
     else if (modelType == multimodal::ModelType::GEMMA4_AUDIO_ENCODER)
     {
-        multimodalRunner = std::make_unique<Gemma4AudioRunner>(multimodalEngineDir, stream);
+        multimodalRunner = std::make_unique<Gemma4AudioRunner>(multimodalEngineDir, stream, checkpointDir);
     }
     else
     {
@@ -269,6 +290,12 @@ bool MultimodalRunner::preprocessSystemPrompt([[maybe_unused]] std::string const
 {
     // Default implementation is to do nothing for system prompt preprocessing and ND-RoPE parameter generation.
     return true;
+}
+
+void MultimodalRunner::setMropeYarnFrequencies(
+    [[maybe_unused]] rt::Tensor const& invFreq, [[maybe_unused]] float mscale)
+{
+    throw std::runtime_error("This multimodal runner does not support YaRN RoPE scaling.");
 }
 
 } // namespace rt

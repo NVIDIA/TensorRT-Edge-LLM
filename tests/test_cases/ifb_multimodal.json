@@ -1,0 +1,61 @@
+{
+    "name": "ifb_multimodal",
+    "description": "Image and text requests mixed with text-only ones on B = 4: one image after ~450 text tokens so a 512-token chunk boundary falls inside the image under mixed chunking, a two-image request, and repeated images that hit the encoder embedding cache.",
+    "num_logprobs": 20,
+    "expect_policy": "mixed",
+    "engine": {
+        "max_batch_size": 4,
+        "ifb_scheduling_mode": "auto",
+        "max_chunk_tokens": 512
+    },
+    "request_defaults": {
+        "max_generate_length": 48,
+        "enable_thinking": false
+    },
+    "snippets": {
+        "harbor": "The old harbor town sits where a slow river meets the sea. Fishing boats leave before dawn and return in the early afternoon, when the market along the quay fills with crates of mackerel, crabs and mussels. Behind the market a row of narrow houses climbs the hill, each painted a different color so that sailors could recognize their homes from the water. A lighthouse on the northern breakwater has guided ships for two hundred years, and its keeper still writes the weather into a logbook every evening. In summer the town hosts a festival where families race small wooden boats across the harbor, and the winner is allowed to ring the bell of the old customs house."
+    },
+    "requests": [
+        {
+            "id": "text_short",
+            "messages": [{"role": "user", "content": "List three practical tips for keeping houseplants healthy."}],
+            "arrival": "at_start"
+        },
+        {
+            "id": "img_dog",
+            "messages": [{"role": "user", "content": [{"image": "examples/multimodal/pics/woman_and_dog.jpeg"}, "Describe the image."]}],
+            "arrival": "at_start"
+        },
+        {
+            "id": "text_long",
+            "messages": [{"role": "user", "content": [{"snippet": "harbor", "repeat": 2}, "Summarize the passage in two sentences."]}],
+            "arrival": {"after": {"request": "img_dog", "tokens": 4}}
+        },
+        {
+            "id": "img_after_long_text",
+            "messages": [{"role": "user", "content": [{"snippet": "harbor", "repeat": 3}, {"image": "examples/multimodal/pics/woman_and_dog.jpeg"}, "Ignoring the passage above, what is the person in the image doing?"]}],
+            "arrival": {"after": {"request": "text_short", "tokens": 8}},
+            "expect": {"prompt_tokens": {"min": 600}}
+        },
+        {
+            "id": "img_two_pandas",
+            "messages": [{"role": "user", "content": [{"image": "examples/multimodal/pics/red_panda.jpeg"}, {"image": "examples/multimodal/pics/giant_panda.jpeg"}, "Compare the two animals in these images."]}],
+            "arrival": {"after": {"request": "img_dog", "tokens": 16}}
+        },
+        {
+            "id": "img_red_panda_again",
+            "messages": [{"role": "user", "content": [{"image": "examples/multimodal/pics/red_panda.jpeg"}, "What animal is this, and where does it usually live?"]}],
+            "arrival": {"after": {"request": "img_two_pandas", "tokens": 4}}
+        },
+        {
+            "id": "text_after_images",
+            "messages": [{"role": "user", "content": "Write a haiku about a lighthouse."}],
+            "arrival": {"after": {"request": "img_after_long_text", "tokens": 4}}
+        },
+        {
+            "id": "img_er_diagram",
+            "messages": [{"role": "user", "content": [{"image": "examples/multimodal/pics/database_er.jpeg"}, "Which entities does this diagram show?"]}],
+            "arrival": {"after": {"request": "text_long", "event": "finish"}}
+        }
+    ]
+}

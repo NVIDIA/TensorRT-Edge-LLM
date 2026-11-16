@@ -35,6 +35,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import struct
 import tempfile
 import urllib.request
@@ -205,6 +206,29 @@ def sha256_file(path: str) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def copy_asset_tree(source: str, destination: str) -> None:
+    """Copy policy assets without following links outside their source tree."""
+    source_root = os.path.realpath(source)
+    if os.path.islink(source):
+        raise ValueError(
+            f"pi0.5 assets directory must not be a symlink: {source}")
+    for parent, directories, filenames in os.walk(source):
+        for name in (*directories, *filenames):
+            path = os.path.join(parent, name)
+            if not os.path.islink(path):
+                continue
+            resolved = os.path.realpath(path)
+            try:
+                inside_source = os.path.commonpath(
+                    (source_root, resolved)) == source_root
+            except ValueError:
+                inside_source = False
+            if not inside_source or not os.path.exists(resolved):
+                raise ValueError(
+                    f"pi0.5 asset symlink escapes its source tree: {path}")
+    shutil.copytree(source, destination, dirs_exist_ok=True)
 
 
 @contextlib.contextmanager

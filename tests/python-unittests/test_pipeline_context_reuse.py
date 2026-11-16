@@ -18,6 +18,7 @@ import json
 import pytest
 from conftest import EnvironmentConfig
 from defs.config import ModelType, TaskType, TestConfig
+from defs.model_test_config import _parse_model_document
 from defs.utils.command_execution import (
     _check_context_reuse_cold_hit_equivalence,
     _check_spec_prefill_evict_equivalence, _read_context_reuse_profile)
@@ -25,8 +26,7 @@ from defs.utils.command_generation import (generate_build_commands,
                                            generate_inference_commands)
 
 _BUILD_PARAM = ("Qwen3.5-4B-nvfp4-mxsl1024-mxbs1-mxil1024-mxkvp64")
-_INFERENCE_PARAM = (f"{_BUILD_PARAM}-ctxreuse-ccrsb67108864-ccpkvsb67108864-"
-                    "llm_context_reuse")
+_INFERENCE_PARAM = f"{_BUILD_PARAM}-ctxreuse-ccms4-llm_context_reuse"
 _GEMMA4_MTP_BUILD_PARAM = (
     "gemma-4-E2B-it-fp16-mxsl2048-mtp-mxbs2-mxil1024-mxkvp64")
 _KV_PAGE_SIZE = 128
@@ -64,11 +64,62 @@ def test_context_reuse_build_and_inference_commands_share_engine(tmp_path):
     ) == inference_config.get_llm_engine_dir()
     assert "--maxKVPoolPages=64" in build_command
     assert "--enableContextReuse" in inference_command
-    assert "--contextCacheRecurrentSnapshotPoolBytes=67108864" in inference_command
-    assert "--contextCachePartialKVSnapshotPoolBytes=67108864" in inference_command
+    assert "--contextCacheMaxSnapshots=4" in inference_command
     assert any(
         option.startswith("--profileOutputFile=")
         for option in inference_command)
+
+
+def test_model_manifest_keeps_context_reuse_out_of_build_parameters():
+    document = {
+        "schema_version":
+        1,
+        "model_id":
+        "google/gemma-4-E2B-it",
+        "inputs": ["text"],
+        "outputs": ["text"],
+        "cases": [{
+            "name":
+            "context-reuse",
+            "mode":
+            "onnx",
+            "platform":
+            "l0_e2e_drive_thor",
+            "quantized_model_id_or_dir":
+            "/models/gemma-4-E2B-it",
+            "requirements": {
+                "min_sm": 100,
+                "min_gpu_memory_gb": 11,
+            },
+            "engine": {
+                "max_kv_cache_capacity": 4096,
+                "max_input_len": 1536,
+                "max_batch_size": 1,
+                "context_reuse": True,
+                "context_cache_max_snapshots": 4,
+            },
+            "inference": [{
+                "name": "context-reuse",
+                "scenario": "generate",
+                "input_file": "tests/test_cases/llm_context_reuse.json",
+                "checks": {
+                    "accuracy": {
+                        "required": ["rouge1"],
+                        "max_regression": 0.3,
+                    }
+                },
+            }],
+        }],
+    }
+
+    tests = _parse_model_document(document, "test")
+    build = next(test for test in tests if test.case_id.endswith("/build"))
+    inference = next(test for test in tests
+                     if test.case_id.endswith("/context-reuse"))
+
+    for name in ("context_reuse", "context_cache_max_snapshots"):
+        assert name not in build.model_parameters
+        assert name in inference.model_parameters
 
 
 def test_spec_build_commands_apply_kv_pool_pages_to_base_and_draft(tmp_path):
@@ -80,10 +131,10 @@ def test_spec_build_commands_apply_kv_pool_pages_to_base_and_draft(tmp_path):
     assert all("--maxKVPoolPages=64" in command for command, _ in commands)
 
 
-def test_context_reuse_snapshot_budgets_require_enable_token(tmp_path):
-    invalid_param = f"{_BUILD_PARAM}-ccrsb67108864-llm_context_reuse"
+def test_context_reuse_max_snapshots_require_enable_token(tmp_path):
+    invalid_param = f"{_BUILD_PARAM}-ccms4-llm_context_reuse"
     with pytest.raises(ValueError,
-                       match="snapshot pool budgets require ctxreuse"):
+                       match="context_cache_max_snapshots requires ctxreuse"):
         _config(invalid_param, TaskType.INFERENCE, tmp_path)
 
 
@@ -180,3 +231,33 @@ def test_spec_prefill_evict_fixture_and_survivor_equivalence(tmp_path):
     with pytest.raises(RuntimeError,
                        match="at least one committed publication"):
         _read_context_reuse_profile(config, logger=None)
+
+
+@pytest.mark.parametrize("route", ["inference", "bench", "direct"])
+@pytest.mark.parametrize("mode", ["dspark", "dflash", "jetspec"])
+def test_block_commands_leave_proposal_depth_to_checkpoint(
+        tmp_path, monkeypatch, route, mode):
+    # Given a block draft whose one backbone call produces multiple proposals,
+    # When constructing any runtime command, Then preserve checkpoint-derived P.
+    from defs import test_builder_pipeline
+    from defs.utils import command_generation
+
+    config = _config(
+        "Qwen3-4B-Instruct-2507-nvfp4-mxsl2048-dspark-block7-fp16-"
+        "mxbs1-mxil1024-mvts8-mdts7-llm_basic", TaskType.INFERENCE, tmp_path)
+    config.is_dspark = mode == "dspark"
+    config.is_dflash = mode == "dflash"
+    config.is_jetspec = mode == "jetspec"
+    if route == "direct":
+        monkeypatch.setattr(config, f"get_{mode}_draft_model_dir",
+                            lambda: "/models/draft")
+        command = test_builder_pipeline._runtime_command(
+            config, "/models/target", "/engine",
+            {"llm_inference": "llm_inference"},
+            "tests/test_cases/llm_basic.json")
+    else:
+        generator = (command_generation.generate_inference_commands
+                     if route == "inference" else
+                     command_generation.generate_e2e_bench_commands)
+        command = generator(config, {"llm_inference": "llm_inference"})[0][0]
+    assert not any(arg.startswith("--specProposalTokens=") for arg in command)

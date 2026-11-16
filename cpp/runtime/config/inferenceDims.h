@@ -36,7 +36,7 @@ namespace rt
 //!
 //! Fields have NO in-class defaults — every construction site must set every
 //! field explicitly. The canonical construction path is an `LLMEngineConfig`
-//! recipe method (`prefillDims`, `decodeDims`, `specVerifyDims`,
+//! recipe method (`prefillDims`, `decodeDims`, `compactDims`, `specVerifyDims`,
 //! `proposalDims`, `acceptDims`, `resetDims`). Direct construction (aggregate
 //! or designated initializers) is supported for unit tests.
 //!
@@ -65,11 +65,14 @@ struct InferenceDims
     //! Shape length for `execution_phase_marker`. The extent is an ExecutionPhase value;
     //! plugins never read the marker payload.
     int64_t executionPhaseLen;
-    //! Shape length for `skip_softmax_scale`: the runtime skip-softmax
-    //! scale-factor override (integer S). Zero = keep the engine-carried
-    //! calibrated default. Like the phase marker, the plugin reads this
-    //! shape, never the payload.
-    int64_t skipSoftmaxScaleLen;
+    //! Shape length for `spec_verify_layout`: 0 inactive, 1 chain, 2 tree.
+    int64_t specVerifyLayoutLen;
+    //! Element count bound for the `skip_softmax_prefill_scale` table (flattened
+    //! (seqlen_bin, S) pairs). Zero dispatches the dense FMHA cubin.
+    int64_t skipSoftmaxPrefillScaleLen;
+    //! Element count bound for the `skip_softmax_decode_scale` table, same format. Zero runs
+    //! decode dense.
+    int64_t skipSoftmaxDecodeScaleLen;
     //! Shape length for `swa_kv_cache_mode`. One selects bounded SWA storage;
     //! zero selects ordinary full KV storage. The plugin reads only the shape.
     int64_t swaKVCacheModeLen;
@@ -85,9 +88,9 @@ struct InferenceDims
 //! change the meaning of every positional aggregate init). Note: these do NOT catch
 //! "short" aggregate inits (omitting trailing fields) — the policy is that production
 //! construction goes through recipe methods, which always set every field.
-static_assert(sizeof(InferenceDims) == 14 * sizeof(int64_t),
+static_assert(sizeof(InferenceDims) == 16 * sizeof(int64_t),
     "InferenceDims layout changed: update kDimNames, toString(), kZeroAllowedMembers, and every recipe "
-    "method in LLMEngineConfig (prefillDims / decodeDims / denoiseDims / diffusionCommitDims / "
+    "method in LLMEngineConfig (prefillDims / decodeDims / compactDims / denoiseDims / diffusionCommitDims / "
     "specVerifyDims / proposalDims / acceptDims / resetDims).");
 static_assert(offsetof(InferenceDims, batch) == 0 * sizeof(int64_t), "InferenceDims::batch reordered");
 static_assert(offsetof(InferenceDims, seqLen) == 1 * sizeof(int64_t), "InferenceDims::seqLen reordered");
@@ -102,13 +105,17 @@ static_assert(offsetof(InferenceDims, contextMaskSelectorLen) == 7 * sizeof(int6
 static_assert(offsetof(InferenceDims, startIndexLen) == 8 * sizeof(int64_t), "InferenceDims::startIndexLen reordered");
 static_assert(
     offsetof(InferenceDims, executionPhaseLen) == 9 * sizeof(int64_t), "InferenceDims::executionPhaseLen reordered");
-static_assert(offsetof(InferenceDims, skipSoftmaxScaleLen) == 10 * sizeof(int64_t),
-    "InferenceDims::skipSoftmaxScaleLen reordered");
+static_assert(offsetof(InferenceDims, specVerifyLayoutLen) == 10 * sizeof(int64_t),
+    "InferenceDims::specVerifyLayoutLen reordered");
+static_assert(offsetof(InferenceDims, skipSoftmaxPrefillScaleLen) == 11 * sizeof(int64_t),
+    "InferenceDims::skipSoftmaxPrefillScaleLen reordered");
+static_assert(offsetof(InferenceDims, skipSoftmaxDecodeScaleLen) == 12 * sizeof(int64_t),
+    "InferenceDims::skipSoftmaxDecodeScaleLen reordered");
 static_assert(
-    offsetof(InferenceDims, swaKVCacheModeLen) == 11 * sizeof(int64_t), "InferenceDims::swaKVCacheModeLen reordered");
+    offsetof(InferenceDims, swaKVCacheModeLen) == 13 * sizeof(int64_t), "InferenceDims::swaKVCacheModeLen reordered");
 static_assert(
-    offsetof(InferenceDims, queryOffsetLen) == 12 * sizeof(int64_t), "InferenceDims::queryOffsetLen reordered");
-static_assert(offsetof(InferenceDims, contextSequenceCount) == 13 * sizeof(int64_t),
+    offsetof(InferenceDims, queryOffsetLen) == 14 * sizeof(int64_t), "InferenceDims::queryOffsetLen reordered");
+static_assert(offsetof(InferenceDims, contextSequenceCount) == 15 * sizeof(int64_t),
     "InferenceDims::contextSequenceCount reordered");
 
 namespace detail
@@ -134,7 +141,9 @@ inline constexpr std::array<std::pair<int64_t InferenceDims::*, std::string_view
         {&InferenceDims::contextMaskSelectorLen, "context_mask_selector_len"},
         {&InferenceDims::startIndexLen, "start_index_len"},
         {&InferenceDims::executionPhaseLen, "execution_phase_len"},
-        {&InferenceDims::skipSoftmaxScaleLen, "skip_softmax_scale_len"},
+        {&InferenceDims::specVerifyLayoutLen, "spec_verify_layout_len"},
+        {&InferenceDims::skipSoftmaxPrefillScaleLen, "skip_softmax_prefill_scale_len"},
+        {&InferenceDims::skipSoftmaxDecodeScaleLen, "skip_softmax_decode_scale_len"},
         {&InferenceDims::swaKVCacheModeLen, "swa_kv_cache_mode_len"},
         {&InferenceDims::queryOffsetLen, "query_offset_len"},
         {&InferenceDims::contextSequenceCount, "context_sequence_count"},
@@ -144,10 +153,12 @@ inline constexpr std::array<std::pair<int64_t InferenceDims::*, std::string_view
 //! bypass). `firstInvalidMember` excludes these from the `> 0` positivity
 //! check. Keep this set as small as possible — default validation should be
 //! strict, and most dims (batch, seqLen, kvLen, etc.) must be > 0.
-inline constexpr std::array<int64_t InferenceDims::*, 5> kZeroAllowedMembers{
+inline constexpr std::array<int64_t InferenceDims::*, 7> kZeroAllowedMembers{
     &InferenceDims::contextMaskSelectorLen,
     &InferenceDims::startIndexLen,
-    &InferenceDims::skipSoftmaxScaleLen,
+    &InferenceDims::specVerifyLayoutLen,
+    &InferenceDims::skipSoftmaxPrefillScaleLen,
+    &InferenceDims::skipSoftmaxDecodeScaleLen,
     &InferenceDims::swaKVCacheModeLen,
     &InferenceDims::contextSequenceCount,
 };

@@ -28,8 +28,8 @@
 #include <stdexcept>
 #include <vector>
 
-using namespace nvinfer1;
 using namespace trt_edgellm::rt;
+using trt_edgellm::DataType;
 
 namespace
 {
@@ -50,13 +50,93 @@ HybridCacheManager::Config makeHybridConfig()
     return config;
 }
 
+//! The Qwen4-Exp n-gram injection's convolution state: one auxiliary state on an arbitrary layer,
+//! sized independently of the recurrent mixers'.
+HybridCacheManager::Config makeHybridConfigWithAuxConvState()
+{
+    HybridCacheManager::Config config = makeHybridConfig();
+    config.auxConvStateConfigs = {HybridCacheManager::AuxConvStateConfig{/*.absLayerIdx=*/1, /*.stateIdx=*/1,
+        /*.convDim=*/7, /*.convWidth=*/9, /*.dataType=*/DataType::kHALF}};
+    return config;
+}
+
 } // namespace
 
 TEST(HybridSnapshotStorageTests, ReportsExactBytesPerSlot)
 {
     HybridCacheManager::Config const config = makeHybridConfig();
-    EXPECT_EQ(HybridSnapshotStorage::recurrentBytesPerSlot(config.mambaConfig), 216U);
+    EXPECT_EQ(HybridSnapshotStorage::recurrentBytesPerSlot(config), 216U);
     EXPECT_EQ(HybridSnapshotStorage::partialKvBytesPerSlot(config.kvConfig), 8192U);
+}
+
+// Given a cache manager carrying an auxiliary conv state, when the recurrent per-slot footprint is
+// priced, then the auxiliary state is charged too -- a slot budget that ignored it would size the
+// snapshot pool past the caller's declared device-memory ceiling.
+TEST(HybridSnapshotStorageTests, PricesAuxiliaryConvStateIntoTheRecurrentSlot)
+{
+    HybridCacheManager::Config const config = makeHybridConfigWithAuxConvState();
+    size_t const auxBytes = static_cast<size_t>(7 * 9) * sizeof(half);
+    EXPECT_EQ(HybridSnapshotStorage::recurrentBytesPerSlot(config), 216U + auxBytes);
+}
+
+// Given a checkpoint taken while an auxiliary conv state held data, when the live slot is zeroed and
+// then restored, then the auxiliary state comes back byte for byte. Without this a reused prefix
+// resumes with the n-gram injection's convolution starting from zero mid-stream, which is silent:
+// the shapes all match and only the first (width-1)*dilation outputs after the reuse point are wrong.
+TEST(HybridSnapshotStorageTests, CaptureAndRestoreRoundTripsAuxiliaryConvState)
+{
+    cudaStream_t stream{};
+    HybridCacheManager::Config const config = makeHybridConfigWithAuxConvState();
+    HybridCacheManager cacheManager(config, stream);
+    HybridSnapshotStorage storage(cacheManager, 2, 2);
+
+    int32_t constexpr kBatchSlot{1};
+    int32_t constexpr kSnapshotSlot{1};
+    uint8_t constexpr kPattern{0x5A};
+    ASSERT_EQ(cacheManager.numAuxConvStates(), 1);
+    size_t const auxBytes = static_cast<size_t>(7 * 9) * sizeof(half);
+    auto* aux = static_cast<uint8_t*>(cacheManager.getAuxConvState(0).rawPointer());
+    CUDA_CHECK(cudaMemsetAsync(aux + kBatchSlot * auxBytes, kPattern, auxBytes, stream));
+
+    storage.captureRecurrent(kSnapshotSlot, kBatchSlot, stream);
+    storage.zeroRecurrent(kBatchSlot, stream);
+
+    std::vector<uint8_t> cleared(auxBytes, kPattern);
+    ASSERT_EQ(cudaMemcpy(cleared.data(), aux + kBatchSlot * auxBytes, auxBytes, cudaMemcpyDeviceToHost), cudaSuccess);
+    EXPECT_TRUE(std::all_of(cleared.begin(), cleared.end(), [](uint8_t value) { return value == 0U; }))
+        << "zeroRecurrent must clear the auxiliary state, or the restore below proves nothing";
+
+    storage.restoreRecurrent(kSnapshotSlot, kBatchSlot, stream);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+    std::vector<uint8_t> restored(auxBytes);
+    ASSERT_EQ(cudaMemcpy(restored.data(), aux + kBatchSlot * auxBytes, auxBytes, cudaMemcpyDeviceToHost), cudaSuccess);
+    EXPECT_TRUE(std::all_of(restored.begin(), restored.end(), [](uint8_t value) { return value == kPattern; }));
+}
+
+// Given two resident slots, when one is checkpointed and restored, then the other slot's auxiliary
+// state is untouched -- the per-slot offset must be the auxiliary state's own, not the mixer's.
+TEST(HybridSnapshotStorageTests, AuxiliaryConvStateRestoreLeavesOtherSlotsAlone)
+{
+    cudaStream_t stream{};
+    HybridCacheManager::Config const config = makeHybridConfigWithAuxConvState();
+    HybridCacheManager cacheManager(config, stream);
+    HybridSnapshotStorage storage(cacheManager, 2, 2);
+
+    uint8_t constexpr kKeptPattern{0x3C};
+    size_t const auxBytes = static_cast<size_t>(7 * 9) * sizeof(half);
+    auto* aux = static_cast<uint8_t*>(cacheManager.getAuxConvState(0).rawPointer());
+    CUDA_CHECK(cudaMemsetAsync(aux, kKeptPattern, auxBytes, stream));
+    CUDA_CHECK(cudaMemsetAsync(aux + auxBytes, 0x11, auxBytes, stream));
+
+    storage.captureRecurrent(/*snapshotSlot=*/0, /*batchSlot=*/1, stream);
+    storage.zeroRecurrent(/*batchSlot=*/1, stream);
+    storage.restoreRecurrent(/*snapshotSlot=*/0, /*batchSlot=*/1, stream);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+    std::vector<uint8_t> kept(auxBytes);
+    ASSERT_EQ(cudaMemcpy(kept.data(), aux, auxBytes, cudaMemcpyDeviceToHost), cudaSuccess);
+    EXPECT_TRUE(std::all_of(kept.begin(), kept.end(), [](uint8_t value) { return value == kKeptPattern; }));
 }
 
 TEST(HybridSnapshotStorageTests, RejectsLiveRecurrentShapeDrift)

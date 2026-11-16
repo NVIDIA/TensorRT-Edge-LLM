@@ -47,6 +47,18 @@ public:
     };
 
     //! \cond INTERNAL
+    //! A per-slot convolution state a layer carries beyond its own mixer's. Held here rather than
+    //! in MambaCacheManager because the layer need not be recurrent. Rows are resident slots, the
+    //! same index space `state_indices` carries into the engine.
+    struct AuxConvStateConfig
+    {
+        int32_t absLayerIdx{};                                        //!< Absolute decoder-layer index it belongs to
+        int32_t stateIdx{};                                           //!< Index within that layer; 0 is the mixer's own
+        int32_t convDim{};                                            //!< Channel count
+        int32_t convWidth{};                                          //!< Steps of history the state holds
+        trt_edgellm::DataType dataType{trt_edgellm::DataType::kHALF}; //!< Element type
+    };
+
     /*!
      * @brief Configuration for HybridCacheManager
      *
@@ -54,10 +66,11 @@ public:
      */
     struct Config
     {
-        std::vector<LayerType> layerTypes;     //!< Absolute layer index -> type (size == total layers)
-        KVCacheManager::Config kvConfig;       //!< Configuration for attention KV cache sub-manager
-        MambaCacheManager::Config mambaConfig; //!< Configuration for Mamba state sub-manager
-        int32_t maxBatchSize{};                //!< Maximum batch size
+        std::vector<LayerType> layerTypes;                   //!< Absolute layer index -> type (size == total layers)
+        KVCacheManager::Config kvConfig;                     //!< Configuration for attention KV cache sub-manager
+        MambaCacheManager::Config mambaConfig;               //!< Configuration for Mamba state sub-manager
+        int32_t maxBatchSize{};                              //!< Maximum batch size
+        std::vector<AuxConvStateConfig> auxConvStateConfigs; //!< Extra per-slot conv states; empty for most models
     };
     //! \endcond
 
@@ -128,10 +141,49 @@ public:
     //! @return Reference to the per-layer recurrent state tensor.
     rt::Tensor& getRecurrentState(int32_t absLayerIdx);
 
-    //! Get the conv state for a given absolute layer index (must be a Mamba layer).
+    //! Get a conv state for a given absolute layer index.
     //! @param absLayerIdx Absolute decoder-layer index.
-    //! @return Reference to the per-layer conv state tensor.
-    rt::Tensor& getConvState(int32_t absLayerIdx);
+    //! @param stateIdx 0 for the layer's own mixer state, which requires a Mamba layer; above that,
+    //!        one of the configured auxiliary states on that layer.
+    //! @return Reference to the per-slot conv state tensor.
+    rt::Tensor& getConvState(int32_t absLayerIdx, int32_t stateIdx = 0);
+
+    //! @brief Number of configured auxiliary conv states, across all layers.
+    //! @return Count, zero for a model that declares none.
+    int32_t numAuxConvStates() const noexcept;
+
+    //! @brief The configuration one auxiliary conv state was allocated from.
+    //! @param auxIdx Index in [0, numAuxConvStates()).
+    //! @return The entry, whose absLayerIdx names the layer it belongs to.
+    AuxConvStateConfig const& auxConvStateConfig(int32_t auxIdx) const;
+
+    //! @brief Storage for one auxiliary conv state, shaped [maxBatchSize, convDim, convWidth].
+    //! @param auxIdx Index in [0, numAuxConvStates()).
+    //! @return Reference to the owned tensor.
+    rt::Tensor& getAuxConvState(int32_t auxIdx);
+
+    //! @brief Whether the auxiliary conv states have spec-verify snapshots.
+    //! @return True when allocated, which follows the Mamba intermediate states.
+    bool hasIntermediateAuxConvStates() const noexcept;
+
+    //! @brief Per-token spec-verify snapshot of one auxiliary conv state.
+    //! @param auxIdx Index in [0, numAuxConvStates()).
+    //! @return Reference to the owned [maxBatchSize, maxIntermediateSeqLen, convDim, convWidth] tensor.
+    rt::Tensor& getIntermediateAuxConvState(int32_t auxIdx);
+
+    //! @brief Reshape the auxiliary snapshots to a step's extents.
+    //! @param activeBatchSize Sequences in the step.
+    //! @param seqLen Verify tokens per sequence.
+    void reshapeIntermediateAuxConvStates(int32_t activeBatchSize, int32_t seqLen);
+
+    //! @brief Copy each sequence's last accepted snapshot into its resident slot.
+    //! @param acceptLengths [activeBatchSize] INT32 accepted token count per sequence.
+    //! @param stateIndices [activeBatchSize] INT32 resident slot per sequence.
+    //! @param stream CUDA stream.
+    //! @param acceptedStateNodeIds Tree verify: [activeBatchSize, maxAcceptLen] INT32 accepted node ids in path
+    //!        order. Null for chain verify, where the snapshot is `acceptLengths[b] - 1`.
+    void scatterAcceptedAuxConvStates(rt::Tensor const& acceptLengths, rt::Tensor const& stateIndices,
+        cudaStream_t stream, rt::Tensor const* acceptedStateNodeIds = nullptr);
 
     // ------------------------------------------------------------------
     // Sub-manager direct access
@@ -209,6 +261,19 @@ public:
     //! Restore a previously validated batch-size view from an exception guard.
     void restoreActiveBatchSize(int32_t activeBatchSize) noexcept;
 
+    //! Exchange the KV lengths of two execution rows. Self-inverse; the device counterpart of
+    //! DecodingInferenceContext::swapExecutionRows, which a batch-one projection pairs it with so the
+    //! projected row runs as row zero while every other row's length is kept where it belongs.
+    //! @throws std::runtime_error if either row is outside the active batch or the swap cannot be enqueued.
+    void swapExecutionRows(int32_t rowA, int32_t rowB, cudaStream_t stream);
+
+    //! Append one sequence to the active batch, as the last execution row, with the KV length it
+    //! already holds (@p committedLength: a reused prefix, or zero). The runtime session reserves
+    //! the row with the sequence's other reservations so the batch here follows the context's from
+    //! the seat on, prefilled or not. Strong exception guarantee: a throw leaves the batch as it was.
+    //! @throws std::runtime_error when the batch is full or the device update cannot be enqueued.
+    void appendSequence(int32_t committedLength, cudaStream_t stream);
+
     //! Materialize the logical lengths for the next contiguous execution batch.
     //!
     //! The source is indexed by execution row. This updates only the transient length input read
@@ -258,6 +323,27 @@ public:
     //! @return Vector of captured tensors (one per recurrent layer).
     std::vector<rt::Tensor> captureConvStates(int32_t batchIdx, cudaStream_t stream);
 
+    //! Capture every auxiliary conv state for a single resident slot.
+    //! @param slot Resident state-pool row to capture, as in `state_indices`.
+    //! @param stream CUDA stream.
+    //! @return One tensor per auxiliary state, in configured order; empty when there are none.
+    std::vector<rt::Tensor> captureAuxConvStates(int32_t slot, cudaStream_t stream);
+
+    //! Restore auxiliary conv states into a single resident slot, zeroing any the capture lacks.
+    //! @param saved Tensors from captureAuxConvStates, or empty to start the slot from zero.
+    //! @param slot Target resident state-pool row.
+    //! @param stream CUDA stream.
+    void restoreAuxConvStates(std::vector<rt::Tensor> const& saved, int32_t slot, cudaStream_t stream);
+
+    //! Zero every auxiliary conv state for a single resident slot.
+    //! @param slot Resident state-pool row to clear.
+    //! @param stream CUDA stream.
+    void clearAuxConvStates(int32_t slot, cudaStream_t stream);
+
+    //! @brief The configuration this manager was built with.
+    //! @return Reference to the stored configuration.
+    Config const& getConfig() const noexcept;
+
 private:
     //! Pre-computed group of KV layers sharing the same headDim for batched kernel launches.
     struct HeadDimGroup
@@ -280,6 +366,16 @@ private:
     int32_t mActiveBatchSize{};               //!< Number of active sequences
     bool mKVCacheAllEmpty{true};              //!< True until the first commitSequenceLength call
     std::vector<HeadDimGroup> mHeadDimGroups; //!< Pre-computed per-headDim groups for batched kernels
+    //! Auxiliary conv states, parallel to mConfig.auxConvStateConfigs and allocated at maxBatchSize.
+    std::vector<rt::Tensor> mAuxConvStates;
+
+    //! Spec-verify snapshots of the above; empty outside speculative decoding.
+    std::vector<rt::Tensor> mIntermediateAuxConvStates;
+    //! Device MtpLayerInfo array for the snapshot scatter.
+    rt::Tensor mDeviceAuxMtpLayerInfos{};
+
+    //! Bytes one resident slot occupies in the given auxiliary state.
+    size_t auxConvStateBytesPerSlot(int32_t auxIdx) const;
 };
 
 } // namespace rt

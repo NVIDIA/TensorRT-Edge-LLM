@@ -25,6 +25,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <optional>
 #include <vector>
 
 #include "common/cudaUtils.h"
@@ -41,7 +42,7 @@ using namespace trt_edgellm;
 /** True if the SM version supports an optimized Blackwell GDN prefill kernel. */
 static inline bool isBlackwellSM(int32_t sm)
 {
-    return sm == 100 || sm == 101 || sm == 110 || sm == 120 || sm == 121;
+    return sm == 100 || sm == 101 || sm == 103 || sm == 110 || sm == 120 || sm == 121;
 }
 
 static inline bool isBlackwellGeforceSM(int32_t sm)
@@ -483,7 +484,7 @@ void runGDNDecodeTest()
 
 void runGDNPrefillTest()
 {
-    // Detect SM version: optimized prefill runs on SM100/101/110 and SM120/121, sequential otherwise.
+    // Detect SM version: optimized prefill runs on SM100/101/103/110 and SM120/121, sequential otherwise.
     int32_t const smVersion = getSMVersion();
     bool const onBlackwell = isBlackwellSM(smVersion);
 
@@ -701,7 +702,7 @@ void runGDNPrefillTest()
 
 /**
  * SM-aware padding test: context_lengths < seq_len for some batch items.
- * On SM100/101/110 and SM120/121 the runner dispatches to an optimized Blackwell kernel.
+ * On SM100/101/103/110 and SM120/121 the runner dispatches to an optimized Blackwell kernel.
  * On SM80   the runner dispatches to sequential kernel (context_lengths masking).
  * Verifies: output at padding positions is 0 (or close to 0), valid positions match reference.
  */
@@ -1052,7 +1053,8 @@ void runGDNIndexedStateTest(
     params.v_dim = dim;
     params.state_pool_rows = statePoolRows;
     params.smVersion = getSMVersion();
-    if (params.seq_len > 1 && (params.smVersion == 100 || params.smVersion == 101 || params.smVersion == 110))
+    if (params.seq_len > 1
+        && (params.smVersion == 100 || params.smVersion == 101 || params.smVersion == 103 || params.smVersion == 110))
     {
         CUDA_CHECK(cudaMalloc(&deviceScratch, static_cast<size_t>(n) * stateStride * sizeof(float)));
         deviceCuSeqlens = allocCuSeqlens(dLengths, n, stream);
@@ -1154,6 +1156,410 @@ void runGDNIndexedStateTest(
     {
         CUDA_CHECK(cudaFree(deviceTensorMapScratch));
     }
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+//! @param initialStateScale Magnitude of the random resident states the sequences start from.
+//! @param aLogOverride When set, every head uses this A_log; a large negative value makes the decay ~1 so the
+//!        initial state stays visible in the outputs and the final states.
+void runGDNPrefillPackedVarlenTest(int32_t h, int32_t hv, bool useStateIndices = true, float initialStateScale = 0.01F,
+    std::optional<float> aLogOverride = std::nullopt)
+{
+    int32_t const smVersion = getSMVersion();
+    bool const isSupportedSm = smVersion == 80 || smVersion == 86 || smVersion == 87 || smVersion == 89
+        || smVersion == 90 || smVersion == 100 || smVersion == 101 || smVersion == 110 || smVersion == 120
+        || smVersion == 121;
+    if (!isSupportedSm)
+    {
+        GTEST_SKIP() << "Packed-varlen GDN prefill is unsupported on SM" << smVersion;
+    }
+#if !defined(CUTE_DSL_GDN_BLACKWELL_ENABLED)
+    if (smVersion == 100 || smVersion == 101 || smVersion == 110)
+    {
+        GTEST_SKIP() << "Packed-varlen Blackwell GDN prefill artifact is not compiled.";
+    }
+#endif
+#if !defined(CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED)
+    if (smVersion == 120 || smVersion == 121)
+    {
+        GTEST_SKIP() << "Packed-varlen GeForce GDN artifact is not compiled.";
+    }
+#endif
+
+    int32_t const n = 4;
+    int32_t const seqLen = 257;
+    int32_t const k = 128;
+    int32_t const v = 128;
+    int32_t const stateSlots = 6;
+    std::vector<int32_t> const hCtx = {257, 129, 65, 7};
+    std::vector<int32_t> const hStateIndices = {4, 1, 5, 0};
+    std::vector<int32_t> hCuSeqlens(n + 1, 0);
+    for (int32_t i = 0; i < n; ++i)
+    {
+        hCuSeqlens[static_cast<size_t>(i + 1)] = hCuSeqlens[static_cast<size_t>(i)] + hCtx[static_cast<size_t>(i)];
+    }
+    int32_t const totalTokens = hCuSeqlens.back();
+
+    size_t const denseQkvLen = static_cast<size_t>(n) * seqLen * h * k;
+    size_t const denseVLen = static_cast<size_t>(n) * seqLen * hv * v;
+    size_t const denseAbLen = static_cast<size_t>(n) * seqLen * hv;
+    size_t const packedQkvLen = static_cast<size_t>(totalTokens) * h * k;
+    size_t const packedVLen = static_cast<size_t>(totalTokens) * hv * v;
+    size_t const packedAbLen = static_cast<size_t>(totalTokens) * hv;
+    size_t const h0Len = static_cast<size_t>(n) * hv * k * v;
+    size_t const stateH0Len = static_cast<size_t>(stateSlots) * hv * k * v;
+    size_t const oLen = static_cast<size_t>(totalTokens) * hv * v;
+
+    std::vector<float> hQDense(denseQkvLen), hKDense(denseQkvLen), hVDense(denseVLen), hADense(denseAbLen),
+        hBDense(denseAbLen);
+    std::vector<float> hALog(hv), hDtBias(hv), hH0State(stateH0Len);
+    uint32_t seed = 0x757u;
+    for (size_t i = 0; i < denseQkvLen; ++i)
+    {
+        hQDense[i] = lcgStep(seed) * 0.2f;
+    }
+    for (size_t i = 0; i < denseQkvLen; ++i)
+    {
+        hKDense[i] = lcgStep(seed) * 0.2f;
+    }
+    for (size_t i = 0; i < denseVLen; ++i)
+    {
+        hVDense[i] = lcgStep(seed) * 0.2f;
+    }
+    for (size_t i = 0; i < denseAbLen; ++i)
+    {
+        hADense[i] = lcgStep(seed) * 0.2f;
+        hBDense[i] = lcgStep(seed) * 0.2f;
+    }
+    for (int32_t i = 0; i < hv; ++i)
+    {
+        hALog[static_cast<size_t>(i)] = aLogOverride.value_or(lcgStep(seed) * 0.2f);
+        hDtBias[static_cast<size_t>(i)] = lcgStep(seed) * 0.2f;
+    }
+    for (size_t i = 0; i < stateH0Len; ++i)
+    {
+        hH0State[i] = lcgStep(seed) * initialStateScale;
+    }
+
+    std::vector<float> hQPacked(packedQkvLen), hKPacked(packedQkvLen), hVPacked(packedVLen), hAPacked(packedAbLen),
+        hBPacked(packedAbLen);
+    size_t packedToken = 0;
+    for (int32_t batch = 0; batch < n; ++batch)
+    {
+        for (int32_t token = 0; token < hCtx[static_cast<size_t>(batch)]; ++token)
+        {
+            for (int32_t head = 0; head < h; ++head)
+            {
+                size_t const denseBase = ((static_cast<size_t>(batch) * seqLen + token) * h + head) * k;
+                size_t const packedBase = (packedToken * h + head) * k;
+                for (int32_t dim = 0; dim < k; ++dim)
+                {
+                    hQPacked[packedBase + dim] = hQDense[denseBase + dim];
+                    hKPacked[packedBase + dim] = hKDense[denseBase + dim];
+                }
+            }
+            for (int32_t head = 0; head < hv; ++head)
+            {
+                size_t const denseVBase = ((static_cast<size_t>(batch) * seqLen + token) * hv + head) * v;
+                size_t const packedVBase = (packedToken * hv + head) * v;
+                for (int32_t dim = 0; dim < v; ++dim)
+                {
+                    hVPacked[packedVBase + dim] = hVDense[denseVBase + dim];
+                }
+                size_t const denseAb = (static_cast<size_t>(batch) * seqLen + token) * hv + head;
+                size_t const packedAb = packedToken * hv + head;
+                hAPacked[packedAb] = hADense[denseAb];
+                hBPacked[packedAb] = hBDense[denseAb];
+            }
+            ++packedToken;
+        }
+    }
+
+    std::vector<float> hH0Active(h0Len);
+    size_t const stateBlockElems = static_cast<size_t>(hv) * k * v;
+    for (int32_t batch = 0; batch < n; ++batch)
+    {
+        int32_t const stateSlot = useStateIndices ? hStateIndices[static_cast<size_t>(batch)] : batch;
+        size_t const srcBase = static_cast<size_t>(stateSlot) * stateBlockElems;
+        size_t const dstBase = static_cast<size_t>(batch) * stateBlockElems;
+        std::copy_n(hH0State.data() + srcBase, stateBlockElems, hH0Active.data() + dstBase);
+    }
+
+    std::vector<float> h0Ref(hH0Active);
+    std::vector<float> oDenseRef(static_cast<size_t>(n) * seqLen * hv * v, 0.f);
+    gdnPrefillReference(hQDense.data(), hKDense.data(), hVDense.data(), hADense.data(), hBDense.data(), hALog.data(),
+        hDtBias.data(), h0Ref.data(), oDenseRef.data(), n, seqLen, h, hv, k, v, hCtx.data());
+
+    std::vector<float> oPackedRef(oLen);
+    packedToken = 0;
+    for (int32_t batch = 0; batch < n; ++batch)
+    {
+        for (int32_t token = 0; token < hCtx[static_cast<size_t>(batch)]; ++token)
+        {
+            size_t const denseBase = (static_cast<size_t>(batch) * seqLen + token) * hv * v;
+            size_t const packedBase = packedToken * hv * v;
+            for (int32_t dim = 0; dim < hv * v; ++dim)
+            {
+                oPackedRef[packedBase + static_cast<size_t>(dim)] = oDenseRef[denseBase + static_cast<size_t>(dim)];
+            }
+            ++packedToken;
+        }
+    }
+
+    std::vector<half> hQHalf(packedQkvLen), hKHalf(packedQkvLen), hVHalf(packedVLen), hAHalf(packedAbLen),
+        hBHalf(packedAbLen), hDtHalf(hv);
+    for (size_t i = 0; i < packedQkvLen; ++i)
+    {
+        hQHalf[i] = floatToHalf(hQPacked[i]);
+        hKHalf[i] = floatToHalf(hKPacked[i]);
+    }
+    for (size_t i = 0; i < packedVLen; ++i)
+    {
+        hVHalf[i] = floatToHalf(hVPacked[i]);
+    }
+    for (size_t i = 0; i < packedAbLen; ++i)
+    {
+        hAHalf[i] = floatToHalf(hAPacked[i]);
+        hBHalf[i] = floatToHalf(hBPacked[i]);
+    }
+    for (int32_t i = 0; i < hv; ++i)
+    {
+        hDtHalf[static_cast<size_t>(i)] = floatToHalf(hDtBias[static_cast<size_t>(i)]);
+    }
+
+    void* dQ = nullptr;
+    void* dK = nullptr;
+    void* dV = nullptr;
+    void* dA = nullptr;
+    void* dB = nullptr;
+    void* dALog = nullptr;
+    void* dDtBias = nullptr;
+    void* dH0 = nullptr;
+    void* dH0Scratch = nullptr;
+    void* dH0OutScratch = nullptr;
+    void* dCuSeqlens = nullptr;
+    void* dStateIndices = nullptr;
+    void* dTensormapScratch = nullptr;
+    void* dO = nullptr;
+    CUDA_CHECK(cudaMalloc(&dQ, packedQkvLen * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&dK, packedQkvLen * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&dV, packedVLen * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&dA, packedAbLen * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&dB, packedAbLen * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&dALog, static_cast<size_t>(hv) * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dDtBias, static_cast<size_t>(hv) * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&dH0, stateH0Len * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dH0Scratch, h0Len * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dH0OutScratch, h0Len * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dCuSeqlens, static_cast<size_t>(n + 1) * sizeof(int32_t)));
+    CUDA_CHECK(cudaMalloc(&dStateIndices, static_cast<size_t>(n) * sizeof(int32_t)));
+    size_t const tensormapScratchBytes = static_cast<size_t>(CuteDslGDNRunner::kBlackwellRaggedMaxSMCount)
+        * CuteDslGDNRunner::kBlackwellRaggedTensorMapsPerCTA
+        * CuteDslGDNRunner::kBlackwellRaggedTensorMapDescriptorBytes;
+    CUDA_CHECK(cudaMalloc(&dTensormapScratch, tensormapScratchBytes));
+    CUDA_CHECK(cudaMalloc(&dO, oLen * sizeof(half)));
+
+    CUDA_CHECK(cudaMemcpy(dQ, hQHalf.data(), packedQkvLen * sizeof(half), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dK, hKHalf.data(), packedQkvLen * sizeof(half), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dV, hVHalf.data(), packedVLen * sizeof(half), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dA, hAHalf.data(), packedAbLen * sizeof(half), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dB, hBHalf.data(), packedAbLen * sizeof(half), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dALog, hALog.data(), static_cast<size_t>(hv) * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dDtBias, hDtHalf.data(), static_cast<size_t>(hv) * sizeof(half), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dH0, hH0State.data(), stateH0Len * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(
+        dCuSeqlens, hCuSeqlens.data(), static_cast<size_t>(n + 1) * sizeof(int32_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(
+        dStateIndices, hStateIndices.data(), static_cast<size_t>(n) * sizeof(int32_t), cudaMemcpyHostToDevice));
+
+    GDNParams params{};
+    params.q = dQ;
+    params.k = dK;
+    params.v = dV;
+    params.a = dA;
+    params.b = dB;
+    params.A_log = dALog;
+    params.dt_bias = dDtBias;
+    params.h0_source = dH0;
+    params.cu_seqlens = dCuSeqlens;
+    params.state_indices = useStateIndices ? dStateIndices : nullptr;
+    params.h0_scratch = dH0Scratch;
+    params.h0_out_scratch = dH0OutScratch;
+    params.tensormap_scratch = dTensormapScratch;
+    params.o = dO;
+    params.packed_varlen = true;
+    params.use_prefill = true;
+    params.n = n;
+    params.seq_len = totalTokens;
+    params.total_tokens = totalTokens;
+    params.h = h;
+    params.hv = hv;
+    params.k_dim = k;
+    params.v_dim = v;
+    params.state_pool_rows = stateSlots;
+    params.smVersion = smVersion;
+    if (isBlackwellGeforceSM(smVersion))
+    {
+        params.h0_out_scratch = nullptr;
+    }
+
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    CuteDslGDNRunner runner;
+    if (useStateIndices && h == 1 && hv == 1)
+    {
+        GDNParams invalidParams = params;
+        invalidParams.state_pool_rows = 0;
+        EXPECT_EQ(runner.run(invalidParams, stream), -1);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        if (CuteDslGDNRunner::selectBackend(params) == GDNBackend::kPrefillBlackwellVarlen)
+        {
+            invalidParams = params;
+            invalidParams.h0_out_scratch = nullptr;
+            EXPECT_EQ(runner.run(invalidParams, stream), -1);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+        }
+
+        std::vector<half> hQAfterFailure(packedQkvLen), hKAfterFailure(packedQkvLen);
+        CUDA_CHECK(cudaMemcpy(hQAfterFailure.data(), dQ, packedQkvLen * sizeof(half), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(hKAfterFailure.data(), dK, packedQkvLen * sizeof(half), cudaMemcpyDeviceToHost));
+        for (size_t i = 0; i < packedQkvLen; ++i)
+        {
+            EXPECT_EQ(halfToFloat(hQAfterFailure[i]), halfToFloat(hQHalf[i]));
+            EXPECT_EQ(halfToFloat(hKAfterFailure[i]), halfToFloat(hKHalf[i]));
+        }
+    }
+    int32_t const ret = runner.run(params, stream);
+    ASSERT_EQ(ret, 0) << "Packed-varlen GDN prefill run failed";
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    std::vector<half> hOHalf(oLen);
+    CUDA_CHECK(cudaMemcpy(hOHalf.data(), dO, oLen * sizeof(half), cudaMemcpyDeviceToHost));
+    std::vector<float> hO(oLen);
+    for (size_t i = 0; i < oLen; ++i)
+    {
+        hO[i] = halfToFloat(hOHalf[i]);
+    }
+
+    float const outputAtol = 1e-3F;
+    float const outputRtol = 5e-2F;
+    double const outputMaxNormalizedRmsError = 0.15;
+    double const minimumSignalSquaredRatio = 0.25;
+    double outputErrorSquared = 0.0;
+    double outputReferenceSquared = 0.0;
+    double outputActualSquared = 0.0;
+    for (size_t i = 0; i < oLen; ++i)
+    {
+        ASSERT_TRUE(std::isfinite(hO[i])) << "Packed-varlen output is non-finite at " << i;
+        EXPECT_TRUE(isclose(hO[i], oPackedRef[i], outputRtol, outputAtol))
+            << "Packed-varlen output mismatch at " << i << ": got " << hO[i] << ", ref " << oPackedRef[i];
+        double const error = static_cast<double>(hO[i]) - oPackedRef[i];
+        outputErrorSquared += error * error;
+        outputReferenceSquared += static_cast<double>(oPackedRef[i]) * oPackedRef[i];
+        outputActualSquared += static_cast<double>(hO[i]) * hO[i];
+    }
+    ASSERT_GT(outputReferenceSquared, 0.0);
+    double const outputNormalizedRmsError = std::sqrt(outputErrorSquared / outputReferenceSquared);
+    EXPECT_LT(outputNormalizedRmsError, outputMaxNormalizedRmsError)
+        << "Packed-varlen output normalized RMS error is too large";
+    EXPECT_GT(outputActualSquared, minimumSignalSquaredRatio * outputReferenceSquared)
+        << "Packed-varlen output signal is missing";
+
+    std::vector<float> hH0Expected(hH0State);
+    std::vector<bool> activeStateSlots(static_cast<size_t>(stateSlots), false);
+    for (int32_t batch = 0; batch < n; ++batch)
+    {
+        int32_t const stateSlot = useStateIndices ? hStateIndices[static_cast<size_t>(batch)] : batch;
+        size_t const srcBase = static_cast<size_t>(batch) * stateBlockElems;
+        size_t const dstBase = static_cast<size_t>(stateSlot) * stateBlockElems;
+        std::copy_n(h0Ref.data() + srcBase, stateBlockElems, hH0Expected.data() + dstBase);
+        activeStateSlots[static_cast<size_t>(stateSlot)] = true;
+    }
+
+    std::vector<float> hH0Out(stateH0Len);
+    CUDA_CHECK(cudaMemcpy(hH0Out.data(), dH0, stateH0Len * sizeof(float), cudaMemcpyDeviceToHost));
+    float const stateAtol = 1e-3F;
+    float const stateRtol = 5e-2F;
+    double const stateDeltaMaxNormalizedRmsError = 0.05;
+    double stateDeltaErrorSquared = 0.0;
+    double stateReferenceDeltaSquared = 0.0;
+    double stateActualDeltaSquared = 0.0;
+    for (int32_t stateSlot = 0; stateSlot < stateSlots; ++stateSlot)
+    {
+        size_t const slotBase = static_cast<size_t>(stateSlot) * stateBlockElems;
+        if (!activeStateSlots[static_cast<size_t>(stateSlot)])
+        {
+            EXPECT_EQ(
+                std::memcmp(hH0Out.data() + slotBase, hH0State.data() + slotBase, stateBlockElems * sizeof(float)), 0)
+                << "Packed-varlen inactive state slot " << stateSlot << " was modified";
+            continue;
+        }
+        for (size_t element = 0; element < stateBlockElems; ++element)
+        {
+            size_t const index = slotBase + element;
+            ASSERT_TRUE(std::isfinite(hH0Out[index])) << "Packed-varlen state is non-finite at " << index;
+            EXPECT_TRUE(isclose(hH0Out[index], hH0Expected[index], stateRtol, stateAtol))
+                << "Packed-varlen slot h0 mismatch at " << index << ": got " << hH0Out[index] << ", ref "
+                << hH0Expected[index];
+            double const expectedDelta = static_cast<double>(hH0Expected[index]) - hH0State[index];
+            double const actualDelta = static_cast<double>(hH0Out[index]) - hH0State[index];
+            double const deltaError = actualDelta - expectedDelta;
+            stateDeltaErrorSquared += deltaError * deltaError;
+            stateReferenceDeltaSquared += expectedDelta * expectedDelta;
+            stateActualDeltaSquared += actualDelta * actualDelta;
+        }
+    }
+    ASSERT_GT(stateReferenceDeltaSquared, 0.0);
+    double const stateDeltaNormalizedRmsError = std::sqrt(stateDeltaErrorSquared / stateReferenceDeltaSquared);
+    EXPECT_LT(stateDeltaNormalizedRmsError, stateDeltaMaxNormalizedRmsError)
+        << "Packed-varlen state-delta normalized RMS error is too large";
+    EXPECT_GT(stateActualDeltaSquared, minimumSignalSquaredRatio * stateReferenceDeltaSquared)
+        << "Packed-varlen recurrent-state update signal is missing";
+
+    if (h == 1 && hv == 1 && useStateIndices)
+    {
+        // Invalid metadata remains contained to the physical token allocation without adding a host synchronization.
+        auto nonzeroStart = hCuSeqlens;
+        ++nonzeroStart.front();
+        auto negativeStart = hCuSeqlens;
+        negativeStart.front() = -1;
+        auto decreasing = hCuSeqlens;
+        decreasing[2] = decreasing[1] - 1;
+        auto oversizedEnd = hCuSeqlens;
+        oversizedEnd.back() += hCtx.back();
+        auto truncatedEnd = hCuSeqlens;
+        --truncatedEnd.back();
+        std::vector<std::vector<int32_t>> const malformedCuSeqlens = {
+            nonzeroStart,
+            negativeStart,
+            decreasing,
+            oversizedEnd,
+            truncatedEnd,
+        };
+        for (auto const& offsets : malformedCuSeqlens)
+        {
+            CUDA_CHECK(cudaMemcpyAsync(dCuSeqlens, offsets.data(), static_cast<size_t>(n + 1) * sizeof(int32_t),
+                cudaMemcpyHostToDevice, stream));
+            ASSERT_EQ(runner.run(params, stream), 0);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+        }
+    }
+
+    CUDA_CHECK(cudaFree(dQ));
+    CUDA_CHECK(cudaFree(dK));
+    CUDA_CHECK(cudaFree(dV));
+    CUDA_CHECK(cudaFree(dA));
+    CUDA_CHECK(cudaFree(dB));
+    CUDA_CHECK(cudaFree(dALog));
+    CUDA_CHECK(cudaFree(dDtBias));
+    CUDA_CHECK(cudaFree(dH0));
+    CUDA_CHECK(cudaFree(dH0Scratch));
+    CUDA_CHECK(cudaFree(dH0OutScratch));
+    CUDA_CHECK(cudaFree(dCuSeqlens));
+    CUDA_CHECK(cudaFree(dStateIndices));
+    CUDA_CHECK(cudaFree(dTensormapScratch));
+    CUDA_CHECK(cudaFree(dO));
     CUDA_CHECK(cudaStreamDestroy(stream));
 }
 
@@ -1616,6 +2022,27 @@ TEST(GDNCuteDsl, IndexedStateGather)
     CUDA_CHECK(cudaStreamDestroy(stream));
 }
 
+TEST(GDNCuteDsl, PrefillPackedVarlenContinuesFromNonSymmetricInitialState)
+{
+    // Given resident states of unit magnitude (not symmetric per head) and a decay of ~1 so they persist,
+    // When packed-varlen prefill continues each sequence from its state, with and without state indices,
+    // Then outputs and final states match a reference started from those states in the resident K-major layout.
+    runGDNPrefillPackedVarlenTest(4, 8, true, 1.0F, -12.0F);
+    runGDNPrefillPackedVarlenTest(1, 1, false, 1.0F, -12.0F);
+}
+
+// Given heterogeneous packed sequences and mapped recurrent-state slots on a supported GPU,
+// when the packed-varlen runner executes, then outputs and active final states match the reference and
+// inactive state slots remain unchanged.
+TEST(GDNCuteDsl, PrefillPackedVarlen)
+{
+    runGDNPrefillPackedVarlenTest(1, 1);
+    runGDNPrefillPackedVarlenTest(4, 8);
+    runGDNPrefillPackedVarlenTest(8, 16);
+    runGDNPrefillPackedVarlenTest(16, 32);
+    runGDNPrefillPackedVarlenTest(1, 1, false);
+}
+
 /**
  * GDN prefill with the exact Qwen3.5-4B parameters: n=1, h=16, hv=32, seq_len=164.
  * This configuration triggers grouped value attention (h_r=2) and tail masking on optimized Blackwell paths.
@@ -1626,7 +2053,7 @@ void runGDNPrefillQwen35Test(float atol = 5e-2f, float rtol = 5e-2f, bool enable
     bool const onBlackwell = isBlackwellSM(smVersion);
     if (!onBlackwell)
     {
-        GTEST_SKIP() << "Qwen3.5-4B prefill test requires SM100/101/110 or SM120/121, skipping on SM" << smVersion;
+        GTEST_SKIP() << "Qwen3.5-4B prefill test requires SM100/101/103/110 or SM120/121, skipping on SM" << smVersion;
         return;
     }
 
@@ -2692,7 +3119,7 @@ void runGDNBlackwellVsSequentialTest()
     int32_t const smVersion = getSMVersion();
     if (!isBlackwellSM(smVersion))
     {
-        GTEST_SKIP() << "Blackwell vs Sequential test requires SM100/101/110 or SM120/121";
+        GTEST_SKIP() << "Blackwell vs Sequential test requires SM100/101/103/110 or SM120/121";
         return;
     }
 

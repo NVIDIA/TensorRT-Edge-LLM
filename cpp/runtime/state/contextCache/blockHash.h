@@ -17,35 +17,17 @@
 
 #pragma once
 
+#include "common/identityHash.h"
+
 #include <cstddef>
 #include <cstdint>
-#include <cuda_runtime.h>
-#include <functional>
 #include <optional>
-#include <string_view>
 #include <vector>
 
 namespace trt_edgellm
 {
 namespace rt
 {
-
-//! Two-word representation used for stable context-cache identities.
-struct Hash128
-{
-    uint64_t hi{};
-    uint64_t lo{};
-};
-
-inline bool operator==(Hash128 const& lhs, Hash128 const& rhs) noexcept
-{
-    return lhs.hi == rhs.hi && lhs.lo == rhs.lo;
-}
-
-inline bool operator!=(Hash128 const& lhs, Hash128 const& rhs) noexcept
-{
-    return !(lhs == rhs);
-}
 
 //! Logical identity of one complete token block and all prefix state that produced it.
 //!
@@ -81,14 +63,6 @@ struct BlockKeyExtras
 
 inline constexpr BlockHash kCHAIN_ROOT{0x9E3779B97F4A7C15ULL, 0xC2B2AE3D27D4EB4FULL};
 
-//! Deterministically hash exact opaque bytes for adapter, media, or isolation identity.
-//! This uses the same non-cryptographic 128-bit FNV-1a primitive as block chaining.
-//!
-//! When @p stream is non-null and @p cpuOnly is false, payloads above an internal threshold are hashed on the GPU
-//! using a parallel chunked kernel. The result is bit-identical to the CPU path. Callers on hot paths with large
-//! payloads (e.g. VLM image embeddings) should pass a valid stream and set cpuOnly=false.
-Hash128 hashOpaqueIdentity(std::string_view bytes, cudaStream_t stream = nullptr, bool cpuOnly = true);
-
 //! Hash one caller-supplied token block and its non-token identity into its parent chain.
 //!
 //! The implementation uses deterministic 128-bit Fowler-Noll-Vo (FNV-1a) over a tagged byte stream. It is a
@@ -116,18 +90,3 @@ BlockHash hashExactPrefix(
 
 } // namespace rt
 } // namespace trt_edgellm
-
-namespace std
-{
-
-template <>
-struct hash<trt_edgellm::rt::Hash128>
-{
-    size_t operator()(trt_edgellm::rt::Hash128 const& value) const noexcept
-    {
-        constexpr uint64_t kFOLD_MULTIPLIER = 0x9E3779B97F4A7C15ULL;
-        return static_cast<size_t>(value.hi ^ (value.lo * kFOLD_MULTIPLIER));
-    }
-};
-
-} // namespace std

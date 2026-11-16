@@ -45,6 +45,9 @@
 //              + CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP16_TN{64,128}_ENABLED
 //   FP8-out:   gemm_blackwell_nvfp4_fp8_tn{64,128}_Kernel_Module_t
 //              + CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP8_TN{64,128}_ENABLED
+//   SM12x FP16-out:
+//              gemm_blackwell_geforce_nvfp4_fp16_tm64_tn{64,128}_Kernel_Module_t
+//              gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_Kernel_Module_t
 //
 // Shape handling
 // --------------
@@ -72,8 +75,9 @@ namespace kernels
 class CuteDslGemmNvFp4Runner
 {
 public:
-    /// Construct with the desired MMA N-tile. Must be one of {64, 128}.
-    explicit CuteDslGemmNvFp4Runner(int32_t mmaTilerN = 64);
+    /// Construct for one runtime SM and the desired MMA N-tile. The N-tile
+    /// must be one of {64, 128}.
+    CuteDslGemmNvFp4Runner(int32_t smVersion, int32_t mmaTilerN = 64);
 
     ~CuteDslGemmNvFp4Runner();
 
@@ -87,6 +91,9 @@ public:
     /// Is there an AOT variant compiled for this GPU + tile combo?
     static bool canImplement(int32_t smVersion, int32_t mmaTilerN);
 
+    /// Is the SM12x M=1 row-major activation-scale specialization compiled?
+    static bool canImplementRawSfaM1(int32_t smVersion);
+
     /// Launch the blockscaled NVFP4 GEMM with FP16 output.
     ///
     /// @param a      FP4 packed activation, device ptr to [M, K/2] uint8
@@ -94,13 +101,20 @@ public:
     /// @param aSF    UE4M3 atom-layout SF buffer for A, device ptr
     /// @param bSF    UE4M3 atom-layout SF buffer for B, device ptr
     /// @param d      FP16 output buffer, device ptr to [M, N] half
-    /// @param alpha  device ptr to the per tensor FP32 dequant scale
+    /// @param alpha  FP32 scalar applied in the SM110/SM12x epilogue before
+    ///               converting the FP32 accumulator to the output dtype.
     /// @param M, N, K dynamic shapes. N must be multiple of 128 and K a
     ///               multiple of 64 (satisfied by TP layouts). M may be any
     ///               positive integer.
     /// @param stream CUDA stream
     cudaError_t run(void const* a, void const* b, void const* aSF, void const* bSF, void* d, void const* alpha,
         int32_t M, int32_t N, int32_t K, cudaStream_t stream);
+
+    /// Launch the SM12x decode specialization with a row-major activation
+    /// scale. The kernel stages the single live SFA row directly into shared
+    /// memory; M must be exactly 1. B scales remain in SfAtom layout.
+    cudaError_t runRawSfaM1(void const* a, void const* b, void const* aSFRaw, void const* bSF, void* d,
+        void const* alpha, int32_t M, int32_t N, int32_t K, cudaStream_t stream);
 
     /// Launch the blockscaled NVFP4 GEMM with FP8 E4M3 output.
     ///
@@ -113,6 +127,7 @@ public:
         int32_t M, int32_t N, int32_t K, cudaStream_t stream);
 
 private:
+    int32_t mSmVersion;
     int32_t mMmaTilerN;
 
 #ifdef CUTE_DSL_GEMM_NVFP4_ENABLED
@@ -142,6 +157,25 @@ private:
 #endif
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN128_ENABLED
     static gemm_blackwell_nvfp4_ws_fp8_tn128_Kernel_Module_t sModWsFp8Tn128;
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_ENABLED
+    static gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_Kernel_Module_t sModGeForceFp16Tm64Tn64;
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_ENABLED
+    static gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_Kernel_Module_t sModGeForceFp16Tm64Tn128;
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_ENABLED
+    static gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_Kernel_Module_t sModGeForceFp16Tm64Tn128Tk256;
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_RAW_SFA_M1_ENABLED
+    static gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1_Kernel_Module_t sModGeForceFp16Tm64Tn64RawSfaM1;
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_RAW_SFA_M1_ENABLED
+    static gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1_Kernel_Module_t sModGeForceFp16Tm64Tn128RawSfaM1;
+#endif
+#ifdef CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_RAW_SFA_M1_ENABLED
+    static gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1_Kernel_Module_t
+        sModGeForceFp16Tm64Tn128Tk256RawSfaM1;
 #endif
 #endif // CUTE_DSL_GEMM_NVFP4_ENABLED
     static std::mutex sMutex;

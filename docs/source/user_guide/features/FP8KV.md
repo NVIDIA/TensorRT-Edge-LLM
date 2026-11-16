@@ -39,7 +39,7 @@ Build the TensorRT engine as usual. Engine build and runtime detect FP8 KV
 cache from the exported ONNX model configuration:
 
 ```bash
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir /tmp/qwen3_nvfp4_fp8kv_onnx/llm \
   --engine-dir engines/qwen3-8b-nvfp4-fp8kv \
   --max-batch-size=1
@@ -48,7 +48,7 @@ cache from the exported ONNX model configuration:
 Run inference with the built engine. No special runtime flags are needed:
 
 ```bash
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
   --engine-dir engines/qwen3-8b-nvfp4-fp8kv \
   --input-file tests/test_cases/llm_basic.json \
   --output-file output.json
@@ -176,4 +176,4 @@ Benchmarks were collected on Thor (SM110): causal masking, persistent scheduling
 - **Automatic Detection**: Engine build automatically detects FP8 KV cache from ONNX model configuration — no special build flags needed.
 - **Compatibility**: Works with the supported LLM and EAGLE flows, but accuracy should be validated per checkpoint.
 - **Memory Benefits**: Most beneficial for long-context models and high batch sizes where KV cache memory dominates.
-- **Platform Requirements**: Requires CUDA 11.8+ for FP8 support (`cuda_fp8.h`). FP8 KV cache is supported on GPUs with compute capability SM89 and above (Ada Lovelace and newer).
+- **Platform Requirements**: Requires CUDA 11.8+ for FP8 storage support (`cuda_fp8.h`). FP8 KV cache is supported on SM80 and newer supported platforms. For ONNX export targeting Ampere, including Jetson Orin, pass `--target-sm 80`, `86`, or `87` as appropriate: TensorRT bindings then carry the E4M3 bytes as INT8 storage. Edge-LLM converts them to FP16 in software and executes attention in FP16, without FP8 compute. Other targets retain FP8 bindings.

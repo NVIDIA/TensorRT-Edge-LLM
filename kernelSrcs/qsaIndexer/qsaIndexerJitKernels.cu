@@ -100,6 +100,15 @@ static_assert(kTOKENS_PER_PAGE % (kQSA_COMPRESS_RATIO * kScoresColumnsPerWarp) =
     "a warp's block-columns must live in one page");
 constexpr int32_t kRawKColumnOffset = kQSA_INDEXER_NUM_HEADS * kQSA_INDEXER_HEAD_DIM;      // 512
 constexpr int32_t kHalfRotaryDim = kQSA_INDEXER_ROTARY_DIM / 2;                            // 32
+//! Block rope row: the 64 FP32 cos/sin of a block's first token 4g, kept as raw bytes in that token's V-tail; kbar
+//! of the block sits in the V-tail of token 4g + 1. The layout is in qsaIndexerKernels.h. One warp moves the row
+//! with 2 floats per lane; the 128-element tail must hold it exactly.
+constexpr int32_t kBlockRopeRowFloats = kQSA_INDEXER_ROTARY_DIM;                // 64
+constexpr int32_t kBlockRopeRowFloatsPerLane = kBlockRopeRowFloats / kWarpSize; // 2
+static_assert(kQSA_INDEXER_HEAD_DIM * sizeof(QsaType) == kBlockRopeRowFloats * sizeof(float),
+    "the block rope row must fill the 128-element tail exactly");
+static_assert(kBlockRopeRowFloats % kWarpSize == 0, "one warp moves a whole rope row");
+constexpr int32_t kKbarTokenOffset = 1;
 constexpr uint32_t kFullWarpMask = 0xffffffffU;
 
 template <typename T>
@@ -183,6 +192,33 @@ __device__ __forceinline__ T* qsaPoolTailPtr(QsaIndexerPoolView const& pool, T* 
         + pool.headSize;
 }
 
+//! Warp-cooperative raw copy of one FP32 rope row (64 floats) into a V-tail viewed as FP32: the
+//! block rope row. Byte-exact: the cell is never interpreted as QsaType. Alignment: the tail
+//! starts at element offset (page * 128 + token) * rowStride + headSize; the host requires
+//! rowStride and headSize to be even, so the byte offset is a multiple of 4 and scalar FP32
+//! access is well-defined.
+__device__ __forceinline__ void qsaWriteBlockRopeRow(QsaType* vTail, float const* cosSinRow, int32_t lane)
+{
+    float* blockRopeRow = reinterpret_cast<float*>(vTail);
+#pragma unroll
+    for (int32_t i = 0; i < kBlockRopeRowFloatsPerLane; ++i)
+    {
+        blockRopeRow[lane * kBlockRopeRowFloatsPerLane + i] = cosSinRow[lane * kBlockRopeRowFloatsPerLane + i];
+    }
+}
+
+//! Inverse of qsaWriteBlockRopeRow: stage a block rope row into shared memory. The caller must
+//! __syncwarp() before reading sCosSin, whose entries [d] and [32 + d] were written by other lanes.
+__device__ __forceinline__ void qsaLoadBlockRopeRow(float* sCosSin, QsaType const* vTail, int32_t lane)
+{
+    float const* blockRopeRow = reinterpret_cast<float const*>(vTail);
+#pragma unroll
+    for (int32_t i = 0; i < kBlockRopeRowFloatsPerLane; ++i)
+    {
+        sCosSin[lane * kBlockRopeRowFloatsPerLane + i] = blockRopeRow[lane * kBlockRopeRowFloatsPerLane + i];
+    }
+}
+
 //! Neox (half-rotation) partial rope on one FP32 head staged in shared memory.
 //! Dim d < 32: y = x[d]*cos[d] - x[d+32]*sin[d]; 32 <= d < 64: y = x[d]*cos[d-32] + x[d-32]*sin[d-32];
 //! d >= 64: passthrough. cosSinRow points at cosSin[pos][0] (cos [0:32], sin [32:64]).
@@ -200,90 +236,40 @@ __device__ __forceinline__ float applyNeoxRopeFromSmem(float const* headSmem, fl
     return headSmem[d];
 }
 
-//! K1b body shared by qsa_indexer_k_compress and qsa_indexer_k_compress_paged.
-//! With kPagedOut each valid kbar row is ALSO written to the pool V-tail of the block's
-//! first token; the dense output and numerics are unchanged.
-template <bool kPagedOut>
-__device__ __forceinline__ void qsaIndexerKCompressImpl(QsaType* kbar, QsaType const* indexQk, float const* cosSin,
-    int32_t const* contextLengths, QsaType const* wK, float rmsEps, int32_t seqLen, int32_t numBlocks,
-    int32_t numGroups, int32_t blockBegin, int32_t pastLen, QsaIndexerPoolView const& pool)
+//! The one block compress every path runs, so all of them agree bit for bit. One warp; out is
+//! written in full. cosSinRow may point at shared memory the warp wrote before the call.
+__device__ __forceinline__ void qsaCompressBlock(QsaType* out, QsaType const* const* rawKeys, float const* cosSinRow,
+    QsaType const* wK, float rmsEps, float* sK, int32_t lane)
 {
-    int32_t const batchIdx = static_cast<int32_t>(blockIdx.x) / numGroups;
-    int32_t const blockId = blockBegin + static_cast<int32_t>(blockIdx.x) % numGroups;
-    int32_t const lane = static_cast<int32_t>(threadIdx.x);
-
-    QsaType* out = kbar + (static_cast<int64_t>(batchIdx) * numBlocks + blockId) * kQSA_INDEXER_HEAD_DIM;
-
-    int32_t const firstToken = blockId * kQSA_COMPRESS_RATIO;
-    bool const valid = (firstToken + kQSA_COMPRESS_RATIO - 1 < contextLengths[batchIdx]) && (firstToken >= pastLen);
-    if (!valid)
-    {
-        // Incomplete/out-of-range block: exact zeros, inputs never read.
-#pragma unroll
-        for (int32_t i = 0; i < kDimsPerLane; ++i)
-        {
-            out[lane * kDimsPerLane + i] = fromFloat<QsaType>(0.0f);
-        }
-        return;
-    }
-
-    __shared__ float sK[kQSA_INDEXER_HEAD_DIM];
-
-    // Raw index-K rows of the 4 block tokens (columns [512, 640) of indexQk).
-    QsaType const* k0 = indexQk + static_cast<int64_t>(batchIdx) * seqLen * kIndexQkRowWidth
-        + static_cast<int64_t>(firstToken - pastLen) * kIndexQkRowWidth + kRawKColumnOffset;
-
-    float m[kDimsPerLane];
+    float mean[kDimsPerLane];
     float sumSq = 0.0f;
 #pragma unroll
     for (int32_t i = 0; i < kDimsPerLane; ++i)
     {
         int32_t const d = lane * kDimsPerLane + i;
         // FP32 mean in FIXED sequential order, then the bit-compatibility-critical cast to QsaType.
-        float acc = toFloat(k0[d]);
-        acc = acc + toFloat(k0[kIndexQkRowWidth + d]);
-        acc = acc + toFloat(k0[2 * kIndexQkRowWidth + d]);
-        acc = acc + toFloat(k0[3 * kIndexQkRowWidth + d]);
-        acc = acc * 0.25f;
-        m[i] = toFloat(fromFloat<QsaType>(acc));
-        sumSq = fmaf(m[i], m[i], sumSq);
+        float acc = toFloat(rawKeys[0][d]);
+        acc = acc + toFloat(rawKeys[1][d]);
+        acc = acc + toFloat(rawKeys[2][d]);
+        acc = acc + toFloat(rawKeys[3][d]);
+        mean[i] = toFloat(fromFloat<QsaType>(acc * 0.25f));
+        sumSq = fmaf(mean[i], mean[i], sumSq);
     }
     sumSq = warpReduceSum(sumSq);
     float const invRms = rsqrtf(sumSq / static_cast<float>(kQSA_INDEXER_HEAD_DIM) + rmsEps);
-
 #pragma unroll
     for (int32_t i = 0; i < kDimsPerLane; ++i)
     {
         int32_t const d = lane * kDimsPerLane + i;
-        sK[d] = m[i] * invRms * (1.0f + toFloat(wK[d]));
+        sK[d] = mean[i] * invRms * (1.0f + toFloat(wK[d]));
     }
     __syncwarp();
-
-    QsaType* vTail = nullptr;
-    if constexpr (kPagedOut)
-    {
-        int32_t const vPage = qsaPoolPage(pool, batchIdx, /* plane = */ 1, firstToken);
-        if (vPage != kUNUSED_PAGE_ENTRY)
-        {
-            vTail = qsaPoolTailPtr(pool, static_cast<QsaType*>(pool.poolPtr), vPage, firstToken);
-        }
-    }
-
-    // Rope at the position of the block's first token; single cast to QsaType at the very end.
-    float const* cosSinRow = cosSin + static_cast<int64_t>(firstToken) * kQSA_INDEXER_ROTARY_DIM;
+    // Rope at the block's first position; single cast to QsaType at the very end.
 #pragma unroll
     for (int32_t i = 0; i < kDimsPerLane; ++i)
     {
         int32_t const d = lane * kDimsPerLane + i;
-        QsaType const value = fromFloat<QsaType>(applyNeoxRopeFromSmem(sK, cosSinRow, d));
-        out[d] = value;
-        if constexpr (kPagedOut)
-        {
-            if (vTail != nullptr)
-            {
-                vTail[d] = value;
-            }
-        }
+        out[d] = fromFloat<QsaType>(applyNeoxRopeFromSmem(sK, cosSinRow, d));
     }
 }
 
@@ -351,8 +337,9 @@ extern "C" __global__ void qsa_indexer_q_prep(QsaType* qNormed, QsaType const* i
     }
     __syncwarp();
 
-    // Partial neox rope at position tokenIdx; single cast to QsaType at the very end.
-    float const* cosSinRow = cosSin + static_cast<int64_t>(tokenIdx) * kQSA_INDEXER_ROTARY_DIM;
+    // Partial neox rope with this token's token-aligned row (activation row b*S + t); single
+    // cast to QsaType at the very end.
+    float const* cosSinRow = cosSin + static_cast<int64_t>(row) * kQSA_INDEXER_ROTARY_DIM;
 #pragma unroll
     for (int32_t i = 0; i < kDimsPerLane; ++i)
     {
@@ -361,33 +348,48 @@ extern "C" __global__ void qsa_indexer_q_prep(QsaType* qNormed, QsaType const* i
     }
 }
 
-//! K1b: see launchQsaIndexKCompress. grid(B * numGroups), block(32); one warp per (b, g).
+//! K1b: see launchQsaIndexKCompress. grid(B * numBlocks), block(32); one warp per (b, g).
 extern "C" __global__ void qsa_indexer_k_compress(QsaType* kbar, QsaType const* indexQk, float const* cosSin,
-    int32_t const* contextLengths, QsaType const* wK, float rmsEps, int32_t seqLen, int32_t numBlocks,
-    int32_t numGroups, int32_t blockBegin, int32_t pastLen)
+    int32_t const* contextLengths, QsaType const* wK, float rmsEps, int32_t seqLen, int32_t numBlocks)
 {
-    qsaIndexerKCompressImpl</* kPagedOut = */ false>(kbar, indexQk, cosSin, contextLengths, wK, rmsEps, seqLen,
-        numBlocks, numGroups, blockBegin, pastLen, QsaIndexerPoolView{});
-}
+    int32_t const batchIdx = static_cast<int32_t>(blockIdx.x) / numBlocks;
+    int32_t const blockId = static_cast<int32_t>(blockIdx.x) % numBlocks;
+    int32_t const lane = static_cast<int32_t>(threadIdx.x);
 
-//! K1b paged variant: see launchQsaIndexKCompressPaged. Same grid/block and dense numerics
-//! as qsa_indexer_k_compress; each valid kbar row is ALSO written to the pool V-tail of the
-//! block's first token.
-extern "C" __global__ void qsa_indexer_k_compress_paged(QsaType* kbar, QsaType const* indexQk, float const* cosSin,
-    int32_t const* contextLengths, QsaType const* wK, float rmsEps, int32_t seqLen, int32_t numBlocks,
-    int32_t numGroups, int32_t blockBegin, int32_t pastLen, void* poolPtr, int32_t const* pageTable,
-    int32_t maxPagesPerSeq, int32_t numPages, int32_t numKVHeads, int32_t poolHeadDim, int32_t headSize)
-{
-    QsaIndexerPoolView const pool{poolPtr, pageTable, maxPagesPerSeq, numPages, numKVHeads, poolHeadDim, headSize};
-    qsaIndexerKCompressImpl</* kPagedOut = */ true>(
-        kbar, indexQk, cosSin, contextLengths, wK, rmsEps, seqLen, numBlocks, numGroups, blockBegin, pastLen, pool);
+    QsaType* out = kbar + (static_cast<int64_t>(batchIdx) * numBlocks + blockId) * kQSA_INDEXER_HEAD_DIM;
+
+    int32_t const firstToken = blockId * kQSA_COMPRESS_RATIO;
+    bool const valid = firstToken + kQSA_COMPRESS_RATIO - 1 < contextLengths[batchIdx];
+    if (!valid)
+    {
+        // Incomplete/out-of-range block: exact zeros, inputs never read.
+#pragma unroll
+        for (int32_t i = 0; i < kDimsPerLane; ++i)
+        {
+            out[lane * kDimsPerLane + i] = fromFloat<QsaType>(0.0f);
+        }
+        return;
+    }
+
+    __shared__ float sK[kQSA_INDEXER_HEAD_DIM];
+
+    // Raw index-K rows of the 4 block tokens (columns [512, 640) of indexQk).
+    QsaType const* k0 = indexQk + static_cast<int64_t>(batchIdx) * seqLen * kIndexQkRowWidth
+        + static_cast<int64_t>(firstToken) * kIndexQkRowWidth + kRawKColumnOffset;
+    QsaType const* const rawKeys[kQSA_COMPRESS_RATIO]
+        = {k0, k0 + kIndexQkRowWidth, k0 + 2 * kIndexQkRowWidth, k0 + 3 * kIndexQkRowWidth};
+    // Rope at the block's first token, from that token's token-aligned row (the row k0 came from).
+    float const* cosSinRow = cosSin + (static_cast<int64_t>(batchIdx) * seqLen + firstToken) * kQSA_INDEXER_ROTARY_DIM;
+    qsaCompressBlock(out, rawKeys, cosSinRow, wK, rmsEps, sK, lane);
 }
 
 //! K2: see launchQsaIndexScores. grid(numRows, ceilDiv(numBlocks, 64)), block(256).
 //! The CTA stages the row's 4x128 q in FP32 smem; each of the 8 warps owns 8 consecutive
 //! block-columns of the 64-column tile and evaluates them one at a time.
-extern "C" __global__ void qsa_indexer_scores(float* logits, QsaType const* qNormed, QsaType const* kbar,
-    int32_t const* contextLengths, int32_t seqLen, int32_t numBlocks, int32_t rowStart)
+template <bool kPaged>
+__device__ __forceinline__ void qsaIndexerScoresImpl(float* logits, int32_t* visibleCounts, QsaType const* qNormed,
+    QsaType const* kbar, int32_t const* contextLengths, int32_t const* pastLengths, int32_t seqLen, int32_t numBlocks,
+    int32_t rowStart, QsaIndexerPoolView const& pool)
 {
     constexpr int32_t kColumnsPerCta = kScoresColumnsPerCta;
     constexpr int32_t kColumnsPerWarp = kScoresColumnsPerWarp;
@@ -402,62 +404,102 @@ extern "C" __global__ void qsa_indexer_scores(float* logits, QsaType const* qNor
 
     int32_t const contextLen = contextLengths[batchIdx];
     bool const isPadding = (tokenIdx >= contextLen) || (contextLen == 0);
-    int32_t const numVisible = isPadding ? 0 : (tokenIdx + 1) / kQSA_COMPRESS_RATIO;
+    int32_t const pastLen = kPaged && pastLengths != nullptr ? pastLengths[batchIdx] : 0;
+    int32_t const numVisible = isPadding ? 0 : (pastLen + tokenIdx + 1) / kQSA_COMPRESS_RATIO;
+
+    if (blockIdx.y == 0 && threadIdx.x == 0)
+    {
+        visibleCounts[chunkRow] = numVisible;
+    }
+    int32_t const ctaColumnBase = static_cast<int32_t>(blockIdx.y) * kColumnsPerCta;
+    if (ctaColumnBase >= numVisible)
+    {
+        return;
+    }
 
     float* outRow = logits + static_cast<int64_t>(chunkRow) * numBlocks;
 
     __shared__ float sQ[kQNormedRowWidth];
-    if (!isPadding)
+    QsaType const* q = qNormed + static_cast<int64_t>(row) * kQNormedRowWidth;
+    for (int32_t i = static_cast<int32_t>(threadIdx.x); i < kQNormedRowWidth; i += static_cast<int32_t>(blockDim.x))
     {
-        QsaType const* q = qNormed + static_cast<int64_t>(row) * kQNormedRowWidth;
-        for (int32_t i = static_cast<int32_t>(threadIdx.x); i < kQNormedRowWidth; i += static_cast<int32_t>(blockDim.x))
-        {
-            sQ[i] = toFloat(q[i]);
-        }
+        sQ[i] = toFloat(q[i]);
     }
     __syncthreads();
 
     for (int32_t it = 0; it < kColumnsPerWarp; ++it)
     {
         int32_t const blockId = columnBase + it;
-        if (blockId >= numBlocks)
+        if (blockId >= numBlocks || blockId >= numVisible)
         {
             break;
         }
 
         float score = -kFloatMax;
-        if (blockId < numVisible)
+        QsaType const* kb = nullptr;
+        if constexpr (kPaged)
         {
-            QsaType const* kb = kbar + (static_cast<int64_t>(batchIdx) * numBlocks + blockId) * kQSA_INDEXER_HEAD_DIM;
-            float partial[kQSA_INDEXER_NUM_HEADS] = {0.0f, 0.0f, 0.0f, 0.0f};
-#pragma unroll
-            for (int32_t i = 0; i < kDimsPerLane; ++i)
+            int32_t const firstToken = blockId * kQSA_COMPRESS_RATIO;
+            int32_t const page = qsaPoolPage(pool, batchIdx, /* plane = */ 1, firstToken);
+            if (page == kUNUSED_PAGE_ENTRY)
             {
-                int32_t const d = lane + i * kWarpSize;
-                float const kf = toFloat(kb[d]);
-#pragma unroll
-                for (int32_t h = 0; h < kQSA_INDEXER_NUM_HEADS; ++h)
+                if (lane == 0)
                 {
-                    partial[h] = fmaf(sQ[h * kQSA_INDEXER_HEAD_DIM + d], kf, partial[h]);
+                    outRow[blockId] = score;
                 }
+                continue;
             }
+            kb = qsaPoolTailPtr(pool, static_cast<QsaType const*>(pool.poolPtr), page, firstToken + kKbarTokenOffset);
+        }
+        else
+        {
+            kb = kbar + (static_cast<int64_t>(batchIdx) * numBlocks + blockId) * kQSA_INDEXER_HEAD_DIM;
+        }
+        float partial[kQSA_INDEXER_NUM_HEADS] = {0.0f, 0.0f, 0.0f, 0.0f};
+#pragma unroll
+        for (int32_t i = 0; i < kDimsPerLane; ++i)
+        {
+            int32_t const d = lane + i * kWarpSize;
+            float const kf = toFloat(kb[d]);
 #pragma unroll
             for (int32_t h = 0; h < kQSA_INDEXER_NUM_HEADS; ++h)
             {
-                partial[h] = warpReduceSum(partial[h]);
+                partial[h] = fmaf(sQ[h * kQSA_INDEXER_HEAD_DIM + d], kf, partial[h]);
             }
-            // Relu PER HEAD, sum over heads (ascending h), scale AFTER the sum.
-            float sum = fmaxf(0.0f, partial[0]);
-            sum += fmaxf(0.0f, partial[1]);
-            sum += fmaxf(0.0f, partial[2]);
-            sum += fmaxf(0.0f, partial[3]);
-            score = sum * (1.0f / sqrtf(static_cast<float>(kQSA_INDEXER_HEAD_DIM)));
         }
+#pragma unroll
+        for (int32_t h = 0; h < kQSA_INDEXER_NUM_HEADS; ++h)
+        {
+            partial[h] = warpReduceSum(partial[h]);
+        }
+        // Relu PER HEAD, sum over heads (ascending h), scale AFTER the sum.
+        float sum = fmaxf(0.0f, partial[0]);
+        sum += fmaxf(0.0f, partial[1]);
+        sum += fmaxf(0.0f, partial[2]);
+        sum += fmaxf(0.0f, partial[3]);
+        score = sum * (1.0f / sqrtf(static_cast<float>(kQSA_INDEXER_HEAD_DIM)));
         if (lane == 0)
         {
             outRow[blockId] = score;
         }
     }
+}
+
+extern "C" __global__ void qsa_indexer_scores(float* logits, int32_t* visibleCounts, QsaType const* qNormed,
+    QsaType const* kbar, int32_t const* contextLengths, int32_t seqLen, int32_t numBlocks, int32_t rowStart)
+{
+    qsaIndexerScoresImpl<false>(
+        logits, visibleCounts, qNormed, kbar, contextLengths, nullptr, seqLen, numBlocks, rowStart, {});
+}
+
+extern "C" __global__ void qsa_indexer_scores_paged(float* logits, int32_t* visibleCounts, QsaType const* qNormed,
+    int32_t const* queryLengths, int32_t const* pastLengths, int32_t seqLen, int32_t maxBlocks, int32_t rowStart,
+    void* poolPtr, int32_t const* pageTable, int32_t maxPagesPerSeq, int32_t numPages, int32_t numKVHeads,
+    int32_t poolHeadDim, int32_t headSize)
+{
+    QsaIndexerPoolView const pool{poolPtr, pageTable, maxPagesPerSeq, numPages, numKVHeads, poolHeadDim, headSize};
+    qsaIndexerScoresImpl<true>(
+        logits, visibleCounts, qNormed, nullptr, queryLengths, pastLengths, seqLen, maxBlocks, rowStart, pool);
 }
 
 //! ids[r * numBlocks + c] = c for the segmented sort values.
@@ -472,7 +514,7 @@ extern "C" __global__ void qsa_indexer_ids_fill(int32_t* ids, int64_t numItems, 
 
 //! K4: see launchQsaIndexExpand. grid(numRows), block(256), threads stride the 2051 outputs.
 extern "C" __global__ void qsa_indexer_expand(int32_t* outIdx, int32_t const* sortedIds, int32_t const* contextLengths,
-    int32_t seqLen, int32_t numBlocks, int32_t rowStart)
+    int32_t seqLen, int32_t numBlocks, int32_t rowStart, int32_t const* pastLengths)
 {
     int32_t const chunkRow = static_cast<int32_t>(blockIdx.x);
     int32_t const row = rowStart + chunkRow;
@@ -486,9 +528,10 @@ extern "C" __global__ void qsa_indexer_expand(int32_t* outIdx, int32_t const* so
     int32_t tailCount = 0;
     if (!isPadding)
     {
-        numVisible = (tokenIdx + 1) / kQSA_COMPRESS_RATIO;
+        int32_t const totalLen = (pastLengths == nullptr ? 0 : pastLengths[batchIdx]) + tokenIdx + 1;
+        numVisible = totalLen / kQSA_COMPRESS_RATIO;
         numSelected = min(kQSA_BLOCK_TOPK, numVisible);
-        tailCount = (tokenIdx + 1) % kQSA_COMPRESS_RATIO;
+        tailCount = totalLen % kQSA_COMPRESS_RATIO;
     }
 
     int32_t const* rowIds = sortedIds + static_cast<int64_t>(chunkRow) * numBlocks;
@@ -514,46 +557,111 @@ extern "C" __global__ void qsa_indexer_expand(int32_t* outIdx, int32_t const* so
     }
 }
 
-//! Prefill tail scatter: see launchQsaRawKTailWritePrefill. grid(B, kQSA_COMPRESS_RATIO - 1),
-//! block(32): CTA (b, j) persists token ctx_b - ctx_b % 4 + j when j < ctx_b % 4.
-extern "C" __global__ void qsa_indexer_raw_k_tail_write_prefill(QsaType const* indexQk, int32_t const* contextLengths,
-    void* poolPtr, int32_t const* pageTable, int32_t maxPagesPerSeq, int32_t numPages, int32_t numKVHeads,
-    int32_t poolHeadDim, int32_t headSize, int32_t seqLen)
+//! Prefill tail write: see launchQsaRawKTailWritePrefill. grid(B * S), block(32): one warp per
+//! query row writes that token's raw index-K and, for a block's first token, the block rope row.
+extern "C" __global__ void qsa_indexer_raw_k_tail_write_prefill(QsaType const* indexQk, float const* cosSin,
+    int32_t const* contextLengths, void* poolPtr, int32_t const* pageTable, int32_t maxPagesPerSeq, int32_t numPages,
+    int32_t numKVHeads, int32_t poolHeadDim, int32_t headSize, int32_t seqLen, int32_t const* pastLengths)
 {
     QsaIndexerPoolView const pool{poolPtr, pageTable, maxPagesPerSeq, numPages, numKVHeads, poolHeadDim, headSize};
 
-    int32_t const batchIdx = static_cast<int32_t>(blockIdx.x);
-    int32_t const tailSlot = static_cast<int32_t>(blockIdx.y);
+    int32_t const row = static_cast<int32_t>(blockIdx.x); // b * seqLen + t
+    int32_t const batchIdx = row / seqLen;
     int32_t const lane = static_cast<int32_t>(threadIdx.x);
-
-    int32_t const contextLen = contextLengths[batchIdx];
-    int32_t const tailCount = contextLen % kQSA_COMPRESS_RATIO; // <= 0 for padding sequences
-    if (tailSlot >= tailCount)
+    if (row % seqLen >= contextLengths[batchIdx])
     {
         return;
     }
-    int32_t const tokenIdx = contextLen - tailCount + tailSlot;
-    if (tokenIdx >= seqLen)
-    {
-        return;
-    }
+    int32_t const tokenIdx = (pastLengths == nullptr ? 0 : pastLengths[batchIdx]) + row % seqLen;
     int32_t const kPage = qsaPoolPage(pool, batchIdx, /* plane = */ 0, tokenIdx);
     if (kPage == kUNUSED_PAGE_ENTRY)
     {
         return;
     }
-    int64_t const row = static_cast<int64_t>(batchIdx) * seqLen + tokenIdx;
-    QsaType const* src = indexQk + row * kIndexQkRowWidth + kRawKColumnOffset;
+    QsaType const* src = indexQk + static_cast<int64_t>(row) * kIndexQkRowWidth + kRawKColumnOffset;
     QsaType* dst = qsaPoolTailPtr(pool, static_cast<QsaType*>(pool.poolPtr), kPage, tokenIdx);
 #pragma unroll
     for (int32_t i = 0; i < kDimsPerLane; ++i)
     {
         dst[lane * kDimsPerLane + i] = src[lane * kDimsPerLane + i]; // bit-unmodified
     }
+    if (tokenIdx % kQSA_COMPRESS_RATIO != 0)
+    {
+        return;
+    }
+    int32_t const vPage = qsaPoolPage(pool, batchIdx, /* plane = */ 1, tokenIdx);
+    if (vPage == kUNUSED_PAGE_ENTRY)
+    {
+        return;
+    }
+    qsaWriteBlockRopeRow(qsaPoolTailPtr(pool, static_cast<QsaType*>(pool.poolPtr), vPage, tokenIdx),
+        cosSin + static_cast<int64_t>(row) * kQSA_INDEXER_ROTARY_DIM, lane);
+}
+
+//! One warp per newly completed group; a group crossing the chunk boundary reads the cached raw
+//! keys and block rope row from the pool.
+extern "C" __global__ void qsa_indexer_k_compress_append(QsaType const* indexQk, float const* cosSin,
+    int32_t const* queryLengths, int32_t const* pastLengths, QsaType const* wK, float rmsEps, int32_t seqLen,
+    void* poolPtr, int32_t const* pageTable, int32_t maxPagesPerSeq, int32_t numPages, int32_t numKVHeads,
+    int32_t poolHeadDim, int32_t headSize)
+{
+    int32_t const batchIdx = static_cast<int32_t>(blockIdx.y);
+    int32_t const lane = static_cast<int32_t>(threadIdx.x);
+    int32_t const pastLen = pastLengths == nullptr ? 0 : pastLengths[batchIdx];
+    int32_t const queryLen = queryLengths[batchIdx];
+    int32_t const blockId = pastLen / kQSA_COMPRESS_RATIO + static_cast<int32_t>(blockIdx.x);
+    int32_t const firstToken = blockId * kQSA_COMPRESS_RATIO;
+    if (queryLen <= 0 || firstToken + kQSA_COMPRESS_RATIO > pastLen + queryLen)
+    {
+        return;
+    }
+
+    QsaIndexerPoolView const pool{poolPtr, pageTable, maxPagesPerSeq, numPages, numKVHeads, poolHeadDim, headSize};
+    int32_t const vPage = qsaPoolPage(pool, batchIdx, /* plane = */ 1, firstToken);
+    if (vPage == kUNUSED_PAGE_ENTRY)
+    {
+        return;
+    }
+    QsaType const* rawKeys[kQSA_COMPRESS_RATIO];
+#pragma unroll
+    for (int32_t j = 0; j < kQSA_COMPRESS_RATIO; ++j)
+    {
+        int32_t const token = firstToken + j;
+        if (token < pastLen)
+        {
+            int32_t const kPage = qsaPoolPage(pool, batchIdx, /* plane = */ 0, token);
+            if (kPage == kUNUSED_PAGE_ENTRY)
+            {
+                return;
+            }
+            rawKeys[j] = qsaPoolTailPtr(pool, static_cast<QsaType const*>(poolPtr), kPage, token);
+        }
+        else
+        {
+            rawKeys[j] = indexQk + (static_cast<int64_t>(batchIdx) * seqLen + token - pastLen) * kIndexQkRowWidth
+                + kRawKColumnOffset;
+        }
+    }
+
+    __shared__ float sK[kQSA_INDEXER_HEAD_DIM];
+    __shared__ float sCosSin[kBlockRopeRowFloats];
+    float const* cosSinRow = nullptr;
+    if (firstToken < pastLen)
+    {
+        qsaLoadBlockRopeRow(sCosSin, qsaPoolTailPtr(pool, static_cast<QsaType const*>(poolPtr), vPage, firstToken), lane);
+        cosSinRow = sCosSin;
+    }
+    else
+    {
+        cosSinRow = cosSin
+            + (static_cast<int64_t>(batchIdx) * seqLen + firstToken - pastLen) * kQSA_INDEXER_ROTARY_DIM;
+    }
+    qsaCompressBlock(qsaPoolTailPtr(pool, static_cast<QsaType*>(poolPtr), vPage, firstToken + kKbarTokenOffset),
+        rawKeys, cosSinRow, wK, rmsEps, sK, lane);
 }
 
 //! B1: see launchQsaIndexerPreDecode. grid(B), block(128) = 4 warps; warp h owns q head h
-//! in phase 1, warp 0 alone runs phase 2 (raw-K tail write) or phase 3 (compress).
+//! in phase 1, warp 0 alone runs phase 2 (tail write) and phase 3 (compress).
 extern "C" __global__ void qsa_indexer_pre_decode(QsaType* qNormed, QsaType const* indexQk, float const* cosSin,
     int32_t const* contextLengths, QsaType const* wQ, QsaType const* wK, float rmsEps, void* poolPtr,
     int32_t const* pageTable, int32_t maxPagesPerSeq, int32_t numPages, int32_t numKVHeads, int32_t poolHeadDim,
@@ -581,9 +689,10 @@ extern "C" __global__ void qsa_indexer_pre_decode(QsaType* qNormed, QsaType cons
 
     __shared__ float sQ[kQSA_INDEXER_NUM_HEADS][kQSA_INDEXER_HEAD_DIM];
     __shared__ float sK[kQSA_INDEXER_HEAD_DIM];
+    __shared__ float sCosSin[kBlockRopeRowFloats];
 
-    // Phase 1: K1a numerics verbatim at S = 1. The rope position is pos, NOT the indexQk
-    // row index (K1a's `row % seqLen` position only coincides with it in prefill).
+    // Phase 1: K1a numerics verbatim at S = 1. Decode is one row per sequence, so the new
+    // token's token-aligned rope row is row batchIdx (position pos).
     QsaType const* in = indexQk + static_cast<int64_t>(batchIdx) * kIndexQkRowWidth + head * kQSA_INDEXER_HEAD_DIM;
     float x[kDimsPerLane];
     float sumSq = 0.0f;
@@ -602,7 +711,7 @@ extern "C" __global__ void qsa_indexer_pre_decode(QsaType* qNormed, QsaType cons
         sQ[head][d] = x[i] * invRms * (1.0f + toFloat(wQ[d]));
     }
     __syncwarp();
-    float const* cosSinRow = cosSin + static_cast<int64_t>(pos) * kQSA_INDEXER_ROTARY_DIM;
+    float const* cosSinRow = cosSin + static_cast<int64_t>(batchIdx) * kQSA_INDEXER_ROTARY_DIM;
 #pragma unroll
     for (int32_t i = 0; i < kDimsPerLane; ++i)
     {
@@ -615,77 +724,84 @@ extern "C" __global__ void qsa_indexer_pre_decode(QsaType* qNormed, QsaType cons
         return;
     }
 
-    // Phase 2 (warp 0): the new token's raw index-K, persisted bit-unmodified only while its
-    // block stays incomplete; otherwise phase 3 consumes it from registers.
+    // Phase 2 (warp 0): the new token's raw index-K, bit-unmodified, and the block rope row
+    // when it opens a block.
     QsaType* const poolBase = static_cast<QsaType*>(pool.poolPtr);
-    QsaType const* rawIn = indexQk + static_cast<int64_t>(batchIdx) * kIndexQkRowWidth + kRawKColumnOffset;
-    QsaType rawK[kDimsPerLane];
-#pragma unroll
-    for (int32_t i = 0; i < kDimsPerLane; ++i)
-    {
-        rawK[i] = rawIn[lane * kDimsPerLane + i];
-    }
     int32_t const kPage = qsaPoolPage(pool, batchIdx, /* plane = */ 0, pos);
     if (kPage == kUNUSED_PAGE_ENTRY)
     {
         return; // unallocated page: nothing persistable this step
     }
+    QsaType const* rawIn = indexQk + static_cast<int64_t>(batchIdx) * kIndexQkRowWidth + kRawKColumnOffset;
+    QsaType* const kTail = qsaPoolTailPtr(pool, poolBase, kPage, pos);
+#pragma unroll
+    for (int32_t i = 0; i < kDimsPerLane; ++i)
+    {
+        kTail[lane * kDimsPerLane + i] = rawIn[lane * kDimsPerLane + i];
+    }
+    if (pos % kQSA_COMPRESS_RATIO == 0)
+    {
+        int32_t const vPage = qsaPoolPage(pool, batchIdx, /* plane = */ 1, pos);
+        if (vPage != kUNUSED_PAGE_ENTRY)
+        {
+            qsaWriteBlockRopeRow(qsaPoolTailPtr(pool, poolBase, vPage, pos), cosSinRow, lane);
+        }
+    }
     if (contextLen % kQSA_COMPRESS_RATIO != 0)
     {
-        QsaType* const kTail = qsaPoolTailPtr(pool, poolBase, kPage, pos);
-#pragma unroll
-        for (int32_t i = 0; i < kDimsPerLane; ++i)
-        {
-            kTail[lane * kDimsPerLane + i] = rawK[i];
-        }
         return;
     }
 
-    // Phase 3 (warp 0): this token completes block 4g..4g+3 — compress it.
-    int32_t const firstToken = contextLen - kQSA_COMPRESS_RATIO; // == 4 * (contextLen/4 - 1)
-    // Tokens 4g..4g+3 share pos's K page: a 4-token block never straddles a 128-token page.
-    QsaType const* const tail0 = qsaPoolTailPtr(pool, poolBase, kPage, firstToken);
-    QsaType const* const tail1 = qsaPoolTailPtr(pool, poolBase, kPage, firstToken + 1);
-    QsaType const* const tail2 = qsaPoolTailPtr(pool, poolBase, kPage, firstToken + 2);
-    float m[kDimsPerLane];
-    float sumSqK = 0.0f;
-#pragma unroll
-    for (int32_t i = 0; i < kDimsPerLane; ++i)
-    {
-        int32_t const d = lane * kDimsPerLane + i;
-        // K1b numerics verbatim: FP32 mean in FIXED sequential order, then the
-        // bit-compatibility-critical cast to QsaType. Token 4g+3 comes from phase 2's registers.
-        float acc = toFloat(tail0[d]);
-        acc = acc + toFloat(tail1[d]);
-        acc = acc + toFloat(tail2[d]);
-        acc = acc + toFloat(rawK[i]);
-        acc = acc * 0.25f;
-        m[i] = toFloat(fromFloat<QsaType>(acc));
-        sumSqK = fmaf(m[i], m[i], sumSqK);
-    }
-    sumSqK = warpReduceSum(sumSqK);
-    float const invRmsK = rsqrtf(sumSqK / static_cast<float>(kQSA_INDEXER_HEAD_DIM) + rmsEps);
-#pragma unroll
-    for (int32_t i = 0; i < kDimsPerLane; ++i)
-    {
-        int32_t const d = lane * kDimsPerLane + i;
-        sK[d] = m[i] * invRmsK * (1.0f + toFloat(wK[d]));
-    }
-    __syncwarp();
-
+    // Phase 3 (warp 0): this token completes block 4g..4g+3. Tokens 4g..4g+2 share pos's K
+    // page (a 4-token block never straddles a 128-token page); token 4g+3 is read from indexQk.
+    int32_t const firstToken = contextLen - kQSA_COMPRESS_RATIO;
     int32_t const vPage = qsaPoolPage(pool, batchIdx, /* plane = */ 1, firstToken);
     if (vPage == kUNUSED_PAGE_ENTRY)
     {
         return;
     }
-    QsaType* const vTail = qsaPoolTailPtr(pool, poolBase, vPage, firstToken);
-    float const* cosSinBlock = cosSin + static_cast<int64_t>(firstToken) * kQSA_INDEXER_ROTARY_DIM;
-#pragma unroll
-    for (int32_t i = 0; i < kDimsPerLane; ++i)
+    QsaType const* const rawKeys[kQSA_COMPRESS_RATIO] = {qsaPoolTailPtr(pool, poolBase, kPage, firstToken),
+        qsaPoolTailPtr(pool, poolBase, kPage, firstToken + 1), qsaPoolTailPtr(pool, poolBase, kPage, firstToken + 2),
+        rawIn};
+    qsaLoadBlockRopeRow(sCosSin, qsaPoolTailPtr(pool, poolBase, vPage, firstToken), lane);
+    qsaCompressBlock(qsaPoolTailPtr(pool, poolBase, vPage, firstToken + kKbarTokenOffset), rawKeys, sCosSin, wK,
+        rmsEps, sK, lane);
+}
+
+//! Seal: see launchQsaIndexerSeal. grid(kQSA_SEAL_BLOCKS, B), block(32): CTA (i, b) recompresses
+//! block lengths[b] / 4 - 1 - i from the pool tails.
+extern "C" __global__ void qsa_indexer_seal(int32_t const* lengths, QsaType const* wK, float rmsEps, void* poolPtr,
+    int32_t const* pageTable, int32_t maxPagesPerSeq, int32_t numPages, int32_t numKVHeads, int32_t poolHeadDim,
+    int32_t headSize)
+{
+    int32_t const batchIdx = static_cast<int32_t>(blockIdx.y);
+    int32_t const lane = static_cast<int32_t>(threadIdx.x);
+    int32_t const blockId = lengths[batchIdx] / kQSA_COMPRESS_RATIO - 1 - static_cast<int32_t>(blockIdx.x);
+    if (blockId < 0)
     {
-        int32_t const d = lane * kDimsPerLane + i;
-        vTail[d] = fromFloat<QsaType>(applyNeoxRopeFromSmem(sK, cosSinBlock, d));
+        return;
     }
+    QsaIndexerPoolView const pool{poolPtr, pageTable, maxPagesPerSeq, numPages, numKVHeads, poolHeadDim, headSize};
+    int32_t const firstToken = blockId * kQSA_COMPRESS_RATIO;
+    // A 4-token block never straddles a 128-token page.
+    int32_t const kPage = qsaPoolPage(pool, batchIdx, /* plane = */ 0, firstToken);
+    int32_t const vPage = qsaPoolPage(pool, batchIdx, /* plane = */ 1, firstToken);
+    if (kPage == kUNUSED_PAGE_ENTRY || vPage == kUNUSED_PAGE_ENTRY)
+    {
+        return;
+    }
+    QsaType* const poolBase = static_cast<QsaType*>(poolPtr);
+    QsaType const* rawKeys[kQSA_COMPRESS_RATIO];
+#pragma unroll
+    for (int32_t j = 0; j < kQSA_COMPRESS_RATIO; ++j)
+    {
+        rawKeys[j] = qsaPoolTailPtr(pool, poolBase, kPage, firstToken + j);
+    }
+    __shared__ float sK[kQSA_INDEXER_HEAD_DIM];
+    __shared__ float sCosSin[kBlockRopeRowFloats];
+    qsaLoadBlockRopeRow(sCosSin, qsaPoolTailPtr(pool, poolBase, vPage, firstToken), lane);
+    qsaCompressBlock(qsaPoolTailPtr(pool, poolBase, vPage, firstToken + kKbarTokenOffset), rawKeys, sCosSin, wK,
+        rmsEps, sK, lane);
 }
 
 //! B2: see launchQsaIndexScoresDecode. grid(B, ceilDiv(maxBlocks, 64)), block(256).
@@ -742,7 +858,7 @@ extern "C" __global__ void qsa_indexer_scores_decode(float* logits, QsaType cons
         {
             break;
         }
-        QsaType const* kb = qsaPoolTailPtr(pool, poolBase, vPage, blockId * kQSA_COMPRESS_RATIO);
+        QsaType const* kb = qsaPoolTailPtr(pool, poolBase, vPage, blockId * kQSA_COMPRESS_RATIO + kKbarTokenOffset);
         float partial[kQSA_INDEXER_NUM_HEADS] = {0.0f, 0.0f, 0.0f, 0.0f};
 #pragma unroll
         for (int32_t i = 0; i < kDimsPerLane; ++i)
@@ -993,5 +1109,235 @@ extern "C" __global__ void qsa_indexer_topk_expand_decode(int32_t* outIdx, float
     for (int32_t j = kExpandedCount + tid; j < kQSA_INDEX_WIDTH; j += kTopKThreads)
     {
         out[j] = j < kExpandedCount + tailCount ? numVisible * kQSA_COMPRESS_RATIO + (j - kExpandedCount) : -1;
+    }
+}
+
+//! One warp per query. Only lane zero walks the bounded parent chain.
+extern "C" __global__ void qsa_indexer_tree_paths(int32_t* paths, int32_t* logicalLengths, int32_t const* parents, int32_t const* depths, int32_t const* queryLengths, int32_t const* pastLengths,
+    int32_t const* pageTable, int32_t seqLen, int32_t maxBlocks, int32_t maxPagesPerSeq, int32_t numPages)
+{
+    int32_t const row = static_cast<int32_t>(blockIdx.x);
+    int32_t const b = row / seqLen;
+    int32_t const node = row % seqLen;
+    int32_t* const path = paths + static_cast<int64_t>(row) * seqLen;
+    for (int32_t i = static_cast<int32_t>(threadIdx.x); i < seqLen; i += kWarpSize)
+    {
+        path[i] = -1;
+    }
+    __syncwarp();
+    if (threadIdx.x != 0)
+    {
+        return;
+    }
+    // Padding and invalid rows keep logicalLengths zero, so they select no blocks.
+    logicalLengths[row] = 0;
+    int32_t const count = queryLengths[b];
+    int32_t const past = pastLengths[b];
+    if (count < 0 || count > seqLen || past < 0 || node >= count)
+    {
+        return;
+    }
+    int32_t const depth = depths[row];
+    int64_t const length = static_cast<int64_t>(past) + depth + 1;
+    int64_t const capacity = static_cast<int64_t>(maxPagesPerSeq) * kTOKENS_PER_PAGE;
+    if (depth < 0 || depth >= seqLen || length > static_cast<int64_t>(maxBlocks) * kQSA_COMPRESS_RATIO
+        || static_cast<int64_t>(past) + count > capacity)
+    {
+        return;
+    }
+    int32_t current = node;
+    for (int32_t d = depth; d >= 0; --d)
+    {
+        if (current < 0 || current >= count || depths[b * seqLen + current] != d)
+        {
+            return;
+        }
+        path[d] = current;
+        int32_t const parent = parents[b * seqLen + current];
+        if ((d == 0 && (current != 0 || parent != -1)) || (d > 0 && (parent < 0 || parent >= current)))
+        {
+            return;
+        }
+        current = parent;
+    }
+    // Validate K/V pages covering [0, past + count): KV slots follow node IDs, not branch depths.
+    int32_t const pages
+        = static_cast<int32_t>((static_cast<int64_t>(past) + count + kTOKENS_PER_PAGE - 1) / kTOKENS_PER_PAGE);
+    for (int32_t slot = 0; slot < pages; ++slot)
+    {
+        int64_t const offset = static_cast<int64_t>(b) * 2 * maxPagesPerSeq + slot;
+        int32_t const kPage = pageTable[offset];
+        int32_t const vPage = pageTable[offset + maxPagesPerSeq];
+        if (kPage < 0 || kPage >= numPages || vPage < numPages || static_cast<int64_t>(vPage) >= 2LL * numPages)
+        {
+            return;
+        }
+    }
+    logicalLengths[row] = static_cast<int32_t>(length);
+}
+
+//! One warp per node. Writes the node's tails into its own slot past + node (the slot its K/V use): raw index-K, and
+//! the block rope row when its position past + depth opens a block. A completed block belongs to its final node and
+//! is shared by that node's descendants.
+extern "C" __global__ void qsa_indexer_tree_k_compress(QsaType* newKbar, QsaType const* indexQk, float const* cosSin,
+    int32_t const* paths, int32_t const* logicalLengths, int32_t const* pastLengths, QsaType const* wK, float rmsEps,
+    int32_t seqLen, void* poolPtr, int32_t const* pageTable, int32_t maxPagesPerSeq, int32_t numPages,
+    int32_t numKVHeads, int32_t poolHeadDim, int32_t headSize)
+{
+    int32_t const row = static_cast<int32_t>(blockIdx.x);
+    int32_t const batchIdx = row / seqLen;
+    int32_t const lane = static_cast<int32_t>(threadIdx.x);
+    int32_t const length = logicalLengths[row];
+    QsaType* const out = newKbar + static_cast<int64_t>(row) * kQSA_INDEXER_HEAD_DIM;
+    for (int32_t d = lane; d < kQSA_INDEXER_HEAD_DIM; d += kWarpSize)
+    {
+        out[d] = fromFloat<QsaType>(0.0f);
+    }
+    if (length == 0)
+    {
+        return;
+    }
+    int32_t const pastLen = pastLengths[batchIdx];
+    QsaIndexerPoolView const pool{poolPtr, pageTable, maxPagesPerSeq, numPages, numKVHeads, poolHeadDim, headSize};
+    QsaType* const poolBase = static_cast<QsaType*>(poolPtr);
+    int32_t const slot = pastLen + row % seqLen;
+    QsaType* const kTail = qsaPoolTailPtr(pool, poolBase, qsaPoolPage(pool, batchIdx, 0, slot), slot);
+    for (int32_t d = lane; d < kQSA_INDEXER_HEAD_DIM; d += kWarpSize)
+    {
+        kTail[d] = indexQk[static_cast<int64_t>(row) * kIndexQkRowWidth + kRawKColumnOffset + d];
+    }
+    if ((length - 1) % kQSA_COMPRESS_RATIO == 0)
+    {
+        qsaWriteBlockRopeRow(qsaPoolTailPtr(pool, poolBase, qsaPoolPage(pool, batchIdx, 1, slot), slot),
+            cosSin + static_cast<int64_t>(row) * kQSA_INDEXER_ROTARY_DIM, lane);
+    }
+    if (length % kQSA_COMPRESS_RATIO != 0)
+    {
+        return;
+    }
+    int32_t const firstToken = length - kQSA_COMPRESS_RATIO;
+    int32_t const* const path = paths + static_cast<int64_t>(row) * seqLen;
+    QsaType const* rawKeys[kQSA_COMPRESS_RATIO];
+#pragma unroll
+    for (int32_t j = 0; j < kQSA_COMPRESS_RATIO; ++j)
+    {
+        int32_t const token = firstToken + j;
+        if (token < pastLen)
+        {
+            int32_t const page = qsaPoolPage(pool, batchIdx, 0, token);
+            rawKeys[j] = qsaPoolTailPtr(pool, static_cast<QsaType const*>(poolPtr), page, token);
+        }
+        else
+        {
+            rawKeys[j] = indexQk + (static_cast<int64_t>(batchIdx) * seqLen + path[token - pastLen]) * kIndexQkRowWidth
+                + kRawKColumnOffset;
+        }
+    }
+    __shared__ float sK[kQSA_INDEXER_HEAD_DIM];
+    __shared__ float sCosSin[kBlockRopeRowFloats];
+    float const* cosSinRow = nullptr;
+    if (firstToken < pastLen)
+    {
+        int32_t const page = qsaPoolPage(pool, batchIdx, 1, firstToken);
+        qsaLoadBlockRopeRow(
+            sCosSin, qsaPoolTailPtr(pool, static_cast<QsaType const*>(poolPtr), page, firstToken), lane);
+        cosSinRow = sCosSin;
+    }
+    else
+    {
+        cosSinRow
+            = cosSin + (static_cast<int64_t>(batchIdx) * seqLen + path[firstToken - pastLen]) * kQSA_INDEXER_ROTARY_DIM;
+    }
+    qsaCompressBlock(out, rawKeys, cosSinRow, wK, rmsEps, sK, lane);
+}
+
+//! Same reduction order as qsaIndexerScoresImpl; only the compressed-key address depends on the tree.
+extern "C" __global__ void qsa_indexer_tree_scores(float* logits, QsaType const* qNormed, QsaType const* newKbar,
+    int32_t const* paths, int32_t const* logicalLengths, int32_t const* pastLengths, int32_t seqLen, int32_t maxBlocks,
+    void* poolPtr, int32_t const* pageTable, int32_t maxPagesPerSeq, int32_t numPages, int32_t numKVHeads,
+    int32_t poolHeadDim, int32_t headSize)
+{
+    int32_t const row = static_cast<int32_t>(blockIdx.x);
+    int32_t const batchIdx = row / seqLen;
+    int32_t const warp = static_cast<int32_t>(threadIdx.x) / kWarpSize;
+    int32_t const lane = static_cast<int32_t>(threadIdx.x) % kWarpSize;
+    int32_t const numVisible = logicalLengths[row] / kQSA_COMPRESS_RATIO;
+    int32_t const columnBase = static_cast<int32_t>(blockIdx.y) * kScoresColumnsPerCta + warp * kScoresColumnsPerWarp;
+    if (static_cast<int32_t>(blockIdx.y) * kScoresColumnsPerCta >= numVisible)
+    {
+        return;
+    }
+    __shared__ float sQ[kQNormedRowWidth];
+    QsaType const* const q = qNormed + static_cast<int64_t>(row) * kQNormedRowWidth;
+    for (int32_t i = static_cast<int32_t>(threadIdx.x); i < kQNormedRowWidth; i += static_cast<int32_t>(blockDim.x))
+    {
+        sQ[i] = toFloat(q[i]);
+    }
+    __syncthreads();
+    int32_t const past = pastLengths[batchIdx];
+    int32_t const* const path = paths + static_cast<int64_t>(row) * seqLen;
+    float* const outRow = logits + static_cast<int64_t>(row) * maxBlocks;
+    QsaIndexerPoolView const pool{poolPtr, pageTable, maxPagesPerSeq, numPages, numKVHeads, poolHeadDim, headSize};
+    for (int32_t it = 0; it < kScoresColumnsPerWarp; ++it)
+    {
+        int32_t const blockId = columnBase + it;
+        if (blockId >= numVisible)
+        {
+            break;
+        }
+        QsaType const* kb = nullptr;
+        if (blockId < past / kQSA_COMPRESS_RATIO)
+        {
+            int32_t const firstToken = blockId * kQSA_COMPRESS_RATIO;
+            int32_t const page = qsaPoolPage(pool, batchIdx, 1, firstToken);
+            kb = qsaPoolTailPtr(pool, static_cast<QsaType const*>(poolPtr), page, firstToken + kKbarTokenOffset);
+        }
+        else
+        {
+            int32_t const endDepth = (blockId + 1) * kQSA_COMPRESS_RATIO - 1 - past;
+            kb = newKbar + (static_cast<int64_t>(batchIdx) * seqLen + path[endDepth]) * kQSA_INDEXER_HEAD_DIM;
+        }
+        float partial[kQSA_INDEXER_NUM_HEADS] = {0.0f, 0.0f, 0.0f, 0.0f};
+#pragma unroll
+        for (int32_t i = 0; i < kDimsPerLane; ++i)
+        {
+            int32_t const d = lane + i * kWarpSize;
+            float const kf = toFloat(kb[d]);
+#pragma unroll
+            for (int32_t h = 0; h < kQSA_INDEXER_NUM_HEADS; ++h)
+            {
+                partial[h] = fmaf(sQ[h * kQSA_INDEXER_HEAD_DIM + d], kf, partial[h]);
+            }
+        }
+#pragma unroll
+        for (int32_t h = 0; h < kQSA_INDEXER_NUM_HEADS; ++h)
+        {
+            partial[h] = warpReduceSum(partial[h]);
+        }
+        // Relu PER HEAD, sum over heads (ascending h), scale AFTER the sum.
+        float sum = fmaxf(0.0f, partial[0]);
+        sum += fmaxf(0.0f, partial[1]);
+        sum += fmaxf(0.0f, partial[2]);
+        sum += fmaxf(0.0f, partial[3]);
+        float const score = sum * (1.0f / sqrtf(static_cast<float>(kQSA_INDEXER_HEAD_DIM)));
+        if (lane == 0)
+        {
+            outRow[blockId] = score;
+        }
+    }
+}
+
+extern "C" __global__ void qsa_indexer_tree_map_indices(
+    int32_t* outIdx, int32_t const* paths, int32_t const* logicalLengths, int32_t const* pastLengths, int32_t seqLen)
+{
+    int32_t const row = static_cast<int32_t>(blockIdx.x);
+    int32_t const past = pastLengths[row / seqLen];
+    int32_t const length = logicalLengths[row];
+    int32_t const* const path = paths + static_cast<int64_t>(row) * seqLen;
+    for (int32_t i = static_cast<int32_t>(threadIdx.x); i < kQSA_INDEX_WIDTH; i += static_cast<int32_t>(blockDim.x))
+    {
+        int64_t const offset = static_cast<int64_t>(row) * kQSA_INDEX_WIDTH + i;
+        int32_t const logical = outIdx[offset];
+        outIdx[offset] = length == 0 || logical < 0 ? -1 : (logical < past ? logical : past + path[logical - past]);
     }
 }

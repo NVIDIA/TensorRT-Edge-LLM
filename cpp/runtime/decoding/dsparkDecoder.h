@@ -17,13 +17,14 @@
 
 #pragma once
 
-#include "common/hashUtils.h"
 #include "runtime/decoding/decodingStrategy.h"
+#include "runtime/decoding/jumpForward.h"
 #include "runtime/decoding/specCommonStateTracker.h"
 #include "runtime/state/externalWeightManager.h"
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 
 namespace trt_edgellm
 {
@@ -34,8 +35,7 @@ class DSparkDecoder final : public DecodingStrategy
 {
 public:
     DSparkDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
-        SpecDecodeDraftingConfig const& draftingConfig, std::unique_ptr<EngineExecutor> draftExecutor,
-        ExternalWeightManager draftWeights, cudaStream_t stream);
+        std::unique_ptr<EngineExecutor> draftExecutor, ExternalWeightManager draftWeights, cudaStream_t stream);
 
     DecodingStrategyKind kind() const noexcept override
     {
@@ -54,41 +54,50 @@ public:
 
     DecodingStrategyCapabilities capabilities() const noexcept override
     {
-        return {/*.ownsBaseVerificationCudaGraphs=*/false, /*.supportsLosslessSampling=*/true,
-            /*.maxSamplingSupport=*/0, /*.fallbackToVanillaForNonGreedySampling=*/mUseTree};
+        return {/*.ownsBaseVerificationCudaGraphs=*/false, /*.supportsLosslessSampling=*/!mHasDraftVocabMap,
+            /*.maxSamplingSupport=*/0,
+            /*.fallbackToVanillaForNonGreedySampling=*/mUseTree || mHasDraftVocabMap};
     }
 
-    DecodingKvHeadroom requiredKvHeadroom() const override;
+    DecodingKvHeadroomPolicy kvHeadroom() const override;
 
     bool decodeStep(DecodingInferenceContext& context) override;
     bool captureCudaGraphs(cudaStream_t stream) override;
     bool initializeForGeneration(DecodingInferenceContext& context) override;
+    void beginBatch() noexcept override;
+    void appendRow(int32_t executionRow) noexcept override;
+    bool seatRow(DecodingInferenceContext& context, int32_t executionRow) override;
+    bool prefillSeatedChunk(DecodingInferenceContext& context) override;
     std::vector<int32_t> const& commonMaterializedStateLengths() const noexcept override;
 
     int64_t getRequiredContextMemorySize() const noexcept override;
     void setContextMemory(Tensor& memory) override;
-
-    bool hasSystemPromptKVCache(SystemPromptCacheKey const& key) const override;
-    void restoreSystemPromptKVCache(
-        SystemPromptCacheKey const& key, int32_t residentSlot, cudaStream_t stream) override;
-    bool runSystemPromptPrefill(DecodingInferenceContext& context) override;
-    void saveSystemPromptKVCache(SystemPromptCacheKey const& key, std::string const& prompt,
-        std::vector<tokenizer::Rank> const& tokenizedPrompt, int32_t promptIdsLength, cudaStream_t stream) override;
 
     void resetForNewSequences(Tensor& reuseLengths, cudaStream_t stream) override;
     void onBatchEvict(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch, int32_t newActiveBatch,
         Tensor& deviceBatchMapping, cudaStream_t stream) override;
 
 private:
-    bool runDraftForward(DecodingInferenceContext& context);
+    //! @param prefillDelta The target-hidden delta is the prefill's (a request's first forward, a context-cache
+    //!        prefill chunk, a seated row) rather than the last round's accepted spans.
+    //! @param heldBackTokens Prompt positions at each row's end a prefill delta leaves for the next step (seatRow
+    //!        holds one back).
+    bool runDraftForward(DecodingInferenceContext& context, bool prefillDelta, int32_t heldBackTokens = 0);
+    //! Grafts the forced chains of the slots that may jump into the round's drafted verify input, and captures the
+    //! verify input for the grammar mask.
+    void finishVerifyInput(DecodingInferenceContext& context);
     bool runBaseVerification(DecodingInferenceContext& context);
     bool buildTreeVerifyInputs(int32_t activeBatchSize, cudaStream_t stream, bool useConfidence);
     void prepareDraftRaggedBindings(int32_t activeBatchSize, int32_t executionWidth, int32_t deltaWidth,
         cudaStream_t stream, std::vector<ResidentRef> const* residentRefs = nullptr);
-    void commitAcceptedTreePath(DecodingInferenceContext& context, int32_t verifySize, int32_t maxAcceptLength);
+    void commitAcceptedTreePath(DecodingInferenceContext& context, int32_t verifyTokenCount, int32_t maxAcceptLength);
     void dsparkBiasMarkovGreedy(DecodingInferenceContext& context, int32_t activeBatchSize, int32_t proposalLen);
     void dsparkBiasMarkovSample(DecodingInferenceContext& context, int32_t activeBatchSize, int32_t proposalLen);
     void loadHeadSidecars(std::filesystem::path const& engineDir, cudaStream_t stream);
+    void loadW2(std::filesystem::path const& engineDir, std::string const& headsFile, std::vector<Tensor>& tensors,
+        cudaStream_t stream);
+    void prepareW4A16(Tensor const& packedWeight, Tensor const& blockScales, cudaStream_t stream);
+    void loadDraftVocabMap(std::filesystem::path const& engineDir, cudaStream_t stream);
 
     DecodingRuntimeContext& mRuntime;
 
@@ -118,10 +127,11 @@ private:
     //! Draft/verify/accepted tokens
     Tensor mDraftTokenIds;        //!< [B, proposalLen] INT32
     Tensor mVerifyTokenIds;       //!< [B, verifyLen] INT32, verifyLen = proposalLen + 1
-    Tensor mAcceptedTokenIds;     //!< [B, verifyLen] INT32
+    Tensor mAcceptedTokenIds;     //!< [B, max(verifyLen, jumpMaxPathLength)] INT32
     Tensor mAcceptLength;         //!< [B] INT32
     Tensor mHostAcceptLengths;    //!< [B] INT32 (CPU)
-    Tensor mHostAcceptedTokenIds; //!< [B, verifyLen] INT32 (CPU)
+    Tensor mHostSeatStaging;      //!< [B, 2] INT32 (CPU); seatRow() only
+    Tensor mHostAcceptedTokenIds; //!< [B, max(verifyLen, jumpMaxPathLength)] INT32 (CPU)
 
     //! Proposal self-attention inside the draft block is causal rather than
     //! bidirectional. Sourced from dspark_config.causal_head.
@@ -132,6 +142,9 @@ private:
     Tensor mHostLastAcceptedTokens; //!< [B] INT32 (CPU)
     Tensor mHostDeltaLens;          //!< [B] INT32 (CPU)
     Tensor mHostProposalLengths;    //!< [B] INT32 (CPU)
+    //! Fences the host staging the draft forward uploads from: a seated prefill returns with its draft-length
+    //! commit still queued, and the next decode step rewrites the staging on the host.
+    AsyncHostStagingFence mHostStagingFence;
 
     //! Stochastic DSpark sampling buffers
     Tensor mDraftProbabilities;      //!< [B, proposalLen, vocabSize] FP32
@@ -150,7 +163,9 @@ private:
     Tensor mConfidenceScores;        //!< [B, proposalLen] FP32
     Tensor mProposalLengths;         //!< [B] INT32 logical prefix selected for verification/accept
 
-    //! Pre-allocated argmax scratch buffer for dsparkGreedyAccept [maxBatch * verifyLen] INT32
+    Tensor mAcceptValidTokenCounts; //!< Root-inclusive bounds retained with pending chain proposals.
+
+    //! Pre-allocated target selection scratch buffer [maxBatch * verifyLen] INT32
     Tensor mArgmaxScratch;
 
     //! Last accepted token per batch [maxBatch] INT32 (GPU)
@@ -158,33 +173,37 @@ private:
 
     //! Tree drafting state.
     Tensor mStackedMarkovLogits;  //!< [maxBatch, blockSize+1, vocabSize] FP32, row 0 is a root placeholder
-    Tensor mTreeTokenIds;         //!< [maxBatch, verifySize] INT32 flattened tree token ids
-    Tensor mTreeNodeScores;       //!< [maxBatch, verifySize] FP32 prefix log-prob scores
+    Tensor mTreeTokenIds;         //!< [maxBatch, jumpVerifyTokenCount] INT32 flattened tree token ids
+    Tensor mTreeNodeScores;       //!< [maxBatch, verifyTokenCount] FP32 prefix log-prob scores
     Tensor mValidCounts;          //!< [maxBatch] INT32 valid node counts
-    Tensor mVerifyTreeMask;       //!< [maxBatch, verifySize, verifySize] INT8 unpacked accept mask
     Tensor mTreeBuildWorkspace;   //!< ddtreeBuild scratch for scheduler and biased requests
-    Tensor mAcceptedTokenIndices; //!< [maxBatch, verifySize] INT32 accepted verify-node indices
+    Tensor mAcceptedTokenIndices; //!< [maxBatch, max(verifyLen, jumpMaxPathLength)] INT32 accepted verify-node indices
 
     //! DSpark Markov/confidence sidecars
-    Tensor mMarkovW1;          //!< [vocabSize, markovRank] FP16
-    Tensor mMarkovW2;          //!< [vocabSize, markovRank] FP16
-    Tensor mMarkovW2Fp8;       //!< [vocabSize, markovRank] E4M3 bytes (EDGELLM_DSPARK_W2_FP8=1)
-    Tensor mMarkovW2RowScales; //!< [vocabSize] FP16 per-row scales for the FP8 layout
-    Tensor mMarkovGreedySlots; //!< [maxBatch, proposalLen] packed per-step greedy winners (fused kernel)
-    Tensor mConfidenceWeight;  //!< [hiddenSize + optional markovRank] FP16
-    Tensor mConfidenceBias;    //!< [1] FP16
+    Tensor mMarkovW1;               //!< [targetVocabSize, markovRank] FP16
+    Tensor mMarkovW2;               //!< [draftVocabSize, markovRank] FP16
+    Tensor mMarkovW2Fp8;            //!< [draftVocabSize, markovRank] E4M3 bytes
+    Tensor mMarkovW2RowScales;      //!< [draftVocabSize] FP16 per-row scales
+    Tensor mMarkovGreedySlots;      //!< [maxBatch, proposalLen] packed greedy winners
+    Tensor mConfidenceWeight;       //!< [hiddenSize + optional markovRank] FP16
+    Tensor mConfidenceBias;         //!< [1] FP16
+    Tensor mDraftVocabMappingTable; //!< [draftVocabSize] reduced-to-full IDs
+    Tensor mMarkovW2GlobalScale;
+    DSparkW2Backend mW2Backend{DSparkW2Backend::kFp16};
+    Tensor mMarkovW2Opaque;
+    Tensor mMarkovW2OpaqueScales;
+    Tensor mMarkovTcgen5Activation;
+    Tensor mMarkovTcgen5Correction;
     bool mHasConfidenceHead{false};
     bool mConfidenceHeadWithMarkov{false};
-    bool mUseFp8W2{false}; //!< EDGELLM_DSPARK_W2_FP8=1: FP8 E4M3 markov_w2 for greedy drafting
-
-    //! System prompt KV cache for draft target KV
-    hash_utils::HashMap<SystemPromptCacheKey, SystemPromptKVCache> mSystemPromptKVCacheDraft;
+    bool mHasDraftVocabMap{false};
 
     //! DSpark-specific parameters
-    bool mUseTree{false};          //!< draftingTopK > 1 selects tree drafting
+    bool mUseTree{false};          //!< draftTopK > 1 selects tree drafting
     bool mUseTreeScheduler{false}; //!< threshold scheduling uses confidence-guided ddtreeBuild
     int32_t mProposalLen{7};
     int32_t mVerifyLen{8};
+    int32_t mAcceptCapacity{0}; //!< Rows per slot of the carried accepted span: max(verifyLen, jumpMaxPathLength)
     int32_t mDraftBlockLen{0};
     //! Index of the first draft query slot that carries a proposal. 0 when the checkpoint
     //! samples from the anchor, 1 when slot 0 is the bonus token (the validated layout).
@@ -195,14 +214,31 @@ private:
     int32_t mDraftHiddenSize{0};
     int32_t mBaseOutputHiddenDim{0};
     int32_t mDraftVocabSize{0};
+    int32_t mTargetVocabSize{0};
     int32_t mMarkovRank{0};
     DSparkSchedulerMode mSchedulerMode{DSparkSchedulerMode::kOff};
     float mConfidenceThreshold{0.0F};
-    int32_t mLastBaseVerifyHiddenStride{0};
     int32_t mMinScheduledProposalLen{1};
     int32_t mMaxScheduledProposalLen{0};
     //! Per-slot scheduled proposal lengths for the current round (scheduler on); empty otherwise.
     std::vector<int32_t> mScheduledProposalLengths;
+    //! Draft distribution the latest proposal stored for stochastic acceptance.
+    enum class DraftDistribution : int8_t
+    {
+        kNone,  //!< greedy proposal
+        kDense, //!< mDraftProbabilities
+        kTopK   //!< mDraftTopKProbabilities and mDraftTopKIndices
+    };
+    DraftDistribution mDraftDistribution{DraftDistribution::kNone};
+    //! Target hidden states of each row's last accepted span, [maxBatch * max(verifyLen, jumpMaxPathLength),
+    //! baseOutputHiddenDim]; a seated prefill overwrites the pipeline's baseHiddenStates between decode steps.
+    Tensor mAcceptedHiddenStates;
+    //! Every row's draft has consumed its prompt, so its next delta is its last accepted span.
+    bool mDraftPrimed{false};
+    JumpGraftSession mJump; //!< The grafter of a deployment that can jump, and whether this round grafted.
+    //! The round's draft was built before eviction with its guided capture deferred to the walk; the capture is
+    //! owed even if no slot may jump any more.
+    bool mCaptureDeferred{false};
 };
 
 } // namespace rt

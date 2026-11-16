@@ -1,7 +1,7 @@
 # Nemotron-3.5-ASR (experimental runtime)
 
 Nemotron-3.5-ASR has both checkpoint-direct model definitions under
-`experimental/builder/models/nemotron3_5_asr` and the maintained ONNX exporter
+`tensorrt_edgellm/builder/models/nemotron3_5_asr` and the maintained ONNX exporter
 under `tensorrt_edgellm.models.nemotron3_5_asr`. This directory owns its C++
 RNN-T transcription runtime and inference CLI. Its restricted Python server is
 packaged from `experimental/nemotron3_5_asr`.
@@ -41,13 +41,13 @@ tensorrt-edgellm-build \
 # 2. Transcribe. --prompt-id selects the language prompt (default = config
 #    default_prompt_id = automatic language detection; the model emits an
 #    <xx-XX> language tag).
-"$BUILD_DIR/experimental_models/nemotron3_5_asr/examples/nemotron_asr_inference" \
+"$BUILD_DIR/bin/nemotron_asr_inference" \
     --engine-dir "$ENGINE_DIR" --audio-file "$AUDIO"     # wav / mp3 / flac
 
 # 3. Or serve the complete model bundle through the isolated experimental API.
 #    This source module is not installed as a console command. Server startup
 #    only loads the bundle; it never builds engines.
-PYTHONPATH="$BUILD_DIR/pybind${PYTHONPATH:+:$PYTHONPATH}" \
+PYTHONPATH="$BUILD_DIR/lib${PYTHONPATH:+:$PYTHONPATH}" \
 python -m experimental.nemotron3_5_asr.server "$ENGINE_DIR" \
     --served-model-name nemotron-3.5-asr-streaming-0.6b
 ```
@@ -56,7 +56,7 @@ The maintained ONNX route exports both components, builds them with
 `audio_build`, and assembles a flat runtime directory. Serve it with:
 
 ```bash
-PYTHONPATH="$BUILD_DIR/pybind${PYTHONPATH:+:$PYTHONPATH}" \
+PYTHONPATH="$BUILD_DIR/lib${PYTHONPATH:+:$PYTHONPATH}" \
 python -m experimental.nemotron3_5_asr.server "$RUN_DIR" \
     --served-model-name nemotron-3.5-asr-streaming-0.6b
 ```

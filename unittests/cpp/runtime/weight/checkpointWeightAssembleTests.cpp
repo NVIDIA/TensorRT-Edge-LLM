@@ -27,7 +27,6 @@
 // test; they are left to the kernel-level suites that already cover those
 // transforms.
 
-#include "runtime/weight/awqInt4RangeCheck.h"
 #include "runtime/weight/checkpointWeightAssemble.h"
 
 #include "common/tensor.h"
@@ -42,8 +41,6 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
-#include <array>
-#include <cstring>
 #include <fstream>
 
 using namespace trt_edgellm;
@@ -60,9 +57,9 @@ constexpr char const* kShard{"model.safetensors"};
 //! prerequisite. Listed so the phase and registration predicates are asserted
 //! against the whole set rather than a convenient sample.
 constexpr char const* kOrdinaryRecipes[]{"identity", "cast_to_fp32", "fill", "gptq_ffn_qweight", "gptq_qkv_qweight",
-    "gptq_qkv_scales", "awq_ffn_qweight", "awq_ffn_qweight_center8", "awq_zero_correction", "modelopt_awq_ffn_qweight",
-    "nvfp4_gated_fc1_qweight", "nvfp4_gated_fc2_scale", "nvfp4_expert_qweight", "nvfp4_fc1_alpha", "int4_moe_gate_up",
-    "int4_moe_down_scales", "fp16_moe_fc1", "fp16_moe_fc2"};
+    "gptq_qkv_scales", "awq_ffn_qweight", "modelopt_awq_ffn_qweight", "nvfp4_gated_fc1_qweight",
+    "nvfp4_gated_fc2_scale", "nvfp4_expert_qweight", "nvfp4_fc1_alpha", "int4_moe_gate_up", "int4_moe_down_scales",
+    "fp16_moe_fc1", "fp16_moe_fc2", "fp16_moe_stacked_fc1", "fp16_moe_stacked_fc2"};
 
 class CheckpointWeightAssembleTest : public ::testing::Test
 {
@@ -85,7 +82,7 @@ protected:
     {
         std::string name;
         Coords shape;
-        nvinfer1::DataType dtype;
+        trt_edgellm::DataType dtype;
         std::vector<float> values;
     };
 
@@ -133,19 +130,19 @@ protected:
         file.write(payload.data(), static_cast<std::streamsize>(payload.size()));
     }
 
-    static char const* dtypeName(nvinfer1::DataType dtype)
+    static char const* dtypeName(trt_edgellm::DataType dtype)
     {
         switch (dtype)
         {
-        case nvinfer1::DataType::kFLOAT: return "F32";
-        case nvinfer1::DataType::kHALF: return "F16";
-        case nvinfer1::DataType::kBF16: return "BF16";
-        case nvinfer1::DataType::kINT32: return "I32";
+        case trt_edgellm::DataType::kFLOAT: return "F32";
+        case trt_edgellm::DataType::kHALF: return "F16";
+        case trt_edgellm::DataType::kBF16: return "BF16";
+        case trt_edgellm::DataType::kINT32: return "I32";
         default: return "";
         }
     }
 
-    static void appendElement(std::vector<char>& payload, float value, nvinfer1::DataType dtype)
+    static void appendElement(std::vector<char>& payload, float value, trt_edgellm::DataType dtype)
     {
         auto append = [&payload](void const* bytes, size_t count) {
             auto const* first = static_cast<char const*>(bytes);
@@ -153,20 +150,20 @@ protected:
         };
         switch (dtype)
         {
-        case nvinfer1::DataType::kFLOAT: append(&value, sizeof(value)); break;
-        case nvinfer1::DataType::kHALF:
+        case trt_edgellm::DataType::kFLOAT: append(&value, sizeof(value)); break;
+        case trt_edgellm::DataType::kHALF:
         {
             __half const half = __float2half(value);
             append(&half, sizeof(half));
             break;
         }
-        case nvinfer1::DataType::kBF16:
+        case trt_edgellm::DataType::kBF16:
         {
             __nv_bfloat16 const bf16 = __float2bfloat16(value);
             append(&bf16, sizeof(bf16));
             break;
         }
-        case nvinfer1::DataType::kINT32:
+        case trt_edgellm::DataType::kINT32:
         {
             auto const integer = static_cast<int32_t>(value);
             append(&integer, sizeof(integer));
@@ -176,7 +173,7 @@ protected:
         }
     }
 
-    Tensor makeOutput(std::string const& engineName, Coords const& shape, nvinfer1::DataType dtype)
+    Tensor makeOutput(std::string const& engineName, Coords const& shape, trt_edgellm::DataType dtype)
     {
         return Tensor(shape, DeviceType::kGPU, dtype, engineName);
     }
@@ -185,7 +182,7 @@ protected:
     {
         CUDA_CHECK(cudaStreamSynchronize(mStream));
         std::vector<float> values;
-        if (output.getDataType() == nvinfer1::DataType::kFLOAT)
+        if (output.getDataType() == trt_edgellm::DataType::kFLOAT)
         {
             return copyDeviceToHost<float>(output);
         }
@@ -310,9 +307,9 @@ TEST_F(CheckpointWeightAssembleTest, OnlyIdentityRecipesManageTheirOwnSourceRegi
 // layout, so it fails and names the op.
 TEST_F(CheckpointWeightAssembleTest, RejectsAnUnknownAssembleOp)
 {
-    writeCheckpoint({{"src", Coords({4}), nvinfer1::DataType::kFLOAT, {1.0F, 2.0F, 3.0F, 4.0F}}});
+    writeCheckpoint({{"src", Coords({4}), trt_edgellm::DataType::kFLOAT, {1.0F, 2.0F, 3.0F, 4.0F}}});
     CheckpointReader reader(mDir);
-    Tensor output = makeOutput("w", Coords({4}), nvinfer1::DataType::kFLOAT);
+    Tensor output = makeOutput("w", Coords({4}), trt_edgellm::DataType::kFLOAT);
     Json const binding = makeBinding("w", "nvfp4_future_recipe", {"src"});
 
     EXPECT_THAT(messageFrom([&] { loadCheckpointWeight(reader, binding, {}, output, mStream); }),
@@ -324,9 +321,9 @@ TEST_F(CheckpointWeightAssembleTest, RejectsAnUnknownAssembleOp)
 // bytes into another weight's buffer, which no later validation would catch.
 TEST_F(CheckpointWeightAssembleTest, RejectsABindingThatDoesNotNameTheOutputTensor)
 {
-    writeCheckpoint({{"src", Coords({4}), nvinfer1::DataType::kFLOAT, {1.0F, 2.0F, 3.0F, 4.0F}}});
+    writeCheckpoint({{"src", Coords({4}), trt_edgellm::DataType::kFLOAT, {1.0F, 2.0F, 3.0F, 4.0F}}});
     CheckpointReader reader(mDir);
-    Tensor output = makeOutput("expected.weight", Coords({4}), nvinfer1::DataType::kFLOAT);
+    Tensor output = makeOutput("expected.weight", Coords({4}), trt_edgellm::DataType::kFLOAT);
 
     EXPECT_THROW(loadCheckpointWeight(reader, makeBinding("other.weight", "", {"src"}), {}, output, mStream),
         std::runtime_error);
@@ -348,9 +345,9 @@ TEST_F(CheckpointWeightAssembleTest, RejectsABindingThatDoesNotNameTheOutputTens
 TEST_F(CheckpointWeightAssembleTest, IdentityCopiesAMatchingTensorVerbatim)
 {
     std::vector<float> const values{1.0F, -2.0F, 3.5F, 4.0F, -5.25F, 6.0F};
-    writeCheckpoint({{"layer.weight", Coords({2, 3}), nvinfer1::DataType::kHALF, values}});
+    writeCheckpoint({{"layer.weight", Coords({2, 3}), trt_edgellm::DataType::kHALF, values}});
     CheckpointReader reader(mDir);
-    Tensor output = makeOutput("engine.weight", Coords({2, 3}), nvinfer1::DataType::kHALF);
+    Tensor output = makeOutput("engine.weight", Coords({2, 3}), trt_edgellm::DataType::kHALF);
 
     loadCheckpointWeight(reader, makeBinding("engine.weight", "identity", {"layer.weight"}), {}, output, mStream);
 
@@ -367,15 +364,15 @@ TEST_F(CheckpointWeightAssembleTest, IdentityCopiesAMatchingTensorVerbatim)
 TEST_F(CheckpointWeightAssembleTest, IdentityNarrowsFp32AndBf16SourcesToAnFp16Binding)
 {
     std::vector<float> const values{1.0F, -2.0F, 3.5F, 4.0F};
-    writeCheckpoint({{"fp32.weight", Coords({2, 2}), nvinfer1::DataType::kFLOAT, values},
-        {"bf16.weight", Coords({2, 2}), nvinfer1::DataType::kBF16, values}});
+    writeCheckpoint({{"fp32.weight", Coords({2, 2}), trt_edgellm::DataType::kFLOAT, values},
+        {"bf16.weight", Coords({2, 2}), trt_edgellm::DataType::kBF16, values}});
     CheckpointReader reader(mDir);
 
-    Tensor fromFp32 = makeOutput("engine.weight", Coords({2, 2}), nvinfer1::DataType::kHALF);
+    Tensor fromFp32 = makeOutput("engine.weight", Coords({2, 2}), trt_edgellm::DataType::kHALF);
     loadCheckpointWeight(reader, makeBinding("engine.weight", "identity", {"fp32.weight"}), {}, fromFp32, mStream);
     EXPECT_EQ(readOutput(fromFp32), values);
 
-    Tensor fromBf16 = makeOutput("engine.weight", Coords({2, 2}), nvinfer1::DataType::kHALF);
+    Tensor fromBf16 = makeOutput("engine.weight", Coords({2, 2}), trt_edgellm::DataType::kHALF);
     loadCheckpointWeight(reader, makeBinding("engine.weight", "identity", {"bf16.weight"}), {}, fromBf16, mStream);
     EXPECT_EQ(readOutput(fromBf16), values);
 }
@@ -391,9 +388,9 @@ TEST_F(CheckpointWeightAssembleTest, IdentityNarrowsFp32AndBf16SourcesToAnFp16Bi
 TEST_F(CheckpointWeightAssembleTest, IdentityTransposesWhenTheBindingSwapsTheSourceDimensions)
 {
     // Row-major [2,3]: rows {1,2,3} and {4,5,6}.
-    writeCheckpoint({{"src", Coords({2, 3}), nvinfer1::DataType::kHALF, {1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F}}});
+    writeCheckpoint({{"src", Coords({2, 3}), trt_edgellm::DataType::kHALF, {1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F}}});
     CheckpointReader reader(mDir);
-    Tensor output = makeOutput("engine.weight", Coords({3, 2}), nvinfer1::DataType::kHALF);
+    Tensor output = makeOutput("engine.weight", Coords({3, 2}), trt_edgellm::DataType::kHALF);
 
     loadCheckpointWeight(reader, makeBinding("engine.weight", "identity", {"src"}), {}, output, mStream);
 
@@ -406,16 +403,16 @@ TEST_F(CheckpointWeightAssembleTest, IdentityTransposesWhenTheBindingSwapsTheSou
 // bounds, so it is rejected with both shapes in the message.
 TEST_F(CheckpointWeightAssembleTest, IdentityRejectsAShapeThatIsNotATranspose)
 {
-    writeCheckpoint({{"src", Coords({2, 3}), nvinfer1::DataType::kHALF, {1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F}}});
+    writeCheckpoint({{"src", Coords({2, 3}), trt_edgellm::DataType::kHALF, {1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F}}});
     CheckpointReader reader(mDir);
 
-    Tensor wrongExtent = makeOutput("engine.weight", Coords({4, 5}), nvinfer1::DataType::kHALF);
+    Tensor wrongExtent = makeOutput("engine.weight", Coords({4, 5}), trt_edgellm::DataType::kHALF);
     EXPECT_THROW(
         loadCheckpointWeight(reader, makeBinding("engine.weight", "identity", {"src"}), {}, wrongExtent, mStream),
         std::runtime_error);
 
     // Same element count, different rank: a flattening is not a transpose.
-    Tensor flattened = makeOutput("engine.weight", Coords({6}), nvinfer1::DataType::kHALF);
+    Tensor flattened = makeOutput("engine.weight", Coords({6}), trt_edgellm::DataType::kHALF);
     EXPECT_THROW(
         loadCheckpointWeight(reader, makeBinding("engine.weight", "identity", {"src"}), {}, flattened, mStream),
         std::runtime_error);
@@ -426,11 +423,11 @@ TEST_F(CheckpointWeightAssembleTest, IdentityRejectsAShapeThatIsNotATranspose)
 // the bytes through would reinterpret them.
 TEST_F(CheckpointWeightAssembleTest, IdentityRejectsAConversionItDoesNotImplement)
 {
-    writeCheckpoint({{"src", Coords({4}), nvinfer1::DataType::kHALF, {1.0F, 2.0F, 3.0F, 4.0F}}});
+    writeCheckpoint({{"src", Coords({4}), trt_edgellm::DataType::kHALF, {1.0F, 2.0F, 3.0F, 4.0F}}});
     CheckpointReader reader(mDir);
 
     // Widening FP16 -> FP32 is cast_to_fp32's job, not identity's.
-    Tensor widened = makeOutput("engine.weight", Coords({4}), nvinfer1::DataType::kFLOAT);
+    Tensor widened = makeOutput("engine.weight", Coords({4}), trt_edgellm::DataType::kFLOAT);
     EXPECT_THROW(loadCheckpointWeight(reader, makeBinding("engine.weight", "identity", {"src"}), {}, widened, mStream),
         std::runtime_error);
 }
@@ -444,16 +441,16 @@ TEST_F(CheckpointWeightAssembleTest, IdentityRejectsAConversionItDoesNotImplemen
 // Then it takes that one
 TEST_F(CheckpointWeightAssembleTest, IdentityTakesTheFirstCheckpointKeyThatExists)
 {
-    writeCheckpoint({{"preferred", Coords({2}), nvinfer1::DataType::kHALF, {1.0F, 2.0F}},
-        {"fallback", Coords({2}), nvinfer1::DataType::kHALF, {30.0F, 40.0F}}});
+    writeCheckpoint({{"preferred", Coords({2}), trt_edgellm::DataType::kHALF, {1.0F, 2.0F}},
+        {"fallback", Coords({2}), trt_edgellm::DataType::kHALF, {30.0F, 40.0F}}});
     CheckpointReader reader(mDir);
 
-    Tensor bothPresent = makeOutput("engine.weight", Coords({2}), nvinfer1::DataType::kHALF);
+    Tensor bothPresent = makeOutput("engine.weight", Coords({2}), trt_edgellm::DataType::kHALF);
     loadCheckpointWeight(
         reader, makeBinding("engine.weight", "identity", {"preferred", "fallback"}), {}, bothPresent, mStream);
     EXPECT_EQ(readOutput(bothPresent), std::vector<float>({1.0F, 2.0F}));
 
-    Tensor firstAbsent = makeOutput("engine.weight", Coords({2}), nvinfer1::DataType::kHALF);
+    Tensor firstAbsent = makeOutput("engine.weight", Coords({2}), trt_edgellm::DataType::kHALF);
     loadCheckpointWeight(
         reader, makeBinding("engine.weight", "identity", {"absent", "fallback"}), {}, firstAbsent, mStream);
     EXPECT_EQ(readOutput(firstAbsent), std::vector<float>({30.0F, 40.0F}));
@@ -467,9 +464,9 @@ TEST_F(CheckpointWeightAssembleTest, IdentityTakesTheFirstCheckpointKeyThatExist
 // Then it fails, naming the binding
 TEST_F(CheckpointWeightAssembleTest, IdentityFailsNamingTheBindingWhenNoKeyExists)
 {
-    writeCheckpoint({{"present", Coords({2}), nvinfer1::DataType::kHALF, {1.0F, 2.0F}}});
+    writeCheckpoint({{"present", Coords({2}), trt_edgellm::DataType::kHALF, {1.0F, 2.0F}}});
     CheckpointReader reader(mDir);
-    Tensor output = makeOutput("engine.weight", Coords({2}), nvinfer1::DataType::kHALF);
+    Tensor output = makeOutput("engine.weight", Coords({2}), trt_edgellm::DataType::kHALF);
 
     EXPECT_THAT(messageFrom([&] {
         loadCheckpointWeight(
@@ -487,12 +484,12 @@ TEST_F(CheckpointWeightAssembleTest, IdentityFailsNamingTheBindingWhenNoKeyExist
 // Then the destination holds the scaled values
 TEST_F(CheckpointWeightAssembleTest, IdentityAppliesTheEmbeddingScaleAfterCopying)
 {
-    writeCheckpoint({{"embed", Coords({4}), nvinfer1::DataType::kHALF, {1.0F, 2.0F, 3.0F, 4.0F}}});
+    writeCheckpoint({{"embed", Coords({4}), trt_edgellm::DataType::kHALF, {1.0F, 2.0F, 3.0F, 4.0F}}});
     CheckpointReader reader(mDir);
 
     Json scaled = makeBinding("engine.embed", "identity", {"embed"});
     scaled["embedding_scale"] = 2.0F;
-    Tensor output = makeOutput("engine.embed", Coords({4}), nvinfer1::DataType::kHALF);
+    Tensor output = makeOutput("engine.embed", Coords({4}), trt_edgellm::DataType::kHALF);
     loadCheckpointWeight(reader, scaled, {}, output, mStream);
     EXPECT_EQ(readOutput(output), std::vector<float>({2.0F, 4.0F, 6.0F, 8.0F}));
 
@@ -500,7 +497,7 @@ TEST_F(CheckpointWeightAssembleTest, IdentityAppliesTheEmbeddingScaleAfterCopyin
     // kernel, which is what lets non-FP16 bindings use this recipe at all.
     Json unscaled = makeBinding("engine.embed", "identity", {"embed"});
     unscaled["embedding_scale"] = 1.0F;
-    Tensor untouched = makeOutput("engine.embed", Coords({4}), nvinfer1::DataType::kHALF);
+    Tensor untouched = makeOutput("engine.embed", Coords({4}), trt_edgellm::DataType::kHALF);
     loadCheckpointWeight(reader, unscaled, {}, untouched, mStream);
     EXPECT_EQ(readOutput(untouched), std::vector<float>({1.0F, 2.0F, 3.0F, 4.0F}));
 }
@@ -519,14 +516,14 @@ TEST_F(CheckpointWeightAssembleTest, IdentityAppliesTheEmbeddingScaleAfterCopyin
 TEST_F(CheckpointWeightAssembleTest, CastToFp32WidensEverySupportedSourceDtype)
 {
     std::vector<float> const values{1.0F, -2.0F, 0.5F, 4.0F};
-    writeCheckpoint({{"as.fp32", Coords({4}), nvinfer1::DataType::kFLOAT, values},
-        {"as.fp16", Coords({4}), nvinfer1::DataType::kHALF, values},
-        {"as.bf16", Coords({4}), nvinfer1::DataType::kBF16, values}});
+    writeCheckpoint({{"as.fp32", Coords({4}), trt_edgellm::DataType::kFLOAT, values},
+        {"as.fp16", Coords({4}), trt_edgellm::DataType::kHALF, values},
+        {"as.bf16", Coords({4}), trt_edgellm::DataType::kBF16, values}});
     CheckpointReader reader(mDir);
 
     for (char const* key : {"as.fp32", "as.fp16", "as.bf16"})
     {
-        Tensor output = makeOutput("engine.norm", Coords({4}), nvinfer1::DataType::kFLOAT);
+        Tensor output = makeOutput("engine.norm", Coords({4}), trt_edgellm::DataType::kFLOAT);
         loadWithCallerRegistration(reader, makeBinding("engine.norm", "cast_to_fp32", {key}), {key}, output);
         EXPECT_EQ(readOutput(output), values) << key;
     }
@@ -538,23 +535,23 @@ TEST_F(CheckpointWeightAssembleTest, CastToFp32WidensEverySupportedSourceDtype)
 TEST_F(CheckpointWeightAssembleTest, CastToFp32RejectsANonFp32BindingOrMultipleSources)
 {
     std::vector<float> const values{1.0F, 2.0F, 3.0F, 4.0F};
-    writeCheckpoint(
-        {{"a", Coords({4}), nvinfer1::DataType::kHALF, values}, {"b", Coords({4}), nvinfer1::DataType::kHALF, values}});
+    writeCheckpoint({{"a", Coords({4}), trt_edgellm::DataType::kHALF, values},
+        {"b", Coords({4}), trt_edgellm::DataType::kHALF, values}});
     CheckpointReader reader(mDir);
 
-    Tensor halfBinding = makeOutput("engine.norm", Coords({4}), nvinfer1::DataType::kHALF);
+    Tensor halfBinding = makeOutput("engine.norm", Coords({4}), trt_edgellm::DataType::kHALF);
     EXPECT_THROW(
         loadWithCallerRegistration(reader, makeBinding("engine.norm", "cast_to_fp32", {"a"}), {"a"}, halfBinding),
         std::runtime_error);
 
-    Tensor twoSources = makeOutput("engine.norm", Coords({4}), nvinfer1::DataType::kFLOAT);
+    Tensor twoSources = makeOutput("engine.norm", Coords({4}), trt_edgellm::DataType::kFLOAT);
     EXPECT_THROW(loadWithCallerRegistration(
                      reader, makeBinding("engine.norm", "cast_to_fp32", {"a", "b"}), {"a", "b"}, twoSources),
         std::runtime_error);
 
     // A shape disagreement is the same class of error and is caught before any
     // copy is enqueued.
-    Tensor wrongShape = makeOutput("engine.norm", Coords({8}), nvinfer1::DataType::kFLOAT);
+    Tensor wrongShape = makeOutput("engine.norm", Coords({8}), trt_edgellm::DataType::kFLOAT);
     EXPECT_THROW(
         loadWithCallerRegistration(reader, makeBinding("engine.norm", "cast_to_fp32", {"a"}), {"a"}, wrongShape),
         std::runtime_error);
@@ -570,17 +567,17 @@ TEST_F(CheckpointWeightAssembleTest, CastToFp32RejectsANonFp32BindingOrMultipleS
 // leaving the allocation as it was.
 TEST_F(CheckpointWeightAssembleTest, FillWritesTheConfiguredValueAcrossTheWholeBinding)
 {
-    writeCheckpoint({{"unused", Coords({2}), nvinfer1::DataType::kFLOAT, {1.0F, 2.0F}}});
+    writeCheckpoint({{"unused", Coords({2}), trt_edgellm::DataType::kFLOAT, {1.0F, 2.0F}}});
     CheckpointReader reader(mDir);
 
     Json withValue = makeBinding("engine.bias", "fill", {});
     withValue["fill_value"] = 0.5F;
-    Tensor filled = makeOutput("engine.bias", Coords({2, 3}), nvinfer1::DataType::kFLOAT);
+    Tensor filled = makeOutput("engine.bias", Coords({2, 3}), trt_edgellm::DataType::kFLOAT);
     loadCheckpointWeight(reader, withValue, {}, filled, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
     EXPECT_THAT(readOutput(filled), ::testing::Each(0.5F));
 
-    Tensor defaulted = makeOutput("engine.bias", Coords({2, 3}), nvinfer1::DataType::kFLOAT);
+    Tensor defaulted = makeOutput("engine.bias", Coords({2, 3}), trt_edgellm::DataType::kFLOAT);
     loadCheckpointWeight(reader, makeBinding("engine.bias", "fill", {}), {}, defaulted, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
     EXPECT_THAT(readOutput(defaulted), ::testing::Each(0.0F));
@@ -590,148 +587,12 @@ TEST_F(CheckpointWeightAssembleTest, FillWritesTheConfiguredValueAcrossTheWholeB
 // exactly the ratio of the element sizes.
 TEST_F(CheckpointWeightAssembleTest, FillRejectsANonFp32Binding)
 {
-    writeCheckpoint({{"unused", Coords({2}), nvinfer1::DataType::kFLOAT, {1.0F, 2.0F}}});
+    writeCheckpoint({{"unused", Coords({2}), trt_edgellm::DataType::kFLOAT, {1.0F, 2.0F}}});
     CheckpointReader reader(mDir);
-    Tensor output = makeOutput("engine.bias", Coords({4}), nvinfer1::DataType::kHALF);
+    Tensor output = makeOutput("engine.bias", Coords({4}), trt_edgellm::DataType::kHALF);
 
     EXPECT_THROW(
         loadCheckpointWeight(reader, makeBinding("engine.bias", "fill", {}), {}, output, mStream), std::runtime_error);
-}
-
-TEST(AwqInt4RangeCheck, ChecksEveryNibbleAndHandlesUnalignedInput)
-{
-    for (uint32_t value = 0; value < 16; ++value)
-    {
-        for (uint32_t zero = 0; zero < 16; ++zero)
-        {
-            for (int32_t nibble = 0; nibble < 8; ++nibble)
-            {
-                uint32_t const weightWord = value << (4 * nibble);
-                uint32_t const zeroWord = zero << (4 * nibble);
-                std::array<uint8_t, 5> weight{};
-                std::array<uint8_t, 5> zeros{};
-                std::memcpy(weight.data() + 1, &weightWord, sizeof(weightWord));
-                std::memcpy(zeros.data() + 1, &zeroWord, sizeof(zeroWord));
-                int32_t const centered = static_cast<int32_t>(value) - static_cast<int32_t>(zero);
-                EXPECT_EQ(
-                    awqInt4ValuesFit(weight.data() + 1, zeros.data() + 1, 1, 1, 1), centered >= -8 && centered <= 7)
-                    << "q=" << value << " zero=" << zero << " nibble=" << nibble;
-            }
-        }
-    }
-}
-
-TEST_F(CheckpointWeightAssembleTest, AwqExternalWeightRejectsClippingAndPreservesValidValues)
-{
-    constexpr int32_t kK = 64;
-    constexpr int32_t kPackedN = 16;
-    constexpr int32_t kGroups = 2;
-    constexpr int32_t kN = kPackedN * 8;
-    std::vector<uint32_t> weights(kK * kPackedN, 0x99999999U);
-    std::vector<uint32_t> zeros(kGroups * kPackedN, 0x88888888U);
-
-    auto writeRaw = [&] {
-        std::ofstream file(mDir / "awq.bin", std::ios::binary | std::ios::trunc);
-        file.write(reinterpret_cast<char const*>(weights.data()), weights.size() * sizeof(uint32_t));
-        file.write(reinterpret_cast<char const*>(zeros.data()), zeros.size() * sizeof(uint32_t));
-    };
-    std::vector<CheckpointReader::TensorLocation> const locations{
-        {"awq.qweight", "awq.bin", "I32", Coords{kK, kPackedN}, 0, weights.size() * sizeof(uint32_t)},
-        {"awq.qzeros", "awq.bin", "I32", Coords{kGroups, kPackedN}, weights.size() * sizeof(uint32_t),
-            zeros.size() * sizeof(uint32_t)},
-    };
-
-    for (int32_t version : {1, 2})
-    {
-        writeRaw();
-        CheckpointReader reader(mDir, locations);
-        Json binding = makeBinding("engine.weight", "awq_ffn_qweight", {"awq.qweight", "awq.qzeros"});
-        binding["int4_gemm_plugin_version"] = version;
-        Coords const shape = version == 1 ? Coords{kN / 2, kK} : Coords{8, 512};
-        Tensor output = makeOutput("engine.weight", shape, nvinfer1::DataType::kINT8);
-        loadWithCallerRegistration(reader, binding, {"awq.qweight", "awq.qzeros"}, output);
-        std::vector<uint8_t> result(static_cast<size_t>(output.getMemoryCapacity()));
-        CUDA_CHECK(cudaMemcpyAsync(result.data(), output.rawPointer(), result.size(), cudaMemcpyDeviceToHost, mStream));
-        CUDA_CHECK(cudaStreamSynchronize(mStream));
-        EXPECT_THAT(result, ::testing::Each(0x99U)) << "version=" << version;
-    }
-
-    weights.back() = 0xF8888888U;
-    zeros.back() = 0x38888888U;
-    writeRaw();
-    for (int32_t version : {1, 2})
-    {
-        CheckpointReader reader(mDir, locations);
-        Json binding = makeBinding("engine.weight", "awq_ffn_qweight", {"awq.qweight", "awq.qzeros"});
-        binding["int4_gemm_plugin_version"] = version;
-        Coords const shape = version == 1 ? Coords{kN / 2, kK} : Coords{8, 512};
-        Tensor output = makeOutput("engine.weight", shape, nvinfer1::DataType::kINT8);
-        CUDA_CHECK(cudaMemsetAsync(output.rawPointer(), 0xA5, output.getMemoryCapacity(), mStream));
-        CUDA_CHECK(cudaStreamSynchronize(mStream));
-        std::string const message
-            = messageFrom([&] { loadWithCallerRegistration(reader, binding, {"awq.qweight", "awq.qzeros"}, output); });
-        EXPECT_THAT(message, HasSubstr("AWQ weights exceed the signed INT4 range")) << "version=" << version;
-        EXPECT_THAT(message, HasSubstr("awq.qweight"));
-        EXPECT_EQ(reader.registeredBytes(), 0U);
-        std::vector<uint8_t> result(static_cast<size_t>(output.getMemoryCapacity()));
-        CUDA_CHECK(cudaMemcpyAsync(result.data(), output.rawPointer(), result.size(), cudaMemcpyDeviceToHost, mStream));
-        CUDA_CHECK(cudaStreamSynchronize(mStream));
-        EXPECT_THAT(result, ::testing::Each(0xA5U));
-    }
-}
-
-TEST_F(CheckpointWeightAssembleTest, AwqExternalWeightCenterAndCorrectionPreserveAsymmetricValues)
-{
-    constexpr int32_t kK = 64;
-    constexpr int32_t kN = 128;
-    constexpr int32_t kGroups = 2;
-    writeCheckpoint({{"awq.qweight", Coords{kK, kN / 8}, nvinfer1::DataType::kINT32,
-                         std::vector<float>(kK * kN / 8, -1.0F)},
-        {"awq.qzeros", Coords{kGroups, kN / 8}, nvinfer1::DataType::kINT32, std::vector<float>(kGroups * kN / 8, 0.0F)},
-        {"awq.scales", Coords{kGroups, kN}, nvinfer1::DataType::kHALF, std::vector<float>(kGroups * kN, 0.125F)}});
-    CheckpointReader reader(mDir);
-    for (int32_t version : {1, 2})
-    {
-        Json weightBinding = makeBinding("engine.weight", "awq_ffn_qweight_center8", {"awq.qweight", "awq.qzeros"});
-        weightBinding["int4_gemm_plugin_version"] = version;
-        Coords const shape = version == 1 ? Coords{kN / 2, kK} : Coords{8, 512};
-        Tensor packed = makeOutput("engine.weight", shape, nvinfer1::DataType::kINT8);
-        loadWithCallerRegistration(reader, weightBinding, {"awq.qweight", "awq.qzeros"}, packed);
-        auto const bytes = copyDeviceToHost<uint8_t>(packed);
-        EXPECT_THAT(bytes, ::testing::Each(0xFFU)) << "version=" << version;
-    }
-    Json correctionBinding = makeBinding("engine.correction", "awq_zero_correction", {"awq.qzeros", "awq.scales"});
-    Tensor correction = makeOutput("engine.correction", Coords{kGroups, kN}, nvinfer1::DataType::kFLOAT);
-    loadWithCallerRegistration(reader, correctionBinding, {"awq.qzeros", "awq.scales"}, correction);
-    EXPECT_THAT(readOutput(correction), ::testing::Each(1.0F));
-    EXPECT_EQ(reader.registeredBytes(), 0U);
-}
-
-TEST_F(CheckpointWeightAssembleTest, AwqZeroCorrectionUsesPackedChannelOrderAndPluginScalePrecision)
-{
-    constexpr int32_t kN = 128;
-    constexpr int32_t kGroups = 2;
-    std::vector<float> const scales(kGroups * kN, 0.1F);
-    writeCheckpoint({{"awq.qzeros", Coords{kGroups, kN / 8}, nvinfer1::DataType::kINT32,
-                         std::vector<float>(kGroups * kN / 8, 12816.0F)},
-        {"scales.fp16", Coords{kGroups, kN}, nvinfer1::DataType::kHALF, scales},
-        {"scales.bf16", Coords{kGroups, kN}, nvinfer1::DataType::kBF16, scales},
-        {"scales.fp32", Coords{kGroups, kN}, nvinfer1::DataType::kFLOAT, scales}});
-    CheckpointReader reader(mDir);
-    constexpr int32_t zeros[8] = {0, 0, 1, 0, 2, 0, 3, 0};
-    for (char const* key : {"scales.fp16", "scales.bf16", "scales.fp32"})
-    {
-        float const inputScale = std::string(key) == "scales.bf16" ? __bfloat162float(__float2bfloat16(0.1F)) : 0.1F;
-        float const pluginScale = __half2float(__float2half(inputScale));
-        Json binding = makeBinding("engine.correction", "awq_zero_correction", {"awq.qzeros", key});
-        Tensor correction = makeOutput("engine.correction", Coords{kGroups, kN}, nvinfer1::DataType::kFLOAT);
-        loadWithCallerRegistration(reader, binding, {"awq.qzeros", key}, correction);
-        auto const actual = readOutput(correction);
-        for (size_t index = 0; index < actual.size(); ++index)
-        {
-            EXPECT_FLOAT_EQ(actual[index], (8 - zeros[index % 8]) * pluginScale) << key << " index=" << index;
-        }
-    }
 }
 
 } // namespace

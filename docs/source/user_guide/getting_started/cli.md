@@ -28,15 +28,15 @@ and Python API parameter names are unchanged.
 
 ## Commands
 
-The recommended installation includes `[server]` for chat and HTTP serving.
-ONNX export requires `[export]`, and quantization requires `[tools]`.
+The recommended installation includes `[runtime]` for chat and HTTP serving.
+ONNX export requires `[onnx]`, and quantization requires `[quantize]`.
 See [Optional Python dependencies](installation.md#optional-python-dependencies)
 to add these extras to your environment.
 
 | Command | Purpose | Guide |
 | --- | --- | --- |
 | `trtedge chat` | Interactive or one-shot text chat | [Interactive Text Chat](../examples/interactive-chat.md) |
-| `trtedge serve` | Launch an OpenAI-compatible HTTP server | [Python API and Server](../examples/experimental-server.md) |
+| `trtedge serve` | Launch an OpenAI-compatible HTTP server | [Python API and Server](../examples/server.md) |
 | `trtedge build` | Build engines directly from a checkpoint | [Direct Engine Builder](direct-engine-builder.md) |
 | `trtedge export` | Export checkpoint components to ONNX | {ref}`ONNX export example <export-the-checkpoint>` |
 | `trtedge quantize` | Quantize an LLM or draft checkpoint | [Quantization](../features/quantization.md) |
@@ -71,7 +71,7 @@ launches reuse matching cached engines.
 trtedge serve Qwen/Qwen3.5-0.8B --port 8000
 ```
 
-See the [server guide](../examples/experimental-server.md) for HTTP requests,
+See the [server guide](../examples/server.md) for HTTP requests,
 speculative decoding, and runtime options.
 
 ### Build engines or export ONNX

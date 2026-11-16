@@ -56,17 +56,20 @@ from typing import List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers.activations import ACT2FN
 
-from ...config import LAYER_GDN, GdnConfig, ModelConfig
-from ...dflash import DFlashVersion
+from ...config import (_QWEN35_EAGLE_BASE_MODEL_TYPES, LAYER_GDN, GdnConfig,
+                       ModelConfig)
 from ..default.modeling_default import (MLP, OnnxSpec, RMSNorm,
                                         _concat_hidden_in_provider_order)
 from ..linear import (ColumnParallelLinear, FP16Linear, NVFP4LinearMethod,
                       ReplicatedLinear, TPMode, is_int4_linear,
                       is_nvfp4_a16_linear, is_nvfp4_linear, make_linear)
-from ..ops import (KV_PAGE_SIZE, attention_plugin, causal_conv1d,
+from ..ops import (KV_PAGE_SIZE, SKIP_SOFTMAX_SCALE_TABLE_MAX_LEN,
+                   attention_plugin, causal_conv1d,
                    causal_conv1d_with_intermediate, gated_delta_net,
-                   gated_delta_net_with_intermediate, qkv_concat)
+                   gated_delta_net_with_intermediate, qkv_concat,
+                   targets_sm12x_nvfp4)
 
 __all__ = ["Qwen3_5CausalLM"]
 
@@ -138,6 +141,12 @@ class Conv1dBuffers(nn.Module):
         return None
 
 
+def _keep_nvfp4_gdn_input_projections_separate(projection: nn.Module) -> bool:
+    """Return whether this projection uses the separate SM12x TP lowering."""
+    return (is_nvfp4_linear(projection) and projection.tp_size > 1
+            and targets_sm12x_nvfp4())
+
+
 # ---------------------------------------------------------------------------
 # GdnMixer  (GatedDeltaNet linear attention)
 # ---------------------------------------------------------------------------
@@ -171,18 +180,28 @@ class GdnMixer(nn.Module):
                                      bias=False,
                                      module_name=f"{module_prefix}.in_proj_z",
                                      tp_mode=TPMode.COL)
+        replicate_ba = _keep_nvfp4_gdn_input_projections_separate(
+            self.in_proj_qkv)
+        ba_out_features = gc.num_value_heads
+        ba_tp_mode = TPMode.COL
+        self._replicated_ba_rank: Optional[int] = None
+        self._replicated_ba_split_size = gc.num_value_heads
+        if replicate_ba:
+            ba_out_features *= config.tp_size
+            ba_tp_mode = TPMode.REPLICATED
+            self._replicated_ba_rank = config.tp_rank
         self.in_proj_b = make_linear(config,
                                      hidden_size,
-                                     gc.num_value_heads,
+                                     ba_out_features,
                                      bias=False,
                                      module_name=f"{module_prefix}.in_proj_b",
-                                     tp_mode=TPMode.COL)
+                                     tp_mode=ba_tp_mode)
         self.in_proj_a = make_linear(config,
                                      hidden_size,
-                                     gc.num_value_heads,
+                                     ba_out_features,
                                      bias=False,
                                      module_name=f"{module_prefix}.in_proj_a",
-                                     tp_mode=TPMode.COL)
+                                     tp_mode=ba_tp_mode)
         qkv_split_sizes = (gc.key_dim, gc.key_dim, gc.value_dim)
         if config.tp_size > 1:
             self.in_proj_qkv.tp_split_sizes = qkv_split_sizes
@@ -202,6 +221,10 @@ class GdnMixer(nn.Module):
 
         # Per-head group norm on output
         self.norm = RMSNorm(gc.value_head_dim, eps=config.rms_norm_eps)
+        if gc.output_gate_type not in ACT2FN:
+            raise ValueError(
+                f"Unsupported GDN output_gate_type {gc.output_gate_type!r}")
+        self.output_gate_act = ACT2FN[gc.output_gate_type]
 
         # Output projection
         self.out_proj = make_linear(config,
@@ -229,6 +252,17 @@ class GdnMixer(nn.Module):
             return 0
         return None
 
+    def _select_local_ba_heads(
+            self, b: torch.Tensor,
+            a: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self._replicated_ba_rank is None:
+            return b, a
+        b = b.split(self._replicated_ba_split_size,
+                    dim=-1)[self._replicated_ba_rank]
+        a = a.split(self._replicated_ba_split_size,
+                    dim=-1)[self._replicated_ba_rank]
+        return b, a
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -239,6 +273,7 @@ class GdnMixer(nn.Module):
         tree_parent_ids: "torch.Tensor | None" = None,
         tree_depths: "torch.Tensor | None" = None,
         collect_intermediate_states: bool = False,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
                torch.Tensor]:
         batch_size, seq_len, _ = hidden_states.shape
@@ -257,6 +292,7 @@ class GdnMixer(nn.Module):
             z = self.in_proj_z(hidden_states)
             b = self.in_proj_b(hidden_states)
             a = self.in_proj_a(hidden_states)
+            b, a = self._select_local_ba_heads(b, a)
 
         # 2. Causal conv1d (no activation baked in)
         if collect_intermediate_states:
@@ -272,8 +308,8 @@ class GdnMixer(nn.Module):
                 groups=self.conv_dim,
                 execution_phase_marker=execution_phase_marker,
                 tree_parent_ids=tree_parent_ids,
+                spec_verify_layout=spec_verify_layout,
                 tree_depths=tree_depths,
-                use_ddtree_state=tree_parent_ids is not None,
             )
             (mixed_qkv, conv_state_out,
              intermediate_conv_state_out) = conv_outputs
@@ -319,7 +355,6 @@ class GdnMixer(nn.Module):
                 execution_phase_marker=execution_phase_marker,
                 tree_parent_ids=tree_parent_ids,
                 tree_depths=tree_depths,
-                use_ddtree_state=tree_parent_ids is not None,
             )
             (core_attn_out, recurrent_state_out,
              intermediate_recurrent_state_out) = gdn_outputs
@@ -330,11 +365,11 @@ class GdnMixer(nn.Module):
             intermediate_recurrent_state_out = None
 
         # 5. Gated norm: norm FIRST, then gate
-        # HF Qwen3_5RMSNormGated: weight * RMSNorm(x) * silu(gate)
+        # HF RMSNormGated: weight * RMSNorm(x) * act(gate)
         core_attn_out = core_attn_out.reshape(-1, self.v_dim)
         z = z.reshape(-1, self.v_dim)
         core_attn_out = self.norm(core_attn_out)
-        core_attn_out = core_attn_out * F.silu(z)
+        core_attn_out = core_attn_out * self.output_gate_act(z)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
 
         # 6. Output projection
@@ -356,6 +391,7 @@ class GdnMixer(nn.Module):
         tree_parent_ids: "torch.Tensor | None" = None,
         tree_depths: "torch.Tensor | None" = None,
         use_intermediate_state: bool = False,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
                torch.Tensor]:
         if hasattr(self, "in_proj_fused"):
@@ -371,6 +407,7 @@ class GdnMixer(nn.Module):
             z = self.in_proj_z(hidden_states)
             b = self.in_proj_b(hidden_states)
             a = self.in_proj_a(hidden_states)
+            b, a = self._select_local_ba_heads(b, a)
 
         if not use_intermediate_state:
             mixed_qkv, conv_state_out, intermediate_conv_state = causal_conv1d(
@@ -403,8 +440,9 @@ class GdnMixer(nn.Module):
                 execution_phase_marker=execution_phase_marker,
                 context_sequence_count_carrier=context_sequence_count_carrier,
                 tree_parent_ids=tree_parent_ids,
+                spec_verify_layout=spec_verify_layout,
                 tree_depths=tree_depths,
-                use_ddtree_state=tree_parent_ids is not None)
+            )
         mixed_qkv = F.silu(mixed_qkv)
         query, key, value = mixed_qkv.split(
             [self.key_dim, self.key_dim, self.value_dim], dim=-1)
@@ -447,9 +485,10 @@ class GdnMixer(nn.Module):
                 context_sequence_count_carrier=context_sequence_count_carrier,
                 tree_parent_ids=tree_parent_ids,
                 tree_depths=tree_depths,
-                use_ddtree_state=tree_parent_ids is not None)
+            )
         core_attn_out = self.norm(core_attn_out.reshape(-1, self.v_dim))
-        core_attn_out = core_attn_out * F.silu(z.reshape(-1, self.v_dim))
+        core_attn_out = core_attn_out * self.output_gate_act(
+            z.reshape(-1, self.v_dim))
         core_attn_out = core_attn_out.reshape(hidden_states.shape[0],
                                               self.value_dim)
         return (self.out_proj(core_attn_out), conv_state_out,
@@ -488,7 +527,9 @@ class GatedAttention(nn.Module):
         self.attention_scale = config.attention_scaling
         self.enable_fp8_kv_cache = config.quant.kv_cache_quant == "fp8"
         self.sliding_window_size = -1
-        self.skip_softmax_scale_factor = config.skip_softmax_scale_factor
+        # Each deployed skip-softmax table wires its own scale-table input.
+        self.skip_softmax_prefill_enabled = config.skip_softmax_prefill_enabled
+        self.skip_softmax_decode_enabled = config.skip_softmax_decode_enabled
         module_prefix = f"layers.{layer_idx}.self_attn"
 
         # q_proj output is doubled: query + gate
@@ -540,7 +581,8 @@ class GatedAttention(nn.Module):
         kv_page_table: torch.Tensor,
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -576,10 +618,16 @@ class GatedAttention(nn.Module):
             "attention_scale": self.attention_scale,
             "enable_context_mask_selector": False,
             "enable_vision_block_attention": False,
-            "skip_softmax_scale_factor": self.skip_softmax_scale_factor,
+            "skip_softmax_prefill_input":
+            int(self.skip_softmax_prefill_enabled),
         }
-        if skip_softmax_scale is not None and self.skip_softmax_scale_factor > 0.0:
-            kwargs["skip_softmax_scale"] = skip_softmax_scale
+        if (skip_softmax_prefill_scale is not None
+                and self.skip_softmax_prefill_enabled):
+            kwargs["skip_softmax_prefill_scale"] = skip_softmax_prefill_scale
+        if (skip_softmax_decode_scale is not None
+                and self.skip_softmax_decode_enabled):
+            kwargs["skip_softmax_decode_scale"] = skip_softmax_decode_scale
+            kwargs["skip_softmax_decode_input"] = 1
         if enable_tree:
             kwargs["attention_mask"] = attention_mask
             kwargs["attention_pos_id"] = attention_pos_id
@@ -617,12 +665,14 @@ class GatedAttention(nn.Module):
         execution_phase_marker: torch.Tensor,
         context_sequence_count_carrier: torch.Tensor,
         kv_page_table: torch.Tensor,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
         attention_position_ids: "torch.Tensor | None" = None,
         packed_attention_mask: "torch.Tensor | None" = None,
         tree_parent_ids: "torch.Tensor | None" = None,
         tree_depths: "torch.Tensor | None" = None,
         valid_tree_counts: "torch.Tensor | None" = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         num_tokens = hidden_states.shape[0]
         q_output = self.q_proj(hidden_states).reshape(num_tokens,
@@ -657,7 +707,7 @@ class GatedAttention(nn.Module):
             attention_scale=self.attention_scale,
             enable_context_mask_selector=False,
             enable_vision_block_attention=False,
-            skip_softmax_scale_factor=self.skip_softmax_scale_factor,
+            skip_softmax_prefill_input=int(self.skip_softmax_prefill_enabled),
             qkv_scales=getattr(self, "_qkv_scales_float", [1.0, 1.0, 1.0]),
             query_start_offsets=query_start_offsets,
             attention_sequence_lengths=attention_sequence_lengths,
@@ -665,9 +715,15 @@ class GatedAttention(nn.Module):
             context_sequence_count_carrier=context_sequence_count_carrier,
             attention_pos_id=attention_position_ids,
             attention_mask=packed_attention_mask,
-            skip_softmax_scale=(skip_softmax_scale
-                                if self.skip_softmax_scale_factor > 0.0 else
-                                None))
+            skip_softmax_prefill_scale=(skip_softmax_prefill_scale
+                                        if self.skip_softmax_prefill_enabled
+                                        else None),
+            skip_softmax_decode_scale=(skip_softmax_decode_scale
+                                       if self.skip_softmax_decode_enabled else
+                                       None),
+            skip_softmax_decode_input=int(
+                self.skip_softmax_decode_enabled
+                and skip_softmax_decode_scale is not None))
         attn_output = attn_output * torch.sigmoid(gate_states)
         return self.o_proj(
             attn_output.reshape(num_tokens, self.num_heads *
@@ -714,7 +770,8 @@ class Qwen3_5DecoderLayer(nn.Module):
         kv_page_table: "torch.Tensor | None" = None,
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
         # GDN-specific (ignored by attention layers)
         conv_state: "torch.Tensor | None" = None,
         recurrent_state: "torch.Tensor | None" = None,
@@ -722,6 +779,7 @@ class Qwen3_5DecoderLayer(nn.Module):
         tree_parent_ids: "torch.Tensor | None" = None,
         tree_depths: "torch.Tensor | None" = None,
         collect_intermediate_states: bool = False,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ):
         residual = hidden_states
         normed = self.input_layernorm(hidden_states)
@@ -735,6 +793,7 @@ class Qwen3_5DecoderLayer(nn.Module):
                  context_lengths,
                  execution_phase_marker=execution_phase_marker,
                  tree_parent_ids=tree_parent_ids,
+                 spec_verify_layout=spec_verify_layout,
                  tree_depths=tree_depths,
                  collect_intermediate_states=collect_intermediate_states)
             hidden_states = residual + mixer_out
@@ -753,7 +812,8 @@ class Qwen3_5DecoderLayer(nn.Module):
                 kv_page_table,
                 attention_mask,
                 attention_pos_id,
-                skip_softmax_scale=skip_softmax_scale)
+                skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+                skip_softmax_decode_scale=skip_softmax_decode_scale)
             hidden_states = residual + attn_out
             residual = hidden_states
             hidden_states = residual + self.mlp(
@@ -767,12 +827,18 @@ class Qwen3_5DecoderLayer(nn.Module):
         if self.layer_type == LAYER_GDN:
             (mixer_out, conv_out, recurrent_out, intermediate_conv_out,
              intermediate_recurrent_out) = self.linear_attn.forward_ragged(
-                 normed, kwargs["conv_state"], kwargs["recurrent_state"],
-                 kwargs["query_start_offsets"], kwargs["query_lengths"],
-                 kwargs["state_indices"], kwargs["execution_phase_marker"],
+                 normed,
+                 kwargs["conv_state"],
+                 kwargs["recurrent_state"],
+                 kwargs["query_start_offsets"],
+                 kwargs["query_lengths"],
+                 kwargs["state_indices"],
+                 kwargs["execution_phase_marker"],
                  kwargs["context_sequence_count_carrier"],
-                 kwargs.get("tree_parent_ids"), kwargs.get("tree_depths"),
-                 kwargs.get("use_intermediate_state", False))
+                 kwargs.get("tree_parent_ids"),
+                 kwargs.get("tree_depths"),
+                 kwargs.get("use_intermediate_state", False),
+                 spec_verify_layout=kwargs.get("spec_verify_layout"))
             mixer_out = mixer_out.reshape(-1, residual.shape[-1])
             hidden_states = residual + mixer_out
             hidden_states = hidden_states + self.mlp(
@@ -786,7 +852,8 @@ class Qwen3_5DecoderLayer(nn.Module):
             kwargs["attention_sequence_lengths"], kwargs["state_indices"],
             kwargs["execution_phase_marker"],
             kwargs["context_sequence_count_carrier"], kwargs["kv_page_table"],
-            kwargs.get("skip_softmax_scale"),
+            kwargs.get("skip_softmax_prefill_scale"),
+            kwargs.get("skip_softmax_decode_scale"),
             kwargs.get("attention_position_ids"),
             kwargs.get("packed_attention_mask"), kwargs.get("tree_parent_ids"),
             kwargs.get("tree_depths"), kwargs.get("valid_tree_counts"))
@@ -835,12 +902,14 @@ class Qwen3_5Backbone(nn.Module):
         recurrent_states: Tuple[torch.Tensor, ...] = (),
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
         execution_phase_marker: "torch.Tensor | None" = None,
         tree_parent_ids: "torch.Tensor | None" = None,
         tree_depths: "torch.Tensor | None" = None,
         collect_intermediate_states: bool = False,
         dflash_target_layer_ids: "List[int] | None" = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, Tuple, Tuple, Tuple, Tuple, Tuple, object]:
         hidden_states = inputs_embeds
         present_key_values_list: List[torch.Tensor] = []
@@ -864,6 +933,7 @@ class Qwen3_5Backbone(nn.Module):
                      recurrent_state=recurrent_states[gdn_idx],
                      execution_phase_marker=execution_phase_marker,
                      tree_parent_ids=tree_parent_ids,
+                     spec_verify_layout=spec_verify_layout,
                      tree_depths=tree_depths,
                      collect_intermediate_states=collect_intermediate_states,
                  )
@@ -884,7 +954,8 @@ class Qwen3_5Backbone(nn.Module):
                     kv_page_table=kv_page_table,
                     attention_mask=attention_mask,
                     attention_pos_id=attention_pos_id,
-                    skip_softmax_scale=skip_softmax_scale,
+                    skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+                    skip_softmax_decode_scale=skip_softmax_decode_scale,
                 )
                 present_key_values_list.append(present_kv)
                 attn_idx += 1
@@ -919,7 +990,8 @@ class Qwen3_5Backbone(nn.Module):
         kv_page_table: torch.Tensor,
         conv_states: Tuple[torch.Tensor, ...],
         recurrent_states: Tuple[torch.Tensor, ...],
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
         attention_position_ids: "torch.Tensor | None" = None,
         packed_attention_mask: "torch.Tensor | None" = None,
         tree_parent_ids: "torch.Tensor | None" = None,
@@ -927,6 +999,7 @@ class Qwen3_5Backbone(nn.Module):
         valid_tree_counts: "torch.Tensor | None" = None,
         collect_intermediate_states: bool = False,
         target_layer_ids: "List[int] | None" = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, Tuple, Tuple, Tuple, Tuple, Tuple,
                "torch.Tensor | None"]:
         hidden_states = inputs_embeds
@@ -950,11 +1023,13 @@ class Qwen3_5Backbone(nn.Module):
             "execution_phase_marker": execution_phase_marker,
             "context_sequence_count_carrier": context_sequence_count_carrier,
             "kv_page_table": kv_page_table,
-            "skip_softmax_scale": skip_softmax_scale,
+            "skip_softmax_prefill_scale": skip_softmax_prefill_scale,
+            "skip_softmax_decode_scale": skip_softmax_decode_scale,
             "attention_position_ids": attention_position_ids,
             "packed_attention_mask": packed_attention_mask,
             "tree_parent_ids": tree_parent_ids,
             "tree_depths": tree_depths,
+            "spec_verify_layout": spec_verify_layout,
             "valid_tree_counts": valid_tree_counts,
             "use_intermediate_state": collect_intermediate_states,
         }
@@ -1030,18 +1105,39 @@ def _is_jetspec_base_export(config: ModelConfig) -> bool:
     return bool(getattr(config, "jetspec_base", False))
 
 
-def _is_spec_tree_base_export(config: ModelConfig) -> bool:
-    """Return True when exporting DDTree metadata for Qwen3.5 hybrid state.
+def _is_eagle_base_export(config: ModelConfig) -> bool:
+    """Return True when exporting the Qwen3.5 hybrid base for EAGLE verify.
 
-    DFlash, JetSpec, MTP, and DSpark tree bases consume the same
-    ``tree_parent_ids`` / ``tree_depths`` verify inputs.
+    Other families that reuse these classes (Qwen3-Omni-Next) ignore
+    ``eagle_base`` and keep their plain export.
     """
-    dflash2_base = (bool(getattr(config, "dflash_base", False)) and getattr(
-        config, "dflash_version", DFlashVersion.V1) == DFlashVersion.V2)
-    return (dflash2_base or bool(getattr(config, "dflash_tree_base", False))
-            or bool(getattr(config, "jetspec_tree_base", False))
-            or bool(getattr(config, "mtp_tree_base", False))
-            or bool(getattr(config, "dspark_tree_base", False)))
+    return (bool(getattr(config, "eagle_base", False))
+            and config.model_type in _QWEN35_EAGLE_BASE_MODEL_TYPES)
+
+
+def _eagle_layer_output_ids(config: ModelConfig) -> List[int]:
+    """Return the decoder layers feeding the EAGLE draft, in draft order.
+
+    EAGLE IDs are HF ``hidden_states`` indices: index k is the output of layer
+    k - 1, index 0 is the embedding and index N the final-norm output.
+    """
+    num_layers = config.num_hidden_layers
+    layer_ids = list(config.eagle3_target_layer_ids) or [
+        2, num_layers // 2, num_layers - 3
+    ]
+    if any(k < 1 or k >= num_layers for k in layer_ids):
+        raise ValueError(
+            f"EAGLE aux hidden-state layer IDs {layer_ids} must be HF "
+            f"hidden-state indices in [1, {num_layers - 1}] for a "
+            f"{num_layers}-layer Qwen3.5 base.")
+    return [k - 1 for k in layer_ids]
+
+
+def _is_recurrent_spec_base_export(config: ModelConfig) -> bool:
+    """Return whether the recurrent target exports the fixed verification ABI."""
+    return (_is_mtp_base_export(config) or _is_dflash_base_export(config)
+            or _is_jetspec_base_export(config)
+            or _is_dspark_base_export(config) or _is_eagle_base_export(config))
 
 
 def _make_flat_wrapper_hybrid_ragged(model: nn.Module, Na: int, Ng: int,
@@ -1055,12 +1151,17 @@ def _make_flat_wrapper_hybrid_ragged(model: nn.Module, Na: int, Ng: int,
             "query_lengths", "past_lengths", "attention_sequence_lengths",
             "state_indices", "execution_phase_marker",
             "context_sequence_count_carrier", "kv_page_table", "logits_indices"
-        ] + [f"conv_state_{i}" for i in range(Ng)] +
-        [f"recurrent_state_{i}" for i in range(Ng)] + ["skip_softmax_scale"])
+        ] + [f"conv_state_{i}"
+             for i in range(Ng)] + [f"recurrent_state_{i}"
+                                    for i in range(Ng)] +
+        ["skip_softmax_prefill_scale", "skip_softmax_decode_scale"])
     if tree_attention:
         param_names += ["attention_position_ids", "packed_attention_mask"]
     if tree_metadata:
-        param_names += ["tree_parent_ids", "tree_depths", "valid_tree_counts"]
+        param_names += [
+            "tree_parent_ids", "tree_depths", "valid_tree_counts",
+            "spec_verify_layout"
+        ]
     past_kv_tuple = "({},)".format(", ".join(
         f"past_key_values_{i}" for i in range(Na))) if Na else "()"
     conv_tuple = "({},)".format(", ".join(f"conv_state_{i}"
@@ -1070,10 +1171,10 @@ def _make_flat_wrapper_hybrid_ragged(model: nn.Module, Na: int, Ng: int,
     tree_kwargs = (", attention_position_ids=attention_position_ids"
                    ", packed_attention_mask=packed_attention_mask"
                    if tree_attention else "")
-    tree_kwargs += (", tree_parent_ids=tree_parent_ids"
-                    ", tree_depths=tree_depths"
-                    ", valid_tree_counts=valid_tree_counts"
-                    if tree_metadata else "")
+    tree_kwargs += (
+        ", tree_parent_ids=tree_parent_ids"
+        ", spec_verify_layout=spec_verify_layout, tree_depths=tree_depths"
+        ", valid_tree_counts=valid_tree_counts" if tree_metadata else "")
     unpack = (
         "    logits, hidden_states, accept_hidden_states, present_key_values, "
         "present_conv_states, present_recurrent_states, "
@@ -1091,8 +1192,8 @@ def _make_flat_wrapper_hybrid_ragged(model: nn.Module, Na: int, Ng: int,
         f"past_lengths, attention_sequence_lengths, "
         f"state_indices, execution_phase_marker, context_sequence_count_carrier, "
         f"kv_page_table, logits_indices, "
-        f"{conv_tuple}, {rec_tuple}, skip_softmax_scale{tree_kwargs})\n" +
-        unpack +
+        f"{conv_tuple}, {rec_tuple}, skip_softmax_prefill_scale, "
+        f"skip_softmax_decode_scale{tree_kwargs})\n" + unpack +
         f"    result = ((logits,) + ((hidden_states,) if hidden_states is not None else ()) "
         f"{accept_result} "
         f"+ tuple(present_key_values)\n"
@@ -1140,7 +1241,10 @@ def _can_fuse_nvfp4_scales(mixer: "GdnMixer") -> bool:
 def _make_fused_nvfp4_linear(source: nn.Module,
                              out_features: int) -> nn.Module:
     """Create a fused NVFP4 projection with the source TP ownership."""
-    method = NVFP4LinearMethod(group_size=source.quant_method.group_size)
+    method = NVFP4LinearMethod(
+        group_size=source.quant_method.group_size,
+        use_generic_allreduce=source.quant_method.use_generic_allreduce,
+        raw_activation_scale=source.quant_method.raw_activation_scale)
     if source.tp_mode == TPMode.COL:
         return ColumnParallelLinear(source.in_features,
                                     out_features,
@@ -1163,8 +1267,9 @@ def fuse_gdn_input_projections(model: nn.Module) -> int:
     Iterates over all :class:`GdnMixer` modules.  For each mixer:
     - **FP16**: always fuse (concatenate weights along output dim).
     - **NVFP4**: fuse only if per-tensor scalar scales (``input_scale``,
-      ``weight_scale_2``) are identical across all 4 projections.  When
-      scales differ, a warning is logged and the layer stays unfused.
+      ``weight_scale_2``) are identical across all 4 projections.  SM12x
+      tensor-parallel exports retain separate projections.  When scales
+      differ, a warning is logged and the layer stays unfused.
     - **Other quant types** (INT4, FP8, …): skip (weight layouts
       incompatible with simple concatenation).
 
@@ -1186,6 +1291,11 @@ def fuse_gdn_input_projections(model: nn.Module) -> int:
         if isinstance(first_proj, FP16Linear):
             pass  # always fusible
         elif is_nvfp4_linear(first_proj):
+            if _keep_nvfp4_gdn_input_projections_separate(first_proj):
+                logger.debug(
+                    "Keeping tensor-parallel GDN input projections separate "
+                    "for SM12x: %s", name)
+                continue
             if not _can_fuse_nvfp4_scales(mixer):
                 # Mixed layout (NVFP4 qkv/z + unquantized FP16 b/a): fuse
                 # same-dtype pairs only — qkv+z into one NVFP4 GEMM, b+a
@@ -1349,10 +1459,12 @@ class Qwen3_5CausalLM(nn.Module):
         dflash_base = _is_dflash_base_export(config)
         jetspec_base = _is_jetspec_base_export(config)
         dspark_base = _is_dspark_base_export(config)
-        target_hidden_base = dflash_base or jetspec_base or dspark_base
+        eagle_base = _is_eagle_base_export(config)
+        target_hidden_base = (dflash_base or jetspec_base or dspark_base
+                              or eagle_base)
         spec_base = mtp_base or target_hidden_base
         tree_attention = spec_base
-        tree_metadata = _is_spec_tree_base_export(config)
+        tree_metadata = _is_recurrent_spec_base_export(config)
         device = next(itertools.chain(self.parameters(),
                                       self.buffers())).device
         num_sequences = _BATCH_SIZE
@@ -1511,13 +1623,25 @@ class Qwen3_5CausalLM(nn.Module):
         all_shapes.extend({0: state_pool} for _ in range(Ng))
         all_shapes.extend({0: state_pool} for _ in range(Ng))
 
-        skip_softmax_scale = torch.zeros(2, dtype=torch.int8, device=device)
-        skip_dim = torch.export.Dim("skip_softmax_scale_len",
+        skip_softmax_prefill_scale = torch.zeros(2,
+                                                 dtype=torch.int32,
+                                                 device=device)
+        skip_softmax_decode_scale = torch.zeros(2,
+                                                dtype=torch.int32,
+                                                device=device)
+        skip_dim = torch.export.Dim("skip_softmax_prefill_scale_len",
                                     min=0,
-                                    max=1048576)
-        args += (skip_softmax_scale, )
-        input_names += ["skip_softmax_scale"]
+                                    max=SKIP_SOFTMAX_SCALE_TABLE_MAX_LEN)
+        skip_decode_dim = torch.export.Dim(
+            "skip_softmax_decode_scale_len",
+            min=0,
+            max=SKIP_SOFTMAX_SCALE_TABLE_MAX_LEN)
+        args += (skip_softmax_prefill_scale, skip_softmax_decode_scale)
+        input_names += [
+            "skip_softmax_prefill_scale", "skip_softmax_decode_scale"
+        ]
         all_shapes.append({0: skip_dim})
+        all_shapes.append({0: skip_decode_dim})
 
         if tree_attention:
             attention_position_ids = positions.clone()
@@ -1543,6 +1667,10 @@ class Qwen3_5CausalLM(nn.Module):
                 "tree_parent_ids", "tree_depths", "valid_tree_counts"
             ]
             all_shapes.extend([{0: tokens}, {0: tokens}, {0: sequences}])
+            args += (torch.empty(2, dtype=torch.int32, device=device), )
+            input_names += ["spec_verify_layout"]
+            all_shapes.append(
+                {0: torch.export.Dim("spec_verify_layout_len", min=0, max=2)})
 
         wrapped = _make_flat_wrapper_hybrid_ragged(self, Na, Ng, spec_base,
                                                    tree_attention,
@@ -1573,22 +1701,27 @@ class Qwen3_5CausalLM(nn.Module):
         logits_indices: torch.Tensor,
         conv_states: Tuple[torch.Tensor, ...] = (),
         recurrent_states: Tuple[torch.Tensor, ...] = (),
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
         attention_position_ids: "torch.Tensor | None" = None,
         packed_attention_mask: "torch.Tensor | None" = None,
         tree_parent_ids: "torch.Tensor | None" = None,
         tree_depths: "torch.Tensor | None" = None,
         valid_tree_counts: "torch.Tensor | None" = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ) -> Tuple:
         mtp_base = _is_mtp_base_export(self.config)
         dflash_base = _is_dflash_base_export(self.config)
         jetspec_base = _is_jetspec_base_export(self.config)
         dspark_base = _is_dspark_base_export(self.config)
-        target_hidden_base = dflash_base or jetspec_base or dspark_base
+        eagle_base = _is_eagle_base_export(self.config)
+        target_hidden_base = (dflash_base or jetspec_base or dspark_base
+                              or eagle_base)
         target_layer_ids = (
             self.config.dspark_target_layer_ids if dspark_base else
             self.config.jetspec_target_layer_ids if jetspec_base else
-            self.config.dflash_target_layer_ids if dflash_base else None)
+            self.config.dflash_target_layer_ids if dflash_base else
+            _eagle_layer_output_ids(self.config) if eagle_base else None)
         (hidden_states, present_kv, present_conv, present_recurrent,
          intermediate_conv, intermediate_recurrent,
          target_hidden) = self.model.forward_ragged(
@@ -1606,10 +1739,12 @@ class Qwen3_5CausalLM(nn.Module):
              kv_page_table,
              conv_states,
              recurrent_states,
-             skip_softmax_scale,
+             skip_softmax_prefill_scale,
+             skip_softmax_decode_scale,
              attention_position_ids=attention_position_ids,
              packed_attention_mask=packed_attention_mask,
              tree_parent_ids=tree_parent_ids,
+             spec_verify_layout=spec_verify_layout,
              tree_depths=tree_depths,
              valid_tree_counts=valid_tree_counts,
              collect_intermediate_states=(mtp_base or target_hidden_base),
@@ -1636,20 +1771,25 @@ class Qwen3_5CausalLM(nn.Module):
         recurrent_states: Tuple[torch.Tensor, ...] = (),
         attention_pos_id: "torch.Tensor | None" = None,
         attention_mask: "torch.Tensor | None" = None,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
         execution_phase_marker: "torch.Tensor | None" = None,
         tree_parent_ids: "torch.Tensor | None" = None,
         tree_depths: "torch.Tensor | None" = None,
+        spec_verify_layout: "torch.Tensor | None" = None,
     ) -> Tuple:
         mtp_base = _is_mtp_base_export(self.config)
         dflash_base = _is_dflash_base_export(self.config)
         jetspec_base = _is_jetspec_base_export(self.config)
         dspark_base = _is_dspark_base_export(self.config)
-        target_hidden_base = dflash_base or jetspec_base or dspark_base
+        eagle_base = _is_eagle_base_export(self.config)
+        target_hidden_base = (dflash_base or jetspec_base or dspark_base
+                              or eagle_base)
         target_layer_ids = (
             self.config.dspark_target_layer_ids if dspark_base else
             self.config.jetspec_target_layer_ids if jetspec_base else
-            self.config.dflash_target_layer_ids if dflash_base else None)
+            self.config.dflash_target_layer_ids if dflash_base else
+            _eagle_layer_output_ids(self.config) if eagle_base else None)
         (hidden_states, present_key_values, present_conv_states,
          present_recurrent_states, intermediate_conv_states,
          intermediate_recurrent_states, dflash_hidden_concat) = self.model(
@@ -1663,9 +1803,11 @@ class Qwen3_5CausalLM(nn.Module):
              recurrent_states,
              attention_mask=attention_mask,
              attention_pos_id=attention_pos_id,
-             skip_softmax_scale=skip_softmax_scale,
+             skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+             skip_softmax_decode_scale=skip_softmax_decode_scale,
              execution_phase_marker=execution_phase_marker,
              tree_parent_ids=tree_parent_ids,
+             spec_verify_layout=spec_verify_layout,
              tree_depths=tree_depths,
              collect_intermediate_states=(mtp_base or target_hidden_base),
              dflash_target_layer_ids=target_layer_ids,

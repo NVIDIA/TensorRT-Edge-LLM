@@ -18,8 +18,16 @@
 #include "runtime/decoding/decoderUtils.h"
 
 #include "common/cudaUtils.h"
-#include "kernels/speculative/eagleUtilKernels.h"
+#include "common/pagedKvTypes.h"
+#include "kernels/speculative/speculativeKernels.h"
+#include "runtime/config/deploymentConfig.h"
+#include "runtime/decoding/decodingStrategy.h"
+#include "runtime/decoding/guidedDecoder.h"
+#include "runtime/decoding/logitBias.h"
 #include "runtime/state/decodingInferenceContext.h"
+#include "runtime/state/pipelineIO.h"
+#include "runtime/state/sharedResources.h"
+#include "substituteEngine.h"
 #include "testUtils.h"
 
 #include <gtest/gtest.h>
@@ -33,7 +41,6 @@
 // This test uses only host-side CUDA runtime APIs; compiling it as C++ avoids
 // routing unrelated host-only JSON headers through the CUDA front end.
 using namespace trt_edgellm;
-using namespace nvinfer1;
 
 TEST(DecoderUtilsTests, IdentityDirectVocabMapConvertsToZeroOffsets)
 {
@@ -184,4 +191,105 @@ TEST(DecoderUtilsTests, SpecPrefillRejectsPhysicalTokenOverflow)
     rt::DecodingInferenceContext context;
     context.activeBatchSize = std::numeric_limits<int32_t>::max();
     EXPECT_THROW(rt::decoder_utils::buildSpecPrefillRaggedBatch(context, 2), std::runtime_error);
+}
+
+// Given a sequence after a speculative round, whose last token is the root the next round verifies,
+// When the tail the n-gram history rewinds to is taken,
+// Then it is the last tokens the engine was fed, leaving the pending root out.
+TEST(DecoderUtilsTests, ConsumedTokenTailLeavesOutThePendingRoot)
+{
+    std::vector<int32_t> tail;
+    rt::decoder_utils::consumedTokenTail(
+        {1, 2, 3, 4, 10, 11, 12}, {1, 2, 3, 4}, /*committedLength=*/6, /*contextLength=*/2, tail);
+
+    EXPECT_EQ(tail, std::vector<int32_t>({10, 11}));
+}
+
+// Given a sequence whose prompt prefix came from the context cache, so its token list starts after it,
+// When fewer tokens were fed here than the hash reaches back,
+// Then the tail continues into the reused prefix.
+TEST(DecoderUtilsTests, ConsumedTokenTailReachesIntoAReusedPrefix)
+{
+    std::vector<int32_t> tail;
+    // Prompt 1..6 with 1..5 reused: 6 was fed here, then 20 became the root.
+    rt::decoder_utils::consumedTokenTail({6, 20}, {1, 2, 3, 4, 5, 6}, /*committedLength=*/6, /*contextLength=*/3, tail);
+
+    EXPECT_EQ(tail, std::vector<int32_t>({4, 5, 6}));
+}
+
+// Given a spec-decode runtime whose base PipelineIO holds the base engine's prefill and decode skip-softmax tables
+// and a draft config with no tables, When the spec ragged bindings are prepared with the draft config,
+// Then both table tensors keep their address and contents: draft geometry never reaches the base engine's bindings.
+TEST(DecoderUtilsTests, SpecRaggedBindingsLeaveSkipSoftmaxTablesUntouched)
+{
+    using namespace trt_edgellm::rt;
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    LLMEngineConfig base;
+    base.hiddenSize = 16;
+    base.outputVocabSize = 32;
+    base.numAttentionLayers = 1;
+    base.numDecoderLayers = 1;
+    base.numKVHeads = 1;
+    base.headDim = 8;
+    base.rotaryDim = 8;
+    base.maxSupportedBatchSize = 2;
+    base.maxSupportedInputLength = 4;
+    base.maxKVCacheCapacity = 256;
+    base.maxPhysicalTokens = 8;
+    base.maxNumSequences = 2;
+    base.recurrentPoolRows = 2;
+    base.kvPoolPages
+        = static_cast<int32_t>(computeMinimumKvPoolPages(base.maxSupportedBatchSize, base.maxKVCacheCapacity));
+    base.kvCacheDtype = DataType::kHALF;
+    base.ropeConfig.type = RopeType::kNoRope;
+    base.layerTypes.assign(1, HybridCacheManager::LayerType::kAttention);
+    base.kvLayerConfigs = {KVLayerConfig{/*numKVHeads=*/1, /*headDim=*/8}};
+    base.kvSharingDonors = {-1};
+    LLMEngineConfig const draft = base;
+    base.skipSoftmaxPrefillScaleTable = {{0, 6000}};
+    base.skipSoftmaxDecodeScaleTable = {{2048, 614}, {4096, 1228}};
+
+    DeploymentConfig deployment{};
+    deployment.base = base;
+    deployment.draft.emplace(draft);
+    deployment.specConfig.emplace();
+    std::unordered_map<std::string, std::string> const noLoraWeights;
+    std::unique_ptr<SharedResources> shared = SharedResources::createForLLM(base, noLoraWeights, nullptr);
+    PipelineIO io = PipelineIO::createForLLM(base, stream);
+    substitute_engine::MockEngineExecutor executor;
+    TensorMap tensorMap;
+    EmbeddingData embedding;
+    EmbeddingPreprocessor embeddingPreprocessor(embedding, deployment.base);
+    StepPreparer stepPreparer(deployment.base);
+    tokenizer::Tokenizer tokenizer;
+    GuidedDecoder guided;
+    LogitBias bias;
+    Tensor unused;
+    std::filesystem::path checkpoint;
+    DecodingRuntimeContext runtime{deployment, 2, checkpoint, checkpoint,
+        {executor, tensorMap, *shared, *shared->cacheManagers.at(0), io, {}},
+        {stepPreparer, embeddingPreprocessor, embedding, unused, nullptr, nullptr, nullptr}, tokenizer, bias, guided,
+        {unused, unused, unused, unused, unused, unused, unused, unused, unused},
+        {unused, unused, unused, unused, unused}};
+
+    void const* const prefillAddress = io.skipSoftmaxPrefillScale.rawPointer();
+    void const* const decodeAddress = io.skipSoftmaxDecodeScale.rawPointer();
+    Tensor attentionPositions({2, 1}, rt::DeviceType::kGPU, DataType::kINT32);
+    Tensor committedPastLengths({2}, rt::DeviceType::kGPU, DataType::kINT32);
+    Tensor selectedTokenIndices({2}, rt::DeviceType::kGPU, DataType::kINT64);
+    copyHostToDevice<int32_t>(attentionPositions, {4, 7});
+    copyHostToDevice<int32_t>(committedPastLengths, {4, 7});
+    copyHostToDevice<int64_t>(selectedTokenIndices, {0, 1});
+
+    rt::decoder_utils::prepareSpecRaggedBindings(runtime, *deployment.draft, /*kvCacheIndex=*/0, attentionPositions,
+        committedPastLengths, /*validCounts=*/nullptr, selectedTokenIndices, /*selectedRows=*/2,
+        /*residentRefs=*/nullptr, /*batchSize=*/2, /*queryWidth=*/1, deployment.draft->decodeDims(2), stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    EXPECT_EQ(io.skipSoftmaxPrefillScale.rawPointer(), prefillAddress);
+    EXPECT_EQ(io.skipSoftmaxDecodeScale.rawPointer(), decodeAddress);
+    EXPECT_EQ(copyDeviceToHost<int32_t>(io.skipSoftmaxPrefillScale), std::vector<int32_t>({0, 6000}));
+    EXPECT_EQ(copyDeviceToHost<int32_t>(io.skipSoftmaxDecodeScale), std::vector<int32_t>({2048, 614, 4096, 1228}));
+    CUDA_CHECK(cudaStreamDestroy(stream));
 }

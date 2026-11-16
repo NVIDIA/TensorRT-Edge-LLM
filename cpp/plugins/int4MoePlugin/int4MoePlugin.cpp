@@ -22,6 +22,7 @@
 #include "common/logger.h"
 #include "common/stringUtils.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "kernels/moe/moeActivationKernels.h"
 #include "kernels/moe/moeAlignSumKernels.h"
 #include "kernels/moe/moeMarlinIndicesKernels.h"
@@ -42,6 +43,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -511,23 +513,26 @@ int32_t Int4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
         int32_t const numTokens = static_cast<int32_t>(numTokens64);
         int32_t const moeBlockSize = getTunedMoeBlockSize(numTokens64);
 
-        rt::Tensor hiddenStatesTensor(const_cast<void*>(inputs[1]), rt::Coords{hiddenStatesDesc.dims},
-            rt::DeviceType::kGPU, hiddenStatesDesc.type);
+        rt::Tensor hiddenStatesTensor(const_cast<void*>(inputs[1]), rt::toCoords(hiddenStatesDesc.dims),
+            rt::DeviceType::kGPU, fromTrt(hiddenStatesDesc.type));
 
         // Weights arrive as INT8 (view of Marlin int32-packed); Marlin expects INT32
         rt::Tensor gateUpQWeightsTensor(const_cast<void*>(inputs[2]),
-            rt::Coords{mNumExperts, mHiddenSize / 16, 2 * mMoeInterSize}, rt::DeviceType::kGPU, DataType::kINT32);
+            rt::Coords{mNumExperts, mHiddenSize / 16, 2 * mMoeInterSize}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kINT32);
 
-        rt::Tensor gateUpScalesTensor(
-            const_cast<void*>(inputs[3]), rt::Coords{inputDesc[3].dims}, rt::DeviceType::kGPU, inputDesc[3].type);
+        rt::Tensor gateUpScalesTensor(const_cast<void*>(inputs[3]), rt::toCoords(inputDesc[3].dims),
+            rt::DeviceType::kGPU, fromTrt(inputDesc[3].type));
 
         rt::Tensor downQWeightsTensor(const_cast<void*>(inputs[4]),
-            rt::Coords{mNumExperts, mMoeInterSize / 16, 2 * mHiddenSize}, rt::DeviceType::kGPU, DataType::kINT32);
+            rt::Coords{mNumExperts, mMoeInterSize / 16, 2 * mHiddenSize}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kINT32);
 
-        rt::Tensor downScalesTensor(
-            const_cast<void*>(inputs[5]), rt::Coords{inputDesc[5].dims}, rt::DeviceType::kGPU, inputDesc[5].type);
+        rt::Tensor downScalesTensor(const_cast<void*>(inputs[5]), rt::toCoords(inputDesc[5].dims), rt::DeviceType::kGPU,
+            fromTrt(inputDesc[5].type));
 
-        rt::Tensor outputTensor(outputs[0], rt::Coords{outputDesc[0].dims}, rt::DeviceType::kGPU, outputDesc[0].type);
+        rt::Tensor outputTensor(
+            outputs[0], rt::toCoords(outputDesc[0].dims), rt::DeviceType::kGPU, fromTrt(outputDesc[0].type));
 
         // Get GPU info
         int32_t dev = 0;
@@ -543,8 +548,8 @@ int32_t Int4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
         int32_t maxPaddedBlocks = divUp(maxPaddedSlots, moeBlockSize);
 
         // Step 1: TopK Softmax outputs (router_logits from inputs[0] FP32, cast done in Python)
-        rt::Tensor routerLogitsTensor(const_cast<void*>(inputs[0]), rt::Coords{inputDesc[0].dims}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kFLOAT);
+        rt::Tensor routerLogitsTensor(const_cast<void*>(inputs[0]), rt::toCoords(inputDesc[0].dims),
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
         // Selected expert weights and indices per token [numTokens, topK] for routing and aggregation
         float* topkWeightsPtr = static_cast<float*>(
             assignTensorFromWorkspace(alignedWorkspacePtr, {numTokens, mTopK}, DataType::kFLOAT).rawPointer());
@@ -598,9 +603,9 @@ int32_t Int4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
 
         // ==================== Step 1: TopK Softmax on router_logits ====================
         rt::Tensor topkWeightsTensor(
-            topkWeightsPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+            topkWeightsPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
         rt::Tensor topkIndicesTensor(
-            topkIndicesPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+            topkIndicesPtr, {numTokens, mTopK}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
         moeTopkSoftmax(routerLogitsTensor, topkWeightsTensor, topkIndicesTensor, mTopK, softmaxWorkspacePtr,
             softmaxWorkspaceSizeBytes, stream, true, 0.0f);
@@ -608,7 +613,7 @@ int32_t Int4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
 
         // Reshape hidden_states to 2D for expert GEMMs
         rt::Tensor hiddenStates2D(const_cast<void*>(hiddenStatesTensor.rawPointer()), {numTokens, mHiddenSize},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         // ==================== Step 2: Prepare Marlin GEMM Indices ====================
         CUDA_CHECK(cudaMemsetAsync(slotsPerExpertWorkspace, 0, mNumExperts * sizeof(int32_t), stream));
@@ -626,14 +631,15 @@ int32_t Int4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
         CUDA_CHECK(cudaGetLastError());
 
         rt::Tensor sortedTokenIdsTensor(
-            sortedTokenIdsPtr, {maxPaddedSlots}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-        rt::Tensor expertIdsTensor(expertIdsPtr, {maxPaddedBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+            sortedTokenIdsPtr, {maxPaddedSlots}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        rt::Tensor expertIdsTensor(
+            expertIdsPtr, {maxPaddedBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         rt::Tensor numTokensPostPaddedTensor(
-            numTokensPostPaddedPtr, {1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+            numTokensPostPaddedPtr, {1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         rt::Tensor topkWeightsFlatTensor(
-            topkWeightsFlatPtr, {maxPaddedSlots}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+            topkWeightsFlatPtr, {maxPaddedSlots}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
         rt::Tensor marlinWorkspaceTensor(
-            marlinWorkspacePtr, {marlinWorkspaceSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+            marlinWorkspacePtr, {marlinWorkspaceSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
         kernel::launchBuildMarlinIndicesKernel(slotsByExpertWorkspace, slotsPerExpertWorkspace, paddedCountsPtr,
             paddedOffsetsPtr, topkWeightsPtr, sortedTokenIdsPtr, topkWeightsFlatPtr, expertIdsPtr, numTokens, mTopK,
@@ -641,7 +647,7 @@ int32_t Int4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
 
         // ==================== Step 3: Gate-Up Projection (Marlin INT4 GEMM) ====================
         rt::Tensor gateUpOutputTensor(
-            gateUpOutputPtr, {totalSlots, 2 * mMoeInterSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            gateUpOutputPtr, {totalSlots, 2 * mMoeInterSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         moeAwqW4A16MarlinGemm(hiddenStates2D, gateUpOutputTensor, gateUpQWeightsTensor, gateUpScalesTensor,
             sortedTokenIdsTensor, expertIdsTensor, numTokensPostPaddedTensor, topkWeightsFlatTensor,
@@ -650,7 +656,7 @@ int32_t Int4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
 
         // ==================== Step 4: Gated Activation ====================
         rt::Tensor activationOutputTensor(
-            activationOutputPtr, {totalSlots, mMoeInterSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            activationOutputPtr, {totalSlots, mMoeInterSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         int32_t const kernelActivationType = (mActivationType == kACTIVATION_GEGLU)
             ? trt_edgellm::kernel::MoeActivationType::kMoeGeGlu
@@ -661,7 +667,7 @@ int32_t Int4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
 
         // ==================== Step 5: Down Projection (Marlin INT4 GEMM) ====================
         rt::Tensor downOutputTensor(
-            downOutputPtr, {totalSlots, mHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+            downOutputPtr, {totalSlots, mHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         // Routing weights in padded slot order for down GEMM (mulTopkWeights=true)
         float* topkWeightsPaddedPtr = static_cast<float*>(
@@ -670,7 +676,7 @@ int32_t Int4MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
         cudaMemcpyAsync(
             topkWeightsPaddedPtr, topkWeightsPtr, totalSlots * sizeof(float), cudaMemcpyDeviceToDevice, stream);
         rt::Tensor topkWeightsPaddedTensor(
-            topkWeightsPaddedPtr, {maxPaddedSlots}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+            topkWeightsPaddedPtr, {maxPaddedSlots}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
 
         moeAwqW4A16MarlinGemm(activationOutputTensor, downOutputTensor, downQWeightsTensor, downScalesTensor,
             sortedTokenIdsTensor, expertIdsTensor, numTokensPostPaddedTensor, topkWeightsPaddedTensor,

@@ -8,17 +8,17 @@ with:
 
 - `A`: FP16 row-major activations `[M, K]`
 - `QW`: INT4 weights, repacked offline into a fragment-order `uint32` buffer
-- `scales`: FP16 row-major `[ceil(K/G), N]`, group size `G ∈ {32, 128}`
+- `scales`: FP16 row-major `[ceil(K/G), N]`
 - `C`: FP16 row-major output `[M, N]`
 - FP32 accumulation
 
 **Constraints**: `K % 64 == 0`, positive `N`, and `group_size` a multiple of 16
 where one of `group_size` / `bK` (=64) divides the other (i.e. `group_size`
-divides 64, or is a multiple of 64) — validated for **128 and 32**. The
+divides 64, or is a multiple of 64). The
 scale granularity is decoupled from the K-tile: a `bK=64` kernel stages
 `groups_per_tile = max(1, bK/group_size)` scale rows per tile (1 for `G≥64`,
-2 for `G=32`), so one kernel body serves both group sizes (`group_size` is still
-baked at compile time — see below).
+2 for `G=32`). The shipped plugin artifact traces the one-row layout and accepts
+group size as a runtime scalar, covering multiples of 64 such as 64 and 128.
 
 Kernel artifacts (static library + headers) are generated locally by
 `kernelSrcs/build_cutedsl.py`; CMake links them directly (see
@@ -37,7 +37,7 @@ Kernel artifacts (static library + headers) are generated locally by
 Each compiled variant exports one C function with the signature:
 
 ```
-(mA, mQW, mScales, mC, mWorkspace, mLocks, swizzle, stream)
+(mA, mQW, mScales, mC, mWorkspace, mLocks, group_size, swizzle, stream)
 ```
 
 - `mQW` — the offline-repacked `uint32` weight buffer
@@ -50,6 +50,8 @@ Each compiled variant exports one C function with the signature:
   entries (a 1-element dummy is fine for `split_k == 1`). The last split-K slice
   resets each lock to 0, so the buffer is reusable across launches with no
   per-call memset.
+- `group_size` — runtime `Int32` quantization group size; the shipped artifact
+  accepts multiples of 64 that divide `K`.
 - `swizzle` — runtime `Int32` grouped-M rasterization width (`1` = none).
 
 ## Baked configuration space (16 GEMM variants)
@@ -63,15 +65,14 @@ shape:
 | CTA tile `(M,N,K)` | `16x128x64`, `32x128x64`, `64x128x64`, `128x128x64` | yes |
 | `num_stages` | `2`, `3`, `4` | yes |
 | `split_k` | selected values from `1`, `2`, `4` (in-kernel reduction for `>1`) | yes |
-| `group_size` | `128` only (kernel also supports `32`) | **yes — but fixed at 128 today** |
+| `group_size` | multiples of `64` that divide `K` | **no — runtime arg** |
 | `swizzle` | grouped-M width | **no — runtime arg** |
 | `num_k_tiles` | `ceil(K/64)` | **no — dynamic in K** |
 
 The 16-entry set is listed in `_INT4_FP16_GEMM_CONFIGS` in
 `kernelSrcs/build_cutedsl.py` and mirrored by the plugin and C++ test X-macros.
-All use the single baked `group_size = 128` and names of the form
-`int4_fp16_gemm_<tile>_s<stages>_sk<splitk>`. Building another group size, or
-shipping both, would multiply the artifact count.
+All use names of the form `int4_fp16_gemm_<tile>_s<stages>_sk<splitk>`.
+Group sizes 64 and 128 share these kernels and the same fragment weight layout.
 
 ### Important: split-K correctness contract
 
@@ -160,7 +161,7 @@ cmake -B build -DBUILD_UNIT_TESTS=ON -DENABLE_CUTE_DSL=int4_fp16_gemm \
 cmake --build build -j
 
 # Run just the int4 accuracy cases
-./build/unittests/unitTestCuteDslKernels --gtest_filter='Int4Fp16GemmAllVariants/*'
+./build/bin/unitTests/unitTestCuteDslKernels --gtest_filter='Int4Fp16GemmAllVariants/*'
 ```
 
 The tests load and exercise every baked GEMM/GEMV module, so they expect a full

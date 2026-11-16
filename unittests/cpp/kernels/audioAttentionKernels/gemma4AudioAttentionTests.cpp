@@ -77,21 +77,21 @@ inline float softplusf(float x)
     return x > 20.f ? x : std::log1p(std::exp(x));
 }
 
-//! \brief Map the element type to the TensorRT data type carried by an rt::Tensor.
+//! \brief Map the element type to the data type carried by an rt::Tensor.
 template <typename T>
-nvinfer1::DataType trtDataType()
+trt_edgellm::DataType trtDataType()
 {
     if constexpr (std::is_same_v<T, half>)
     {
-        return nvinfer1::DataType::kHALF;
+        return trt_edgellm::DataType::kHALF;
     }
     else if constexpr (std::is_same_v<T, __nv_bfloat16>)
     {
-        return nvinfer1::DataType::kBF16;
+        return trt_edgellm::DataType::kBF16;
     }
     else
     {
-        return nvinfer1::DataType::kFLOAT; // float
+        return trt_edgellm::DataType::kFLOAT; // float
     }
 }
 
@@ -264,15 +264,15 @@ void runCase(int B, int S, Mask mask, float atol)
     std::vector<T> hq = toHostT(q), hk = toHostT(k), hv = toHostT(v), hrel = toHostT(rel);
 
     // Owning GPU tensors; each carries its shape and element type.
-    nvinfer1::DataType const dt = trtDataType<T>();
+    trt_edgellm::DataType const dt = trtDataType<T>();
     auto onGpu = rt::DeviceType::kGPU;
     rt::Tensor qT(rt::Coords{B, S, kH, kD}, onGpu, dt);
     rt::Tensor kT(rt::Coords{B, S, kH, kD}, onGpu, dt);
     rt::Tensor vT(rt::Coords{B, S, kH, kD}, onGpu, dt);
     rt::Tensor outT(rt::Coords{B, S, kH, kD}, onGpu, dt);
-    rt::Tensor gammaT(rt::Coords{kD}, onGpu, nvinfer1::DataType::kFLOAT);
+    rt::Tensor gammaT(rt::Coords{kD}, onGpu, trt_edgellm::DataType::kFLOAT);
     rt::Tensor relT(rt::Coords{kP, kH, kD}, onGpu, dt);
-    rt::Tensor validT(rt::Coords{B, S}, onGpu, nvinfer1::DataType::kBOOL);
+    rt::Tensor validT(rt::Coords{B, S}, onGpu, trt_edgellm::DataType::kBOOL);
 
     auto upload = [](rt::Tensor& t, void const* src, size_t bytes) {
         CUDA_CHECK(cudaMemcpy(t.rawPointer(), src, bytes, cudaMemcpyHostToDevice));

@@ -128,7 +128,7 @@ TEST_F(LayerDebuggerForcedRows, DumpsNonContiguousResidentRowsInExecutionOrder)
     rt::HybridCacheManager::Config config{};
     config.layerTypes = {rt::HybridCacheManager::LayerType::kMamba, rt::HybridCacheManager::LayerType::kAttention};
     config.kvConfig
-        = rt::KVCacheManager::Config{1, maxSlots, 32, {rt::KVLayerConfig{1, 64}}, nvinfer1::DataType::kHALF};
+        = rt::KVCacheManager::Config{1, maxSlots, 32, {rt::KVLayerConfig{1, 64}}, trt_edgellm::DataType::kHALF};
     config.mambaConfig.numRecurrentLayers = 1;
     config.mambaConfig.maxBatchSize = maxSlots;
     config.mambaConfig.recurrentStateNumHeads = 1;
@@ -142,7 +142,7 @@ TEST_F(LayerDebuggerForcedRows, DumpsNonContiguousResidentRowsInExecutionOrder)
     pageTable.setIdentity();
 
     auto fillDevice = [&](rt::Tensor& destination, std::vector<half> const& values) {
-        rt::Tensor pinned({static_cast<int64_t>(values.size())}, rt::DeviceType::kCPU, nvinfer1::DataType::kHALF,
+        rt::Tensor pinned({static_cast<int64_t>(values.size())}, rt::DeviceType::kCPU, trt_edgellm::DataType::kHALF,
             "layerDebuggerTest.pinned");
         std::memcpy(pinned.rawPointer(), values.data(), values.size() * sizeof(half));
         CUDA_CHECK(cudaMemcpyAsync(destination.rawPointer(), pinned.rawPointer(), values.size() * sizeof(half),
@@ -169,7 +169,7 @@ TEST_F(LayerDebuggerForcedRows, DumpsNonContiguousResidentRowsInExecutionOrder)
     fillDevice(kView, kValues);
     fillDevice(vView, vValues);
 
-    rt::Tensor logits({2, 4}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "logits");
+    rt::Tensor logits({2, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "logits");
     CUDA_CHECK(cudaMemsetAsync(logits.rawPointer(), 0, logits.getMemoryCapacity(), stream));
     auto debugger = rt::LayerDebugger::fromEnv();
     ASSERT_NE(debugger, nullptr);
@@ -196,7 +196,7 @@ TEST_F(LayerDebuggerForcedRows, DumpsNonContiguousResidentRowsInExecutionOrder)
     };
     auto readHalf = [&](rt::Tensor const& tensor) {
         std::vector<half> host(static_cast<size_t>(tensor.getShape().volume()));
-        rt::Tensor pinned({static_cast<int64_t>(host.size())}, rt::DeviceType::kCPU, nvinfer1::DataType::kHALF,
+        rt::Tensor pinned({static_cast<int64_t>(host.size())}, rt::DeviceType::kCPU, trt_edgellm::DataType::kHALF,
             "layerDebuggerTest.readback");
         CUDA_CHECK(cudaMemcpyAsync(
             pinned.rawPointer(), tensor.rawPointer(), host.size() * sizeof(half), cudaMemcpyDeviceToHost, stream));
@@ -241,7 +241,7 @@ TEST_F(LayerDebuggerForcedRows, DumpsFullAndReducedKvLayersThroughTheirOwnNonIde
         /*.maxBatchSize=*/maxSlots,
         /*.maxSequenceLength=*/maxSequenceLength,
         /*.layerConfigs=*/{rt::KVLayerConfig{1, 64}, rt::KVLayerConfig{1, 64, rt::kTOKENS_PER_PAGE}},
-        /*.kvCacheType=*/nvinfer1::DataType::kHALF,
+        /*.kvCacheType=*/trt_edgellm::DataType::kHALF,
         /*.numPages=*/fullPages,
         /*.numSwaPages=*/swaPages,
         /*.useBoundedSwaKVCache=*/true};
@@ -274,7 +274,7 @@ TEST_F(LayerDebuggerForcedRows, DumpsFullAndReducedKvLayersThroughTheirOwnNonIde
                     __float2half(base + kv * 100 + page));
             }
         }
-        rt::Tensor pinned({static_cast<int64_t>(values.size())}, rt::DeviceType::kCPU, nvinfer1::DataType::kHALF,
+        rt::Tensor pinned({static_cast<int64_t>(values.size())}, rt::DeviceType::kCPU, trt_edgellm::DataType::kHALF,
             "layerDebuggerTest.poolStaging");
         std::memcpy(pinned.rawPointer(), values.data(), values.size() * sizeof(half));
         CUDA_CHECK(cudaMemcpyAsync(
@@ -284,7 +284,7 @@ TEST_F(LayerDebuggerForcedRows, DumpsFullAndReducedKvLayersThroughTheirOwnNonIde
     fillPoolByPage(/*layer=*/0, /*base=*/10.0F);
     fillPoolByPage(/*layer=*/1, /*base=*/20.0F);
 
-    rt::Tensor logits({2, 4}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "logits");
+    rt::Tensor logits({2, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "logits");
     CUDA_CHECK(cudaMemsetAsync(logits.rawPointer(), 0, logits.getMemoryCapacity(), stream));
     auto debugger = rt::LayerDebugger::fromEnv();
     ASSERT_NE(debugger, nullptr);
@@ -310,7 +310,7 @@ TEST_F(LayerDebuggerForcedRows, DumpsFullAndReducedKvLayersThroughTheirOwnNonIde
     };
     auto readHalf = [&](rt::Tensor const& tensor) {
         std::vector<half> host(static_cast<size_t>(tensor.getShape().volume()));
-        rt::Tensor pinned({static_cast<int64_t>(host.size())}, rt::DeviceType::kCPU, nvinfer1::DataType::kHALF,
+        rt::Tensor pinned({static_cast<int64_t>(host.size())}, rt::DeviceType::kCPU, trt_edgellm::DataType::kHALF,
             "layerDebuggerTest.readback");
         CUDA_CHECK(cudaMemcpyAsync(
             pinned.rawPointer(), tensor.rawPointer(), host.size() * sizeof(half), cudaMemcpyDeviceToHost, stream));

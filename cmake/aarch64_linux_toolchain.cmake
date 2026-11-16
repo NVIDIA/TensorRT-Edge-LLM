@@ -99,6 +99,13 @@ elseif("${EMBEDDED_TARGET}" STREQUAL "gb10")
       /usr/local/cuda/n1/targets/sbsa-linux
       CACHE STRING "CUDA toolkit target dir")
   message(STATUS "Using CUDA toolkit dir: ${CUDA_DIR}")
+elseif("${EMBEDDED_TARGET}" STREQUAL "gb300")
+  set_ifndef(CUDA_CTK_VERSION 13.2)
+  set(CMAKE_CUDA_ARCHITECTURES 103a)
+  set(CUDA_DIR
+      /usr/local/cuda/targets/sbsa-linux
+      CACHE STRING "CUDA toolkit dir")
+  message(STATUS "Using CUDA toolkit dir: ${CUDA_DIR}")
 endif()
 
 # Tell CMake how to search for the libraries and programs

@@ -79,7 +79,7 @@ bool isAllZero(void const* data, size_t bytes)
 bool isSupportedSm()
 {
     int32_t const sm = trt_edgellm::getSMVersion();
-    return sm == 100 || sm == 101 || sm == 110;
+    return sm == 100 || sm == 101 || sm == 103 || sm == 110;
 }
 
 using rt::Coords;
@@ -92,11 +92,13 @@ MoELayout createMoELayout(int32_t maxTokens, int32_t topK, int32_t localNumExper
     int32_t const maxMPadded = padUp(maxExpanded + localNumExperts * (tileSize - 1), tileSize);
     int32_t const maxTiles = maxMPadded / tileSize;
     MoELayout layout;
-    layout.tileIdxToGroupIdx = trt_edgellm::rt::Tensor(Coords{maxTiles}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    layout.tileIdxToMnLimit = trt_edgellm::rt::Tensor(Coords{maxTiles}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    layout.tileIdxToGroupIdx
+        = trt_edgellm::rt::Tensor(Coords{maxTiles}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    layout.tileIdxToMnLimit
+        = trt_edgellm::rt::Tensor(Coords{maxTiles}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     layout.permutedIdxToExpandedIdx
-        = trt_edgellm::rt::Tensor(Coords{maxMPadded}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    layout.numNonExitingTiles = trt_edgellm::rt::Tensor(Coords{1}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        = trt_edgellm::rt::Tensor(Coords{maxMPadded}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    layout.numNonExitingTiles = trt_edgellm::rt::Tensor(Coords{1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     return layout;
 }
 
@@ -106,11 +108,11 @@ MoELayoutBuffers createMoELayoutBuffers(int32_t maxTokens, int32_t topK, int32_t
     int32_t const maxMPadded = padUp(maxExpanded + localNumExperts * (tileSize - 1), tileSize);
     int32_t const maxTiles = maxMPadded / tileSize;
     MoELayoutBuffers buf;
-    buf.tileIdxToGroupIdx = trt_edgellm::rt::Tensor(Coords{maxTiles}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    buf.tileIdxToMnLimit = trt_edgellm::rt::Tensor(Coords{maxTiles}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    buf.tileIdxToGroupIdx = trt_edgellm::rt::Tensor(Coords{maxTiles}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    buf.tileIdxToMnLimit = trt_edgellm::rt::Tensor(Coords{maxTiles}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     buf.permutedIdxToExpandedIdx
-        = trt_edgellm::rt::Tensor(Coords{maxMPadded}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    buf.numNonExitingTiles = trt_edgellm::rt::Tensor(Coords{1}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        = trt_edgellm::rt::Tensor(Coords{maxMPadded}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    buf.numNonExitingTiles = trt_edgellm::rt::Tensor(Coords{1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     return buf;
 }
 
@@ -201,7 +203,7 @@ TEST(NvFP4MoEQuantizeTest, fp4OutputNonZero)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t M = 128;
@@ -213,10 +215,10 @@ TEST(NvFP4MoEQuantizeTest, fp4OutputNonZero)
     int32_t const fp4Bytes = M * (N / 8) * static_cast<int32_t>(sizeof(uint32_t));
     int32_t const sfBytes = atomSfBytes(M, N, sfVecSize);
 
-    Tensor dInput(Coords{M, N}, DeviceType::kGPU, nvinfer1::DataType::kBF16);
-    Tensor dGsf(Coords{1}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    Tensor dFP4(Coords{M * (N / 8)}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    Tensor dSF(Coords{sfBytes}, DeviceType::kGPU, nvinfer1::DataType::kINT8);
+    Tensor dInput(Coords{M, N}, DeviceType::kGPU, trt_edgellm::DataType::kBF16);
+    Tensor dGsf(Coords{1}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    Tensor dFP4(Coords{M * (N / 8)}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    Tensor dSF(Coords{sfBytes}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     CHECK_CUDA(
         cudaMemcpy(dInput.rawPointer(), hostInput.data(), M * N * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
@@ -243,7 +245,7 @@ TEST(NvFP4MoEQuantizeTest, fp4OutputNonZeroFp16)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t M = 128;
@@ -255,10 +257,10 @@ TEST(NvFP4MoEQuantizeTest, fp4OutputNonZeroFp16)
     int32_t const fp4Bytes = M * (N / 8) * static_cast<int32_t>(sizeof(uint32_t));
     int32_t const sfBytes = atomSfBytes(M, N, sfVecSize);
 
-    Tensor dInput(Coords{M, N}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    Tensor dGsf(Coords{1}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    Tensor dFP4(Coords{M * (N / 8)}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    Tensor dSF(Coords{sfBytes}, DeviceType::kGPU, nvinfer1::DataType::kINT8);
+    Tensor dInput(Coords{M, N}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    Tensor dGsf(Coords{1}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    Tensor dFP4(Coords{M * (N / 8)}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    Tensor dSF(Coords{sfBytes}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     CHECK_CUDA(cudaMemcpy(dInput.rawPointer(), hostInput.data(), M * N * sizeof(__half), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemset(dFP4.rawPointer(), 0, fp4Bytes));
@@ -282,7 +284,7 @@ TEST(NvFP4MoEQuantizeTest, bf16Fp16ProduceSameOutput)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t M = 128;
@@ -297,10 +299,10 @@ TEST(NvFP4MoEQuantizeTest, bf16Fp16ProduceSameOutput)
     int32_t const sfBytes = atomSfBytes(M, N, sfVecSize);
 
     // BF16 path
-    Tensor dBf16Input(Coords{M, N}, DeviceType::kGPU, nvinfer1::DataType::kBF16);
-    Tensor dGsf(Coords{1}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    Tensor dBf16FP4(Coords{M * (N / 8)}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    Tensor dBf16SF(Coords{sfBytes}, DeviceType::kGPU, nvinfer1::DataType::kINT8);
+    Tensor dBf16Input(Coords{M, N}, DeviceType::kGPU, trt_edgellm::DataType::kBF16);
+    Tensor dGsf(Coords{1}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    Tensor dBf16FP4(Coords{M * (N / 8)}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    Tensor dBf16SF(Coords{sfBytes}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     CHECK_CUDA(
         cudaMemcpy(dBf16Input.rawPointer(), hostBf16.data(), M * N * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice));
@@ -312,9 +314,9 @@ TEST(NvFP4MoEQuantizeTest, bf16Fp16ProduceSameOutput)
     fp4Quantize(dBf16Input, dGsf, dBf16FP4, dBf16SF, nullptr);
 
     // FP16 path
-    Tensor dFp16Input(Coords{M, N}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    Tensor dFp16FP4(Coords{M * (N / 8)}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    Tensor dFp16SF(Coords{sfBytes}, DeviceType::kGPU, nvinfer1::DataType::kINT8);
+    Tensor dFp16Input(Coords{M, N}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    Tensor dFp16FP4(Coords{M * (N / 8)}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    Tensor dFp16SF(Coords{sfBytes}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     CHECK_CUDA(cudaMemcpy(dFp16Input.rawPointer(), hostFp16.data(), M * N * sizeof(__half), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemset(dFp16FP4.rawPointer(), 0, fp4Bytes));
@@ -345,7 +347,7 @@ TEST(NvFP4MoELayoutTest, cpuBuildLayoutBasic)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t numTokens = 32;
@@ -378,7 +380,7 @@ TEST(NvFP4MoELayoutTest, gpuBuildLayoutProducesValidOutput)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t numTokens = 256;
@@ -421,7 +423,7 @@ TEST(NvFP4MoELayoutTest, gpuLayoutCpuLayoutTileCountMatch)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t numTokens = 64;
@@ -470,7 +472,7 @@ TEST(NvFP4MoELayoutTest, gpuTileMetadataMatchesCpu)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t numTokens = 64;
@@ -539,7 +541,7 @@ TEST(NvFP4MoELayoutTest, gpuPermutationCoversAllTokens)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t numTokens = 32;
@@ -612,6 +614,99 @@ TEST(NvFP4MoELayoutTest, gpuPermutationCoversAllTokens)
     cudaFree(dRouting);
 }
 
+// Contract: when there are more local experts than the layout kernel has threads, so each thread owns several experts,
+// the GPU layout still matches the CPU reference: tile count, every tile's expert and row limit, and the set of
+// expanded indices inside each expert's padded segment.
+TEST(NvFP4MoELayoutTest, gpuLayoutMatchesCpuWithMoreExpertsThanThreads)
+{
+    if (!isSupportedSm())
+    {
+        GTEST_SKIP() << "Requires SM100/101/103/110";
+    }
+
+    // Given 200 tokens routed top-10 over 512 local experts: every token picks expert 511 and expert 257, which then
+    // span two tiles, plus eight distinct random experts.
+    constexpr int32_t numTokens = 200;
+    constexpr int32_t topK = 10;
+    constexpr int32_t numExperts = 512;
+    constexpr int32_t localExpertOffset = 0;
+    constexpr int32_t localNumExperts = 512;
+    constexpr int32_t tileSize = 128;
+    constexpr int32_t kHotExperts[] = {511, 257};
+    std::vector<int32_t> others;
+    for (int32_t e = 0; e < localNumExperts; ++e)
+    {
+        if (e != kHotExperts[0] && e != kHotExperts[1])
+        {
+            others.push_back(e);
+        }
+    }
+    std::mt19937 rng(7);
+    std::vector<int32_t> hostRouting(numTokens * topK);
+    for (int32_t t = 0; t < numTokens; ++t)
+    {
+        std::shuffle(others.begin(), others.end(), rng);
+        hostRouting[t * topK] = kHotExperts[0];
+        hostRouting[t * topK + 1] = kHotExperts[1];
+        std::copy(others.begin(), others.begin() + topK - 2, hostRouting.begin() + t * topK + 2);
+    }
+
+    // When the CPU reference and the GPU builder lay out the same routing.
+    MoELayout cpuLayout = createMoELayout(numTokens, topK, localNumExperts, tileSize);
+    buildLayoutCpu(cpuLayout, hostRouting.data(), numTokens, topK, numExperts, localExpertOffset, localNumExperts,
+        tileSize, nullptr);
+    CHECK_CUDA(cudaDeviceSynchronize());
+    ASSERT_EQ(
+        std::count(cpuLayout.tileIdxToGroupIdxHost.begin(), cpuLayout.tileIdxToGroupIdxHost.end(), kHotExperts[0]), 2);
+
+    int32_t* dRouting = nullptr;
+    CHECK_CUDA(cudaMalloc(&dRouting, numTokens * topK * sizeof(int32_t)));
+    CHECK_CUDA(cudaMemcpy(dRouting, hostRouting.data(), numTokens * topK * sizeof(int32_t), cudaMemcpyHostToDevice));
+    MoELayoutBuffers buffers = createMoELayoutBuffers(numTokens, topK, localNumExperts, tileSize);
+    buildLayoutGpu(buffers, dRouting, numTokens, topK, localNumExperts, tileSize, nullptr);
+    CHECK_CUDA(cudaDeviceSynchronize());
+
+    // Then the tile count, per-tile expert and row limit, and each expert segment's indices match the reference.
+    int32_t gpuNumTiles = 0;
+    CHECK_CUDA(cudaMemcpy(
+        &gpuNumTiles, buffers.numNonExitingTiles.dataPointer<int32_t>(), sizeof(int32_t), cudaMemcpyDeviceToHost));
+    ASSERT_EQ(gpuNumTiles, cpuLayout.numTiles);
+    std::vector<int32_t> gpuTileGroup(gpuNumTiles);
+    std::vector<int32_t> gpuTileMnLimit(gpuNumTiles);
+    CHECK_CUDA(cudaMemcpy(gpuTileGroup.data(), buffers.tileIdxToGroupIdx.dataPointer<int32_t>(),
+        gpuNumTiles * sizeof(int32_t), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(gpuTileMnLimit.data(), buffers.tileIdxToMnLimit.dataPointer<int32_t>(),
+        gpuNumTiles * sizeof(int32_t), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(gpuTileGroup, cpuLayout.tileIdxToGroupIdxHost);
+    EXPECT_EQ(gpuTileMnLimit, cpuLayout.tileIdxToMnLimitHost);
+
+    std::vector<int32_t> gpuPerm(cpuLayout.mPadded);
+    std::vector<int32_t> cpuPerm(cpuLayout.mPadded);
+    CHECK_CUDA(cudaMemcpy(gpuPerm.data(), buffers.permutedIdxToExpandedIdx.dataPointer<int32_t>(),
+        cpuLayout.mPadded * sizeof(int32_t), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(cpuPerm.data(), cpuLayout.permutedIdxToExpandedIdx.dataPointer<int32_t>(),
+        cpuLayout.mPadded * sizeof(int32_t), cudaMemcpyDeviceToHost));
+    std::vector<int32_t> const& tileGroup = cpuLayout.tileIdxToGroupIdxHost;
+    for (int32_t begin = 0; begin < cpuLayout.numTiles;)
+    {
+        int32_t end = begin + 1;
+        while (end < cpuLayout.numTiles && tileGroup[end] == tileGroup[begin])
+        {
+            ++end;
+        }
+        // Atomic scatter order inside a segment is unspecified, so segments compare as sorted multisets.
+        auto const sortedSegment = [&](std::vector<int32_t> const& perm) {
+            std::vector<int32_t> rows(perm.begin() + begin * tileSize, perm.begin() + end * tileSize);
+            std::sort(rows.begin(), rows.end());
+            return rows;
+        };
+        EXPECT_EQ(sortedSegment(gpuPerm), sortedSegment(cpuPerm)) << "expert " << tileGroup[begin];
+        begin = end;
+    }
+
+    cudaFree(dRouting);
+}
+
 // =========================================================================
 // Worst-case routing stress tests for the GPU layout builder
 //
@@ -626,7 +721,7 @@ TEST(NvFP4MoEWorstCaseRoutingTest, singletonPerExpert)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t localNumExperts = 16;
@@ -667,7 +762,7 @@ TEST(NvFP4MoEWorstCaseRoutingTest, hotExpertHotspot)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t localNumExperts = 16;
@@ -703,7 +798,7 @@ TEST(NvFP4MoEWorstCaseRoutingTest, zeroHitExperts)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t localNumExperts = 16;
@@ -745,7 +840,7 @@ TEST(NvFP4MoEWorstCaseRoutingTest, emptyInput)
 {
     if (!isSupportedSm())
     {
-        GTEST_SKIP() << "Requires SM100/101/110";
+        GTEST_SKIP() << "Requires SM100/101/103/110";
     }
 
     constexpr int32_t localNumExperts = 16;

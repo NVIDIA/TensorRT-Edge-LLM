@@ -341,6 +341,9 @@ char const * const errStr = getErrorStr(status);
 #### Python Standard
 1. The code developed for TensorRT-Edge-LLM should conform to Python 3.8+.
 
+#### String Formatting
+1. Prefer f-strings over `str.format()` for simple interpolation in new or modified code. Use `str.format()` when the format template is dynamic or reused independently of its values.
+
 #### Indentation
 1. Indent code with 4 spaces. Do not use tabs.
 

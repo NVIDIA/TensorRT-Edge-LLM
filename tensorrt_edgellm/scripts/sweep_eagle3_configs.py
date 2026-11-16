@@ -32,7 +32,7 @@ Sweep grid (defaults; overridable via --top_ks / --draft_steps)
   verifyTreeSize (vts) per (topK, draftStep) pair:
     - ds × tk           (full product)
     - ⌊0.67 × ds × tk⌋  (67 % of full product)
-    - max_ts            (engine's maxVerifyTreeSize from base_config.json)
+    - max_ts            (engine's maxSpecVerifyTokens from base_config.json)
   Duplicates are removed; values > max_ts are clamped to max_ts.
 
 Reported metrics (per run)
@@ -116,15 +116,15 @@ def _load_dataset(path: str, subset_entries: Optional[int]) -> list[dict]:
 
 
 def _read_engine_limits(engines_dir: Path) -> tuple[int, int]:
-    """Return (max_verify_tree_size, max_batch_size) from base_config.json."""
+    """Return (max_spec_verify_tokens, max_batch_size) from base_config.json."""
     cfg_path = engines_dir / "base_config.json"
     if not cfg_path.exists():
         raise FileNotFoundError(f"base_config.json not found in {engines_dir}")
     cfg = json.loads(cfg_path.read_text())
     bc = cfg.get("builder_config", {})
-    ts = bc.get("max_verify_tree_size")
+    ts = bc.get("max_spec_verify_tokens")
     if ts is None:
-        raise KeyError(f"max_verify_tree_size not found in {cfg_path}")
+        raise KeyError(f"max_spec_verify_tokens not found in {cfg_path}")
     bs = bc.get("max_batch_size")
     if bs is None:
         raise KeyError(f"max_batch_size not found in {cfg_path}")
@@ -181,7 +181,13 @@ def _run_one(
     with batch_size > 1 the reported accept_length is a per-batch aggregate,
     not a per-request value.
     """
-    runtime = rt.LLMRuntime(str(engines_dir), "", {}, topk, draft_step, vts)
+    runtime = rt.LLMRuntime(engine_dir=str(engines_dir),
+                            multimodal_engine_dir="",
+                            lora_weights_map={},
+                            draft_top_k=topk,
+                            draft_step=draft_step,
+                            proposal_tokens=None,
+                            verify_tokens=vts)
     # Mirror production path: capture decoding CUDA graphs so the sweep
     # measures the same kernel-launch overhead profile users see in practice.
     # Without this, all configs are penalized equally by graph-less launches
@@ -217,7 +223,6 @@ def _run_one(
             add_generation_prompt=True,
             enable_thinking=False,
             lora_weights_name="",
-            save_system_prompt_kv_cache=False,
             disable_spec_decode=False,
         )
         resp = runtime.handle_request(greq)
@@ -520,7 +525,7 @@ def main() -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
     print(f"[config] engines_dir      = {engines_dir}")
-    print(f"[config] max_verify_tree_size = {max_ts}")
+    print(f"[config] max_spec_verify_tokens = {max_ts}")
     print(f"[config] max_batch_size   = {max_batch_size}")
 
     if args.batch_size > max_batch_size:

@@ -20,6 +20,7 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "plugins/utils/pluginUtils.h"
 
 #include <cstdint>
@@ -35,6 +36,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -67,7 +69,7 @@ AllReduceExecutionStatus executeIdentityAllReducePath(PluginTensorDesc const& in
         return AllReduceExecutionStatus::kUnavailable;
     }
 
-    size_t const typeSize = rt::utils::getTypeSize(inputDesc.type);
+    size_t const typeSize = rt::utils::getTypeSize(fromTrt(inputDesc.type));
     cudaError_t const error = cudaMemcpyAsync(output, input, numElements * typeSize, cudaMemcpyDeviceToDevice, stream);
     if (error != cudaSuccess)
     {

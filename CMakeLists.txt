@@ -15,321 +15,160 @@
 
 cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
 
+option(ENABLE_SAFETY_RUNTIME "Build the Edge-LLM Safety Runtime" OFF)
+option(ENABLE_EXPERIMENTAL_WEIGHTLESS
+       "Enable experimental internal TensorRT/Myelin weightless engine refit"
+       OFF)
+option(EDGELLM_SAFETY_ONLY_PACKAGE
+       "Build only the Safety Runtime against a safety-only dependency package"
+       OFF)
 option(EDGELLM_PYTHON_ONLY_WHEEL
        "Configure only the Python sources for the wheel fan-in base" OFF)
-if(EDGELLM_PYTHON_ONLY_WHEEL)
-  set(_EDGELLM_PROJECT_LANGUAGES NONE)
-else()
-  set(_EDGELLM_PROJECT_LANGUAGES C CXX CUDA)
+
+if(ENABLE_EXPERIMENTAL_WEIGHTLESS AND ENABLE_SAFETY_RUNTIME)
+  message(
+    FATAL_ERROR
+      "Experimental weightless engines require enterprise TensorRT, without Safety Runtime"
+  )
 endif()
 
-set(_EDGELLM_CUDA_ARCHITECTURES_PRESET FALSE)
-if(DEFINED CMAKE_CUDA_ARCHITECTURES)
-  set(_EDGELLM_CUDA_ARCHITECTURES_PRESET TRUE)
+if(EDGELLM_PYTHON_ONLY_WHEEL AND EDGELLM_SAFETY_ONLY_PACKAGE)
+  message(
+    FATAL_ERROR
+      "EDGELLM_PYTHON_ONLY_WHEEL and EDGELLM_SAFETY_ONLY_PACKAGE are mutually exclusive"
+  )
+endif()
+
+include(cmake/EdgeLLMPlatform.cmake)
+if(NOT EDGELLM_PYTHON_ONLY_WHEEL)
+  edgellm_prepare_toolchain()
+endif()
+
+if(EDGELLM_PYTHON_ONLY_WHEEL)
+  set(_edgellm_languages NONE)
+else()
+  set(_edgellm_languages C CXX CUDA)
 endif()
 
 project(
   tensorrt_edgellm_sdk
-  VERSION 0.11.1
-  LANGUAGES ${_EDGELLM_PROJECT_LANGUAGES})
+  VERSION 0.12.0
+  LANGUAGES ${_edgellm_languages})
 
 if(EDGELLM_PYTHON_ONLY_WHEEL)
   return()
 endif()
-
-# Specify the C++ standard and platform-specific warning flags.
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
-set(CMAKE_CUDA_STANDARD 17)
-
-if(MSVC)
-  add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS)
-  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/W4>)
-  add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
-  add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/W4>)
-else()
-  set(CMAKE_CXX_FLAGS
-      "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wall -Werror -Wno-error=unused-parameter"
-  )
-  set(CMAKE_CUDA_FLAGS
-      "${CMAKE_CUDA_FLAGS} -Wno-deprecated-declarations -Xcompiler=-Werror,-Wno-error=unused-parameter"
-  )
-  set(CMAKE_SHARED_LINKER_FLAGS
-      "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-undefined")
+if(EDGELLM_SAFETY_ONLY_PACKAGE AND NOT ENABLE_SAFETY_RUNTIME)
+  message(
+    FATAL_ERROR "EDGELLM_SAFETY_ONLY_PACKAGE requires ENABLE_SAFETY_RUNTIME=ON")
 endif()
 
-function(edgellm_apply_qnx_warning_suppressions target)
-  if(QNX_BUILD)
-    # Suppress QNX 8 system-header false positives on affected project targets.
-    set(_qnx_warning_suppressions
-        -Wno-array-bounds
-        -Wno-maybe-uninitialized
-        -Wno-dangling-pointer
-        -Wno-free-nonheap-object
-        -Wno-stringop-overflow
-        -Wno-return-type
-        -Wno-stringop-overread)
-    target_compile_options(
-      ${target}
-      PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:${_qnx_warning_suppressions}>)
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+include(cmake/EdgeLLMBuild.cmake)
+edgellm_configure_platform()
 
-    set(_qnx_cuda_warning_suppressions ${_qnx_warning_suppressions})
-    list(TRANSFORM _qnx_cuda_warning_suppressions PREPEND "-Xcompiler=")
-    target_compile_options(
-      ${target}
-      PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:${_qnx_cuda_warning_suppressions}>)
-  endif()
-endfunction()
+if(EDGELLM_SAFETY_ONLY_PACKAGE)
+  find_path(
+    CUDA_RUNTIME_API_INCLUDE_DIR cuda_runtime_api.h
+    HINTS ${CUDA_DIR}
+    PATH_SUFFIXES include)
+  find_library(
+    CUDART_LIB cudart
+    HINTS ${CUDA_DIR} ${CUDA_TARGET_DIR}
+    PATH_SUFFIXES lib lib64)
+  set(CUDA_INCLUDE_DIR ${CUDA_RUNTIME_API_INCLUDE_DIR}
+                       ${CUDA_PLATFORM_INCLUDE_DIR})
+  include(cmake/SafetyRuntimeBuild.cmake)
+  return()
+endif()
 
-# Code coverage with gcov (for SonarQube analysis)
 option(ENABLE_COVERAGE "Enable gcov code coverage instrumentation" OFF)
-include(${CMAKE_SOURCE_DIR}/cmake/CodeCoverage.cmake)
-
-# Declare unit-test options before cpp/ so its library targets can enable
-# test-only instrumentation when requested.
+option(ENABLE_NVTX_PROFILING "Enable NVTX profiling support" OFF)
 option(BUILD_UNIT_TESTS "Enable building unit tests" OFF)
 option(ENABLE_CUTEDSL_MODULE_TEST_HOOK
        "Enable deterministic CuTe DSL module-load failure injection" OFF)
+option(BUILD_EXPERIMENTAL_MODELS "Enable building experimental models" OFF)
+option(BUILD_PYTHON_BINDINGS "Enable building Python nanobind bindings" OFF)
+
 if(ENABLE_CUTEDSL_MODULE_TEST_HOOK AND NOT BUILD_UNIT_TESTS)
   message(
     FATAL_ERROR "ENABLE_CUTEDSL_MODULE_TEST_HOOK requires BUILD_UNIT_TESTS=ON")
 endif()
 
-macro(set_ifndef var val)
-  if(NOT DEFINED ${var})
-    set(${var} ${val})
-  endif()
-  message(STATUS "Configurable variable ${var} set to ${${var}}")
-endmacro()
-
-macro(add_cross_build_link_options target)
-  if(AARCH64_BUILD)
-    get_target_property(_cross_link_options_added ${target}
-                        TRT_EDGELLM_CROSS_LINK_OPTIONS_ADDED)
-    if(NOT _cross_link_options_added)
-      get_target_property(_cross_target_type ${target} TYPE)
-      set(_cross_link_scope PRIVATE)
-      if(_cross_target_type STREQUAL "STATIC_LIBRARY")
-        set(_cross_link_scope INTERFACE)
-      endif()
-      target_link_options(${target} ${_cross_link_scope} "-L${CUDA_DIR}/lib"
-                          "-L${CUDA_DIR}/lib/stubs")
-      set_property(TARGET ${target}
-                   PROPERTY TRT_EDGELLM_CROSS_LINK_OPTIONS_ADDED TRUE)
-    endif()
-  endif()
-endmacro(add_cross_build_link_options)
-
-# CUDA flags and dependencies.
-if(DEFINED CUDA_VERSION)
-  message(
-    FATAL_ERROR
-      "CUDA_VERSION can cause ambiguity with CUDA Macros. Please use -DCUDA_CTK_VERSION to specify the CUDA Toolkit version."
-  )
-endif()
-if(WIN32)
-  find_package(CUDAToolkit REQUIRED)
-  set_ifndef(CUDA_CTK_VERSION ${CUDAToolkit_VERSION})
-  get_filename_component(_cuda_root "${CUDAToolkit_BIN_DIR}" DIRECTORY)
-  file(TO_CMAKE_PATH "${_cuda_root}" _cuda_root)
-  set_ifndef(CUDA_DIR "${_cuda_root}")
-  unset(_cuda_root)
-else()
-  set_ifndef(CUDA_CTK_VERSION 12.8)
-  set_ifndef(CUDA_DIR /usr/local/cuda-${CUDA_CTK_VERSION})
+set(ENABLE_CUTE_DSL
+    "ALL"
+    CACHE STRING "CuTe DSL kernel groups; production builds use ALL")
+if(QNX_BUILD)
+  set(ENABLE_CUTE_DSL
+      "OFF"
+      CACHE STRING "CuTe DSL is unavailable on QNX" FORCE)
+elseif(ENABLE_CUTE_DSL STREQUAL "OFF" AND NOT ENABLE_SAFETY_RUNTIME)
+  message(FATAL_ERROR "CuTe DSL is required. Use ENABLE_CUTE_DSL=ALL.")
 endif()
 
-# Wheel payloads are single-SM builds. Windows builds may also select one
-# architecture explicitly; other x86 builds use the supported architecture set.
-if(NOT DEFINED EDGELLM_WHEEL_PAYLOAD_DIR
-   AND NOT AARCH64_BUILD
-   AND (NOT WIN32 OR NOT _EDGELLM_CUDA_ARCHITECTURES_PRESET))
-  set(CMAKE_CUDA_ARCHITECTURES 80;86;89;90)
-  if(CUDA_CTK_VERSION VERSION_GREATER_EQUAL 12.8)
-    list(APPEND CMAKE_CUDA_ARCHITECTURES 100a 120)
-  endif()
-  if(WIN32)
-    set(CMAKE_CUDA_ARCHITECTURES
-        "${CMAKE_CUDA_ARCHITECTURES}"
-        CACHE STRING "CUDA architectures" FORCE)
-  endif()
-endif()
-unset(_EDGELLM_CUDA_ARCHITECTURES_PRESET)
-
-# Orin/JetPack cuda.h may lack cudaLibrary_t; GDN runner uses compat typedef
-# when this is set.
-if(DEFINED EMBEDDED_TARGET AND EMBEDDED_TARGET STREQUAL "jetson-orin")
-  add_compile_definitions(TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT)
-endif()
-
-if(WIN32)
-  list(GET CUDAToolkit_INCLUDE_DIRS 0 CUDA_RUNTIME_API_INCLUDE_DIR)
-  set(CUDART_LIB CUDA::cudart)
-else()
-  find_path(
-    CUDA_RUNTIME_API_INCLUDE_DIR cuda_runtime_api.h
-    HINTS ${CUDA_DIR}
-    PATH_SUFFIXES include)
-
-  find_library(
-    CUDART_LIB cudart
-    HINTS ${CUDA_DIR} ${CUDA_TARGET_DIR}
-    PATH_SUFFIXES lib lib64)
-endif()
-
-if(WIN32)
-  set(CURAND_KERNEL_INCLUDE_DIR "${CUDAToolkit_INCLUDE_DIRS}")
-  set(CUDA_DRIVER_LIB CUDA::cuda_driver)
-  set(CUDA_DRIVER_LINK_LIB CUDA::cuda_driver)
-else()
-  find_library(
-    CUDA_DRIVER_LIB cuda
-    HINTS ${CUDA_DIR} ${CUDA_TARGET_DIR}
-    PATH_SUFFIXES lib lib64 lib/stubs)
-  set(CUDA_DRIVER_LINK_LIB "${CUDA_DRIVER_LIB}")
-  if(AARCH64_BUILD)
-    # Cross builds link against the CUDA driver stub via -L.../lib/stubs -lcuda.
-    # Do not pass the absolute stub .so to target_link_libraries(), or CMake
-    # will bake the stub directory into build RUNPATH and target execution can
-    # load it.
-    set(CUDA_DRIVER_LINK_LIB cuda)
-  endif()
-
-  find_path(
-    CURAND_KERNEL_INCLUDE_DIR
-    NAMES curand_kernel.h
-    HINTS ${CUDA_DIR} ${CUDA_TARGET_DIR}
-    PATH_SUFFIXES include)
-endif()
-
-set(CUDA_INCLUDE_DIR ${CUDA_RUNTIME_API_INCLUDE_DIR}
-                     ${CURAND_KERNEL_INCLUDE_DIR} ${CUDA_PLATFORM_INCLUDE_DIR})
-
-set(CUDA_USE_STATIC_CUDA_RUNTIME OFF)
-
-include(${CMAKE_SOURCE_DIR}/cmake/FindNVRTC.cmake)
-
-# NVTX profiling support option (default: OFF)
-option(ENABLE_NVTX_PROFILING "Enable NVTX profiling support" OFF)
+include(cmake/CodeCoverage.cmake)
 
 if(ENABLE_NVTX_PROFILING)
-  # Use bundled NVTX3 headers (v3.4.0-c-cpp) for consistency across all
-  # platforms This ensures profiling support works on all targets
-  # (GPU/Thor/Orin) with CUDA 11/12/13
   set(NVTX_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/3rdParty/NVTX/include/nvtx3")
-
-  if(EXISTS "${NVTX_INCLUDE_DIR}/nvtx3.hpp")
-    message(STATUS "NVTX profiling ENABLED: ${NVTX_INCLUDE_DIR}")
-    # Define preprocessor macro for conditional compilation
-    add_compile_definitions(ENABLE_NVTX_PROFILING)
-  else()
-    message(
-      FATAL_ERROR
-        "NVTX3 headers not found at ${NVTX_INCLUDE_DIR}. "
-        "Please ensure 3rdParty/NVTX is initialized: git submodule update --init 3rdParty/NVTX"
-    )
+  if(NOT EXISTS "${NVTX_INCLUDE_DIR}/nvtx3.hpp")
+    message(FATAL_ERROR "NVTX headers are missing. Initialize git submodules.")
   endif()
+  add_compile_definitions(ENABLE_NVTX_PROFILING)
 else()
-  message(
-    STATUS "NVTX profiling DISABLED (use -DENABLE_NVTX_PROFILING=ON to enable)")
   set(NVTX_INCLUDE_DIR "")
 endif()
 
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
-find_package(TensorRT REQUIRED COMPONENTS OnnxParser)
+include(cmake/EdgeLLMDependencies.cmake)
 
-# TRT and CUDA headers are treated as system includes so that the compiler
-# suppresses warnings originating from them (e.g. -Wunused-parameter in
-# NvInferRuntime.h virtual stubs).
-include_directories(SYSTEM ${CUDA_INCLUDE_DIR} ${TensorRT_INCLUDE_DIR})
-
-set(COMMON_INCLUDE_DIRS
-    ${NVTX_INCLUDE_DIR}
-    ${CMAKE_SOURCE_DIR}/cpp
-    ${CMAKE_SOURCE_DIR}/examples/multimodal
-    ${CMAKE_SOURCE_DIR}/3rdParty/nlohmannJson/include
-    ${CMAKE_SOURCE_DIR}/3rdParty/stb
-    ${CMAKE_SOURCE_DIR}/3rdParty/miniaudio)
-
-add_library(commonLibraryExt INTERFACE)
-target_link_libraries(
-  commonLibraryExt INTERFACE TensorRT::TensorRT TensorRT::OnnxParser
-                             ${CUDART_LIB})
-# Workaround for aarch64 cross compilation where libvninfer.so links to
-# libnvdla_compilers. The libnvinfer dependencies shall be resolved at execution
-# time on an embedded board.
-if(NOT MSVC)
-  target_link_options(commonLibraryExt INTERFACE
-                      "-Wl,--unresolved-symbols=ignore-in-shared-libs")
+if(EMBEDDED_TARGET STREQUAL "jetson-orin")
+  add_compile_definitions(TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT)
+endif()
+if(ENABLE_EXPERIMENTAL_WEIGHTLESS AND IS_TRT_RTX)
+  message(
+    FATAL_ERROR
+      "Experimental weightless engines require enterprise TensorRT, without Safety Runtime"
+  )
 endif()
 
-# CuTe DSL unified kernel option — declare here so it is always defined before
-# any subdirectory or include references it.
-# cmake-format: off
-# Choices:
-#   fmha             -- FP16 Context/ViT FMHA, plus the optimized Blackwell
-#                       variants when the artifact has them
-#   ALL              -- enable every kernel group below
-#   gdn              -- gated delta net (Mamba2-style hybrid SSM)
-#   f16_moe          -- target-specific FP16 grouped MoE for Ampere,
-#                       Blackwell DC, and Blackwell GeForce
-#   nvfp4_moe        -- SM110 (Thor) split FC1/FC2 NVFP4 MoE; consumed by the
-#                       SM110-only ``Nvfp4MoePlugin``
-#   nvfp4_fused_moe  -- SM12x (consumer Blackwell / Spark GB10) fused NVFP4
-#                       MoE; consumed by ``NvFP4MoEPluginGeforce``
-#   layernorm        -- homogeneous FP16/BF16 LayerNorm for benchmarked hidden
-#                       sizes plus odd-H correctness coverage
-#   rmsnorm          -- FP16/BF16 RMSNorm for supported production hidden sizes
-#   semicolon-separated group list (e.g. -DENABLE_CUTE_DSL=fmha;gdn)
-# cmake-format: on
-set(ENABLE_CUTE_DSL
-    "fmha"
-    CACHE
-      STRING
-      "CuTe DSL kernels: fmha (default), ALL, or semicolon-separated group list (fmha;gdn;f16_moe;layernorm;rmsnorm)"
-)
-
-# Guided decoding: defines XGRAMMAR_INCLUDE_DIRS and the xgrammarCore target.
-# Must precede add_subdirectory(cpp) so edgellmCore can link it.
-include(${CMAKE_SOURCE_DIR}/cmake/GuidedDecoding.cmake)
-
-# Build Core libraries of the project. attentionPlugin shared library and
-# edgellmCore/edgellmBuilder static library will be generated.
+include(cmake/GuidedDecoding.cmake)
 add_subdirectory(cpp)
-
-# Build C++ examples to showcase the usage
 add_subdirectory(examples)
 
-# Experimental models (opt-in). These are not first-class models; they live in a
-# separate tree and link against the core edgellm libraries. Cosmos3 is the
-# first.
-option(BUILD_EXPERIMENTAL_MODELS
-       "Enable building experimental models (e.g. cosmos3)" OFF)
 if(BUILD_EXPERIMENTAL_MODELS)
   add_subdirectory(experimental_models)
 endif()
 
-option(BUILD_PYTHON_BINDINGS "Enable building Python pybind11 bindings" OFF)
-
 if(BUILD_UNIT_TESTS)
-  # FORCE, because a build tree configured before gmock was enabled already
-  # caches OFF, and a plain `set(... CACHE ...)` would leave it there — the
-  # failure is then a missing gmock/gmock.h, not a stale-cache message.
   set(BUILD_GMOCK
       ON
       CACHE BOOL "Enable Google Mock" FORCE)
+  set(INSTALL_GTEST
+      OFF
+      CACHE BOOL "Do not install test-only dependencies" FORCE)
   add_subdirectory(${CMAKE_SOURCE_DIR}/3rdParty/googletest)
-  include(${CMAKE_SOURCE_DIR}/cmake/CuteDsl.cmake)
   enable_testing()
-  # Targets, grouping and per-target wiring all live in
-  # unittests/CMakeLists.txt.
   add_subdirectory(unittests)
 endif()
 
 if(BUILD_PYTHON_BINDINGS)
-  add_subdirectory(experimental/pybind)
-  if(DEFINED EDGELLM_WHEEL_PAYLOAD_DIR AND NOT EDGELLM_WHEEL_PAYLOAD_DIR
-                                           STREQUAL "")
-    include(${CMAKE_SOURCE_DIR}/packaging/cmake/InstallWheel.cmake)
+  add_subdirectory(python/nanobind)
+  if(EDGELLM_WHEEL_PAYLOAD_DIR)
+    include(packaging/cmake/InstallWheel.cmake)
+  endif()
+endif()
+
+if(NOT QNX_BUILD
+   AND NOT ENABLE_SAFETY_RUNTIME
+   AND NOT EDGELLM_WHEEL_PAYLOAD_DIR)
+  include(cmake/EdgeLLMInstall.cmake)
+  if(BUILD_UNIT_TESTS)
+    add_dependencies(unitTests ${_edgellm_export_targets})
+    # Not every program is built on every platform (llm_stream is not built on
+    # Windows).
+    foreach(_edgellm_program IN LISTS _edgellm_programs)
+      if(TARGET ${_edgellm_program})
+        add_dependencies(unitTests ${_edgellm_program})
+      endif()
+    endforeach()
   endif()
 endif()

@@ -840,6 +840,9 @@ def load_muse_glimmer_visual_weights(
     through the shared ``load_submodule_weights`` pipeline.
 
     Returns ``(missing, unexpected)``.
+
+    Raises:
+        ValueError: A required visual checkpoint tensor is missing.
     """
     from ...checkpoint.loader import load_submodule_weights
 
@@ -849,17 +852,19 @@ def load_muse_glimmer_visual_weights(
         return k[len(strip):] if k.startswith(
             _MUSE_GLIMMER_VISUAL_PREFIXES) else None
 
-    load_submodule_weights(model,
-                           weights,
-                           _remap,
-                           label="MuseGlimmerVisualModel")
-
     remapped = {
         k[len(strip):]
         for k in weights if k.startswith(_MUSE_GLIMMER_VISUAL_PREFIXES)
     }
     model_keys = set(model.state_dict().keys())
     missing = sorted(model_keys - remapped)
+    if missing:
+        raise ValueError("Incomplete Muse-Glimmer visual checkpoint; missing "
+                         f"{len(missing)} required tensors: {missing[:10]}")
+    load_submodule_weights(model,
+                           weights,
+                           _remap,
+                           label="MuseGlimmerVisualModel")
     unexpected = sorted(remapped - model_keys)
     return missing, unexpected
 

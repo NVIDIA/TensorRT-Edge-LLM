@@ -18,6 +18,15 @@ Alpamayo-R1-10B runs as a chained VLM + action pipeline:
 
 Both stages are run with a single `action_inference` invocation. The engines are built separately and loaded together at runtime.
 
+For ONNX export, `--tp-size` selects the LLM's TP size and the compatible
+action model: TP=1 uses paged prefix reuse, and TP>1 uses dense KV inputs.
+The action engine runs on one device in both cases.
+
+For the [direct engine builder](../../getting_started/direct-engine-builder.md),
+Alpamayo action builds default to `--reuse-llm-kv-cache=true` for an LLM
+using TP=1. For an LLM using TP>1, build action separately with
+`--components action --reuse-llm-kv-cache=false`.
+
 The current TensorRT Edge-LLM input parser accepts image files, text, and
 trajectory history points as `[x, y, z]`. The action output is written as
 `output_trajectory`, a list of `(accel, kappa)` acceleration and curvature pairs.
@@ -45,7 +54,16 @@ trtedge export \
 
 This creates `onnx/llm`, `onnx/visual`, and `onnx/action`.
 
-> **Note:** Only FP16 is supported for Alpamayo export. The `--max-kv-cache-capacity` value must match the `--max-kv-cache-capacity` used when building the LLM engine in Step 3.
+> **Note:** The export also reads the public
+> [`Qwen/Qwen3-VL-8B-Instruct`](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct)
+> configuration from Hugging Face.
+>
+> This guide covers the FP16 flow. Quantized export of the LLM is not covered
+> in 0.12.0; see [Limitations and Known Issues](../../getting_started/limitations.md).
+>
+> The action expert uses FP16 weights and action KV. The `--max-kv-cache-capacity`
+> value must match the `--max-kv-cache-capacity` used when building the LLM engine
+> in Step 3.
 
 ## Step 2: Transfer to Device
 
@@ -62,15 +80,15 @@ export MODEL_NAME=Alpamayo-R1-10B
 cd /path/to/TensorRT-Edge-LLM
 
 # Build language model engine
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/llm \
   --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
   --max-input-len 3424 \
   --max-kv-cache-capacity 4096 \
-  --max-batch-size 6
+  --max-batch-size 1
 
 # Build visual encoder engine
-./build/examples/multimodal/visual_build \
+./build/bin/visual_build \
   --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/visual \
   --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
   --min-image-tokens 160 \
@@ -78,23 +96,38 @@ cd /path/to/TensorRT-Edge-LLM
   --max-image-tokens-per-image 192
 
 # Build action expert engine
-./build/examples/multimodal/action_build \
+./build/bin/action_build \
   --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/action \
   --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
-  --max-batch-size 6
+  --max-batch-size 1
 ```
+
+Use `--max-batch-size 1` for single-scene deployment, and the same value for
+the language model and action engines.
 
 `visual_build` writes `$WORKSPACE_DIR/$MODEL_NAME/engines/visual/`, and
 `action_build` writes `$WORKSPACE_DIR/$MODEL_NAME/engines/action/`. Both
 subdirectories are loaded through `--multimodal-engine-dir` during inference.
 
-## Step 4: Run Inference (Thor Device)
+## Step 4: Prepare an Input
 
-Create an input file `$WORKSPACE_DIR/input_action.json`. The `trajectory`
-content item provides past egomotion history as `[x, y, z]` positions. Replace
-the image paths with actual RGB image files. The checkpoint card describes the
-primary setting as 4 cameras over 4 timesteps; the runtime parser accepts the
-images as an ordered list of image content items.
+Alpamayo takes 4 cameras at 4 timesteps (16 images) and 16 egomotion history
+points. Build requests from the
+[NVIDIA PhysicalAI Autonomous Vehicles](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles)
+dataset with the dataset preparation script. Accept the dataset license and run
+`hf auth login` first. Only the selected clips are downloaded:
+
+```bash
+pip install -r examples/accuracy/requirements-physical-ai-av.txt
+python examples/accuracy/scripts/prepare_dataset.py \
+  --dataset PhysicalAIAV \
+  --max_samples 1 \
+  --output_dir $WORKSPACE_DIR/physical_ai_av
+```
+
+Copy the output directory to the device. Each request has this format, and you
+can also write one by hand. The `trajectory` item provides past egomotion
+history as `[x, y, z]` positions:
 
 ```json
 {
@@ -167,16 +200,16 @@ images as an ordered list of image content items.
 }
 ```
 
-Run inference:
+## Step 5: Run Inference (Thor Device)
 
 ```bash
 cd /path/to/TensorRT-Edge-LLM
 
-./build/examples/multimodal/action_inference \
+./build/bin/action_inference \
   --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
   --multimodal-engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
-  --input-file $WORKSPACE_DIR/input_action.json \
+  --input-file $WORKSPACE_DIR/physical_ai_av/physical_ai_av_dataset.json \
   --output-file $WORKSPACE_DIR/output_action.json
 ```
 
-Check `output_action.json` for the response. Each entry includes `output_text` (VLM language output) and `output_trajectory` (predicted (accel, kappa) acceleration and curvature pairs).
+Check `output_action.json` for the response. Each entry includes `output_text` (VLM language output) and `output_trajectory` (64 predicted (accel, kappa) acceleration and curvature pairs).

@@ -42,11 +42,30 @@ struct SwaRetainedRange
     int32_t end{};
 };
 
-SwaRetainedRange retainedRange(int32_t endpoint, int32_t pageSize, int32_t windowSize) noexcept
+SwaRetainedRange activeRange(int32_t endpoint, int32_t pageSize, int32_t windowSize) noexcept
 {
     int64_t const retainedEnd = (static_cast<int64_t>(endpoint) + pageSize - 1) / pageSize;
     int64_t const windowStart = std::max<int64_t>(0, static_cast<int64_t>(endpoint) - windowSize);
     return SwaRetainedRange{static_cast<int32_t>(windowStart / pageSize), static_cast<int32_t>(retainedEnd)};
+}
+
+SwaRetainedRange retainedRange(
+    int32_t endpoint, int32_t pageSize, int32_t windowSize, SwaRetentionMode retentionMode) noexcept
+{
+    SwaRetainedRange const active = activeRange(endpoint, pageSize, windowSize);
+    if (retentionMode == SwaRetentionMode::kFullInputRewind)
+    {
+        return active;
+    }
+
+    int32_t const publishableEndpoint = endpoint - endpoint % pageSize;
+    SwaRetainedRange const publishable = activeRange(publishableEndpoint, pageSize, windowSize);
+    return SwaRetainedRange{std::max(0, publishable.begin - kSWA_REPLAY_HALO_PAGES), active.end};
+}
+
+bool externallyOwned(BoundedSwaKVPageManager::ExternalPageLifecycle const& lifecycle, int32_t slot, PageId page)
+{
+    return lifecycle.isExternallyOwned && lifecycle.isExternallyOwned(slot, page);
 }
 
 std::optional<SwaPageBinding> findBinding(SwaKVCacheState const& state, int32_t logicalPage) noexcept
@@ -135,13 +154,14 @@ bool BoundedSwaKVPageManager::RequestHandle::valid() const noexcept
 }
 
 BoundedSwaKVPageManager::BoundedSwaKVPageManager(HybridCacheManager& baseCache, KVPageTable& basePageTable,
-    KVPageTable& swaPageTable, cudaStream_t stream, StreamSynchronizer synchronizer)
+    KVPageTable& swaPageTable, cudaStream_t stream, StreamSynchronizer synchronizer, bool externalPageOwnership)
     : mBaseCache(baseCache)
     , mBasePageTable(basePageTable)
     , mSwaPageTable(swaPageTable)
     , mPageSize(kTOKENS_PER_PAGE)
     , mStream(stream)
     , mSynchronizer(std::move(synchronizer))
+    , mExternalPageOwnership(externalPageOwnership)
 {
     KVCacheManager const& kvCache = mBaseCache.getKVCacheManager();
     std::optional<int32_t> const windowSize = kvCache.reducedKVCacheCapacity();
@@ -170,10 +190,13 @@ BoundedSwaKVPageManager::BoundedSwaKVPageManager(HybridCacheManager& baseCache, 
         }
     }
 
-    mFreePages.reserve(static_cast<size_t>(mSwaPageTable.numPages()));
-    for (PageId page = 0; page < mSwaPageTable.numPages(); ++page)
+    if (!mExternalPageOwnership)
     {
-        mFreePages.push_back(page);
+        mFreePages.reserve(static_cast<size_t>(mSwaPageTable.numPages()));
+        for (PageId page = 0; page < mSwaPageTable.numPages(); ++page)
+        {
+            mFreePages.push_back(page);
+        }
     }
     if (!mSynchronizer)
     {
@@ -192,6 +215,7 @@ BoundedSwaKVPageManager::~BoundedSwaKVPageManager() noexcept
 BoundedSwaKVPageManager::BeginRequestResult BoundedSwaKVPageManager::beginRequest(
     std::vector<ResidentRef> const& residents, cudaStream_t stream)
 {
+    ELLM_CHECK(!mExternalPageOwnership, "Externally owned SWA pages require seeded request admission");
     ELLM_CHECK(stream == mStream, "SWA KV cache request stream differs from the manager construction stream");
     if (mPoisoned)
     {
@@ -222,8 +246,7 @@ BoundedSwaKVPageManager::BeginRequestResult BoundedSwaKVPageManager::beginReques
 
     auto impl = std::make_unique<RequestHandle::Impl>(*this, stream);
     impl->states.resize(static_cast<size_t>(batchSize));
-    size_t const maxRetainedPages
-        = static_cast<size_t>((static_cast<int64_t>(mWindowSize) + mPageSize - 1) / mPageSize + 1);
+    size_t const maxRetainedPages = static_cast<size_t>(computeSwaMaxRetainedPages(mWindowSize, mPageSize));
     for (size_t sequence = 0; sequence < impl->states.size(); ++sequence)
     {
         SwaKVCacheState& state = impl->states[sequence];
@@ -247,6 +270,93 @@ BoundedSwaKVPageManager::BeginRequestResult BoundedSwaKVPageManager::beginReques
     return BeginRequestResult{SwaKVCacheStatus::kOk, std::optional<RequestHandle>{RequestHandle(std::move(impl))}};
 }
 
+void BoundedSwaKVPageManager::validateExternalStates(std::vector<SwaKVCacheState> const& states) const
+{
+    int32_t const maxBatch = mBaseCache.getKVCacheManager().getConfig().maxBatchSize;
+    ELLM_CHECK(!states.empty() && states.size() <= static_cast<size_t>(maxBatch),
+        "Seeded SWA KV cache batch size is outside the engine range");
+
+    std::vector<uint8_t> reserved(static_cast<size_t>(mSwaPageTable.numPages()), 0U);
+    std::vector<uint8_t> bound(static_cast<size_t>(mSwaPageTable.numPages()), 0U);
+    for (size_t stateIndex = 0; stateIndex < states.size(); ++stateIndex)
+    {
+        SwaKVCacheState const& state = states[stateIndex];
+        ELLM_CHECK(state.resident.slot >= 0 && state.resident.slot < maxBatch && state.resident.epoch != 0
+                && std::none_of(
+                    states.begin(), states.begin() + static_cast<ptrdiff_t>(stateIndex),
+                    [&](SwaKVCacheState const& prior) { return prior.resident.slot == state.resident.slot; })
+                && state.pageSizeTokens == mPageSize && state.windowSizeTokens == mWindowSize
+                && state.exactResidentTokenCount >= 0 && state.retainedLogicalPageBegin >= 0
+                && state.retainedLogicalPageEnd >= state.retainedLogicalPageBegin && !state.pendingEndpoint.has_value()
+                && state.newPageBindings.empty() && state.pendingRetireBindings.empty(),
+            "Seeded SWA KV cache state has invalid geometry or pending work");
+        SwaRetainedRange const expected
+            = retainedRange(state.exactResidentTokenCount, mPageSize, mWindowSize, state.retentionMode);
+        ELLM_CHECK(state.retainedLogicalPageBegin == expected.begin && state.retainedLogicalPageEnd == expected.end
+                && state.pageBindings.size() == static_cast<size_t>(expected.end - expected.begin),
+            "Seeded SWA KV cache state does not cover its retained logical range");
+        size_t const leasedPages = state.pageBindings.size() + state.reservedPages.size();
+        size_t const expectedPages
+            = static_cast<size_t>(mPrivatePagesPerSequence - swaReservationPageCredit(state.retentionMode));
+        ELLM_CHECK(
+            leasedPages == expectedPages && state.reservedPages.size() >= static_cast<size_t>(kSWA_REPLACEMENT_PAGES),
+            "Seeded SWA KV cache state does not own its complete bounded reservation");
+
+        std::vector<uint8_t> statePages(static_cast<size_t>(mSwaPageTable.numPages()), 0U);
+        for (size_t index = 0; index < state.pageBindings.size(); ++index)
+        {
+            SwaPageBinding const& binding = state.pageBindings[index];
+            ELLM_CHECK(binding.logicalPage == state.retainedLogicalPageBegin + static_cast<int32_t>(index)
+                    && binding.page >= 0 && binding.page < mSwaPageTable.numPages()
+                    && statePages[static_cast<size_t>(binding.page)] == 0U,
+                "Seeded SWA KV cache contains an invalid or duplicate page binding");
+            statePages[static_cast<size_t>(binding.page)] = 1U;
+            bound[static_cast<size_t>(binding.page)] = 1U;
+        }
+        for (PageId const page : state.reservedPages)
+        {
+            ELLM_CHECK(page >= 0 && page < mSwaPageTable.numPages() && statePages[static_cast<size_t>(page)] == 0U
+                    && reserved[static_cast<size_t>(page)] == 0U,
+                "Seeded SWA KV cache contains an invalid or duplicate private page");
+            statePages[static_cast<size_t>(page)] = 1U;
+            reserved[static_cast<size_t>(page)] = 1U;
+        }
+    }
+    for (size_t page = 0; page < reserved.size(); ++page)
+    {
+        ELLM_CHECK(reserved[page] == 0U || bound[page] == 0U,
+            "Seeded SWA private page aliases a retained binding in another sequence");
+    }
+}
+
+BoundedSwaKVPageManager::BeginRequestResult BoundedSwaKVPageManager::beginRequest(
+    std::vector<SwaKVCacheState> states, cudaStream_t stream)
+{
+    ELLM_CHECK(mExternalPageOwnership, "Seeded SWA admission requires external page ownership");
+    ELLM_CHECK(stream == mStream, "SWA KV cache request stream differs from the manager construction stream");
+    if (mPoisoned)
+    {
+        return BeginRequestResult{SwaKVCacheStatus::kPoisoned, std::nullopt};
+    }
+    if (mRequestActive)
+    {
+        return BeginRequestResult{SwaKVCacheStatus::kRequestFailed, std::nullopt};
+    }
+
+    validateExternalStates(states);
+    auto impl = std::make_unique<RequestHandle::Impl>(*this, stream);
+    impl->states = std::move(states);
+    size_t const maxRetainedPages = static_cast<size_t>(computeSwaMaxRetainedPages(mWindowSize, mPageSize));
+    for (SwaKVCacheState& state : impl->states)
+    {
+        state.reservedPages.reserve(static_cast<size_t>(mPrivatePagesPerSequence));
+        state.newPageBindings.reserve(maxRetainedPages);
+        state.pendingRetireBindings.reserve(maxRetainedPages);
+    }
+    mRequestActive = true;
+    return BeginRequestResult{SwaKVCacheStatus::kOk, std::optional<RequestHandle>{RequestHandle(std::move(impl))}};
+}
+
 BoundedSwaKVPageManager::RequestHandle::Impl& BoundedSwaKVPageManager::checkedImpl(RequestHandle& request) const
 {
     ELLM_CHECK(request.mImpl != nullptr && request.mImpl->manager == this,
@@ -262,7 +372,8 @@ BoundedSwaKVPageManager::RequestHandle::Impl const& BoundedSwaKVPageManager::che
     return *request.mImpl;
 }
 
-bool BoundedSwaKVPageManager::advance(SwaKVCacheState& state, int32_t newExactResidentTokenCount)
+bool BoundedSwaKVPageManager::advance(
+    SwaKVCacheState& state, int32_t newExactResidentTokenCount, int32_t slot, ExternalPageLifecycle const& lifecycle)
 {
     ELLM_CHECK(!state.pendingEndpoint.has_value(), "SWA KV cache advancement must be completed before another advance");
     ELLM_CHECK(
@@ -275,7 +386,14 @@ bool BoundedSwaKVPageManager::advance(SwaKVCacheState& state, int32_t newExactRe
         return true;
     }
 
-    SwaRetainedRange const retained = retainedRange(newExactResidentTokenCount, mPageSize, mWindowSize);
+    bool const completingFullInputRewind = state.retentionMode == SwaRetentionMode::kFullInputRewind;
+    if (completingFullInputRewind
+        && static_cast<int64_t>(newExactResidentTokenCount) != static_cast<int64_t>(oldEndpoint) + mPageSize)
+    {
+        return false;
+    }
+    SwaRetainedRange const retained
+        = retainedRange(newExactResidentTokenCount, mPageSize, mWindowSize, SwaRetentionMode::kLive);
     if (retained.end > mSwaPageTable.maxPagesPerSeq())
     {
         return false;
@@ -283,6 +401,16 @@ bool BoundedSwaKVPageManager::advance(SwaKVCacheState& state, int32_t newExactRe
     int32_t const firstWritePage = oldEndpoint / mPageSize;
     bool const writesExistingPartialPage = oldEndpoint % mPageSize != 0;
     bool const singleToken = static_cast<int64_t>(newExactResidentTokenCount) == static_cast<int64_t>(oldEndpoint) + 1;
+
+    if (writesExistingPartialPage)
+    {
+        std::optional<SwaPageBinding> const writeBinding = findBinding(state, firstWritePage);
+        if (!writeBinding.has_value() || externallyOwned(lifecycle, slot, writeBinding->page))
+        {
+            // Published states are page aligned, so a shared partial page indicates an incoherent seed.
+            return false;
+        }
+    }
 
     if (singleToken)
     {
@@ -306,6 +434,7 @@ bool BoundedSwaKVPageManager::advance(SwaKVCacheState& state, int32_t newExactRe
         }
         if (!mapNewPage && beginDelta == 0)
         {
+            state.retentionMode = SwaRetentionMode::kLive;
             state.pendingEndpoint = newExactResidentTokenCount;
             return true;
         }
@@ -336,6 +465,7 @@ bool BoundedSwaKVPageManager::advance(SwaKVCacheState& state, int32_t newExactRe
         }
         state.retainedLogicalPageBegin = retained.begin;
         state.retainedLogicalPageEnd = retained.end;
+        state.retentionMode = SwaRetentionMode::kLive;
         state.pendingEndpoint = newExactResidentTokenCount;
         return true;
     }
@@ -391,6 +521,7 @@ bool BoundedSwaKVPageManager::advance(SwaKVCacheState& state, int32_t newExactRe
 
     state.retainedLogicalPageBegin = retained.begin;
     state.retainedLogicalPageEnd = retained.end;
+    state.retentionMode = SwaRetentionMode::kLive;
     state.pageBindings = std::move(nextBindings);
     state.reservedPages = std::move(nextReservedPages);
     state.newPageBindings = std::move(newBindings);
@@ -407,28 +538,50 @@ void BoundedSwaKVPageManager::bindNewPages(SwaKVCacheState const& state, int32_t
     }
 }
 
-void BoundedSwaKVPageManager::retire(SwaKVCacheState& state, int32_t slot)
+void BoundedSwaKVPageManager::retire(
+    SwaKVCacheState& state, int32_t sequenceSlot, ExternalPageLifecycle const& lifecycle)
 {
     ELLM_CHECK(state.pendingEndpoint.has_value(), "SWA KV cache completion has no prepared advance");
     size_t const leasedPageCount
         = state.pageBindings.size() + state.reservedPages.size() + state.pendingRetireBindings.size();
-    ELLM_CHECK(leasedPageCount == static_cast<size_t>(mPrivatePagesPerSequence),
-        "SWA KV cache transition does not own its complete private reservation");
-    for (SwaPageBinding const& binding : state.pendingRetireBindings)
+    size_t const reservationPageCount = static_cast<size_t>(mPrivatePagesPerSequence);
+    if (mExternalPageOwnership)
     {
-        mSwaPageTable.clearEntry(slot, binding.logicalPage);
-        state.reservedPages.push_back(binding.page);
+        ELLM_CHECK(leasedPageCount == reservationPageCount
+                || (reservationPageCount > 0
+                    && leasedPageCount + swaReservationPageCredit(SwaRetentionMode::kFullInputRewind)
+                        == reservationPageCount),
+            "Externally owned SWA KV cache transition does not match its bounded reservation");
+    }
+    else
+    {
+        ELLM_CHECK(
+            leasedPageCount == reservationPageCount, "SWA KV cache transition does not match its bounded reservation");
+    }
+    while (!state.pendingRetireBindings.empty())
+    {
+        SwaPageBinding const binding = state.pendingRetireBindings.front();
+        state.pendingRetireBindings.erase(state.pendingRetireBindings.begin());
+        mSwaPageTable.clearEntry(state.resident.slot, binding.logicalPage);
+        if (externallyOwned(lifecycle, sequenceSlot, binding.page))
+        {
+            ELLM_CHECK(lifecycle.replace, "Externally owned SWA page retirement requires a replacement hook");
+            state.reservedPages.push_back(lifecycle.replace(sequenceSlot, binding.page));
+        }
+        else
+        {
+            state.reservedPages.push_back(binding.page);
+        }
     }
     state.exactResidentTokenCount = *state.pendingEndpoint;
     state.newPageBindings.clear();
-    state.pendingRetireBindings.clear();
     state.pendingEndpoint.reset();
     ELLM_CHECK(state.reservedPages.size() >= static_cast<size_t>(kSWA_REPLACEMENT_PAGES),
         "SWA KV cache retirement failed to restore its replacement reservation");
 }
 
 SwaKVCacheStatus BoundedSwaKVPageManager::preparePrefill(
-    RequestHandle& request, std::vector<int32_t> const& inputLengths)
+    RequestHandle& request, std::vector<int32_t> const& inputLengths, ExternalPageLifecycle const& lifecycle)
 {
     RequestHandle::Impl& impl = checkedImpl(request);
     ELLM_CHECK(impl.phase == RequestHandle::Impl::Phase::kAdmitted && !impl.deviceWorkPending,
@@ -447,7 +600,11 @@ SwaKVCacheStatus BoundedSwaKVPageManager::preparePrefill(
     {
         int32_t const residentSlot = impl.states[slot].resident.slot;
         mSwaPageTable.setRow(residentSlot, nullptr, 0);
-        ELLM_CHECK(advance(impl.states[slot], impl.inputLengths[slot]),
+        for (SwaPageBinding const& binding : impl.states[slot].pageBindings)
+        {
+            mSwaPageTable.setEntry(residentSlot, binding.logicalPage, binding.page);
+        }
+        ELLM_CHECK(advance(impl.states[slot], impl.inputLengths[slot], static_cast<int32_t>(slot), lifecycle),
             "SWA KV cache could not prepare the admitted prefill range");
         bindNewPages(impl.states[slot], residentSlot);
     }
@@ -457,7 +614,8 @@ SwaKVCacheStatus BoundedSwaKVPageManager::preparePrefill(
     return SwaKVCacheStatus::kOk;
 }
 
-SwaKVCacheStatus BoundedSwaKVPageManager::completePrefill(RequestHandle& request)
+SwaKVCacheStatus BoundedSwaKVPageManager::completePrefill(
+    RequestHandle& request, ExternalPageLifecycle const& lifecycle)
 {
     RequestHandle::Impl& impl = checkedImpl(request);
     ELLM_CHECK(impl.phase == RequestHandle::Impl::Phase::kExecuting && impl.deviceWorkPending,
@@ -466,23 +624,28 @@ SwaKVCacheStatus BoundedSwaKVPageManager::completePrefill(RequestHandle& request
     {
         ELLM_CHECK(impl.states[slot].pendingEndpoint == std::optional<int32_t>{impl.inputLengths[slot]},
             "SWA KV cache prefill endpoint differs from its prepared input length");
-        retire(impl.states[slot], impl.states[slot].resident.slot);
+        retire(impl.states[slot], static_cast<int32_t>(slot), lifecycle);
     }
     // The caller invokes this only after the runtime's existing host-visible prefill completion point.
     impl.deviceWorkPending = false;
     return SwaKVCacheStatus::kOk;
 }
 
-SwaKVCacheStatus BoundedSwaKVPageManager::prepareDecodeStep(RequestHandle& request)
+SwaKVCacheStatus BoundedSwaKVPageManager::prepareDecodeStep(
+    RequestHandle& request, ExternalPageLifecycle const& lifecycle, std::vector<int32_t> const* advanceCounts)
 {
     RequestHandle::Impl& impl = checkedImpl(request);
     ELLM_CHECK(impl.phase == RequestHandle::Impl::Phase::kExecuting && !impl.deviceWorkPending,
         "SWA KV cache decode preparation requires terminal prior work");
+    ELLM_CHECK(advanceCounts == nullptr || advanceCounts->size() == impl.states.size(),
+        "SWA KV cache decode preparation needs one advance count per slot");
     for (size_t slot = 0; slot < impl.states.size(); ++slot)
     {
         SwaKVCacheState& state = impl.states[slot];
-        if (state.exactResidentTokenCount == std::numeric_limits<int32_t>::max()
-            || !advance(state, state.exactResidentTokenCount + 1))
+        int32_t const advanceBy = advanceCounts == nullptr ? 1 : (*advanceCounts)[slot];
+        ELLM_CHECK(advanceBy >= 1, "SWA KV cache decode step advances every slot by at least one token");
+        if (state.exactResidentTokenCount > std::numeric_limits<int32_t>::max() - advanceBy
+            || !advance(state, state.exactResidentTokenCount + advanceBy, static_cast<int32_t>(slot), lifecycle))
         {
             impl.phase = RequestHandle::Impl::Phase::kFinishing;
             return SwaKVCacheStatus::kRequestFailed;
@@ -494,14 +657,15 @@ SwaKVCacheStatus BoundedSwaKVPageManager::prepareDecodeStep(RequestHandle& reque
     return SwaKVCacheStatus::kOk;
 }
 
-SwaKVCacheStatus BoundedSwaKVPageManager::completeDecodeStep(RequestHandle& request)
+SwaKVCacheStatus BoundedSwaKVPageManager::completeDecodeStep(
+    RequestHandle& request, ExternalPageLifecycle const& lifecycle)
 {
     RequestHandle::Impl& impl = checkedImpl(request);
     ELLM_CHECK(impl.phase == RequestHandle::Impl::Phase::kExecuting && impl.deviceWorkPending,
         "SWA KV cache decode completion requires pending model work");
     for (size_t slot = 0; slot < impl.states.size(); ++slot)
     {
-        retire(impl.states[slot], impl.states[slot].resident.slot);
+        retire(impl.states[slot], static_cast<int32_t>(slot), lifecycle);
     }
     // Vanilla decoding has already reached its existing host-visible completion point.
     impl.deviceWorkPending = false;
@@ -556,19 +720,33 @@ SwaKVCacheStatus BoundedSwaKVPageManager::compactBatch(RequestHandle& request)
     std::vector<int32_t> const& oldToNew = impl.pendingCompactionMapping;
     int32_t const newBatchSize = impl.pendingCompactionBatchSize;
     int32_t const oldBatchSize = static_cast<int32_t>(impl.states.size());
-    for (int32_t oldSlot = 0; oldSlot < oldBatchSize; ++oldSlot)
+    if (!mExternalPageOwnership)
     {
-        if (oldToNew[static_cast<size_t>(oldSlot)] < 0)
+        for (int32_t oldSlot = 0; oldSlot < oldBatchSize; ++oldSlot)
         {
-            int32_t const residentSlot = impl.states[static_cast<size_t>(oldSlot)].resident.slot;
-            mBasePageTable.setRow(residentSlot, nullptr, 0);
-            mSwaPageTable.setRow(residentSlot, nullptr, 0);
-            mBaseCache.clearResidentSlot(residentSlot, impl.stream);
+            if (oldToNew[static_cast<size_t>(oldSlot)] < 0)
+            {
+                int32_t const residentSlot = impl.states[static_cast<size_t>(oldSlot)].resident.slot;
+                mBasePageTable.setRow(residentSlot, nullptr, 0);
+                mSwaPageTable.setRow(residentSlot, nullptr, 0);
+                mBaseCache.clearResidentSlot(residentSlot, impl.stream);
+            }
         }
+        mBasePageTable.upload(impl.stream);
+        mSwaPageTable.uploadDirty(impl.stream);
+        mBaseCache.compactKVCacheLengths(*impl.pendingDeviceBatchMapping, oldBatchSize, newBatchSize, impl.stream);
     }
-    mBasePageTable.upload(impl.stream);
-    mSwaPageTable.uploadDirty(impl.stream);
-    mBaseCache.compactKVCacheLengths(*impl.pendingDeviceBatchMapping, oldBatchSize, newBatchSize, impl.stream);
+    else
+    {
+        for (int32_t oldSlot = 0; oldSlot < oldBatchSize; ++oldSlot)
+        {
+            if (oldToNew[static_cast<size_t>(oldSlot)] < 0)
+            {
+                mSwaPageTable.setRow(impl.states[static_cast<size_t>(oldSlot)].resident.slot, nullptr, 0);
+            }
+        }
+        mSwaPageTable.uploadDirty(impl.stream);
+    }
 
     SwaKVCacheStatus const syncStatus = synchronize(request);
     if (syncStatus != SwaKVCacheStatus::kOk)
@@ -593,7 +771,10 @@ SwaKVCacheStatus BoundedSwaKVPageManager::compactBatch(RequestHandle& request)
     impl.pendingCompactionMapping.clear();
     impl.pendingCompactionBatchSize = -1;
     impl.pendingDeviceBatchMapping = nullptr;
-    mBaseCache.setActiveBatchSize(newBatchSize);
+    if (!mExternalPageOwnership)
+    {
+        mBaseCache.setActiveBatchSize(newBatchSize);
+    }
     if (newBatchSize == 0)
     {
         impl.phase = RequestHandle::Impl::Phase::kFinishing;
@@ -605,6 +786,19 @@ void BoundedSwaKVPageManager::releaseState(SwaKVCacheState& state) noexcept
 {
     size_t const leasedPageCount
         = state.pageBindings.size() + state.reservedPages.size() + state.pendingRetireBindings.size();
+    if (mExternalPageOwnership)
+    {
+        if (leasedPageCount > static_cast<size_t>(mPrivatePagesPerSequence))
+        {
+            std::terminate();
+        }
+        state.pageBindings.clear();
+        state.reservedPages.clear();
+        state.newPageBindings.clear();
+        state.pendingRetireBindings.clear();
+        state.pendingEndpoint.reset();
+        return;
+    }
     if (leasedPageCount != static_cast<size_t>(mPrivatePagesPerSequence)
         || mFreePages.size() + leasedPageCount > mFreePages.capacity())
     {
@@ -749,6 +943,12 @@ SwaKVCacheState const& BoundedSwaKVPageManager::state(RequestHandle const& reque
     ELLM_CHECK(slot >= 0 && slot < static_cast<int32_t>(impl.states.size()),
         "SWA KV cache state slot is outside the active batch");
     return impl.states[static_cast<size_t>(slot)];
+}
+
+SwaWindowStateView BoundedSwaKVPageManager::states(RequestHandle const& request) const
+{
+    RequestHandle::Impl const& impl = checkedImpl(request);
+    return SwaWindowStateView{impl.states.data(), impl.states.size()};
 }
 
 } // namespace rt

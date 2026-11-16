@@ -31,6 +31,8 @@
 #include <limits>
 #include <numeric>
 #include <random>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -119,14 +121,19 @@ struct QsaIndexerHarness
         cosSinF = makeCosSinTable(seqLen);
 
         dIndexQk = rt::Tensor(
-            {batch, seqLen, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "indexQk");
-        dCosSin = rt::Tensor({seqLen, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "cosSin");
-        dLens = rt::Tensor({batch}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "contextLengths");
-        dWQ = rt::Tensor({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "wQ");
-        dWK = rt::Tensor({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "wK");
+            {batch, seqLen, qsa_ref::kIndexQkWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "indexQk");
+        // Token-aligned rope rows, as the ragged runtime binds them: row b*S + t is the cos/sin of
+        // token (b, t); padding rows are NaN and must never be read.
+        dCosSin = rt::Tensor({static_cast<int64_t>(batch) * seqLen, qsa_ref::kRotaryDim}, rt::DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT, "cosSin");
+        dLens = rt::Tensor({batch}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "contextLengths");
+        dWQ = rt::Tensor({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "wQ");
+        dWK = rt::Tensor({qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "wK");
         uploadIndexQk(indexQkH);
-        CUDA_CHECK(
-            cudaMemcpy(dCosSin.rawPointer(), cosSinF.data(), cosSinF.size() * sizeof(float), cudaMemcpyHostToDevice));
+        std::vector<float> const cosSinRows
+            = qsa_ref::gatherCosSinRows(cosSinF, qsa_ref::prefillRopePositions(lens, seqLen));
+        CUDA_CHECK(cudaMemcpy(
+            dCosSin.rawPointer(), cosSinRows.data(), cosSinRows.size() * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(dLens.rawPointer(), lens.data(), lens.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(dWQ.rawPointer(), wQH.data(), wQH.size() * sizeof(half), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(dWK.rawPointer(), wKH.data(), wKH.size() * sizeof(half), cudaMemcpyHostToDevice));
@@ -142,15 +149,18 @@ struct QsaIndexerHarness
 //! Full pipeline on the harness inputs; returns host outIdx [batch * seqLen, kWidth].
 std::vector<int32_t> runPrefill(QsaIndexerHarness const& h)
 {
-    size_t const workspaceBytes = kernel::getQsaIndexerWorkspaceSize(h.batch, h.seqLen);
+    int32_t const numBlocks = qsa_ref::ceilDiv(h.seqLen, qsa_ref::kRatio);
+    size_t const workspaceBytes = kernel::getQsaIndexerWorkspaceSize(h.batch, h.seqLen, numBlocks, false);
     rt::Tensor workspace(
-        {static_cast<int64_t>(workspaceBytes)}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8, "workspace");
-    rt::Tensor outIdx(
-        {static_cast<int64_t>(h.batch) * h.seqLen, kWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "outIdx");
+        {static_cast<int64_t>(workspaceBytes)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "workspace");
+    // Invisible scores stay untouched; poison them with large positive floats to expose an overlong sort.
+    CUDA_CHECK(cudaMemset(workspace.rawPointer(), 0x7f, workspaceBytes));
+    rt::Tensor outIdx({static_cast<int64_t>(h.batch) * h.seqLen, kWidth}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kINT32, "outIdx");
     kernel::runQsaIndexerPrefill<half>(outIdx.dataPointer<int32_t>(), h.dIndexQk.dataPointer<half>(),
-        h.dCosSin.dataPointer<float>(), h.dLens.dataPointer<int32_t>(), h.dWQ.dataPointer<half>(),
-        h.dWK.dataPointer<half>(), h.rmsEps, workspace.rawPointer(), workspaceBytes, h.batch, h.seqLen,
-        /* poolState = */ nullptr, /* stream = */ nullptr);
+        h.dCosSin.dataPointer<float>(), h.dLens.dataPointer<int32_t>(), nullptr, h.dWQ.dataPointer<half>(),
+        h.dWK.dataPointer<half>(), h.rmsEps, nullptr, workspace.rawPointer(), workspaceBytes, h.batch, h.seqLen,
+        numBlocks, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
     return copyDeviceToHost<int32_t>(outIdx);
 }
@@ -269,7 +279,7 @@ TEST(QsaIndexerKernels, QPrepMatchesReference)
     QsaIndexerHarness h(kBatch, kSeqLen, {50, 67}, /* seed = */ 123);
 
     rt::Tensor dQNormed({kBatch, kSeqLen, qsa_ref::kNumHeads, qsa_ref::kHeadDim}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "qNormed");
+        trt_edgellm::DataType::kHALF, "qNormed");
     kernel::launchQsaIndexQPrep<half>(dQNormed.dataPointer<half>(), h.dIndexQk.dataPointer<half>(),
         h.dCosSin.dataPointer<float>(), h.dLens.dataPointer<int32_t>(), h.dWQ.dataPointer<half>(), h.rmsEps, kBatch,
         kSeqLen, nullptr);
@@ -311,10 +321,11 @@ TEST(QsaIndexerKernels, KCompressMatchesReference)
     QsaIndexerHarness h(kBatch, kSeqLen, {50, 67}, /* seed = */ 321);
     int32_t const numBlocks = h.numBlocks;
 
-    rt::Tensor dKbar({kBatch, numBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "kbar");
+    rt::Tensor dKbar(
+        {kBatch, numBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "kbar");
     kernel::launchQsaIndexKCompress<half>(dKbar.dataPointer<half>(), h.dIndexQk.dataPointer<half>(),
         h.dCosSin.dataPointer<float>(), h.dLens.dataPointer<int32_t>(), h.dWK.dataPointer<half>(), h.rmsEps, kBatch,
-        kSeqLen, numBlocks, /* blockBegin = */ 0, /* blockEnd = */ numBlocks, /* pastLen = */ 0, nullptr);
+        kSeqLen, numBlocks, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<half> const got = copyDeviceToHost<half>(dKbar);
 
@@ -350,9 +361,12 @@ TEST(QsaIndexerKernels, ScoresMatchReference)
     {
         GTEST_SKIP() << "No CUDA device available";
     }
-    constexpr int32_t kBatch = 2;
-    constexpr int32_t kSeqLen = 64;
-    QsaIndexerHarness h(kBatch, kSeqLen, {64, 37}, /* seed = */ 777);
+    // Given ragged queries spanning a 64-column CTA boundary and an empty sequence,
+    // When the scorer writes visible prefixes and their device-side lengths,
+    // Then live scores match the reference and all other cells retain their canary.
+    constexpr int32_t kBatch = 3;
+    constexpr int32_t kSeqLen = 260;
+    QsaIndexerHarness h(kBatch, kSeqLen, {260, 37, 0}, /* seed = */ 777);
     int32_t const numBlocks = h.numBlocks;
     int32_t const numRows = kBatch * kSeqLen;
 
@@ -372,22 +386,30 @@ TEST(QsaIndexerKernels, ScoresMatchReference)
         kbarH[i] = __float2half(kbarF[i]);
     }
     rt::Tensor dQNormed({kBatch, kSeqLen, qsa_ref::kNumHeads, qsa_ref::kHeadDim}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "qNormed");
-    rt::Tensor dKbar({kBatch, numBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "kbar");
+        trt_edgellm::DataType::kHALF, "qNormed");
+    rt::Tensor dKbar(
+        {kBatch, numBlocks, qsa_ref::kHeadDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "kbar");
     copyHostToDevice(dQNormed, qNormedH);
     copyHostToDevice(dKbar, kbarH);
 
-    rt::Tensor dLogits({numRows, numBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "logits");
-    kernel::launchQsaIndexScores<half>(dLogits.dataPointer<float>(), dQNormed.dataPointer<half>(),
-        dKbar.dataPointer<half>(), h.dLens.dataPointer<int32_t>(), kBatch, kSeqLen, numBlocks, /* rowStart = */ 0,
-        numRows, nullptr);
+    rt::Tensor dLogits({numRows, numBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "logits");
+    rt::Tensor dVisibleCounts({numRows}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "visibleCounts");
+    constexpr float kUntouched = 12345.0f;
+    copyHostToDevice(dLogits, std::vector<float>(static_cast<size_t>(numRows) * numBlocks, kUntouched));
+    copyHostToDevice(dVisibleCounts, std::vector<int32_t>(numRows, -1));
+    kernel::launchQsaIndexScores<half>(dLogits.dataPointer<float>(), dVisibleCounts.dataPointer<int32_t>(),
+        dQNormed.dataPointer<half>(), dKbar.dataPointer<half>(), h.dLens.dataPointer<int32_t>(), kBatch, kSeqLen,
+        numBlocks, /* rowStart = */ 0, numRows, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<float> const got = copyDeviceToHost<float>(dLogits);
+    std::vector<int32_t> const visibleCounts = copyDeviceToHost<int32_t>(dVisibleCounts);
 
     for (int32_t b = 0; b < kBatch; ++b)
     {
         for (int32_t t = 0; t < kSeqLen; ++t)
         {
+            ASSERT_EQ(visibleCounts[b * kSeqLen + t], t < h.lens[b] ? (t + 1) / qsa_ref::kRatio : 0)
+                << "b=" << b << " t=" << t;
             std::vector<double> const ref = qsa_ref::refLogitsRow(qNormedF, kbarF, h.lens, kBatch, kSeqLen, b, t);
             for (int32_t g = 0; g < numBlocks; ++g)
             {
@@ -395,7 +417,7 @@ TEST(QsaIndexerKernels, ScoresMatchReference)
                 bool const masked = (t >= h.lens[b]) || (g >= (t + 1) / qsa_ref::kRatio);
                 if (masked)
                 {
-                    ASSERT_EQ(v, -FLT_MAX) << "b=" << b << " t=" << t << " g=" << g;
+                    ASSERT_EQ(v, kUntouched) << "b=" << b << " t=" << t << " g=" << g;
                 }
                 else
                 {
@@ -438,14 +460,14 @@ TEST(QsaIndexerKernels, ExpandMatchesReferenceExactly)
             std::shuffle(row, row + numBlocks, rng);
         }
 
-        rt::Tensor dSortedIds({numRows, numBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "sortedIds");
-        rt::Tensor dLens({c.batch}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "lens");
-        rt::Tensor dOutIdx({numRows, kWidth}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "outIdx");
+        rt::Tensor dSortedIds({numRows, numBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "sortedIds");
+        rt::Tensor dLens({c.batch}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "lens");
+        rt::Tensor dOutIdx({numRows, kWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "outIdx");
         copyHostToDevice(dSortedIds, sortedIds);
         copyHostToDevice(dLens, c.lens);
 
         kernel::launchQsaIndexExpand(dOutIdx.dataPointer<int32_t>(), dSortedIds.dataPointer<int32_t>(),
-            dLens.dataPointer<int32_t>(), c.batch, c.seqLen, numBlocks, /* rowStart = */ 0, numRows, nullptr);
+            dLens.dataPointer<int32_t>(), nullptr, c.batch, c.seqLen, numBlocks, /* rowStart = */ 0, numRows, nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
         std::vector<int32_t> const got = copyDeviceToHost<int32_t>(dOutIdx);
 
@@ -464,6 +486,38 @@ TEST(QsaIndexerKernels, ExpandMatchesReferenceExactly)
             }
         }
     }
+}
+
+TEST(QsaIndexerPrefill, RejectsUndersizedZeroPastScoreWidth)
+{
+    if (!hasCudaDevice())
+    {
+        GTEST_SKIP() << "No CUDA device available";
+    }
+    // Given a ragged empty-prefix input whose valid rows fit one block but padded length needs two,
+    // When the caller supplies only one score column,
+    // Then reject the host shape before launching, regardless of the device query length.
+    // Mutation: round the null-past width guard down instead of up; this input then runs safely.
+    QsaIndexerHarness h(/* batch = */ 1, /* seqLen = */ 5, {4}, /* seed = */ 17);
+    constexpr int32_t kMaxBlocks = 1;
+    size_t const workspaceBytes = kernel::getQsaIndexerWorkspaceSize(h.batch, h.seqLen, kMaxBlocks, false);
+    rt::Tensor workspace(
+        {static_cast<int64_t>(workspaceBytes)}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT8, "workspace");
+    rt::Tensor outIdx({h.batch * h.seqLen, kWidth}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "outIdx");
+    try
+    {
+        kernel::runQsaIndexerPrefill<half>(outIdx.dataPointer<int32_t>(), h.dIndexQk.dataPointer<half>(),
+            h.dCosSin.dataPointer<float>(), h.dLens.dataPointer<int32_t>(), nullptr, h.dWQ.dataPointer<half>(),
+            h.dWK.dataPointer<half>(), h.rmsEps, nullptr, workspace.rawPointer(), workspaceBytes, h.batch, h.seqLen,
+            kMaxBlocks, nullptr);
+        ADD_FAILURE() << "Expected the padded zero-past score width to be rejected";
+    }
+    catch (std::runtime_error const& e)
+    {
+        EXPECT_NE(std::string(e.what()).find("maxBlocks must cover ceilDiv(seqLen, 4) when pastLengths is null"),
+            std::string::npos);
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 TEST(QsaIndexerPrefill, MixedLengthsE2E)
@@ -625,6 +679,9 @@ TEST(QsaIndexerPrefill, MultiChunkDeterministicRuns)
     // chunk, so this run exercises the chunk loop twice.
     constexpr int32_t kBatch = 1;
     constexpr int32_t kSeqLen = 8192;
+    // A smaller page-table capacity increases the row chunk but must fit the profile's workspace.
+    ASSERT_LE(kernel::getQsaIndexerWorkspaceSize(kBatch, kSeqLen, 2048, true),
+        kernel::getQsaIndexerWorkspaceSize(kBatch, kSeqLen, 4096, true));
     QsaIndexerHarness h(kBatch, kSeqLen, {kSeqLen}, /* seed = */ 31337);
 
     std::vector<int32_t> const first = runPrefill(h);

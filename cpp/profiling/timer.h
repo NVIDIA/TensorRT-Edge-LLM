@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cuda_runtime_api.h>
 #include <functional>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <string>
@@ -244,81 +245,168 @@ struct StageTimingData
     }
 };
 
-/*!
- * @brief CUDA timer with RAII and deferred calculation
- *
- * Provides stage-based timing using CUDA events with automatic cleanup.
- */
+//! One completed invocation; model forwards are children of their semantic stage.
+struct TimingSample
+{
+    std::string stageId;
+    std::string parentStage;
+    uint64_t requestId{0};
+    int32_t round{-1};
+    int64_t batchSize{0};
+    int64_t queryTokens{0};
+    int64_t selectedTokens{0};
+    std::vector<int32_t> pastLengths;
+    bool forward{false};
+    int32_t forwardIndex{-1}; //!< Forward ordinal within this request and round; -1 for stages.
+    float gpuTimeMs{0};
+};
+
+//! Host-visible acceptance facts collected at the production token readback boundary.
+struct AcceptanceSample
+{
+    uint64_t requestId;
+    int32_t round;
+    int32_t sequenceIndex;
+    int32_t proposedDrafts;
+    int32_t acceptedDrafts;
+    int32_t outputTokens;
+    int32_t bonusTokens;
+    int32_t baseMaterializedLength;
+    bool provenanceExact;
+    bool proposedExact; //!< False when proposedDrafts is a verify-tree capacity, not valid proposal nodes.
+};
+
+//! Preallocated event pool. Longer-lived profiling can grow without waiting for earlier stages.
 class Timer
 {
 public:
-    //! @brief Default constructor
-    Timer() = default;
-
-    //! @brief Destructor
-    ~Timer() = default;
-
-    //! @brief Reset all timing data
+    void reserve(size_t maxSamples, size_t maxSequences = 1);
+    //! Number of timing slots whose CUDA events have been created.
+    size_t capacity() const noexcept
+    {
+        return mPending.size();
+    }
+    //! When disabled, profiling keeps host-side acceptance records but creates no CUDA events or stage samples.
+    void setGpuTimingEnabled(bool enabled) noexcept
+    {
+        mGpuTimingEnabled = enabled;
+    }
+    void recordAcceptance(int32_t sequenceIndex, int32_t proposed, int32_t accepted, int32_t output, int32_t bonus,
+        int32_t baseLength, bool provenanceExact = false, bool proposedExact = false);
+    std::vector<AcceptanceSample> const& getAcceptanceSamples() const noexcept
+    {
+        return mAcceptanceSamples;
+    }
     void reset() noexcept;
-
-    /*!
-     * @brief Start timing a stage with automatic cleanup
-     * @param stageId Stage identifier
-     * @param stream CUDA stream (default: 0)
-     * @return RAII session that stops timing on destruction
-     * @throws std::runtime_error if a CUDA error occurs
-     */
+    void beginRequest();
+    void setRound(int32_t round) noexcept;
+    //! Host-known past lengths for the next forward; empty means unavailable without device readback.
+    void setPastLengths(std::vector<int32_t> const& lengths);
     TimerSession startStage(std::string const& stageId, cudaStream_t stream);
-
-    /*!
-     * @brief Get timing data for a stage
-     * @param stageId Stage identifier
-     * @return Timing data if available, nullopt otherwise
-     * @throws std::runtime_error if a CUDA error occurs
-     */
+    TimerSession startForward(
+        std::string const& modelRole, int64_t batch, int64_t tokens, int64_t selected, cudaStream_t stream);
     std::optional<StageTimingData> getTimingData(std::string const& stageId) const;
-
-    /*!
-     * @brief Get all timing data
-     * @return Map of stage IDs to timing data
-     * @throws std::runtime_error if a CUDA error occurs
-     */
     std::unordered_map<std::string, StageTimingData> const& getAllTimingData() const;
+    std::vector<TimingSample> const& getSamples() const;
 
 private:
-    mutable std::unordered_map<std::string, StageTimingData> mTimingData; //!< Timing data per stage
-
-    mutable std::unordered_map<std::string, TimerPair> mTimers;                 //!< Timer pairs per stage
-    mutable std::unordered_map<std::string, std::vector<float>> mTimingResults; //!< Pending results
-    mutable std::unordered_set<std::string> mPendingTimings;                    //!< Stages with pending timings
-
-    //! @brief Start timer for stage
-    //! @throws std::runtime_error if a CUDA error occurs
-    void startTimer(std::string const& stageId, cudaStream_t stream);
-
-    //! @brief End timer for stage
-    //! @throws std::runtime_error if a CUDA error occurs
-    void endTimer(std::string const& stageId, cudaStream_t stream);
-
-    //! @brief Record timing measurement
-    //! @throws std::runtime_error if a CUDA error occurs
-    void recordTiming(std::string const& stageId) const;
-
-    //! @brief Handle stage completion
-    //! @throws std::runtime_error if a CUDA error occurs
-    void onStageComplete(std::string const& stageId, cudaStream_t stream);
+    void grow(size_t maxSamples, size_t maxSequences);
+    struct PendingTiming
+    {
+        TimerPair events;
+        TimingSample sample;
+        bool collected{false};
+        cudaStream_t stream{};
+    };
+    TimerSession start(
+        std::string const& name, bool forward, int64_t batch, int64_t tokens, int64_t selected, cudaStream_t stream);
+    void collect() const;
+    mutable std::vector<PendingTiming> mPending;
+    size_t mUsed{0};
+    size_t mMaxSequences{0};
+    bool mGpuTimingEnabled{true};
+    std::vector<size_t> mActive;
+    uint64_t mRequestId{0};
+    int32_t mRound{-1};
+    int32_t mNextForwardIndex{0};
+    std::vector<int32_t> mPastLengths;
+    mutable std::unordered_map<std::string, StageTimingData> mTimingData;
+    mutable std::vector<TimingSample> mSamples;
+    std::vector<AcceptanceSample> mAcceptanceSamples;
 };
 
-/*!
- * @brief Convenience macro for RAII-based stage timing
- *
- * Usage: TIME_STAGE("stage_name", stream);
- */
+//! Keeps legacy profiling call sites attached to the current runtime's event storage.
+class TimerProxy
+{
+public:
+    void select(std::shared_ptr<Timer> timer)
+    {
+        mTimer = std::move(timer);
+    }
+    void reserve(size_t size, size_t maxSequences = 1)
+    {
+        mTimer->reserve(size, maxSequences);
+    }
+    size_t capacity() const noexcept
+    {
+        return mTimer->capacity();
+    }
+    void recordAcceptance(int32_t sequenceIndex, int32_t proposed, int32_t accepted, int32_t output, int32_t bonus,
+        int32_t baseLength, bool provenanceExact = false, bool proposedExact = false)
+    {
+        mTimer->recordAcceptance(
+            sequenceIndex, proposed, accepted, output, bonus, baseLength, provenanceExact, proposedExact);
+    }
+    std::vector<AcceptanceSample> const& getAcceptanceSamples() const noexcept
+    {
+        return mTimer->getAcceptanceSamples();
+    }
+    void reset() noexcept
+    {
+        mTimer->reset();
+    }
+    void beginRequest()
+    {
+        mTimer->beginRequest();
+    }
+    void setRound(int32_t round) noexcept
+    {
+        mTimer->setRound(round);
+    }
+    void setPastLengths(std::vector<int32_t> const& lengths)
+    {
+        mTimer->setPastLengths(lengths);
+    }
+    TimerSession startStage(std::string const& stage, cudaStream_t stream)
+    {
+        return mTimer->startStage(stage, stream);
+    }
+    TimerSession startForward(
+        std::string const& modelRole, int64_t batch, int64_t tokens, int64_t selected, cudaStream_t stream)
+    {
+        return mTimer->startForward(modelRole, batch, tokens, selected, stream);
+    }
+    std::optional<StageTimingData> getTimingData(std::string const& stage) const
+    {
+        return mTimer->getTimingData(stage);
+    }
+    std::unordered_map<std::string, StageTimingData> const& getAllTimingData() const
+    {
+        return mTimer->getAllTimingData();
+    }
+    std::vector<TimingSample> const& getSamples() const
+    {
+        return mTimer->getSamples();
+    }
+
+private:
+    std::shared_ptr<Timer> mTimer{std::make_shared<Timer>()};
+};
+
 #define TIME_STAGE(stageId, stream) auto _session = trt_edgellm::gTimer.startStage(stageId, stream)
 
 } // namespace timer
 
-//! Global timer instance
-inline timer::Timer gTimer;
+inline thread_local timer::TimerProxy gTimer;
 
 } // namespace trt_edgellm

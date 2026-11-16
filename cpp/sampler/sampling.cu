@@ -19,13 +19,14 @@
 #include "sampling.h"
 // clang-format on
 #include "common/checkMacros.h"
+#include "common/counterRng.h"
+#include <algorithm>
 #include <cassert>
 #include <cfloat>
 #include <cstdint>
 #include <cub/cub.cuh>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
-#include <curand_kernel.h>
 #include <limits>
 #include <stdexcept>
 
@@ -83,74 +84,15 @@ struct SamplingWorkspace
     {
         ptr = workspace;
         size = workspaceSize;
-
-        // Add alignment function (same as in size calculation)
-        auto alignSize = [](size_t size) -> size_t {
-            size_t const alignment = 256; // 256-byte alignment for optimal GPU memory access
-            return (size + alignment - 1) & ~(alignment - 1);
-        };
-
-        // Calculate buffer sizes and offsets
         size_t offset = 0;
-
         if (params.useTopK)
         {
-            // Top-K workspace layout
-            size_t tempLogitsSize = alignSize(params.batchSize * params.vocabSize * sizeof(float));
-            size_t indicesSize = alignSize(params.batchSize * 8 * params.topK * sizeof(int32_t)); // BLOCKS_PER_BEAM = 8
-            size_t valuesSize = alignSize(params.batchSize * 8 * params.topK * sizeof(float));
-
-            topkTempLogits = reinterpret_cast<float*>(static_cast<char*>(ptr) + offset);
-            offset += tempLogitsSize;
-
-            topkIndices = reinterpret_cast<int32_t*>(static_cast<char*>(ptr) + offset);
-            offset += indicesSize;
-
-            topkValues = reinterpret_cast<float*>(static_cast<char*>(ptr) + offset);
-            offset += valuesSize;
+            offset = carveTopK(offset, params.batchSize, params.vocabSize, params.topK);
         }
         else if (params.useTopP)
         {
-            // Top-P workspace layout
-            // Calculate CUB temp storage size
-            size_t cubTempStorageSize;
-            cub::DeviceSegmentedRadixSort::SortPairsDescending(nullptr, cubTempStorageSize,
-                static_cast<float*>(nullptr), static_cast<float*>(nullptr), static_cast<int32_t*>(nullptr),
-                static_cast<int32_t*>(nullptr), static_cast<int32_t>(params.vocabSize * params.batchSize),
-                params.batchSize, static_cast<int32_t*>(nullptr), static_cast<int32_t*>(nullptr));
-
-            toppTempStorage = static_cast<char*>(ptr) + offset;
-            offset += alignSize(cubTempStorageSize);
-
-            toppProbs = reinterpret_cast<float*>(static_cast<char*>(ptr) + offset);
-            offset += alignSize(params.batchSize * params.vocabSize * sizeof(float));
-
-            toppSortedProbs = reinterpret_cast<float*>(static_cast<char*>(ptr) + offset);
-            offset += alignSize(params.batchSize * params.vocabSize * sizeof(float));
-
-            toppSortedIdVals = reinterpret_cast<int32_t*>(static_cast<char*>(ptr) + offset);
-            offset += alignSize(params.batchSize * params.vocabSize * sizeof(int32_t));
-
-            toppIdVals = reinterpret_cast<int32_t*>(static_cast<char*>(ptr) + offset);
-            offset += alignSize(params.batchSize * params.vocabSize * sizeof(int32_t));
-
-            toppOffsetBuf = reinterpret_cast<int32_t*>(static_cast<char*>(ptr) + offset);
-            offset += alignSize((params.batchSize + 1) * sizeof(int32_t));
-
-            toppBeginOffsetBuf = reinterpret_cast<int32_t*>(static_cast<char*>(ptr) + offset);
-            offset += alignSize((params.batchSize + 1) * sizeof(int32_t));
-
-            toppTopKIndices = reinterpret_cast<int32_t*>(static_cast<char*>(ptr) + offset);
-            offset += alignSize(params.batchSize * params.vocabSize * sizeof(int32_t));
-
-            toppTopKValues = reinterpret_cast<float*>(static_cast<char*>(ptr) + offset);
-            offset += alignSize(params.batchSize * params.vocabSize * sizeof(float));
-
-            toppEarlyExitFlags = reinterpret_cast<int32_t*>(static_cast<char*>(ptr) + offset);
-            offset += alignSize(params.batchSize * sizeof(int32_t));
+            offset = carveTopP(offset, params.batchSize, params.vocabSize);
         }
-
-        // Validate workspace size
         ELLM_CHECK(offset <= workspaceSize,
             "Workspace size too small. Required: " + std::to_string(offset)
                 + ", provided: " + std::to_string(workspaceSize));
@@ -162,33 +104,78 @@ struct SamplingWorkspace
     {
         ptr = workspace;
         size = workspaceSize;
-
-        // Add alignment function (same as in size calculation)
-        auto alignSize = [](size_t size) -> size_t {
-            size_t const alignment = 256; // 256-byte alignment for optimal GPU memory access
-            return (size + alignment - 1) & ~(alignment - 1);
-        };
-
-        size_t offset = 0;
-
-        // Same layout as top-K sampling
-        size_t tempLogitsSize = alignSize(batchSize * vocabSize * sizeof(float));
-        size_t indicesSize = alignSize(batchSize * 8 * topK * sizeof(int32_t)); // BLOCKS_PER_BEAM = 8
-        size_t valuesSize = alignSize(batchSize * 8 * topK * sizeof(float));
-
-        topkTempLogits = reinterpret_cast<float*>(static_cast<char*>(ptr) + offset);
-        offset += tempLogitsSize;
-
-        topkIndices = reinterpret_cast<int32_t*>(static_cast<char*>(ptr) + offset);
-        offset += indicesSize;
-
-        topkValues = reinterpret_cast<float*>(static_cast<char*>(ptr) + offset);
-        offset += valuesSize;
-
-        // Validate workspace size
+        size_t const offset = carveTopK(0, batchSize, vocabSize, topK);
         ELLM_CHECK(offset <= workspaceSize,
             "Workspace size too small for topK. Required: " + std::to_string(offset)
                 + ", provided: " + std::to_string(workspaceSize));
+    }
+
+    // Setup workspace for sampleRows: the top-k region at the widest top-k, then the top-p region.
+    void setupWorkspaceForRows(void* workspace, size_t workspaceSize, int32_t batchSize, int32_t vocabSize)
+    {
+        ptr = workspace;
+        size = workspaceSize;
+        size_t offset = carveTopK(0, batchSize, vocabSize, kMaxSamplingTopK);
+        offset = carveTopP(offset, batchSize, vocabSize);
+        ELLM_CHECK(offset <= workspaceSize,
+            "Workspace size too small for per-row sampling. Required: " + std::to_string(offset)
+                + ", provided: " + std::to_string(workspaceSize));
+    }
+
+private:
+    static size_t alignSize(size_t size) noexcept
+    {
+        size_t const alignment = 256; // 256-byte alignment for optimal GPU memory access
+        return (size + alignment - 1) & ~(alignment - 1);
+    }
+
+    char* at(size_t offset) const noexcept
+    {
+        return static_cast<char*>(ptr) + offset;
+    }
+
+    // Top-K layout: temperature-scaled logits, then BLOCKS_PER_BEAM (8) candidates per k per row.
+    size_t carveTopK(size_t offset, int32_t batchSize, int32_t vocabSize, int32_t topK)
+    {
+        topkTempLogits = reinterpret_cast<float*>(at(offset));
+        offset += alignSize(batchSize * vocabSize * sizeof(float));
+        topkIndices = reinterpret_cast<int32_t*>(at(offset));
+        offset += alignSize(batchSize * 8 * topK * sizeof(int32_t));
+        topkValues = reinterpret_cast<float*>(at(offset));
+        offset += alignSize(batchSize * 8 * topK * sizeof(float));
+        return offset;
+    }
+
+    // Top-P layout: CUB temp storage, probabilities, their sorted copy and ids, segment offsets.
+    size_t carveTopP(size_t offset, int32_t batchSize, int32_t vocabSize)
+    {
+        size_t cubTempStorageSize;
+        cub::DeviceSegmentedRadixSort::SortPairsDescending(nullptr, cubTempStorageSize, static_cast<float*>(nullptr),
+            static_cast<float*>(nullptr), static_cast<int32_t*>(nullptr), static_cast<int32_t*>(nullptr),
+            static_cast<int32_t>(vocabSize * batchSize), batchSize, static_cast<int32_t*>(nullptr),
+            static_cast<int32_t*>(nullptr));
+
+        toppTempStorage = at(offset);
+        offset += alignSize(cubTempStorageSize);
+        toppProbs = reinterpret_cast<float*>(at(offset));
+        offset += alignSize(batchSize * vocabSize * sizeof(float));
+        toppSortedProbs = reinterpret_cast<float*>(at(offset));
+        offset += alignSize(batchSize * vocabSize * sizeof(float));
+        toppSortedIdVals = reinterpret_cast<int32_t*>(at(offset));
+        offset += alignSize(batchSize * vocabSize * sizeof(int32_t));
+        toppIdVals = reinterpret_cast<int32_t*>(at(offset));
+        offset += alignSize(batchSize * vocabSize * sizeof(int32_t));
+        toppOffsetBuf = reinterpret_cast<int32_t*>(at(offset));
+        offset += alignSize((batchSize + 1) * sizeof(int32_t));
+        toppBeginOffsetBuf = reinterpret_cast<int32_t*>(at(offset));
+        offset += alignSize((batchSize + 1) * sizeof(int32_t));
+        toppTopKIndices = reinterpret_cast<int32_t*>(at(offset));
+        offset += alignSize(batchSize * vocabSize * sizeof(int32_t));
+        toppTopKValues = reinterpret_cast<float*>(at(offset));
+        offset += alignSize(batchSize * vocabSize * sizeof(float));
+        toppEarlyExitFlags = reinterpret_cast<int32_t*>(at(offset));
+        offset += alignSize(batchSize * sizeof(int32_t));
+        return offset;
     }
 };
 
@@ -277,6 +264,15 @@ size_t getSelectAllTopKWorkspaceSize(int32_t batchSize, int32_t vocabSize, int32
     return workspaceSize;
 }
 
+size_t getRowSamplingWorkspaceSize(int32_t maxRows, int32_t vocabSize)
+{
+    check::check(maxRows > 0 && vocabSize > 0, "Per-row sampling workspace needs positive dimensions");
+    SamplingParams const widestTopK(maxRows, vocabSize, 1.0F, kMaxSamplingTopK, 1.0F);
+    SamplingParams const pureTopP(maxRows, vocabSize, 1.0F, 0, 0.5F);
+    return getTopKtopPSamplingWorkspaceSize(maxRows, vocabSize, widestTopK)
+        + getTopKtopPSamplingWorkspaceSize(maxRows, vocabSize, pureTopP);
+}
+
 // Device functions for math operations (FP32 only)
 __device__ float exp_device(float x)
 {
@@ -292,6 +288,114 @@ __device__ float invTemp_device(float temperature)
 {
     return (temperature < 1e-3f) ? 1000.0f : 1.0f / temperature;
 }
+
+__device__ __forceinline__ float clampUniform(float uniform)
+{
+    return fminf(fmaxf(uniform, 0.0F), 0.99999994F);
+}
+
+// Rows without a caller uniform draw from (randomSeed, randomOffset, row).
+__device__ float rowSamplingUniform(float const* rowUniforms, int32_t row, uint64_t randomSeed, uint64_t randomOffset)
+{
+    float const uniform = rowUniforms != nullptr
+        ? rowUniforms[row]
+        : counter_rng::counterUniform(randomSeed, randomOffset, static_cast<uint64_t>(row));
+    return clampUniform(uniform);
+}
+
+// How the kernels read a row's parameters. topKRow / topPRow say which path a row belongs to; a
+// kernel returns at once for rows of the other path.
+
+// The whole launch shares one SamplingParams.
+struct BatchRowParams
+{
+    SamplingParams params;
+    uint64_t randomSeed;
+    uint64_t randomOffset;
+    float const* rowUniforms;
+
+    __device__ __forceinline__ bool topKRow(int32_t) const
+    {
+        return true;
+    }
+
+    __device__ __forceinline__ bool topPRow(int32_t) const
+    {
+        return true;
+    }
+
+    __device__ __forceinline__ int32_t topK(int32_t) const
+    {
+        return params.topK;
+    }
+
+    __device__ __forceinline__ float temperature(int32_t) const
+    {
+        return params.temperature;
+    }
+
+    __device__ __forceinline__ float topP(int32_t) const
+    {
+        return params.topP;
+    }
+
+    __device__ __forceinline__ float uniform(int32_t row) const
+    {
+        return rowSamplingUniform(rowUniforms, row, randomSeed, randomOffset);
+    }
+};
+
+// Every row carries its own SamplingRow.
+struct PerRowParams
+{
+    SamplingRow const* rows;
+
+    __device__ __forceinline__ bool topKRow(int32_t row) const
+    {
+        return rows[row].topK > 0;
+    }
+
+    __device__ __forceinline__ bool topPRow(int32_t row) const
+    {
+        return rows[row].topK == 0;
+    }
+
+    __device__ __forceinline__ int32_t topK(int32_t row) const
+    {
+        return rows[row].topK;
+    }
+
+    __device__ __forceinline__ float temperature(int32_t row) const
+    {
+        return rows[row].temperature;
+    }
+
+    __device__ __forceinline__ float topP(int32_t row) const
+    {
+        return rows[row].topP;
+    }
+
+    __device__ __forceinline__ float uniform(int32_t row) const
+    {
+        return clampUniform(rows[row].uniform);
+    }
+};
+
+// One temperature for every row, for the softmax launches outside sampling.
+struct FixedTemperature
+{
+    float value;
+
+    __device__ __forceinline__ bool topPRow(int32_t) const
+    {
+        return true;
+    }
+
+    __device__ __forceinline__ float temperature(int32_t) const
+    {
+        return value;
+    }
+};
 
 // Helper structures for top-k reduction operations (FP32 only)
 struct TopK_2
@@ -512,9 +616,13 @@ __global__ void argmaxEntropyKernel(T const* __restrict__ logits, int32_t* __res
 }
 
 // Stage 1: Find top-K elements using iterative block-level reduction.
-template <typename T, int32_t BLOCK_SIZE_, int32_t BLOCKS_PER_BEAM_>
+// Stage 1: each of BLOCKS_PER_BEAM blocks per row keeps its k best candidates. A row owns
+// BLOCKS_PER_BEAM * kStride slots and packs its candidates at [lane * k + i] inside them, so stage 2
+// reads them contiguously whatever k is; kStride is the row's k for a whole-batch launch and the
+// batch's widest k when rows carry their own.
+template <typename T, int32_t BLOCK_SIZE_, int32_t BLOCKS_PER_BEAM_, typename Params>
 __global__ void topKStage1(T const* __restrict__ logits, float* tmpLogits, int32_t* topKTmpIdBuf, float* topKTmpValBuf,
-    SamplingParams const params)
+    int32_t batchSize, int32_t vocabSize, int32_t kStride, Params const params)
 {
     typedef cub::BlockReduce<TopK_2, BLOCK_SIZE_> BlockReduce;
     __shared__ typename BlockReduce::TempStorage tempStorage;
@@ -525,16 +633,15 @@ __global__ void topKStage1(T const* __restrict__ logits, float* tmpLogits, int32
     auto const batchId = bid / BLOCKS_PER_BEAM_;
     auto const blockLane = bid % BLOCKS_PER_BEAM_;
 
-    if (batchId >= params.batchSize)
+    if (batchId >= batchSize || !params.topKRow(batchId))
         return;
 
-    auto const vocabSize = params.vocabSize;
-    auto const k = params.topK;
-    auto const temperature = params.temperature;
+    auto const k = params.topK(batchId);
+    auto const temperature = params.temperature(batchId);
     auto const invTemp = invTemp_device(temperature);
 
     auto const tmpLogBufIndex = batchId * vocabSize;
-    auto const tmpTopKBufIndex = batchId * BLOCKS_PER_BEAM_ * k + blockLane * k;
+    auto const tmpTopKBufIndex = batchId * BLOCKS_PER_BEAM_ * kStride + blockLane * k;
 
     TopK_2 partial;
     float const MAX_T_VAL = FLT_MAX;
@@ -576,25 +683,24 @@ __global__ void topKStage1(T const* __restrict__ logits, float* tmpLogits, int32
 }
 
 // Stage 2: Sample from top-K elements using softmax (FP32 only)
-template <int BLOCK_SIZE_>
+template <int BLOCK_SIZE_, typename Params>
 __global__ void topKStage2Sampling(int32_t const* __restrict__ topKTmpIdBuf, float* topKTmpValBuf,
-    int32_t* __restrict__ selectedIndices, SamplingParams const params, uint64_t philoxSeed, uint64_t philoxOffset,
-    float const* __restrict__ rowUniforms)
+    int32_t* __restrict__ selectedIndices, int32_t batchSize, int32_t vocabSize, int32_t kStride, Params const params)
 {
     float const MAX_T_VAL = FLT_MAX;
 
     auto const tid = static_cast<int32_t>(threadIdx.x);
     auto const batchIdx = static_cast<int32_t>(blockIdx.x);
 
-    if (batchIdx >= params.batchSize)
+    if (batchIdx >= batchSize || !params.topKRow(batchIdx))
     {
         return;
     }
 
-    auto const k = params.topK;
-    auto const topP = params.topP;
-    auto const size = k * 8; // BLOCKS_PER_BEAM = 8
-    auto const stride = k * 8;
+    auto const k = params.topK(batchIdx);
+    auto const topP = params.topP(batchIdx);
+    auto const size = k * 8;         // BLOCKS_PER_BEAM = 8 candidates packed per row
+    auto const stride = kStride * 8; // slots owned by one row
 
     typedef cub::BlockReduce<TopK_2, BLOCK_SIZE_> BlockReduce;
     __shared__ typename BlockReduce::TempStorage tempStorage;
@@ -652,17 +758,7 @@ __global__ void topKStage2Sampling(int32_t const* __restrict__ topKTmpIdBuf, flo
     // Sample from the distribution
     if (tid == 0)
     {
-        float uniform;
-        if (rowUniforms != nullptr)
-        {
-            uniform = fminf(fmaxf(rowUniforms[batchIdx], 0.0F), 0.99999994F);
-        }
-        else
-        {
-            curandState_t localState;
-            curand_init(philoxSeed, batchIdx, philoxOffset, &localState);
-            uniform = curand_uniform(&localState);
-        }
+        float const uniform = params.uniform(batchIdx);
         float retainedSum{sSum};
         if (topP < 1.0F)
         {
@@ -688,24 +784,24 @@ __global__ void topKStage2Sampling(int32_t const* __restrict__ topKTmpIdBuf, flo
             {
                 auto idx = sId[ki];
 
-                if (idx >= 0 && idx < stride)
+                if (idx >= 0 && idx < size)
                 {
                     auto globalIdx = topKTmpIdBuf[batchIdx * stride + idx];
-                    auto outputId = (globalIdx != -1) ? (globalIdx % params.vocabSize) : (params.vocabSize - 1);
-                    outputId = (outputId == -1) ? (params.vocabSize - 1) : outputId;
+                    auto outputId = (globalIdx != -1) ? (globalIdx % vocabSize) : (vocabSize - 1);
+                    outputId = (outputId == -1) ? (vocabSize - 1) : outputId;
 
-                    if (outputId >= 0 && outputId < params.vocabSize)
+                    if (outputId >= 0 && outputId < vocabSize)
                     {
                         selectedIndices[batchIdx] = outputId;
                     }
                     else
                     {
-                        selectedIndices[batchIdx] = params.vocabSize - 1; // Safe fallback
+                        selectedIndices[batchIdx] = vocabSize - 1; // Safe fallback
                     }
                 }
                 else
                 {
-                    selectedIndices[batchIdx] = params.vocabSize - 1; // Safe fallback
+                    selectedIndices[batchIdx] = vocabSize - 1; // Safe fallback
                 }
                 break;
             }
@@ -717,18 +813,18 @@ __global__ void topKStage2Sampling(int32_t const* __restrict__ topKTmpIdBuf, flo
 // LOG_OUTPUT=false: output[i] = exp(x[i]*invT - max) / sum_exp  (probabilities for sampling)
 // LOG_OUTPUT=true:  output[i] = x[i]*invT - max - log(sum_exp)  (log-probabilities, T=1 for logprobs)
 // Use customed reductionOp to WAR CUDA12/13 compatibility issue
-template <int BLOCK_SIZE, bool LOG_OUTPUT>
+template <int BLOCK_SIZE, bool LOG_OUTPUT, typename Params>
 __global__ void softmaxKernelImpl(
-    float const* logits, float* output, int32_t batchSize, int32_t vocabSize, float temperature)
+    float const* logits, float* output, int32_t batchSize, int32_t vocabSize, Params const params)
 {
     auto const batchId = static_cast<int32_t>(blockIdx.x);
     auto const tid = static_cast<int32_t>(threadIdx.x);
 
-    if (batchId >= batchSize)
+    if (batchId >= batchSize || !params.topPRow(batchId))
         return;
 
     auto const offset = batchId * vocabSize;
-    auto const invTemp = invTemp_device(temperature);
+    auto const invTemp = invTemp_device(params.temperature(batchId));
 
     typedef cub::BlockReduce<float, BLOCK_SIZE> BlockReduce;
     __shared__ typename BlockReduce::TempStorage tempStorage;
@@ -816,10 +912,10 @@ void validateLogitBiasInputs(rt::Tensor const& logits, rt::Tensor const& tokenId
     check::check(logits.getDeviceType() == rt::DeviceType::kGPU && tokenIds.getDeviceType() == rt::DeviceType::kGPU
             && biasValues.getDeviceType() == rt::DeviceType::kGPU && offsets.getDeviceType() == rt::DeviceType::kGPU,
         "All tensors must be on GPU");
-    check::check(logits.getDataType() == nvinfer1::DataType::kFLOAT
-            && tokenIds.getDataType() == nvinfer1::DataType::kINT32
-            && biasValues.getDataType() == nvinfer1::DataType::kFLOAT
-            && offsets.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(logits.getDataType() == trt_edgellm::DataType::kFLOAT
+            && tokenIds.getDataType() == trt_edgellm::DataType::kINT32
+            && biasValues.getDataType() == trt_edgellm::DataType::kFLOAT
+            && offsets.getDataType() == trt_edgellm::DataType::kINT32,
         "Invalid tensor data types");
 
     auto const logitsShape = logits.getShape();
@@ -912,9 +1008,9 @@ void applyTokenBitmask(
     check::check(logits.getDeviceType() == rt::DeviceType::kGPU && bitmask.getDeviceType() == rt::DeviceType::kGPU
             && rowNeedsMask.getDeviceType() == rt::DeviceType::kGPU,
         "All token-bitmask tensors must be on GPU");
-    check::check(logits.getDataType() == nvinfer1::DataType::kFLOAT
-            && bitmask.getDataType() == nvinfer1::DataType::kINT32
-            && rowNeedsMask.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(logits.getDataType() == trt_edgellm::DataType::kFLOAT
+            && bitmask.getDataType() == trt_edgellm::DataType::kINT32
+            && rowNeedsMask.getDataType() == trt_edgellm::DataType::kINT32,
         "Invalid token-bitmask tensor data types");
 
     auto const logitsShape = logits.getShape();
@@ -940,8 +1036,11 @@ void applyTokenBitmask(
 }
 
 // Initialize ID values and offsets for top-p sampling
-__global__ void topPInitialize(
-    int32_t* topPIdValBuf, int32_t* topPOffsetBuf, int32_t* beginTopPOffsetBuf, int32_t batchSize, int32_t vocabSize)
+// Segment i of the sort is [beginTopPOffsetBuf[i], topPOffsetBuf[i + 1]); a row on the top-k path
+// gets an empty segment so the sort skips it.
+template <typename Params>
+__global__ void topPInitialize(int32_t* topPIdValBuf, int32_t* topPOffsetBuf, int32_t* beginTopPOffsetBuf,
+    int32_t batchSize, int32_t vocabSize, Params const params)
 {
     auto const tid = static_cast<int32_t>(threadIdx.x);
     auto const bid = static_cast<int32_t>(blockIdx.x);
@@ -950,9 +1049,9 @@ __global__ void topPInitialize(
     {
         for (auto i = tid; i < batchSize + 1; i += static_cast<int32_t>(blockDim.x))
         {
-            int32_t expectedOffset = i * vocabSize;
-            topPOffsetBuf[i] = expectedOffset;
+            int32_t const expectedOffset = i * vocabSize;
             beginTopPOffsetBuf[i] = expectedOffset;
+            topPOffsetBuf[i] = (i == 0 || params.topPRow(i - 1)) ? expectedOffset : expectedOffset - vocabSize;
         }
     }
 
@@ -1038,17 +1137,17 @@ __global__ void topPScatterProbabilities(float const* sortedProbabilities, int32
 }
 
 // Early exit optimization: check if highest probability token exceeds threshold (FP32 only)
-template <int THREADBLOCK_SIZE>
+template <int THREADBLOCK_SIZE, typename Params>
 __launch_bounds__(THREADBLOCK_SIZE) __global__ void topPBeamTopKKernel(float const* probs, int32_t* topKTmpIdBuf,
-    float* topKTmpValBuf, int32_t* earlyExitFlags, int32_t vocabSize, float topP, int32_t batchSize)
+    float* topKTmpValBuf, int32_t* earlyExitFlags, int32_t vocabSize, int32_t batchSize, Params const params)
 {
     auto const threadId = static_cast<int32_t>(threadIdx.x);
     auto const batchId = static_cast<int32_t>(blockIdx.x);
 
-    if (batchId >= batchSize)
+    if (batchId >= batchSize || !params.topPRow(batchId))
         return;
 
-    float pThreshold = topP;
+    float pThreshold = params.topP(batchId);
 
     typedef cub::BlockReduce<TopK_2, THREADBLOCK_SIZE> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
@@ -1089,10 +1188,9 @@ __launch_bounds__(THREADBLOCK_SIZE) __global__ void topPBeamTopKKernel(float con
 }
 
 // Final sampling stage using block-level prefix sum
-template <int blockSize>
+template <int blockSize, typename Params>
 __global__ void topPSampling(float const* sortedProbs, int32_t const* sortedIdVals, int32_t* selectedIndices,
-    int32_t const* topKTmpIdBuf, int32_t const* earlyExitFlags, int32_t vocabSize, uint64_t philoxSeed,
-    uint64_t philoxOffset, float topP, int32_t batchSize, float const* rowUniforms)
+    int32_t vocabSize, int32_t batchSize, Params const params)
 {
     __shared__ float randNumS;
     __shared__ float retainedMassS;
@@ -1100,12 +1198,12 @@ __global__ void topPSampling(float const* sortedProbs, int32_t const* sortedIdVa
     auto const tid = static_cast<int32_t>(threadIdx.x);
     auto const batchId = static_cast<int32_t>(blockIdx.x);
 
-    if (batchId >= batchSize)
+    if (batchId >= batchSize || !params.topPRow(batchId))
     {
         return;
     }
 
-    auto const probThreshold = topP;
+    auto const probThreshold = params.topP(batchId);
     typedef cub::BlockScan<float, blockSize> BlockScan;
     __shared__ typename BlockScan::TempStorage tempStorage;
 
@@ -1141,18 +1239,7 @@ __global__ void topPSampling(float const* sortedProbs, int32_t const* sortedIdVa
 
     if (threadIdx.x == 0)
     {
-        float randomNumber;
-        if (rowUniforms != nullptr)
-        {
-            randomNumber = fminf(fmaxf(rowUniforms[batchId], 0.0F), 0.99999994F);
-        }
-        else
-        {
-            curandState_t localState;
-            curand_init(philoxSeed, batchId, philoxOffset, &localState);
-            randomNumber = curand_uniform(&localState);
-        }
-        randNumS = randomNumber * retainedMassS;
+        randNumS = params.uniform(batchId) * retainedMassS;
     }
     __syncthreads();
 
@@ -1180,9 +1267,64 @@ __global__ void topPSampling(float const* sortedProbs, int32_t const* sortedIdVa
     }
 }
 
+// The two launch sequences, shared by the whole-batch and the per-row entry points.
+template <typename Params>
+void launchTopKSampling(float const* logits, int32_t* selectedIndices, SamplingWorkspace const& ws, int32_t batchSize,
+    int32_t vocabSize, int32_t kStride, Params const& params, cudaStream_t stream)
+{
+    constexpr int32_t BLOCK_SIZE = 256;
+    constexpr int32_t BLOCKS_PER_BEAM = 8;
+
+    // Stage 1: Find top-K elements
+    dim3 const grid1(batchSize * BLOCKS_PER_BEAM);
+    dim3 const block1(BLOCK_SIZE);
+    topKStage1<float, BLOCK_SIZE, BLOCKS_PER_BEAM><<<grid1, block1, 0, stream>>>(
+        logits, ws.topkTempLogits, ws.topkIndices, ws.topkValues, batchSize, vocabSize, kStride, params);
+
+    // Stage 2: Sample from top-K elements
+    dim3 const grid2(batchSize);
+    dim3 const block2(BLOCK_SIZE);
+    size_t const sharedMemSize = static_cast<size_t>(kStride) * (sizeof(int32_t) + sizeof(float));
+    topKStage2Sampling<BLOCK_SIZE><<<grid2, block2, sharedMemSize, stream>>>(
+        ws.topkIndices, ws.topkValues, selectedIndices, batchSize, vocabSize, kStride, params);
+}
+
+template <typename Params>
+void launchTopPSampling(float const* logits, int32_t* selectedIndices, SamplingWorkspace const& ws, int32_t batchSize,
+    int32_t vocabSize, Params const& params, cudaStream_t stream)
+{
+    constexpr int32_t BLOCK_SIZE = 256;
+
+    // Stage 0: Convert logits to probabilities using softmax
+    softmaxKernelImpl<BLOCK_SIZE, false>
+        <<<batchSize, BLOCK_SIZE, 0, stream>>>(logits, ws.toppProbs, batchSize, vocabSize, params);
+
+    // Stage 1: Initialize ids and sort segments
+    topPInitialize<<<32, 512, 0, stream>>>(
+        ws.toppIdVals, ws.toppOffsetBuf, ws.toppBeginOffsetBuf, batchSize, vocabSize, params);
+
+    // Stage 2: Early exit optimization
+    topPBeamTopKKernel<BLOCK_SIZE><<<batchSize, BLOCK_SIZE, 0, stream>>>(
+        ws.toppProbs, ws.toppTopKIndices, ws.toppTopKValues, ws.toppEarlyExitFlags, vocabSize, batchSize, params);
+
+    // Stage 3: Sort probabilities in descending order
+    size_t cubTempStorageSize;
+    cub::DeviceSegmentedRadixSort::SortPairsDescending(nullptr, cubTempStorageSize, static_cast<float*>(nullptr),
+        static_cast<float*>(nullptr), static_cast<int32_t*>(nullptr), static_cast<int32_t*>(nullptr),
+        static_cast<int32_t>(vocabSize * batchSize), batchSize, static_cast<int32_t*>(nullptr),
+        static_cast<int32_t*>(nullptr));
+    cub::DeviceSegmentedRadixSort::SortPairsDescending(ws.toppTempStorage, cubTempStorageSize, ws.toppProbs,
+        ws.toppSortedProbs, ws.toppIdVals, ws.toppSortedIdVals, vocabSize * batchSize, batchSize, ws.toppBeginOffsetBuf,
+        ws.toppOffsetBuf + 1, 0, sizeof(float) * 8, stream);
+
+    // Stage 4: Sample using block-level prefix sum
+    topPSampling<BLOCK_SIZE><<<batchSize, BLOCK_SIZE, 0, stream>>>(
+        ws.toppSortedProbs, ws.toppSortedIdVals, selectedIndices, vocabSize, batchSize, params);
+}
+
 // Updated sampling function with tensor-based interface (FP32 only)
 void topKtopPSamplingFromLogits(rt::Tensor const& logits, rt::Tensor& selectedIndices, SamplingParams const& params,
-    rt::Tensor& workspace, cudaStream_t stream, uint64_t philoxSeed, uint64_t philoxOffset,
+    rt::Tensor& workspace, cudaStream_t stream, uint64_t randomSeed, uint64_t randomOffset,
     rt::Tensor const* rowUniforms)
 {
     // Validate input tensors
@@ -1190,9 +1332,9 @@ void topKtopPSamplingFromLogits(rt::Tensor const& logits, rt::Tensor& selectedIn
             && selectedIndices.getDeviceType() == rt::DeviceType::kGPU
             && workspace.getDeviceType() == rt::DeviceType::kGPU,
         "All tensors must be on GPU");
-    check::check(logits.getDataType() == nvinfer1::DataType::kFLOAT
-            && selectedIndices.getDataType() == nvinfer1::DataType::kINT32
-            && workspace.getDataType() == nvinfer1::DataType::kINT8,
+    check::check(logits.getDataType() == trt_edgellm::DataType::kFLOAT
+            && selectedIndices.getDataType() == trt_edgellm::DataType::kINT32
+            && workspace.getDataType() == trt_edgellm::DataType::kINT8,
         "Invalid tensor data types");
 
     auto logitsShape = logits.getShape();
@@ -1205,82 +1347,99 @@ void topKtopPSamplingFromLogits(rt::Tensor const& logits, rt::Tensor& selectedIn
     if (rowUniforms != nullptr)
     {
         check::check(rowUniforms->getDeviceType() == rt::DeviceType::kGPU
-                && rowUniforms->getDataType() == nvinfer1::DataType::kFLOAT && rowUniforms->getShape().getNumDims() == 1
-                && rowUniforms->getShape()[0] == params.batchSize,
+                && rowUniforms->getDataType() == trt_edgellm::DataType::kFLOAT
+                && rowUniforms->getShape().getNumDims() == 1 && rowUniforms->getShape()[0] == params.batchSize,
             "Per-row uniforms must be a GPU float tensor with shape [batch-size]");
     }
     float const* uniformData = rowUniforms == nullptr ? nullptr : rowUniforms->dataPointer<float>();
-
-    int const BLOCK_SIZE = 256;
-    int const BLOCKS_PER_BEAM = 8;
 
     // Setup workspace partitioning
     SamplingWorkspace ws;
     ws.setupWorkspace(workspace.rawPointer(), workspace.getMemoryCapacity(), params);
 
-    // Validate workspace buffers
+    BatchRowParams const rowParams{params, randomSeed, randomOffset, uniformData};
     if (params.useTopK)
     {
         assert(ws.topkTempLogits != nullptr && ws.topkIndices != nullptr && ws.topkValues != nullptr);
-    }
-
-    if (params.useTopK)
-    {
-
-        // Stage 1: Find top-K elements
-        dim3 grid1(params.batchSize * BLOCKS_PER_BEAM);
-        dim3 block1(BLOCK_SIZE);
-
-        topKStage1<float, BLOCK_SIZE, BLOCKS_PER_BEAM><<<grid1, block1, 0, stream>>>(
-            logits.dataPointer<float>(), ws.topkTempLogits, ws.topkIndices, ws.topkValues, params);
-
-        // Stage 2: Sample from top-K elements
-        dim3 grid2(params.batchSize);
-        dim3 block2(BLOCK_SIZE);
-        size_t sharedMemSize = params.topK * sizeof(int32_t) + params.topK * sizeof(float);
-
-        topKStage2Sampling<BLOCK_SIZE><<<grid2, block2, sharedMemSize, stream>>>(ws.topkIndices, ws.topkValues,
-            selectedIndices.dataPointer<int32_t>(), params, philoxSeed, philoxOffset, uniformData);
+        launchTopKSampling(logits.dataPointer<float>(), selectedIndices.dataPointer<int32_t>(), ws, params.batchSize,
+            params.vocabSize, params.topK, rowParams, stream);
     }
     else if (params.useTopP)
     {
-        // Top-P only sampling using workspace
-
-        // Stage 0: Convert logits to probabilities using softmax
-        int const SOFTMAX_BLOCK_SIZE = 256;
-
-        softmaxKernelImpl<SOFTMAX_BLOCK_SIZE, false><<<params.batchSize, SOFTMAX_BLOCK_SIZE, 0, stream>>>(
-            logits.dataPointer<float>(), ws.toppProbs, params.batchSize, params.vocabSize, params.temperature);
-
-        // Stage 1: Initialize
-        topPInitialize<<<32, 512, 0, stream>>>(
-            ws.toppIdVals, ws.toppOffsetBuf, ws.toppBeginOffsetBuf, params.batchSize, params.vocabSize);
-
-        // Stage 2: Early exit optimization
-        int const BLOCK_SIZE_TOPK = 256;
-
-        topPBeamTopKKernel<BLOCK_SIZE_TOPK><<<params.batchSize, BLOCK_SIZE_TOPK, 0, stream>>>(ws.toppProbs,
-            ws.toppTopKIndices, ws.toppTopKValues, ws.toppEarlyExitFlags, params.vocabSize, params.topP,
-            params.batchSize);
-
-        // Stage 3: Sort probabilities in descending order
-        size_t cubTempStorageSize;
-        cub::DeviceSegmentedRadixSort::SortPairsDescending(nullptr, cubTempStorageSize, static_cast<float*>(nullptr),
-            static_cast<float*>(nullptr), static_cast<int32_t*>(nullptr), static_cast<int32_t*>(nullptr),
-            static_cast<int32_t>(params.vocabSize * params.batchSize), params.batchSize, static_cast<int32_t*>(nullptr),
-            static_cast<int32_t*>(nullptr));
-
-        cub::DeviceSegmentedRadixSort::SortPairsDescending(ws.toppTempStorage, cubTempStorageSize, ws.toppProbs,
-            ws.toppSortedProbs, ws.toppIdVals, ws.toppSortedIdVals, params.vocabSize * params.batchSize,
-            params.batchSize, ws.toppBeginOffsetBuf, ws.toppOffsetBuf + 1, 0, sizeof(float) * 8, stream);
-
-        // Stage 4: Sample using block-level prefix sum
-        int const SAMPLING_BLOCK_SIZE = 256;
-
-        topPSampling<SAMPLING_BLOCK_SIZE><<<params.batchSize, SAMPLING_BLOCK_SIZE, 0, stream>>>(ws.toppSortedProbs,
-            ws.toppSortedIdVals, selectedIndices.dataPointer<int32_t>(), ws.toppTopKIndices, ws.toppEarlyExitFlags,
-            params.vocabSize, philoxSeed, philoxOffset, params.topP, params.batchSize, uniformData);
+        launchTopPSampling(logits.dataPointer<float>(), selectedIndices.dataPointer<int32_t>(), ws, params.batchSize,
+            params.vocabSize, rowParams, stream);
     }
+}
+
+SamplingRow makeSamplingRow(RowSamplingParams const& params, float uniform) noexcept
+{
+    if (!shouldUseNonGreedySampling(params))
+    {
+        return SamplingRow{1.0F, 1, 1.0F, uniform};
+    }
+    return SamplingRow{params.temperature, params.topK, params.topP, uniform};
+}
+
+void sampleRows(rt::Tensor const& logits, rt::Tensor& selectedIndices, SamplingRow const* hostRows,
+    rt::Tensor const& deviceRows, int32_t rowCount, rt::Tensor& workspace, cudaStream_t stream)
+{
+    check::check(logits.getDeviceType() == rt::DeviceType::kGPU
+            && selectedIndices.getDeviceType() == rt::DeviceType::kGPU
+            && deviceRows.getDeviceType() == rt::DeviceType::kGPU && workspace.getDeviceType() == rt::DeviceType::kGPU,
+        "Per-row sampling tensors must be on GPU");
+    check::check(logits.getDataType() == DataType::kFLOAT && selectedIndices.getDataType() == DataType::kINT32
+            && deviceRows.getDataType() == DataType::kINT8 && workspace.getDataType() == DataType::kINT8,
+        "Per-row sampling tensor data types do not match the kernels' contract");
+    check::check(rowCount > 0 && hostRows != nullptr, "Per-row sampling needs at least one row");
+    auto const logitsShape = logits.getShape();
+    auto const indicesShape = selectedIndices.getShape();
+    check::check(logitsShape.getNumDims() == 2 && logitsShape[0] == rowCount && logitsShape[1] > 0,
+        "Logits must have shape [row-count, vocab-size]");
+    check::check(indicesShape.getNumDims() == 2 && indicesShape[0] == rowCount && indicesShape[1] == 1,
+        "Selected indices must have shape [row-count, 1]");
+    check::check(
+        static_cast<size_t>(deviceRows.getMemoryCapacity()) >= static_cast<size_t>(rowCount) * sizeof(SamplingRow),
+        "Device rows must hold one SamplingRow per row");
+    int32_t const vocabSize = static_cast<int32_t>(logitsShape[1]);
+    // The kernels index with int32: every row's logits and the row's candidate slots must fit.
+    int64_t const maxIndex = std::numeric_limits<int32_t>::max();
+    check::check(static_cast<int64_t>(rowCount) * vocabSize <= maxIndex
+            && static_cast<int64_t>(rowCount) * 8 * kMaxSamplingTopK <= maxIndex,
+        "Per-row sampling dimensions exceed int32 indexing");
+
+    // Plan the launches from the host copy: which paths are present and the widest top-k.
+    bool anyTopK = false;
+    bool anyTopP = false;
+    int32_t widestTopK = 0;
+    for (int32_t row = 0; row < rowCount; ++row)
+    {
+        SamplingRow const& r = hostRows[row];
+        if (r.topK < 0 || r.topK > kMaxSamplingTopK || r.temperature < 0.0F)
+        {
+            check::check(false,
+                "Row " + std::to_string(row) + " asks for top-k " + std::to_string(r.topK) + " and temperature "
+                    + std::to_string(r.temperature) + "; top-k must be in [0, " + std::to_string(kMaxSamplingTopK)
+                    + "] and the temperature non-negative");
+        }
+        anyTopK = anyTopK || r.topK > 0;
+        anyTopP = anyTopP || r.topK == 0;
+        widestTopK = std::max(widestTopK, r.topK);
+    }
+
+    SamplingWorkspace ws;
+    ws.setupWorkspaceForRows(workspace.rawPointer(), workspace.getMemoryCapacity(), rowCount, vocabSize);
+    PerRowParams const params{static_cast<SamplingRow const*>(deviceRows.rawPointer())};
+    if (anyTopK)
+    {
+        launchTopKSampling(logits.dataPointer<float>(), selectedIndices.dataPointer<int32_t>(), ws, rowCount, vocabSize,
+            widestTopK, params, stream);
+    }
+    if (anyTopP)
+    {
+        launchTopPSampling(logits.dataPointer<float>(), selectedIndices.dataPointer<int32_t>(), ws, rowCount, vocabSize,
+            params, stream);
+    }
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void topPProbabilitiesFromLogits(rt::Tensor const& logits, rt::Tensor& probabilities, float temperature, float topP,
@@ -1290,9 +1449,10 @@ void topPProbabilitiesFromLogits(rt::Tensor const& logits, rt::Tensor& probabili
     check::check(shape.getNumDims() == 2 && shape[0] > 0 && shape[0] <= std::numeric_limits<int32_t>::max()
             && shape[1] > 0 && shape[1] <= std::numeric_limits<int32_t>::max() && probabilities.getShape() == shape
             && logits.getDeviceType() == rt::DeviceType::kGPU && probabilities.getDeviceType() == rt::DeviceType::kGPU
-            && workspace.getDeviceType() == rt::DeviceType::kGPU && logits.getDataType() == nvinfer1::DataType::kFLOAT
-            && probabilities.getDataType() == nvinfer1::DataType::kFLOAT
-            && workspace.getDataType() == nvinfer1::DataType::kINT8 && temperature > 0.0F && topP > 0.0F
+            && workspace.getDeviceType() == rt::DeviceType::kGPU
+            && logits.getDataType() == trt_edgellm::DataType::kFLOAT
+            && probabilities.getDataType() == trt_edgellm::DataType::kFLOAT
+            && workspace.getDataType() == trt_edgellm::DataType::kINT8 && temperature > 0.0F && topP > 0.0F
             && topP <= 1.0F,
         "Top-p probability tensor contract does not match");
     int32_t const rows = static_cast<int32_t>(shape[0]);
@@ -1319,8 +1479,8 @@ void topPProbabilitiesFromLogits(rt::Tensor const& logits, rt::Tensor& probabili
     int32_t* const offsets = reinterpret_cast<int32_t*>(base + offset);
 
     constexpr int32_t kBlockSize{256};
-    softmaxKernelImpl<kBlockSize, false><<<rows, kBlockSize, 0, stream>>>(
-        logits.dataPointer<float>(), probabilities.dataPointer<float>(), rows, vocabSize, temperature);
+    softmaxKernelImpl<kBlockSize, false><<<rows, kBlockSize, 0, stream>>>(logits.dataPointer<float>(),
+        probabilities.dataPointer<float>(), rows, vocabSize, FixedTemperature{temperature});
     topPProbabilityInitialize<<<32, kBlockSize, 0, stream>>>(ids, offsets, rows, vocabSize);
     cub::DeviceSegmentedRadixSort::SortPairsDescending(cubStorage, cubStorageSize, probabilities.dataPointer<float>(),
         sortedProbabilities, ids, sortedGlobalIds, rows * vocabSize, rows, offsets, offsets + 1, 0, sizeof(float) * 8,
@@ -1421,9 +1581,9 @@ void topKLogitsToDenseProbabilities(rt::Tensor const& topKValues, rt::Tensor con
             && topKIndices.getDeviceType() == rt::DeviceType::kGPU
             && probabilities.getDeviceType() == rt::DeviceType::kGPU,
         "All tensors must be on GPU");
-    check::check(topKValues.getDataType() == nvinfer1::DataType::kFLOAT
-            && topKIndices.getDataType() == nvinfer1::DataType::kINT32
-            && probabilities.getDataType() == nvinfer1::DataType::kFLOAT,
+    check::check(topKValues.getDataType() == trt_edgellm::DataType::kFLOAT
+            && topKIndices.getDataType() == trt_edgellm::DataType::kINT32
+            && probabilities.getDataType() == trt_edgellm::DataType::kFLOAT,
         "Invalid tensor data types");
 
     auto const topKValuesShape = topKValues.getShape();
@@ -1452,9 +1612,10 @@ void selectAllTopK(rt::Tensor const& input, rt::OptionalOutputTensor topKValues,
     check::check(input.getDeviceType() == rt::DeviceType::kGPU && topKIndices.getDeviceType() == rt::DeviceType::kGPU
             && workspace.getDeviceType() == rt::DeviceType::kGPU,
         "All tensors must be on GPU");
-    check::check((input.getDataType() == nvinfer1::DataType::kFLOAT || input.getDataType() == nvinfer1::DataType::kHALF)
-            && topKIndices.getDataType() == nvinfer1::DataType::kINT32
-            && workspace.getDataType() == nvinfer1::DataType::kINT8,
+    check::check(
+        (input.getDataType() == trt_edgellm::DataType::kFLOAT || input.getDataType() == trt_edgellm::DataType::kHALF)
+            && topKIndices.getDataType() == trt_edgellm::DataType::kINT32
+            && workspace.getDataType() == trt_edgellm::DataType::kINT8,
         "Invalid tensor data types");
 
     auto inputShape = input.getShape();
@@ -1470,7 +1631,7 @@ void selectAllTopK(rt::Tensor const& input, rt::OptionalOutputTensor topKValues,
     {
         rt::Tensor& topKValuesTensor = topKValues.value().get();
         check::check(topKValuesTensor.getDeviceType() == rt::DeviceType::kGPU
-                && topKValuesTensor.getDataType() == nvinfer1::DataType::kFLOAT,
+                && topKValuesTensor.getDataType() == trt_edgellm::DataType::kFLOAT,
             "TopK values tensor must be on GPU with float data type");
         auto topKValuesShape = topKValuesTensor.getShape();
         check::check(topKValuesShape.getNumDims() == 2 && topKValuesShape[0] == batchSize && topKValuesShape[1] == topK,
@@ -1490,21 +1651,21 @@ void selectAllTopK(rt::Tensor const& input, rt::OptionalOutputTensor topKValues,
     ws.setupWorkspaceForTopK(workspace.rawPointer(), workspace.getMemoryCapacity(), batchSize, vocabSize, topK);
 
     // Create sampling parameters with temperature = 1.0 (no scaling applied to values)
-    SamplingParams params(batchSize, vocabSize, 1.0f, topK);
+    BatchRowParams const params{SamplingParams(batchSize, vocabSize, 1.0f, topK), 0U, 0U, nullptr};
 
     // Stage 1: Find top-K elements (temperature=1.0 means no value transformation)
     dim3 grid1(batchSize * BLOCKS_PER_BEAM);
     dim3 block1(BLOCK_SIZE);
 
-    if (input.getDataType() == nvinfer1::DataType::kHALF)
+    if (input.getDataType() == trt_edgellm::DataType::kHALF)
     {
-        topKStage1<half, BLOCK_SIZE, BLOCKS_PER_BEAM><<<grid1, block1, 0, stream>>>(
-            input.dataPointer<half>(), ws.topkTempLogits, ws.topkIndices, ws.topkValues, params);
+        topKStage1<half, BLOCK_SIZE, BLOCKS_PER_BEAM><<<grid1, block1, 0, stream>>>(input.dataPointer<half>(),
+            ws.topkTempLogits, ws.topkIndices, ws.topkValues, batchSize, vocabSize, topK, params);
     }
     else
     {
-        topKStage1<float, BLOCK_SIZE, BLOCKS_PER_BEAM><<<grid1, block1, 0, stream>>>(
-            input.dataPointer<float>(), ws.topkTempLogits, ws.topkIndices, ws.topkValues, params);
+        topKStage1<float, BLOCK_SIZE, BLOCKS_PER_BEAM><<<grid1, block1, 0, stream>>>(input.dataPointer<float>(),
+            ws.topkTempLogits, ws.topkIndices, ws.topkValues, batchSize, vocabSize, topK, params);
     }
 
     // Stage 2: Select final top-K from 8*K candidates and return indices + raw values
@@ -1523,10 +1684,11 @@ void selectArgmaxAndComputeEntropy(
     check::check(input.getDeviceType() == rt::DeviceType::kGPU && topIndices.getDeviceType() == rt::DeviceType::kGPU
             && entropy.getDeviceType() == rt::DeviceType::kGPU,
         "All tensors must be on GPU");
-    check::check((input.getDataType() == nvinfer1::DataType::kFLOAT || input.getDataType() == nvinfer1::DataType::kHALF
-                     || input.getDataType() == nvinfer1::DataType::kBF16)
-            && topIndices.getDataType() == nvinfer1::DataType::kINT32
-            && entropy.getDataType() == nvinfer1::DataType::kFLOAT,
+    check::check(
+        (input.getDataType() == trt_edgellm::DataType::kFLOAT || input.getDataType() == trt_edgellm::DataType::kHALF
+            || input.getDataType() == trt_edgellm::DataType::kBF16)
+            && topIndices.getDataType() == trt_edgellm::DataType::kINT32
+            && entropy.getDataType() == trt_edgellm::DataType::kFLOAT,
         "Invalid tensor data types");
 
     auto const inputShape = input.getShape();
@@ -1547,12 +1709,12 @@ void selectArgmaxAndComputeEntropy(
     constexpr int32_t kBlockSize = 256;
     dim3 const grid(rows);
     dim3 const block(kBlockSize);
-    if (input.getDataType() == nvinfer1::DataType::kHALF)
+    if (input.getDataType() == trt_edgellm::DataType::kHALF)
     {
         argmaxEntropyKernel<half, kBlockSize><<<grid, block, 0, stream>>>(input.dataPointer<half>(),
             topIndices.dataPointer<int32_t>(), entropy.dataPointer<float>(), rows, vocabSize, temperature);
     }
-    else if (input.getDataType() == nvinfer1::DataType::kBF16)
+    else if (input.getDataType() == trt_edgellm::DataType::kBF16)
     {
         argmaxEntropyKernel<__nv_bfloat16, kBlockSize><<<grid, block, 0, stream>>>(input.dataPointer<__nv_bfloat16>(),
             topIndices.dataPointer<int32_t>(), entropy.dataPointer<float>(), rows, vocabSize, temperature);
@@ -1610,7 +1772,7 @@ void logSoftmax(rt::Tensor const& logits, rt::Tensor& out, cudaStream_t stream)
     int32_t const vocabSize = static_cast<int32_t>(shape[1]);
     constexpr int32_t LOG_SOFTMAX_BLOCK = 256;
     softmaxKernelImpl<LOG_SOFTMAX_BLOCK, true><<<batchSize, LOG_SOFTMAX_BLOCK, 0, stream>>>(
-        logits.dataPointer<float>(), out.dataPointer<float>(), batchSize, vocabSize, 1.0f);
+        logits.dataPointer<float>(), out.dataPointer<float>(), batchSize, vocabSize, FixedTemperature{1.0f});
 }
 } // namespace
 
@@ -1640,10 +1802,10 @@ void extractTopKLogprobs(rt::Tensor const& logits, rt::Tensor& logprobsValues, r
             >= getExtractTopKLogprobsWorkspaceSize(batchSize, vocabSize, topK),
         "Logprobs workspace too small; size it with getExtractTopKLogprobsWorkspaceSize()");
     int8_t* const wsBase = workspace.dataPointer<int8_t>();
-    rt::Tensor logSoftmaxOut(wsBase, {batchSize, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor logSoftmaxOut(wsBase, {batchSize, vocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
     rt::Tensor topKWorkspace(wsBase + bufferBytes,
         {static_cast<int64_t>(workspace.getMemoryCapacity() - static_cast<int64_t>(bufferBytes))}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kINT8);
+        trt_edgellm::DataType::kINT8);
 
     // Compute numerically-stable log-softmax, then select top-K (values are already log-probs).
     logSoftmax(logits, logSoftmaxOut, stream);
@@ -1694,8 +1856,8 @@ void mapReducedVocabToFullVocab(rt::Tensor& vocabIds, rt::Tensor const& vocabMap
         "All tensors must be on GPU");
 
     // Validate data types
-    check::check(vocabIds.getDataType() == nvinfer1::DataType::kINT32
-            && vocabMappingTable.getDataType() == nvinfer1::DataType::kINT32,
+    check::check(vocabIds.getDataType() == trt_edgellm::DataType::kINT32
+            && vocabMappingTable.getDataType() == trt_edgellm::DataType::kINT32,
         "All tensors must have INT32 data type");
 
     // Calculate total number of elements

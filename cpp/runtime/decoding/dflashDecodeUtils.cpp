@@ -52,9 +52,9 @@ char const* blockDraftTreePolicyName(BlockDraftTreePolicy policy) noexcept
 int32_t runtimeBlockSize(DeploymentConfig const& deployment)
 {
     ELLM_CHECK(deployment.specConfig.has_value(), "cached block draft runtime block size requires specConfig.");
-    ELLM_CHECK(deployment.specConfig->dflashBlockSize > 0,
-        "cached block draft runtime block size requires resolved dflashBlockSize.");
-    return deployment.specConfig->dflashBlockSize;
+    ELLM_CHECK(deployment.specConfig->draftBlockSize > 0,
+        "cached block draft runtime block size requires resolved draftBlockSize.");
+    return deployment.specConfig->draftBlockSize;
 }
 
 bool shouldUseDDTree(DeploymentConfig const& deployment)
@@ -63,7 +63,7 @@ bool shouldUseDDTree(DeploymentConfig const& deployment)
     {
         return false;
     }
-    return deployment.specConfig->draftingTopK > 1;
+    return deployment.specConfig->draftTopK > 1;
 }
 
 CachedBlockDraftRuntimeConfig makeCachedBlockDraftRuntimeConfig(DeploymentConfig const& deployment)
@@ -73,7 +73,7 @@ CachedBlockDraftRuntimeConfig makeCachedBlockDraftRuntimeConfig(DeploymentConfig
 
     SpecDecodeMode const userMode = deployment.specDecodeMode();
     ELLM_CHECK(isCachedBlockDraftMode(userMode),
-        "cached block draft runtime config requires spec_decode_type=dflash or jetspec; got "
+        "cached block draft runtime config requires spec_decode_type=dflash, jetspec, or domino; got "
             + std::string(specDecodeModeName(userMode)) + ".");
     ELLM_CHECK(deployment.draft->specDecodeType == userMode,
         "cached block draft base/draft modes must match: base=" + std::string(specDecodeModeName(userMode))
@@ -86,43 +86,66 @@ CachedBlockDraftRuntimeConfig makeCachedBlockDraftRuntimeConfig(DeploymentConfig
     cfg.userMode = userMode;
     cfg.proposalAttention = userMode == SpecDecodeMode::kJetSpec ? ProposalAttentionPolicy::kCausal
                                                                  : ProposalAttentionPolicy::kBidirectional;
-    cfg.treePolicy = spec.draftingTopK > 1 ? BlockDraftTreePolicy::kDDTree : BlockDraftTreePolicy::kLinear;
+    cfg.treePolicy = spec.draftTopK > 1 ? BlockDraftTreePolicy::kDDTree : BlockDraftTreePolicy::kLinear;
     cfg.blockSize = runtimeBlockSize(deployment);
-    cfg.verifySize = spec.verifySize;
-    cfg.proposalLen = cfg.treePolicy == BlockDraftTreePolicy::kDDTree ? cfg.blockSize : cfg.verifySize - 1;
-    cfg.candidateTopK = spec.draftingTopK;
+    cfg.verifyTokenCount = spec.verifyTokenCount;
+    bool const isDFlash2 = userMode == SpecDecodeMode::kDFlash && deployment.base.dflashVersion == DFlashVersion::kV2;
+    // DFlash V1/JetSpec/Domino DDTree reads logits rows [anchor, proposals...] of the full block; a DFlash2 draft
+    // emits only the blockSize - 1 proposal rows.
+    cfg.proposalLen = cfg.treePolicy == BlockDraftTreePolicy::kDDTree && !isDFlash2 ? cfg.blockSize : cfg.blockSize - 1;
+    cfg.candidateTopK = spec.draftTopK;
     cfg.maskTokenId = deployment.draft->specDraftMaskTokenId > 0 ? deployment.draft->specDraftMaskTokenId
                                                                  : deployment.base.specDraftMaskTokenId;
     cfg.draftHiddenSize = spec.draftHiddenSize;
     cfg.baseOutputHiddenDim = spec.baseOutputHiddenDim;
     cfg.draftVocabSize = deployment.draft->outputVocabSize;
+    if (userMode == SpecDecodeMode::kDomino)
+    {
+        cfg.correctionHead = BlockDraftCorrectionHead::kDomino;
+        cfg.dominoGruHiddenDim = deployment.draft->dominoGruHiddenDim;
+        cfg.dominoProjDim = deployment.draft->dominoProjDim;
+        cfg.dominoPoolSize = deployment.draft->dominoPoolSize;
+    }
 
-    ELLM_CHECK(spec.draftingStep == 1,
+    ELLM_CHECK(spec.draftSteps == 1,
         std::string(specDecodeModeName(userMode))
-            + " cached block draft supports draftingStep=1 only; one draft forward emits the full block.");
+            + " cached block draft supports draftSteps=1 only; one draft forward emits the full block.");
     ELLM_CHECK(cfg.candidateTopK >= 1, "cached block draft runtime config requires candidateTopK >= 1.");
     if (cfg.treePolicy == BlockDraftTreePolicy::kLinear)
     {
-        ELLM_CHECK(cfg.verifySize == cfg.blockSize,
-            "cached block draft linear verifySize must equal blockSize: verifySize=" + std::to_string(cfg.verifySize)
-                + ", blockSize=" + std::to_string(cfg.blockSize) + ".");
-        ELLM_CHECK(
-            cfg.proposalLen > 0, "cached block draft linear requires verifySize >= 2 because node 0 is the root.");
+        ELLM_CHECK(cfg.verifyTokenCount == cfg.blockSize,
+            "cached block draft linear verifyTokenCount must equal blockSize: verifyTokenCount="
+                + std::to_string(cfg.verifyTokenCount) + ", blockSize=" + std::to_string(cfg.blockSize) + ".");
+        ELLM_CHECK(cfg.proposalLen > 0,
+            "cached block draft linear requires verifyTokenCount >= 2 because node 0 is the root.");
     }
     else
     {
-        ELLM_CHECK(cfg.candidateTopK <= kernel::kDDTreeMaxCandidateTopK,
-            "cached block draft DDTree candidateTopK exceeds the current kernel limit.");
+        int32_t const maxCandidateTopK
+            = isDFlash2 ? deployment.draft->specSelectorTopK : kernel::kDDTreeMaxCandidateTopK;
+        ELLM_CHECK(cfg.candidateTopK <= maxCandidateTopK,
+            "cached block draft DDTree candidateTopK=" + std::to_string(cfg.candidateTopK) + " exceeds the limit of "
+                + std::to_string(maxCandidateTopK) + ".");
     }
     if (userMode == SpecDecodeMode::kJetSpec)
     {
         ELLM_CHECK(deployment.base.specDraftCausalHead && deployment.draft->specDraftCausalHead,
             "JetSpec requires causal proposal attention in both base and draft configs.");
     }
-    ELLM_CHECK(cfg.maskTokenId >= 0 && cfg.maskTokenId < cfg.draftVocabSize,
+    if (userMode == SpecDecodeMode::kDomino)
+    {
+        ELLM_CHECK(cfg.dominoGruHiddenDim > 0 && cfg.dominoProjDim > 0 && cfg.dominoPoolSize > 0,
+            "Domino requires positive gru_hidden_dim, proj_dim, and pool_size in the draft engine config.");
+        ELLM_CHECK(cfg.dominoPoolSize <= cfg.draftVocabSize,
+            "Domino pool_size (" + std::to_string(cfg.dominoPoolSize) + ") exceeds the draft vocabulary ("
+                + std::to_string(cfg.draftVocabSize) + ").");
+        ELLM_CHECK(
+            deployment.draft->reducedVocabSize == 0, "Domino does not support reduced-vocabulary draft engines.");
+    }
+    ELLM_CHECK(cfg.maskTokenId >= 0 && cfg.maskTokenId < deployment.base.vocabSize,
         std::string(specDecodeModeName(userMode)) + " cached block draft mask_token_id ("
-            + std::to_string(cfg.maskTokenId) + ") is outside draft vocab range [0, "
-            + std::to_string(cfg.draftVocabSize) + ").");
+            + std::to_string(cfg.maskTokenId) + ") is outside base embedding vocab range [0, "
+            + std::to_string(deployment.base.vocabSize) + ").");
 
     return cfg;
 }

@@ -18,9 +18,7 @@ import numpy as np
 import pytest
 import torch
 
-from experimental.builder.core import quantization
-from experimental.builder.core.weights import ParameterSpec, Weights
-from experimental.builder.weight_packing import int4
+from tensorrt_edgellm.builder.weight_packing import int4
 from tensorrt_edgellm.checkpoint import repacking
 from tensorrt_edgellm.models import linear
 from tensorrt_edgellm.onnx import export as onnx_export
@@ -100,12 +98,11 @@ def test_direct_builder_and_exporter_use_identical_awq_representation(
     repacking._repack_awq_weights(layer)
     np.testing.assert_array_equal(
         layer.qweight.numpy(),
-        int4.repack_awq(qweight.numpy(),
-                        qzeros.numpy(),
-                        version,
-                        center_at_eight=True))
+        int4.repack_awq(qweight.numpy(), qzeros.numpy(), version))
+    # The direct builder keeps the correction as FP16 [N, G]; the exporter
+    # keeps the exact FP32 product as [G, N].
     np.testing.assert_array_equal(
-        layer.zero_correction.numpy(),
+        layer.zero_correction.numpy().T.astype(np.float16),
         int4.awq_zero_correction(qzeros.numpy(), scales.numpy()))
 
 
@@ -127,44 +124,3 @@ def test_onnx_fixup_preserves_awq_correction_fp32(tmp_path, name):
     result = onnx.load(path)
     assert result.graph.initializer[0].data_type == onnx.TensorProto.FLOAT
     onnx.checker.check_model(result)
-
-
-@pytest.mark.parametrize("version", [1, 2])
-def test_direct_builder_materialized_and_external_awq_recipes(
-        tmp_path, version):
-    from safetensors.numpy import save_file
-
-    rng = np.random.default_rng(12)
-    q = torch.from_numpy(rng.integers(0, 16, (64, 64), dtype=np.int32))
-    z = torch.from_numpy(rng.integers(0, 16, (2, 64), dtype=np.int32))
-    scales = rng.random((2, 64)).astype(np.float16)
-    save_file(
-        {
-            "layer.qweight": _pack(q).numpy(),
-            "layer.qzeros": _pack(z).numpy(),
-            "layer.scales": scales
-        }, str(tmp_path / "model.safetensors"))
-    quant = quantization.QuantConfig(quant_type=quantization.QUANT_INT4_AWQ,
-                                     group_size=32)
-    weights = Weights(str(tmp_path),
-                      quant=quant,
-                      int4_gemm_plugin_version=version)
-    try:
-        actual = weights.linear("layer", quantization.QUANT_INT4_AWQ)
-        metadata = weights.linear_metadata("layer",
-                                           quantization.QUANT_INT4_AWQ)
-        assert isinstance(metadata.zero_correction, ParameterSpec)
-        assert metadata.zero_correction.shape == (2, 64)
-        assert metadata.zero_correction.dtype == np.dtype(np.float32)
-        assert metadata.weight_recipe["assemble"] == "awq_ffn_qweight_center8"
-        assert metadata.zero_correction_recipe[
-            "assemble"] == "awq_zero_correction"
-        assert actual.weight_recipe["assemble"] == metadata.weight_recipe[
-            "assemble"]
-        np.testing.assert_array_equal(actual.zero_correction,
-                                      (8 - z.numpy()).astype(np.float32) *
-                                      scales.astype(np.float32))
-        with pytest.raises(NotImplementedError, match="tensor-parallel"):
-            Weights.shard_linear(metadata, "column", 2, 0)
-    finally:
-        weights.close()

@@ -205,8 +205,8 @@ std::vector<int32_t> readTokenIds(std::string const& spec)
 rt::Tensor readPixelValues(
     std::string const& path, std::vector<int64_t> const& shape, int32_t seed, cudaStream_t stream)
 {
-    rt::Tensor device(shape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "pi05::pixelValues");
-    rt::Tensor host(shape, rt::DeviceType::kCPU, nvinfer1::DataType::kHALF, "pi05::pixelValuesHost");
+    rt::Tensor device(shape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "pi05::pixelValues");
+    rt::Tensor host(shape, rt::DeviceType::kCPU, trt_edgellm::DataType::kHALF, "pi05::pixelValuesHost");
     auto const bytes = static_cast<size_t>(host.getMemoryCapacity());
     if (path.empty())
     {
@@ -245,7 +245,7 @@ void writeActionChunk(std::string const& path, Pi05ActionChunk const& chunk, int
     if (isSafetensorsPath(path))
     {
         rt::Tensor raw({chunk.batch, chunk.horizon, chunk.modelActionDim}, rt::DeviceType::kCPU,
-            nvinfer1::DataType::kFLOAT, "actions");
+            trt_edgellm::DataType::kFLOAT, "actions");
         std::memcpy(raw.rawPointer(), chunk.normalizedActions.data(), chunk.normalizedActions.size() * sizeof(float));
         std::vector<rt::Tensor> tensors;
         tensors.push_back(std::move(raw));

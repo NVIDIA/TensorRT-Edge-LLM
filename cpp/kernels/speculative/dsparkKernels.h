@@ -37,19 +37,12 @@ int32_t dsparkMarkovPartialCount(int32_t vocabSize);
  * verify[b, j + 1] = draftTokenIds[b, j], j in [0, verifyProposalLen)
  */
 void dsparkBuildVerifyTokens(rt::Tensor const& lastAcceptedTokens, rt::Tensor const& draftTokenIds,
-    rt::Tensor& verifyTokenIds, int32_t batchSize, int32_t draftStride, int32_t verifyProposalLen, cudaStream_t stream);
+    rt::Tensor const& proposalLengths, rt::Tensor& verifyTokenIds, rt::Tensor& acceptValidTokenCounts,
+    int32_t batchSize, int32_t draftStride, int32_t verifyProposalLen, cudaStream_t stream);
 
-/*!
- * @brief Greedy DSpark accept for a linear proposal block.
- *
- * This deterministic path accepts a draft token while it matches the base
- * argmax at the previous verify position, then appends the base bonus token.
- * It is the top-1 analogue of DeepSpec's rejection-sampling verifier.
- */
-void dsparkGreedyAccept(rt::Tensor const& baseLogits, rt::Tensor const& draftTokenIds,
-    rt::Tensor const& proposalLengths, rt::Tensor& acceptedTokenIds, rt::Tensor& acceptLength,
-    rt::Tensor& argmaxScratch, int32_t batchSize, int32_t draftStride, int32_t verifyProposalLen, int32_t vocabSize,
-    cudaStream_t stream);
+//! Select target IDs using DSpark's existing CUB reduction and exceptional-value semantics.
+void dsparkSelectTargetTokens(rt::Tensor const& baseLogits, rt::Tensor& targetTokenIds, int32_t batchSize,
+    int32_t verifyLen, int32_t vocabSize, cudaStream_t stream);
 
 /*!
  * @brief Fill logical proposal lengths with a fixed full-block value.
@@ -175,6 +168,26 @@ void dsparkMarkovGreedyFusedStepFp8(rt::Tensor const& backboneLogits, rt::Tensor
     rt::Tensor* stackedLogits, int32_t stackedDepthRow, int32_t batchSize, int32_t step, int32_t proposalLen,
     int32_t vocabSize, int32_t markovRank, cudaStream_t stream, int32_t logitsStride = 0, int32_t logitsOffset = 0);
 
+//! Materialize the dense FP16 fallback from native NVFP4 weights on the initialization stream.
+void dsparkDequantizeW2(rt::Tensor const& packed, rt::Tensor const& scales, rt::Tensor const& globalScale,
+    rt::Tensor& dense, cudaStream_t stream);
+
+//! Repack row-major NVFP4 bytes to the SM110 TCGen5 opaque layout before graph capture.
+void dsparkRepackW2Tcgen5(rt::Tensor const& packed, rt::Tensor const& scales, rt::Tensor& opaquePacked,
+    rt::Tensor& opaqueScales, int32_t vocabSize, int32_t markovRank, cudaStream_t stream);
+
+//! Execute one device-dependent W4A16 Markov step using persistent scratch buffers.
+//! The AOT transform scales weights in FP16 before tensor-core accumulation and stores
+//! an FP16 correction; its scale rounding and reduction differ from the SIMT path.
+//! Non-null stackedLogits must own storage for batchSize * (proposalLen + 1) * vocabSize
+//! elements; the call updates its logical shape. Scratch and output storage must remain
+//! valid until stream work and every graph execution referencing it have completed.
+void dsparkMarkovGreedyStepTcgen5(rt::Tensor const& backboneLogits, rt::Tensor const& markovW1,
+    rt::Tensor const& opaquePacked, rt::Tensor const& opaqueScales, rt::Tensor const& globalScale,
+    rt::Tensor const& firstPrevTokens, rt::Tensor& greedySlots, rt::Tensor& activation, rt::Tensor& correction,
+    rt::Tensor* stackedLogits, int32_t stackedDepthRow, int32_t batchSize, int32_t step, int32_t proposalLen,
+    int32_t vocabSize, int32_t markovRank, cudaStream_t stream, int32_t logitsStride, int32_t logitsOffset);
+
 /*!
  * @brief Sample one token per row from probabilityScratch [B, vocabSize].
  */
@@ -220,7 +233,7 @@ void dsparkSampleTopKRowsAndStore(rt::Tensor const& topKValues, rt::Tensor const
 void dsparkProbabilisticAccept(rt::Tensor const& targetProbabilities, rt::Tensor const& draftProbabilities,
     rt::Tensor const& draftTokenIds, rt::Tensor const& proposalLengths, rt::Tensor const& acceptUniforms,
     rt::Tensor& acceptedTokenIds, rt::Tensor& acceptLength, int32_t batchSize, int32_t draftStride,
-    int32_t verifyProposalLen, int32_t vocabSize, cudaStream_t stream);
+    int32_t verifyProposalLen, int32_t vocabSize, cudaStream_t stream, int32_t forcedAcceptanceLength = -1);
 
 } // namespace kernel
 } // namespace trt_edgellm

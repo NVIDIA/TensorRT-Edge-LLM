@@ -562,7 +562,7 @@ void cpSpecTopKTopPProbs(rt::Tensor const& logits, rt::Tensor& probabilities, in
     size_t const smem = static_cast<size_t>(vocabSize + (vocabSize & 1)) * sizeof(uint32_t)
         + static_cast<size_t>(kMaxCandidates) * sizeof(uint64_t) + static_cast<size_t>(kSortBlockSize) * sizeof(float);
     // Half logits come straight from the lm_head GEMV, so the CP path skips a widening pass.
-    if (logits.getDataType() == nvinfer1::DataType::kHALF)
+    if (logits.getDataType() == trt_edgellm::DataType::kHALF)
     {
         cpSpecTopKTopPProbsKernel<__half>
             <<<rows, kSortBlockSize, smem, stream>>>(static_cast<__half const*>(logits.rawPointer()),

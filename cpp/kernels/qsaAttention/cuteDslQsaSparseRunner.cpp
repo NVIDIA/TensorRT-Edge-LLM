@@ -19,15 +19,16 @@
 
 #if defined(CUTE_DSL_QSA_ENABLED)
 
-#include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "kernels/contextAttentionKernels/cuteDslTensorDescriptors.h"
 
 namespace trt_edgellm
 {
 
-detail::LazyKernelModule<qsa_sparse_d256_fp16_Kernel_Module_t> CuteDslQsaSparsePrefillRunner::sSparseD256Fp16{};
-detail::LazyKernelModule<qsa_sparse_d256_bf16_Kernel_Module_t> CuteDslQsaSparsePrefillRunner::sSparseD256Bf16{};
+detail::LazyKernelModule<qsa_sparse_chunk_prefill_d256_fp16_Kernel_Module_t>
+    CuteDslQsaSparsePrefillRunner::sSparseD256Fp16{};
+detail::LazyKernelModule<qsa_sparse_chunk_prefill_d256_bf16_Kernel_Module_t>
+    CuteDslQsaSparsePrefillRunner::sSparseD256Bf16{};
 
 namespace
 {
@@ -46,7 +47,8 @@ constexpr int32_t kQsaMaxGroupSize{16};
 
 bool isQsaSm(int32_t smVersion)
 {
-    return smVersion == 100 || smVersion == 101 || smVersion == 110;
+    return smVersion == 100 || smVersion == 101 || smVersion == 103 || smVersion == 110 || smVersion == 120
+        || smVersion == 121;
 }
 
 //! Populate a [B, S, H] descriptor over a contiguous [B, S, H, D] buffer. The QSA kernels bake
@@ -58,81 +60,49 @@ TensorT makeQsaBshTensor(void const* data, int32_t batchSize, int32_t seqLen, in
         {static_cast<int64_t>(seqLen) * numHeads * headDim, static_cast<int64_t>(numHeads) * headDim});
 }
 
-//! Launch one QSA sparse prefill variant over dense padded BSND Q/K/V/O plus the index lists.
 template <auto cuteDslKernelWrapper, auto moduleLoader, auto moduleUnloader>
 int32_t callQsaSparsePrefill(detail::LazyKernelModule<WrapperArgT<0, decltype(cuteDslKernelWrapper)>>& state,
     char const* moduleName, QsaSparsePrefillParams const& params)
 {
-    static_assert(WrapperArity<decltype(cuteDslKernelWrapper)>::value == 10,
-        "callQsaSparsePrefill: not a QSA sparse prefill wrapper (module, q_tensor, k_tensor, v_tensor, o_tensor, "
-        "indices, context_lengths, attention_scale, sm_count, stream).");
-
+    static_assert(WrapperArity<decltype(cuteDslKernelWrapper)>::value == 9,
+        "callQsaSparsePrefill: expected a paged QSA wrapper.");
     if (!detail::ensureModuleLoaded<moduleLoader, moduleUnloader>(state, moduleName, params.stream))
     {
         return -1;
     }
     auto& module = state.module;
-
     auto qTensor = makeQsaBshTensor<WrapperArgT<1, decltype(cuteDslKernelWrapper)>>(
         params.qPtr, params.batchSize, params.seqLen, params.numQHeads, params.headDim);
-    auto kTensor = makeQsaBshTensor<WrapperArgT<2, decltype(cuteDslKernelWrapper)>>(
-        params.kPtr, params.batchSize, params.seqLen, params.numKVHeads, params.headDim);
-    auto vTensor = makeQsaBshTensor<WrapperArgT<3, decltype(cuteDslKernelWrapper)>>(
-        params.vPtr, params.batchSize, params.seqLen, params.numKVHeads, params.headDim);
-    auto oTensor = makeQsaBshTensor<WrapperArgT<4, decltype(cuteDslKernelWrapper)>>(
-        params.oPtr, params.batchSize, params.seqLen, params.numQHeads, params.headDim);
-    auto indicesTensor = makePackedTensor<WrapperArgT<5, decltype(cuteDslKernelWrapper)>>(
+    auto indicesTensor = makePackedTensor<WrapperArgT<4, decltype(cuteDslKernelWrapper)>>(
         params.indices, {params.batchSize, params.seqLen, params.topK});
-    auto contextLengths
-        = makeCuSeqLenTensor<WrapperArgT<6, decltype(cuteDslKernelWrapper)>>(params.contextLengths, params.batchSize);
-
-    return cuteDslKernelWrapper(&module, &qTensor, &kTensor, &vTensor, &oTensor, &indicesTensor, &contextLengths,
-        params.attentionScale, getDeviceMultiProcessorCount(), params.stream);
-}
-
-bool validateQsaParams(QsaSparsePrefillParams const& params)
-{
-    if (params.headDim != kQsaHeadDim)
-    {
-        LOG_ERROR("QSA sparse prefill: unsupported head_dim=%d (expected %d)", params.headDim, kQsaHeadDim);
-        return false;
-    }
-    if (params.numKVHeads <= 0 || params.numQHeads % params.numKVHeads != 0
-        || params.numQHeads / params.numKVHeads > kQsaMaxGroupSize)
-    {
-        LOG_ERROR("QSA sparse prefill: unsupported GQA shape H_q=%d, H_kv=%d (group must divide and be <= %d)",
-            params.numQHeads, params.numKVHeads, kQsaMaxGroupSize);
-        return false;
-    }
-    if (params.batchSize <= 0 || params.seqLen <= 0 || params.topK <= 0)
-    {
-        LOG_ERROR(
-            "QSA sparse prefill: degenerate shape B=%d, S=%d, topk=%d", params.batchSize, params.seqLen, params.topK);
-        return false;
-    }
-    if (params.qPtr == nullptr || params.kPtr == nullptr || params.vPtr == nullptr || params.oPtr == nullptr
-        || params.indices == nullptr || params.contextLengths == nullptr)
-    {
-        LOG_ERROR("QSA sparse prefill: null tensor pointer");
-        return false;
-    }
-    return true;
+    auto queryLengths
+        = makeCuSeqLenTensor<WrapperArgT<5, decltype(cuteDslKernelWrapper)>>(params.queryLengths, params.batchSize);
+    auto oTensor = makeQsaBshTensor<WrapperArgT<6, decltype(cuteDslKernelWrapper)>>(
+        params.oPtr, params.batchSize, params.seqLen, params.numQHeads, params.headDim);
+    auto poolTensor = makeStridedTensor<WrapperArgT<2, decltype(cuteDslKernelWrapper)>>(params.kvPoolPtr,
+        {params.numFlatPages, 128, params.numKVHeads, params.poolHeadDim},
+        {static_cast<int64_t>(128) * params.numKVHeads * params.poolHeadDim,
+            static_cast<int64_t>(params.numKVHeads) * params.poolHeadDim, static_cast<int64_t>(params.poolHeadDim)});
+    auto pageTableTensor = makePackedTensor<WrapperArgT<3, decltype(cuteDslKernelWrapper)>>(
+        params.pageTable, {params.batchSize, 2, params.maxPagesPerSeq});
+    return cuteDslKernelWrapper(&module, &qTensor, &poolTensor, &pageTableTensor, &indicesTensor, &queryLengths,
+        &oTensor, params.attentionScale, params.stream);
 }
 
 } // namespace
 
-bool CuteDslQsaSparsePrefillRunner::canImplement(
-    int32_t numQHeads, int32_t numKVHeads, int32_t headDim, int32_t smVersion, nvinfer1::DataType dataType)
+bool CuteDslQsaSparsePrefillRunner::canImplement(int32_t numQHeads, int32_t numKVHeads, int32_t headDim,
+    int32_t poolHeadDim, int32_t smVersion, trt_edgellm::DataType dataType)
 {
     if (!isQsaSm(smVersion))
     {
         return false;
     }
-    if (dataType != nvinfer1::DataType::kHALF && dataType != nvinfer1::DataType::kBF16)
+    if (dataType != trt_edgellm::DataType::kHALF && dataType != trt_edgellm::DataType::kBF16)
     {
         return false;
     }
-    if (headDim != kQsaHeadDim)
+    if (headDim != kQsaHeadDim || poolHeadDim < headDim || poolHeadDim % 8 != 0)
     {
         return false;
     }
@@ -143,38 +113,50 @@ bool CuteDslQsaSparsePrefillRunner::canImplement(
     return true;
 }
 
-bool CuteDslQsaSparsePrefillRunner::preflight(nvinfer1::DataType dataType, cudaStream_t stream)
+bool CuteDslQsaSparsePrefillRunner::preflight(trt_edgellm::DataType dataType, cudaStream_t stream)
 {
-    if (dataType == nvinfer1::DataType::kHALF)
+    if (dataType == trt_edgellm::DataType::kHALF)
     {
-        return detail::ensureModuleLoaded<qsa_sparse_d256_fp16_Kernel_Module_Load,
-            qsa_sparse_d256_fp16_Kernel_Module_Unload>(sSparseD256Fp16, "qsa_sparse_d256_fp16", stream);
+        return detail::ensureModuleLoaded<qsa_sparse_chunk_prefill_d256_fp16_Kernel_Module_Load,
+            qsa_sparse_chunk_prefill_d256_fp16_Kernel_Module_Unload>(
+            sSparseD256Fp16, "qsa_sparse_chunk_prefill_d256_fp16", stream);
     }
-    if (dataType == nvinfer1::DataType::kBF16)
+    if (dataType == trt_edgellm::DataType::kBF16)
     {
-        return detail::ensureModuleLoaded<qsa_sparse_d256_bf16_Kernel_Module_Load,
-            qsa_sparse_d256_bf16_Kernel_Module_Unload>(sSparseD256Bf16, "qsa_sparse_d256_bf16", stream);
+        return detail::ensureModuleLoaded<qsa_sparse_chunk_prefill_d256_bf16_Kernel_Module_Load,
+            qsa_sparse_chunk_prefill_d256_bf16_Kernel_Module_Unload>(
+            sSparseD256Bf16, "qsa_sparse_chunk_prefill_d256_bf16", stream);
     }
     LOG_ERROR("QSA sparse prefill: unsupported data type");
     return false;
 }
 
-bool CuteDslQsaSparsePrefillRunner::run(nvinfer1::DataType dataType, QsaSparsePrefillParams const& params)
+bool CuteDslQsaSparsePrefillRunner::run(trt_edgellm::DataType dataType, QsaSparsePrefillParams const& params)
 {
-    if (!validateQsaParams(params))
+    if (params.headDim != kQsaHeadDim || params.numQHeads <= 0 || params.numKVHeads <= 0
+        || params.numQHeads % params.numKVHeads != 0 || params.numQHeads / params.numKVHeads > kQsaMaxGroupSize
+        || params.batchSize <= 0 || params.seqLen <= 0 || params.topK <= 0 || params.qPtr == nullptr
+        || params.indices == nullptr || params.queryLengths == nullptr || params.oPtr == nullptr
+        || params.poolHeadDim < params.headDim || params.poolHeadDim % 8 != 0 || params.numFlatPages <= 0
+        || params.maxPagesPerSeq <= 0 || params.kvPoolPtr == nullptr || params.pageTable == nullptr)
     {
+        LOG_ERROR("QSA sparse prefill: invalid parameters");
         return false;
     }
     int32_t status = -1;
-    if (dataType == nvinfer1::DataType::kHALF)
+    if (dataType == trt_edgellm::DataType::kHALF)
     {
-        status = callQsaSparsePrefill<cute_dsl_qsa_sparse_d256_fp16_wrapper, qsa_sparse_d256_fp16_Kernel_Module_Load,
-            qsa_sparse_d256_fp16_Kernel_Module_Unload>(sSparseD256Fp16, "qsa_sparse_d256_fp16", params);
+        status = callQsaSparsePrefill<cute_dsl_qsa_sparse_chunk_prefill_d256_fp16_wrapper,
+            qsa_sparse_chunk_prefill_d256_fp16_Kernel_Module_Load,
+            qsa_sparse_chunk_prefill_d256_fp16_Kernel_Module_Unload>(
+            sSparseD256Fp16, "qsa_sparse_chunk_prefill_d256_fp16", params);
     }
-    else if (dataType == nvinfer1::DataType::kBF16)
+    else if (dataType == trt_edgellm::DataType::kBF16)
     {
-        status = callQsaSparsePrefill<cute_dsl_qsa_sparse_d256_bf16_wrapper, qsa_sparse_d256_bf16_Kernel_Module_Load,
-            qsa_sparse_d256_bf16_Kernel_Module_Unload>(sSparseD256Bf16, "qsa_sparse_d256_bf16", params);
+        status = callQsaSparsePrefill<cute_dsl_qsa_sparse_chunk_prefill_d256_bf16_wrapper,
+            qsa_sparse_chunk_prefill_d256_bf16_Kernel_Module_Load,
+            qsa_sparse_chunk_prefill_d256_bf16_Kernel_Module_Unload>(
+            sSparseD256Bf16, "qsa_sparse_chunk_prefill_d256_bf16", params);
     }
     else
     {
@@ -272,27 +254,20 @@ int32_t callQsaSparseDecode(detail::LazyKernelModule<WrapperArgT<0, decltype(cut
 } // namespace
 
 bool CuteDslQsaSparseDecodeRunner::canImplement(int32_t numQHeads, int32_t numKVHeads, int32_t headDim,
-    int32_t poolHeadDim, int32_t smVersion, nvinfer1::DataType dataType)
+    int32_t poolHeadDim, int32_t smVersion, trt_edgellm::DataType dataType)
 {
-    if (!CuteDslQsaSparsePrefillRunner::canImplement(numQHeads, numKVHeads, headDim, smVersion, dataType))
-    {
-        return false;
-    }
-    if (poolHeadDim < headDim || poolHeadDim % 8 != 0)
-    {
-        return false;
-    }
-    return true;
+    return CuteDslQsaSparsePrefillRunner::canImplement(
+        numQHeads, numKVHeads, headDim, poolHeadDim, smVersion, dataType);
 }
 
-bool CuteDslQsaSparseDecodeRunner::preflight(nvinfer1::DataType dataType, cudaStream_t stream)
+bool CuteDslQsaSparseDecodeRunner::preflight(trt_edgellm::DataType dataType, cudaStream_t stream)
 {
-    if (dataType == nvinfer1::DataType::kHALF)
+    if (dataType == trt_edgellm::DataType::kHALF)
     {
         return detail::ensureModuleLoaded<qsa_sparse_decode_d256_fp16_Kernel_Module_Load,
             qsa_sparse_decode_d256_fp16_Kernel_Module_Unload>(sDecodeD256Fp16, "qsa_sparse_decode_d256_fp16", stream);
     }
-    if (dataType == nvinfer1::DataType::kBF16)
+    if (dataType == trt_edgellm::DataType::kBF16)
     {
         return detail::ensureModuleLoaded<qsa_sparse_decode_d256_bf16_Kernel_Module_Load,
             qsa_sparse_decode_d256_bf16_Kernel_Module_Unload>(sDecodeD256Bf16, "qsa_sparse_decode_d256_bf16", stream);
@@ -301,7 +276,7 @@ bool CuteDslQsaSparseDecodeRunner::preflight(nvinfer1::DataType dataType, cudaSt
     return false;
 }
 
-bool CuteDslQsaSparseDecodeRunner::run(nvinfer1::DataType dataType, QsaSparseDecodeParams const& params)
+bool CuteDslQsaSparseDecodeRunner::run(trt_edgellm::DataType dataType, QsaSparseDecodeParams const& params)
 {
     if (params.headDim != kQsaHeadDim || params.poolHeadDim < params.headDim || params.batchSize <= 0
         || params.topK <= 0 || params.qPtr == nullptr || params.kvPoolPtr == nullptr || params.pageTable == nullptr
@@ -312,13 +287,13 @@ bool CuteDslQsaSparseDecodeRunner::run(nvinfer1::DataType dataType, QsaSparseDec
         return false;
     }
     int32_t status = -1;
-    if (dataType == nvinfer1::DataType::kHALF)
+    if (dataType == trt_edgellm::DataType::kHALF)
     {
         status = callQsaSparseDecode<cute_dsl_qsa_sparse_decode_d256_fp16_wrapper,
             qsa_sparse_decode_d256_fp16_Kernel_Module_Load, qsa_sparse_decode_d256_fp16_Kernel_Module_Unload>(
             sDecodeD256Fp16, "qsa_sparse_decode_d256_fp16", params);
     }
-    else if (dataType == nvinfer1::DataType::kBF16)
+    else if (dataType == trt_edgellm::DataType::kBF16)
     {
         status = callQsaSparseDecode<cute_dsl_qsa_sparse_decode_d256_bf16_wrapper,
             qsa_sparse_decode_d256_bf16_Kernel_Module_Load, qsa_sparse_decode_d256_bf16_Kernel_Module_Unload>(
@@ -345,32 +320,32 @@ bool CuteDslQsaSparseDecodeRunner::run(nvinfer1::DataType dataType, QsaSparseDec
 namespace trt_edgellm
 {
 
-bool CuteDslQsaSparsePrefillRunner::canImplement(int32_t, int32_t, int32_t, int32_t, nvinfer1::DataType)
+bool CuteDslQsaSparsePrefillRunner::canImplement(int32_t, int32_t, int32_t, int32_t, int32_t, trt_edgellm::DataType)
 {
     return false;
 }
 
-bool CuteDslQsaSparsePrefillRunner::preflight(nvinfer1::DataType, cudaStream_t)
+bool CuteDslQsaSparsePrefillRunner::preflight(trt_edgellm::DataType, cudaStream_t)
 {
     return false;
 }
 
-bool CuteDslQsaSparsePrefillRunner::run(nvinfer1::DataType, QsaSparsePrefillParams const&)
+bool CuteDslQsaSparsePrefillRunner::run(trt_edgellm::DataType, QsaSparsePrefillParams const&)
 {
     return false;
 }
 
-bool CuteDslQsaSparseDecodeRunner::canImplement(int32_t, int32_t, int32_t, int32_t, int32_t, nvinfer1::DataType)
+bool CuteDslQsaSparseDecodeRunner::canImplement(int32_t, int32_t, int32_t, int32_t, int32_t, trt_edgellm::DataType)
 {
     return false;
 }
 
-bool CuteDslQsaSparseDecodeRunner::preflight(nvinfer1::DataType, cudaStream_t)
+bool CuteDslQsaSparseDecodeRunner::preflight(trt_edgellm::DataType, cudaStream_t)
 {
     return false;
 }
 
-bool CuteDslQsaSparseDecodeRunner::run(nvinfer1::DataType, QsaSparseDecodeParams const&)
+bool CuteDslQsaSparseDecodeRunner::run(trt_edgellm::DataType, QsaSparseDecodeParams const&)
 {
     return false;
 }

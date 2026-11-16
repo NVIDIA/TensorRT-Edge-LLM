@@ -17,6 +17,7 @@
 
 #include "runtime/cosmos3Runtime.h"
 #include "common/cosmos3Bindings.h"
+#include "common/trtInterop.h"
 
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
@@ -50,7 +51,7 @@ Cosmos3Runtime::Cosmos3Runtime(std::string const& engineDir, cudaStream_t stream
 {
     // Load the UND prefill engine (prefill-only tower emitting per-layer K/V directly).
     std::string const textEngine = engineDir + "/und_prefill/und_prefill.engine";
-    mTextRuntime = std::unique_ptr<IRuntime>(createInferRuntime(gLogger));
+    mTextRuntime = std::unique_ptr<IRuntime>(createInferRuntime(TrtLogger::instance()));
     ELLM_CHECK(mTextRuntime, "Failed to create TensorRT runtime");
     mTextEngine = deserializeCudaEngineFromFile(*mTextRuntime, textEngine);
     mTextContext = std::unique_ptr<IExecutionContext>(

@@ -29,18 +29,19 @@ are **runtime** arguments.
 
 | Variant | DIM | DSTATE | Notes |
 |---|---|---|---|
-| `ssd_prefill_d128_n128` | 128 | 128 | Nemotron-Nano-9B-v2 |
-| `ssd_prefill_d64_n128` | 64 | 128 | Nemotron-3-Nano-4B, 30B-A3B |
+| `ssd_prefill_d128_n128` | 128 | 128 | Generic D128 |
+| `ssd_prefill_d64_n128` | 64 | 128 | Nemotron-3-Nano-30B-A3B |
 | `ssd_prefill_d128_n64` | 128 | 64 | — |
 | `ssd_prefill_d64_n64` | 64 | 64 | — |
 
 ### Blackwell (SM100-110 — TMA + TMEM + WGMMA)
 
-SM120+ (GB10/GB20) lacks TMEM/wgmma and uses the non-Blackwell fallback.
+The padded runner uses the non-Blackwell fallback on SM120/121. The separate
+packed runner below uses TMA and warp MMA without TMEM.
 
 | Variant | DIM | DSTATE | `has_init_states` | Notes |
 |---|---|---|---|---|
-| `ssd_prefill_blackwell_d64_n128` | 64 | 128 | false | Nemotron-3-Nano-4B, 30B-A3B production fast path |
+| `ssd_prefill_blackwell_d64_n128` | 64 | 128 | false | Nemotron-3-Nano-30B-A3B production fast path |
 | `ssd_prefill_blackwell_d64_n128_init_states` | 64 | 128 | true | Chunked prefill / continuous batching |
 | `ssd_prefill_blackwell_d80_n128` | 80 | 128 | false | Nemotron D80 single-launch fast path |
 | `ssd_prefill_blackwell_d80_n128_init_states` | 80 | 128 | true | Chunked prefill / continuous batching |
@@ -52,7 +53,7 @@ TMEM capacity (512 columns). Logical D80 uses two D64 work tiles; DIM=128
 models use the non-Blackwell fallback on Blackwell GPUs.
 
 D80/N128 keeps the physical tensor-core tile at D64 and adds a logical D tile
-to the persistent scheduler. On SM100, SM101, and SM110, one kernel launch
+to the persistent scheduler. On SM100, SM101, SM103, and SM110, one kernel launch
 creates two independent work tiles per `(sequence, head)`: one processes
 dimensions 0..63 and one processes dimensions 64..79 with TMA boundary fill
 and bounded stores for the unused tail. This preserves the D64 TMEM footprint,
@@ -66,6 +67,53 @@ path (state arrives zeroed); `true` adds an extra TMA pipeline stage to load
 the initial state at chunk 0 (~30% slower vs zero-state). Runner dispatches
 on `params.has_init_states`.
 
+### Packed SM120/121 (TMA + warp MMA)
+
+`ssd_prefill_sm12x_d{64,80,128}_n{64,128}` exports six variants through the
+`ssd` build group. `CuteDslSSDRunner::canImplementPackedStatePool()` reports availability
+only when the complete variant set is built and the requested SM is 120 or 121.
+`runPacked(PackedSSDParams, stream)` accepts contiguous FP16 X/output `[T,H,D]`,
+B/C `[T,G,N]`, dt `[T,H]`, D/bias `[H]`, and FP32 A `[H]`. D and bias are
+required, softplus is enabled, and gating is not fused.
+
+GPU `cuSeqlens[batch+1]` must be monotonic, start at zero, and end at T.
+GPU `stateIndices[batch]` must contain distinct valid indices into the in-place
+FP16 state pool `[stateSlots,H,D,N]`. Empty sequences and inactive slots remain
+unchanged. Initialize a fresh sequence's slot to zero; retain its final state
+for continuation. The runner does not read device metadata back to the host.
+Pointers must be 16-byte aligned. `getPackedWorkspaceSize(T,H)` reserves two
+FP32 `[T,H]` arrays with each span rounded to 256 bytes; the caller owns
+their storage and passes its capacity. The scan grid requires
+`T / SCAN_GROUP_SIZE + batch <= 65535` (integer division), using the selected
+variant's exported scan-group size (512 in the default configuration). Warm up
+on an explicit non-default stream before CUDA Graph capture.
+
+The first kernel computes per-chunk dt and decay prefixes. The second uses one
+CTA per `(sequence, head, D64 tile)`, carrying FP32 state through consecutive
+64-token chunks. Full chunks use TMA; partial chunks use masked loads. D80
+uses two D64 tiles with bounded state/output accesses and TMA zero-fill past
+the logical D boundary. No global CB or per-chunk state buffer is allocated.
+The fused launch budgets registers for two CTAs per SM. Shared-memory use
+can further limit residency with non-default tile sizes.
+
+Representative checkpoint configurations are `(H,D,N,G)=(64,64,128,8)` for
+Nemotron-3-Nano-30B-A3B, `(96,80,128,8)` for Nemotron-3-Nano-4B-FP8, and
+`(128,80,128,8)` for Nemotron-Nano-9B-v2. Read `mamba_head_dim` from the model
+configuration; its attention `head_dim` is a different dimension.
+
+Use `canImplementPackedStatePool()` with this pooled-state ABI. The existing
+`canImplementPacked()` describes the Blackwell `run(SSDParams, stream)` ABI,
+which consumes gathered active states. `MambaPlugin::enqueueCompact()` calls
+`runPacked()` on SM120/121 and updates the resident state pool directly. Packed
+prefill requires FP16 inputs, enabled softplus, and disabled speculative
+verification. Mixed batches use packed prefill for the prefix and the existing
+state-update kernel for the decode suffix. The model runtime's compact phase-8
+scheduler remains disabled; plugin support does not enable model-level execution.
+Runner correctness and graph replay are covered by
+`Sm12x/PackedSsdRunnerTest.RaggedStatePoolAndGraphReplay` in `unitTestKernelsMisc`.
+`Sm12x/PackedSsdPluginTest.RaggedStatePoolAndGraphReplay` in `unitTestPlugins`
+covers the plugin path, including mixed prefill and decode.
+
 ### Compile-time vs Runtime Parameters
 
 | Parameter | Compile / Runtime | Affects variant? |
@@ -74,12 +122,13 @@ on `params.has_init_states`.
 | `DSTATE` (state dim) | Compile-time | Yes |
 | `has_init_states` (Blackwell only) | Compile-time | Yes (x2 binaries per DxN) |
 | `has_varlen` (Blackwell only) | Compile-time (always `True`) | No (single binary handles uniform + varlen) |
-| `CHUNK_SIZE` | Compile-time (fixed 128) | No (same for all) |
+| `CHUNK_SIZE` | Compile-time (128 padded, 64 packed SM12x) | Fixed within each path |
 | `batch` (n) | Runtime | No |
 | `nheads` | Runtime | No |
 | `ngroups` | Runtime | No |
 | `seq_len` | Runtime | No |
 | `context_lengths` (per-batch valid lengths) | Runtime | No (degenerate metadata for uniform) |
+| `cuSeqlens`, `stateIndices` (packed SM12x) | Runtime device tensors | No |
 
 ## Chunk Scan Pipeline
 
@@ -142,7 +191,7 @@ resident for process lifetime. The plugin calls
 `ensureKernelModules(SSDParams, stream)` before its output-state copy; `run()`
 repeats that guard defensively. On SM100 through SM110, D=64 uses the
 Blackwell native kernel. D80/N128 uses the single-launch two-work-tile kernel
-only on SM100, SM101, and SM110. D128 uses the non-Blackwell implementation;
+only on SM100, SM101, SM103, and SM110. D128 uses the non-Blackwell implementation;
 unsupported configurations remain on the plugin's serial prefill path.
 
 Plugin (`cpp/plugins/mamba/mambaPlugin.cpp`): integrates via the SSD runner.

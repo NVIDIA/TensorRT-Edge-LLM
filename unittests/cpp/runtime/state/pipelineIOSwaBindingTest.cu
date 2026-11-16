@@ -59,7 +59,7 @@ LLMEngineConfig makeBindingConfig(bool useSwa)
     cfg.kvPoolPages
         = static_cast<int32_t>(computeMinimumKvPoolPages(cfg.maxSupportedBatchSize, cfg.maxKVCacheCapacity));
     cfg.numSwaPages = 64;
-    cfg.kvCacheDtype = nvinfer1::DataType::kHALF;
+    cfg.kvCacheDtype = trt_edgellm::DataType::kHALF;
     cfg.ropeConfig.type = RopeType::kNoRope;
     cfg.layerTypes.assign(3, HybridCacheManager::LayerType::kAttention);
 
@@ -115,8 +115,8 @@ TEST(PipelineIOSwaBindingTest, ReusablePinnedMetadataIsNotOverwrittenWhileUpload
         PipelineIO io = PipelineIO::createForLLM(cfg, stream);
         RaggedExecutionBatch const first = makeBatch(10, 0);
         RaggedExecutionBatch const second = makeBatch(20, 0);
-        Tensor firstSnapshot({4}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "firstMetadataSnapshot");
-        Tensor secondSnapshot({4}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "secondMetadataSnapshot");
+        Tensor firstSnapshot({4}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "firstMetadataSnapshot");
+        Tensor secondSnapshot({4}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "secondMetadataSnapshot");
 
         constexpr unsigned long long kDELAY_CYCLES{50000000ULL};
         delayMetadataUploads<<<1, 1, 0, stream>>>(kDELAY_CYCLES);
@@ -180,10 +180,10 @@ TEST(PipelineIOSwaBindingTest, StateIndexOnlyUploadSharesRaggedMetadataStagingFe
     ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
     {
         PipelineIO io = PipelineIO::createForLLM(cfg, stream);
-        Tensor firstSnapshot({2}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "firstStateIndexSnapshot");
-        Tensor secondSnapshot({2}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "secondStateIndexSnapshot");
-        Tensor thirdSnapshot({2}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "thirdStateIndexSnapshot");
-        Tensor identitySnapshot({2}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "identityStateIndexSnapshot");
+        Tensor firstSnapshot({2}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "firstStateIndexSnapshot");
+        Tensor secondSnapshot({2}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "secondStateIndexSnapshot");
+        Tensor thirdSnapshot({2}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "thirdStateIndexSnapshot");
+        Tensor identitySnapshot({2}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "identityStateIndexSnapshot");
 
         constexpr unsigned long long kDELAY_CYCLES{50000000ULL};
         delayMetadataUploads<<<1, 1, 0, stream>>>(kDELAY_CYCLES);
@@ -248,8 +248,8 @@ TEST(PipelineIOSwaBindingTest, StepFenceProtectsReusablePinnedTokenSnapshots)
     ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
     {
         PipelineIO io = PipelineIO::createForLLM(cfg, stream);
-        Tensor hostTokens({2}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "hostTokens");
-        Tensor deviceTokens({2}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "deviceTokens");
+        Tensor hostTokens({2}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "hostTokens");
+        Tensor deviceTokens({2}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "deviceTokens");
         auto* source = hostTokens.dataPointer<int32_t>();
         constexpr size_t kBytes{2 * sizeof(int32_t)};
 
@@ -302,14 +302,14 @@ TEST(PipelineIOSwaBindingTest, PrefillToDenoiseStepStagingIsNotOverwrittenWhileU
     ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
     {
         PipelineIO io = PipelineIO::createForLLM(cfg, stream);
-        Tensor hostTemperature({1}, DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "hostTemperature");
-        Tensor deviceTemperature({1}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "deviceTemperature");
-        Tensor firstContext({2}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "firstContext");
-        Tensor secondContext({2}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "secondContext");
-        Tensor firstPhase({1}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "firstPhase");
-        Tensor secondPhase({1}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "secondPhase");
-        Tensor firstTemperature({1}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "firstTemperature");
-        Tensor secondTemperature({1}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "secondTemperature");
+        Tensor hostTemperature({1}, DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, "hostTemperature");
+        Tensor deviceTemperature({1}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "deviceTemperature");
+        Tensor firstContext({2}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "firstContext");
+        Tensor secondContext({2}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "secondContext");
+        Tensor firstPhase({1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "firstPhase");
+        Tensor secondPhase({1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "secondPhase");
+        Tensor firstTemperature({1}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "firstTemperature");
+        Tensor secondTemperature({1}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "secondTemperature");
 
         auto upload = [&](std::array<int32_t, 2> const& lengths, int32_t phase, float temperature,
                           Tensor& contextSnapshot, Tensor& phaseSnapshot, Tensor& temperatureSnapshot) {
@@ -479,11 +479,11 @@ TEST(PipelineIOSwaBindingTest, SpecDecodeAllocatesRopeBuffersForHeterogeneousBas
     SpecDecodeConfig spec;
     spec.baseOutputHiddenDim = 64;
     spec.draftHiddenSize = 64;
-    spec.maxVerifySize = 2;
-    spec.maxDraftProposalSize = 2;
-    spec.draftingTopK = 1;
-    spec.draftingStep = 1;
-    spec.verifySize = 2;
+    spec.maxVerifyTokens = 2;
+    spec.maxDraftTokens = 2;
+    spec.draftTopK = 1;
+    spec.draftSteps = 1;
+    spec.verifyTokenCount = 2;
     deployment.specConfig = spec;
 
     cudaStream_t stream{};
@@ -574,11 +574,11 @@ TEST(PipelineIOSwaBindingTest, SpecDecodeMRopeUsesResidentPoolAndPreservesInacti
     SpecDecodeConfig spec;
     spec.baseOutputHiddenDim = 64;
     spec.draftHiddenSize = 64;
-    spec.maxVerifySize = 2;
-    spec.maxDraftProposalSize = 2;
-    spec.draftingTopK = 1;
-    spec.draftingStep = 1;
-    spec.verifySize = 2;
+    spec.maxVerifyTokens = 2;
+    spec.maxDraftTokens = 2;
+    spec.draftTopK = 1;
+    spec.draftSteps = 1;
+    spec.verifyTokenCount = 2;
     deployment.specConfig = spec;
 
     cudaStream_t stream{};
@@ -709,6 +709,144 @@ TEST(PipelineIOSwaBindingTest, VanillaTextMRopeNarrowsActiveScratchBeforeResiden
     ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
 }
 
+// Given an MRoPE engine whose rope config requests YaRN
+// When PipelineIO fills its resident rows and prepares text-only active rows
+// Then every row holds the table of a YaRN engine with the same parameters
+TEST(PipelineIOSwaBindingTest, TextMRopeWithYarnUsesTheYarnTable)
+{
+    nlohmann::json yarnConfig{{"rope_theta", 10000000.0F},
+        {"rope_scaling", {{"rope_type", "yarn"}, {"factor", 4.0F}, {"original_max_position_embeddings", 262144}}}};
+    RopeConfig const yarnRope = collectRopeConfig(yarnConfig);
+    yarnConfig["rope_scaling"]["mrope_section"] = nlohmann::json::array({11, 11, 10});
+
+    LLMEngineConfig cfg;
+    cfg.hiddenSize = 64;
+    cfg.outputVocabSize = 16;
+    cfg.maxSupportedBatchSize = 2;
+    cfg.maxSupportedInputLength = 4;
+    cfg.maxKVCacheCapacity = 512;
+    cfg.maxPhysicalTokens = 8;
+    cfg.maxNumSequences = 2;
+    cfg.recurrentPoolRows = 3;
+    cfg.rotaryDim = 64;
+    cfg.ropeConfig = collectRopeConfig(yarnConfig);
+    ASSERT_EQ(cfg.ropeConfig.type, RopeType::kMRope);
+    size_t const rowSize = static_cast<size_t>(cfg.maxKVCacheCapacity) * cfg.rotaryDim;
+
+    cudaStream_t stream{};
+    ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+    {
+        Tensor yarnTable({1, cfg.maxKVCacheCapacity, cfg.rotaryDim}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        ASSERT_TRUE(initializeRopeCosSinCache(yarnTable, yarnRope, stream));
+        PipelineIO io = PipelineIO::createForLLM(cfg, stream);
+        prepareTextOnlyMRope(io, cfg, /*activeRows=*/2, stream);
+
+        std::vector<float> expected(rowSize);
+        std::vector<float> resident(rowSize * cfg.recurrentPoolRows);
+        std::vector<float> active(rowSize * 2);
+        ASSERT_EQ(cudaMemcpyAsync(expected.data(), yarnTable.rawPointer(), expected.size() * sizeof(float),
+                      cudaMemcpyDeviceToHost, stream),
+            cudaSuccess);
+        ASSERT_EQ(cudaMemcpyAsync(resident.data(), io.mropeCosSin.rawPointer(), resident.size() * sizeof(float),
+                      cudaMemcpyDeviceToHost, stream),
+            cudaSuccess);
+        ASSERT_EQ(cudaMemcpyAsync(active.data(), io.mropeActiveCosSin.rawPointer(), active.size() * sizeof(float),
+                      cudaMemcpyDeviceToHost, stream),
+            cudaSuccess);
+        ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+        for (int32_t row = 0; row < cfg.recurrentPoolRows; ++row)
+        {
+            EXPECT_TRUE(std::equal(expected.begin(), expected.end(), resident.begin() + row * rowSize))
+                << "resident row " << row;
+        }
+        for (int32_t row = 0; row < 2; ++row)
+        {
+            EXPECT_TRUE(std::equal(expected.begin(), expected.end(), active.begin() + row * rowSize))
+                << "active row " << row;
+        }
+    }
+    ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+}
+
+// Given an MTP deployment whose base and draft MRoPE configs request the same YaRN scaling
+// When spec-decode PipelineIO fills its resident rows and prepares text-only active rows
+// Then every row holds the table of a YaRN engine with the same parameters
+TEST(PipelineIOSwaBindingTest, SpecDecodeTextMRopeWithYarnUsesTheYarnTable)
+{
+    constexpr int32_t kRuntimeBatch = 2;
+    constexpr int32_t kResidentRows = 3;
+    nlohmann::json yarnConfig{{"rope_theta", 10000000.0F},
+        {"rope_scaling", {{"rope_type", "yarn"}, {"factor", 4.0F}, {"original_max_position_embeddings", 262144}}}};
+    RopeConfig const yarnRope = collectRopeConfig(yarnConfig);
+    yarnConfig["rope_scaling"]["mrope_section"] = nlohmann::json::array({11, 11, 10});
+
+    DeploymentConfig deployment;
+    deployment.base.hiddenSize = 64;
+    deployment.base.outputVocabSize = 16;
+    deployment.base.maxSupportedBatchSize = kRuntimeBatch;
+    deployment.base.maxSupportedInputLength = 4;
+    deployment.base.maxKVCacheCapacity = 512;
+    deployment.base.maxPhysicalTokens = 8;
+    deployment.base.maxNumSequences = kResidentRows;
+    deployment.base.recurrentPoolRows = kResidentRows;
+    deployment.base.rotaryDim = 64;
+    deployment.base.ropeConfig = collectRopeConfig(yarnConfig);
+    deployment.base.specDecodeType = SpecDecodeMode::kMTP;
+    ASSERT_EQ(deployment.base.ropeConfig.type, RopeType::kMRope);
+
+    LLMEngineConfig draft = deployment.base;
+    draft.vocabSize = 16;
+    deployment.draft = draft;
+    SpecDecodeConfig spec;
+    spec.baseOutputHiddenDim = 64;
+    spec.draftHiddenSize = 64;
+    spec.maxVerifyTokens = 2;
+    spec.maxDraftTokens = 2;
+    spec.draftTopK = 1;
+    spec.draftSteps = 1;
+    spec.verifyTokenCount = 2;
+    deployment.specConfig = spec;
+    size_t const rowSize = static_cast<size_t>(deployment.base.maxKVCacheCapacity) * deployment.base.rotaryDim;
+
+    cudaStream_t stream{};
+    ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+    {
+        Tensor yarnTable({1, deployment.base.maxKVCacheCapacity, deployment.base.rotaryDim}, DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT);
+        ASSERT_TRUE(initializeRopeCosSinCache(yarnTable, yarnRope, stream));
+        PipelineIO io = PipelineIO::createForSpecDecode(
+            deployment, kRuntimeBatch, stream, /*hasAcceptHiddenOutput=*/false, /*hasTreeMetadataInputs=*/false);
+        std::vector<float> resident(rowSize * kResidentRows);
+        ASSERT_EQ(cudaMemcpyAsync(resident.data(), io.mropeCosSin.rawPointer(), resident.size() * sizeof(float),
+                      cudaMemcpyDeviceToHost, stream),
+            cudaSuccess);
+        prepareTextOnlyMRope(io, deployment.base, kRuntimeBatch, stream);
+
+        std::vector<float> expected(rowSize);
+        std::vector<float> active(rowSize * kRuntimeBatch);
+        ASSERT_EQ(cudaMemcpyAsync(expected.data(), yarnTable.rawPointer(), expected.size() * sizeof(float),
+                      cudaMemcpyDeviceToHost, stream),
+            cudaSuccess);
+        ASSERT_EQ(cudaMemcpyAsync(active.data(), io.mropeActiveCosSin.rawPointer(), active.size() * sizeof(float),
+                      cudaMemcpyDeviceToHost, stream),
+            cudaSuccess);
+        ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+        for (int32_t row = 0; row < kResidentRows; ++row)
+        {
+            EXPECT_TRUE(std::equal(expected.begin(), expected.end(), resident.begin() + row * rowSize))
+                << "resident row " << row;
+        }
+        for (int32_t row = 0; row < kRuntimeBatch; ++row)
+        {
+            EXPECT_TRUE(std::equal(expected.begin(), expected.end(), active.begin() + row * rowSize))
+                << "active row " << row;
+        }
+    }
+    ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+}
+
 TEST(PipelineIOSwaBindingTest, RaggedExecutionBindingsGatherResidentMRopeRows)
 {
     LLMEngineConfig cfg;
@@ -726,7 +864,7 @@ TEST(PipelineIOSwaBindingTest, RaggedExecutionBindingsGatherResidentMRopeRows)
     cfg.maxNumSequences = 2;
     cfg.recurrentPoolRows = 2;
     cfg.kvPoolPages = static_cast<int32_t>(computeMinimumKvPoolPages(cfg.recurrentPoolRows, cfg.maxKVCacheCapacity));
-    cfg.kvCacheDtype = nvinfer1::DataType::kHALF;
+    cfg.kvCacheDtype = trt_edgellm::DataType::kHALF;
     cfg.ropeConfig.type = RopeType::kMRope;
     cfg.layerTypes.assign(1, HybridCacheManager::LayerType::kAttention);
     cfg.kvLayerConfigs = {KVLayerConfig{/*numKVHeads=*/1, /*headDim=*/64}};
@@ -738,7 +876,7 @@ TEST(PipelineIOSwaBindingTest, RaggedExecutionBindingsGatherResidentMRopeRows)
         auto resources = makeResources(cfg);
         PipelineIO io = PipelineIO::createForLLM(cfg, stream);
         Tensor residentRope({cfg.recurrentPoolRows, cfg.maxKVCacheCapacity, cfg.rotaryDim}, DeviceType::kCPU,
-            nvinfer1::DataType::kFLOAT, "residentRopeStaging");
+            trt_edgellm::DataType::kFLOAT, "residentRopeStaging");
         float* const residentRopeData = residentRope.dataPointer<float>();
         for (int32_t row = 0; row < cfg.recurrentPoolRows; ++row)
         {
@@ -768,7 +906,7 @@ TEST(PipelineIOSwaBindingTest, RaggedExecutionBindingsGatherResidentMRopeRows)
 
         prepareRaggedExecutionBindings(io, *resources, cfg, batch, /*kvCacheIndex=*/0, stream);
 
-        Tensor gatheredRope({2, cfg.rotaryDim}, DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "gatheredRopeStaging");
+        Tensor gatheredRope({2, cfg.rotaryDim}, DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, "gatheredRopeStaging");
         ASSERT_EQ(cudaMemcpyAsync(gatheredRope.rawPointer(), io.raggedRopeCosSin.rawPointer(),
                       gatheredRope.getMemoryCapacity(), cudaMemcpyDeviceToHost, stream),
             cudaSuccess);
@@ -819,7 +957,7 @@ TEST(PipelineIOSwaBindingTest, RaggedExecutionBindingsPrepareBoundedSwaAndDualRo
         batch.logitsIndices = {1, 2};
 
         prepareRaggedExecutionBindings(io, *resources, cfg, batch, /*kvCacheIndex=*/0, stream);
-        Tensor gatheredSwa({2}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "gatheredSwaStaging");
+        Tensor gatheredSwa({2}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "gatheredSwaStaging");
         int32_t const maxPagesPerSeq = computeMaxPagesPerSeq(cfg.maxKVCacheCapacity);
         ASSERT_EQ(cudaMemcpyAsync(gatheredSwa.rawPointer(), io.raggedSwaKVPageTable.rawPointer(), sizeof(int32_t),
                       cudaMemcpyDeviceToHost, stream),
@@ -834,6 +972,97 @@ TEST(PipelineIOSwaBindingTest, RaggedExecutionBindingsPrepareBoundedSwaAndDualRo
         EXPECT_EQ(io.raggedSwaKVPageTable.getShape(), Coords({2, 2, maxPagesPerSeq}));
         EXPECT_EQ(io.raggedRopeCosSinSliding.getShape(), Coords({4, cfg.slidingRotaryDim}));
         EXPECT_EQ(io.raggedRopeCosSinFull.getShape(), Coords({4, cfg.fullRotaryDim}));
+    }
+    ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+}
+
+TEST(PipelineIOSwaBindingTest, VanillaDoesNotAllocateSpeculativeLayoutStorage)
+{
+    // Given vanilla inference, when allocating PipelineIO, then no speculative layout storage is allocated.
+    LLMEngineConfig cfg;
+    cfg.hiddenSize = 16;
+    cfg.outputVocabSize = 32;
+    cfg.maxSupportedBatchSize = 2;
+    cfg.maxSupportedInputLength = 4;
+    cfg.maxKVCacheCapacity = 8;
+    cfg.maxPhysicalTokens = 8;
+    cfg.maxNumSequences = 2;
+    cfg.recurrentPoolRows = 2;
+    cfg.rotaryDim = 8;
+    cfg.ropeConfig.type = RopeType::kNoRope;
+    cudaStream_t stream{};
+    ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+    {
+        PipelineIO io = PipelineIO::createForLLM(cfg, stream);
+        EXPECT_EQ(io.specVerifyLayout.getMemoryCapacity(), 0);
+    }
+    ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+}
+
+// Given an engine config with a prefill and a decode skip-softmax table, When ragged bindings are prepared for an
+// all-decode batch and then for an all-context batch, Then `skip_softmax_prefill_scale` still holds the prefill table
+// and `skip_softmax_decode_scale` the decode table, each at the address it was uploaded to (the executor re-reads the
+// address every enqueue, so a step must never re-point either tensor).
+TEST(PipelineIOSwaBindingTest, SkipSoftmaxTablesStayConstantAcrossRaggedSteps)
+{
+    LLMEngineConfig cfg = makeBindingConfig(false);
+    cfg.maxPhysicalTokens = 8;
+    cfg.maxNumSequences = 2;
+    cfg.recurrentPoolRows = 2;
+    cfg.skipSoftmaxPrefillScaleTable = {{0, 6000}};
+    cfg.skipSoftmaxDecodeScaleTable = {{2048, 614}, {4096, 1228}};
+
+    cudaStream_t stream{};
+    ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+    {
+        auto resources = makeResources(cfg);
+        PipelineIO io = PipelineIO::createForLLM(cfg, stream);
+        void const* const prefillAddress = io.skipSoftmaxPrefillScale.rawPointer();
+        void const* const decodeAddress = io.skipSoftmaxDecodeScale.rawPointer();
+        auto readTable = [&](Tensor const& table) {
+            std::vector<int32_t> host(static_cast<size_t>(table.getShape().volume()), 0);
+            EXPECT_EQ(
+                cudaMemcpy(host.data(), table.rawPointer(), host.size() * sizeof(int32_t), cudaMemcpyDeviceToHost),
+                cudaSuccess);
+            return host;
+        };
+        auto expectTablesUnchanged = [&]() {
+            EXPECT_EQ(io.skipSoftmaxPrefillScale.rawPointer(), prefillAddress);
+            EXPECT_EQ(io.skipSoftmaxDecodeScale.rawPointer(), decodeAddress);
+            EXPECT_EQ(readTable(io.skipSoftmaxPrefillScale), (std::vector<int32_t>{0, 6000}));
+            EXPECT_EQ(readTable(io.skipSoftmaxDecodeScale), (std::vector<int32_t>{2048, 614, 4096, 1228}));
+        };
+        expectTablesUnchanged();
+
+        RaggedExecutionBatch decodeBatch;
+        decodeBatch.shape = {/*numSequences=*/2, /*validTokens=*/2, /*physicalTokens=*/2, /*queryWidth=*/1,
+            /*numContextSequences=*/0, /*numContextTokens=*/0, /*numLogits=*/2};
+        decodeBatch.positions = {4, 7};
+        decodeBatch.queryStartOffsets = {0, 1, 2};
+        decodeBatch.queryLengths = {1, 1};
+        decodeBatch.pastLengths = {4, 7};
+        decodeBatch.attentionSequenceLengths = {5, 8};
+        decodeBatch.stateIndices = {1, 0};
+        decodeBatch.logitsIndices = {0, 1};
+        decodeBatch.sequenceWorks = {SequenceWork::kDecode, SequenceWork::kDecode};
+        prepareRaggedExecutionBindings(io, *resources, cfg, decodeBatch, /*kvCacheIndex=*/0, stream);
+        ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+        expectTablesUnchanged();
+
+        RaggedExecutionBatch contextBatch;
+        contextBatch.shape = {/*numSequences=*/2, /*validTokens=*/3, /*physicalTokens=*/4, /*queryWidth=*/2,
+            /*numContextSequences=*/2, /*numContextTokens=*/3, /*numLogits=*/2};
+        contextBatch.positions = {0, 1, 0, -1};
+        contextBatch.queryStartOffsets = {0, 2, 4};
+        contextBatch.queryLengths = {2, 1};
+        contextBatch.pastLengths = {0, 0};
+        contextBatch.attentionSequenceLengths = {2, 1};
+        contextBatch.stateIndices = {0, 1};
+        contextBatch.logitsIndices = {1, 2};
+        contextBatch.sequenceWorks = {SequenceWork::kContext, SequenceWork::kContext};
+        prepareRaggedExecutionBindings(io, *resources, cfg, contextBatch, /*kvCacheIndex=*/0, stream);
+        ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+        expectTablesUnchanged();
     }
     ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
 }

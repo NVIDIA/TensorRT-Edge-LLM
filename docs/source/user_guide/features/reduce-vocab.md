@@ -39,13 +39,13 @@ trtedge export \
   --reduced-vocab-dir reduced_vocab/
 
 # Step 3: Build TensorRT engine (unchanged)
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir qwen3_0_6b_onnx/llm \
   --engine-dir engines/qwen3-0.6b \
   --max-batch-size 1
 
 # Step 4: Run inference (unchanged)
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
   --engine-dir engines/qwen3-0.6b \
   --input-file input.json \
   --output-file output.json

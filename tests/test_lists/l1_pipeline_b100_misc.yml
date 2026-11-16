@@ -7,6 +7,9 @@ tests:
   - tests/defs/test_common.py::test_build_project
   - tests/defs/test_common.py::test_unit_tests
 
+  # The public 26B Orbax checkpoint must convert, build, run, and match its HF reference.
+  - tests/defs/test_flax_checkpoint_converter.py::test_gemma4_26b_orbax_matches_hf
+
   # Gemma4 12B paired MTP
   - tests/defs/test_llm_pipeline.py::test_engine_build[gemma-4-12B-it-fp16-mxsl1024-mtp-mxbs1-mxil512]
   - tests/defs/test_llm_pipeline.py::test_inference[gemma-4-12B-it-fp16-mxsl1024-mtp-mxbs1-mxil512-llm_basic]

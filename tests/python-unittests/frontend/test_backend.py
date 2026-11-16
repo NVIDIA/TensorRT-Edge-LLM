@@ -14,14 +14,15 @@
 # limitations under the License.
 """Frontend adapter: option forwarding, reasoning, runtime details, and rates."""
 
+import inspect
 import json
 import types
 
 import pytest
 
-from experimental import server
-from experimental.frontend import backend
-from experimental.server.runtime import engine
+from experimental.frontend import agent, backend
+from tensorrt_edgellm import server
+from tensorrt_edgellm.server.runtime import engine
 
 from . import helpers
 
@@ -74,8 +75,13 @@ def test_public_cancellable_iterator_closes_before_iteration():
     assert started == []
 
 
+@pytest.mark.parametrize(("method", "spec_args", "expected_geometry"), [
+    ("mtp", ("--draft-step", "3", "--verify-tokens", "4"), (3, None, 4)),
+    ("dflash", ("--proposal-tokens", "15", "--verify-tokens", "16"),
+     (None, 15, 16)),
+])
 def test_launch_options_reach_runtime_sampling_and_builder(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, method, spec_args, expected_geometry):
     # Given explicit launch options.
     # When the backend loads, then runtime and sampling settings retain them.
     result = helpers.settings(
@@ -83,26 +89,34 @@ def test_launch_options_reach_runtime_sampling_and_builder(
         "--max-batch-size", "2", "--tp-size", "1", "--plugin-path",
         "/tmp/plugin.so", "--max-image-tokens", "512",
         "--max-image-tokens-per-image", "256", "--clear-engine-cache",
-        "--draft-top-k", "1", "--draft-step", "3", "--verify-tree-size", "4",
-        "--speculative-config", '{"method":"mtp","num_speculative_tokens":3}',
-        "--context-cache-config", '{"enabled":true,"max_records":8}',
+        "--draft-top-k", "1", *spec_args, "--speculative-config",
+        json.dumps({
+            "method": method,
+            **({
+                "model": "/tmp/draft"
+            } if method == "dflash" else {}),
+        }), "--context-cache-config", '{"enabled":true,"max_records":8}',
         "--reasoning-effort", "low", "--disable-spec-decode", "--num-logprobs",
         "2", "--stop", "END", "--stop", "DONE", "--logit-bias", '{"42":-5}',
-        "--guided-decoding", '{"regex":"[a-z]+"}', "--no-reuse-context",
-        "--no-cache-generated-tokens", "--no-skip-special-tokens")
+        "--guided-decoding", '{"regex":"[a-z]+","jump_forward":true}',
+        "--no-reuse-context", "--no-cache-generated-tokens",
+        "--no-skip-special-tokens")
     calls = {}
+    llm_signature = inspect.signature(engine.LLM)
 
     def load(model, **kwargs):
+        llm_signature.bind(model, **kwargs)
         calls.update(kwargs)
         return types.SimpleNamespace(model_dir=str(tmp_path))
 
     monkeypatch.setattr(engine, "LLM", load)
     instance = backend.Backend(result, lambda _: None)
     assert calls["clear_engine_cache"]
-    assert calls["speculative_config"].method == "mtp"
+    assert calls["speculative_config"].method == method
     assert calls["context_cache_config"].max_records == 8
-    assert (calls["draft_top_k"], calls["draft_step"],
-            calls["verify_tree_size"]) == (1, 3, 4)
+    assert calls["draft_top_k"] == 1
+    assert (calls.get("draft_step"), calls.get("proposal_tokens"),
+            calls["verify_tokens"]) == expected_geometry
     build = calls["build_options"]
     assert (build.max_input_len, build.max_kv_cache_capacity,
             build.max_batch_size) == (1024, 4096, 2)
@@ -116,18 +130,22 @@ def test_launch_options_reach_runtime_sampling_and_builder(
     assert sampling.stop == ["END", "DONE"]
     assert sampling.logit_bias == {42: -5.0}
     assert sampling.guided_decoding == ("regex", "[a-z]+")
+    assert sampling.jump_forward
     assert sampling.reasoning_effort == "low" and sampling.disable_spec_decode
     assert sampling.num_logprobs == 2
     assert not sampling.reuse_context and not sampling.cache_generated_tokens
     assert not sampling.skip_special_tokens
 
 
-@pytest.mark.parametrize("thinking,skip_special", [(True, False),
-                                                   (False, True)])
+@pytest.mark.parametrize("agentic", [False, True])
+@pytest.mark.parametrize("thinking,skip_special,prefix", [
+    (False, True, ""),
+    (True, False, "<think>"),
+    (True, False, ""),
+])
 def test_backend_splits_thinking_and_keeps_native_sampling(
-        tmp_path, thinking, skip_special):
-    # Given streamed thinking and special tokens.
-    # When adapted, then reasoning is separated without changing sampling.
+        tmp_path, thinking, skip_special, prefix, agentic):
+    """Reasoning stays separate with tools and either form of thinking prefix."""
     (tmp_path / "config.json").write_text(json.dumps({"model_type":
                                                       "qwen3_5"}))
     model = backend.Backend.__new__(backend.Backend)
@@ -136,9 +154,9 @@ def test_backend_splits_thinking_and_keeps_native_sampling(
         "--skip-special-tokens"
         if skip_special else "--no-skip-special-tokens").sampling
     closed = []
-    text = "<think>Let me check.</think>Four." if thinking else "Four."
+    text = f"{prefix}Let me check.</think>Four." if thinking else "Four."
 
-    def generate(_messages, sampling, on_metrics):
+    def generate(_messages, sampling, on_metrics, tools):
         assert sampling.enable_thinking == thinking
         assert sampling.skip_special_tokens == skip_special
         decoded = text + ("" if sampling.skip_special_tokens else "<|im_end|>")
@@ -147,7 +165,9 @@ def test_backend_splits_thinking_and_keeps_native_sampling(
 
     model.llm = types.SimpleNamespace(model_dir=str(tmp_path),
                                       generate_stream=generate)
-    stream = model.stream([], lambda _: None)
+    stream = model.stream([],
+                          lambda _: None,
+                          tools=agent.TOOLS if agentic else None)
     parts = list(stream)
     assert closed == [True]
     stream.close()

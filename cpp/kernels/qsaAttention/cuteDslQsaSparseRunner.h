@@ -37,63 +37,60 @@ extern "C" cudaError_t cudaLibraryUnload(cudaLibrary_t library);
 #undef CUTE_DSL_CUDA_ERROR_CHECK
 #endif // defined(CUTE_DSL_QSA_ENABLED)
 
-#include <NvInferRuntime.h>
+#include "common/dataType.h"
 #include <cstdint>
 
 namespace trt_edgellm
 {
 
-//! Per-launch parameters for the QSA sparse-GQA prefill kernel.
+//! Initial and continuation prefill queries attend to individual causal token-index lists.
 //!
-//! Q/K/V/O are dense padded BSND tensors: Q/O are [batchSize, seqLen, numQHeads, headDim] and
-//! K/V are [batchSize, seqLen, numKVHeads, headDim], all fp16 (or bf16), contiguous with D
-//! innermost. @c indices is the QSA indexer output [batchSize, seqLen, topK] Int32: per query
-//! row the selected KV token ids, -1-padded on the right, unsorted, distinct, all < token + 1.
-//! Causality lives entirely in the index list — the kernel applies no positional mask.
-//! @c contextLengths is [batchSize] Int32; output rows at or past the live length store exact
-//! zeros, and K/V rows at or past it are never referenced (indices only name live tokens).
+//! Q/O are [batchSize, seqLen, numQHeads, headDim]. The pool and page table use
+//! the decode layout; columns [headDim, poolHeadDim) are never read.
+//! @c indices is [batchSize, seqLen, topK], with causal token ids followed by -1.
+//! @c queryLengths is [batchSize]; padded query rows store exact zeros without
+//! reading their Q, index list, or KV data.
 struct QsaSparsePrefillParams
 {
     void const* qPtr{};
-    void const* kPtr{};
-    void const* vPtr{};
-    void* oPtr{};
+    void const* kvPoolPtr{};
+    int32_t const* pageTable{};
     int32_t const* indices{};
-    int32_t const* contextLengths{};
+    int32_t const* queryLengths{};
+    void* oPtr{};
     int32_t batchSize{};
     int32_t seqLen{};
     int32_t numQHeads{};
     int32_t numKVHeads{};
     int32_t headDim{};
+    int32_t poolHeadDim{};
+    int32_t numFlatPages{};
+    int32_t maxPagesPerSeq{};
     int32_t topK{};
     float attentionScale{};
     cudaStream_t stream{};
 };
 
-//! Runner for the CuTe DSL QSA sparse-GQA prefill kernels (Qwen3.8-Flash-Next).
-//!
-//! One CTA per (query token, KV head); the GQA head group is the MMA M tile and the KV
-//! traversal is a per-row cp.async gather over the index list. The AOT family bakes only the
-//! head dim and tile tuning; batch, seq, head counts, topK and strides stay runtime-dynamic.
+//! Sparse attention with one CTA per query token and KV head.
 class CuteDslQsaSparsePrefillRunner
 {
 public:
     CuteDslQsaSparsePrefillRunner() = delete;
 
-    //! Returns whether the QSA AOT family covers this shape on this SM.
-    static bool canImplement(
-        int32_t numQHeads, int32_t numKVHeads, int32_t headDim, int32_t smVersion, nvinfer1::DataType dataType);
+    //! Returns whether the paged QSA AOT family covers this shape on this SM.
+    static bool canImplement(int32_t numQHeads, int32_t numKVHeads, int32_t headDim, int32_t poolHeadDim,
+        int32_t smVersion, trt_edgellm::DataType dataType);
 
-    //! Ensures the variant selected by run() is loaded (CUDA-graph-capture aware).
-    static bool preflight(nvinfer1::DataType dataType, cudaStream_t stream);
+    //! Loads the paged prefill variant for this dtype before CUDA graph capture.
+    static bool preflight(trt_edgellm::DataType dataType, cudaStream_t stream);
 
-    //! Launches sparse prefill attention over the gathered index lists.
-    static bool run(nvinfer1::DataType dataType, QsaSparsePrefillParams const& params);
+    //! Launches all prefill queries against their individual causal index lists.
+    static bool run(trt_edgellm::DataType dataType, QsaSparsePrefillParams const& params);
 
 private:
 #if defined(CUTE_DSL_QSA_ENABLED)
-    static detail::LazyKernelModule<qsa_sparse_d256_fp16_Kernel_Module_t> sSparseD256Fp16;
-    static detail::LazyKernelModule<qsa_sparse_d256_bf16_Kernel_Module_t> sSparseD256Bf16;
+    static detail::LazyKernelModule<qsa_sparse_chunk_prefill_d256_fp16_Kernel_Module_t> sSparseD256Fp16;
+    static detail::LazyKernelModule<qsa_sparse_chunk_prefill_d256_bf16_Kernel_Module_t> sSparseD256Bf16;
 #endif // defined(CUTE_DSL_QSA_ENABLED)
 };
 
@@ -144,12 +141,12 @@ public:
     CuteDslQsaSparseDecodeRunner() = delete;
 
     static bool canImplement(int32_t numQHeads, int32_t numKVHeads, int32_t headDim, int32_t poolHeadDim,
-        int32_t smVersion, nvinfer1::DataType dataType);
+        int32_t smVersion, trt_edgellm::DataType dataType);
 
     //! Ensures the decode variant is loaded (CUDA-graph-capture aware).
-    static bool preflight(nvinfer1::DataType dataType, cudaStream_t stream);
+    static bool preflight(trt_edgellm::DataType dataType, cudaStream_t stream);
 
-    static bool run(nvinfer1::DataType dataType, QsaSparseDecodeParams const& params);
+    static bool run(trt_edgellm::DataType dataType, QsaSparseDecodeParams const& params);
 
 private:
 #if defined(CUTE_DSL_QSA_ENABLED)

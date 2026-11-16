@@ -101,6 +101,18 @@ TEST(DecodingContextCompactionTest, ThinkingDoneStaysInStepWithOtherPerSlotVecto
     EXPECT_EQ(context.thinkingDone.size(), context.slotStreams.size());
 }
 
+//! initialize clears the digest table rather than sizing it per slot, so a context reused for the next
+//! request offers the caches no identities from the previous one.
+TEST(DecodingContextCompactionTest, ImageContentDigestsAreRequestScoped)
+{
+    auto context = makeContext(2);
+    EXPECT_TRUE(context.imageContentDigests.empty());
+
+    context.imageContentDigests = {{rt::Hash128{1, 2}}, {rt::Hash128{3, 4}, rt::Hash128{5, 6}}};
+    context.initialize(2, 4, std::nullopt, rt::OptionalInputTensors{}, "", nullptr);
+    EXPECT_TRUE(context.imageContentDigests.empty());
+}
+
 //! A slot marked finished earlier in the same step (cancellation, or a guided-decoding
 //! failure) is evicted at the end of it, so a token appended to it is never fed back and only
 //! pollutes the output. Prefill and collectLogprobsFromHost both skip such slots; decode used

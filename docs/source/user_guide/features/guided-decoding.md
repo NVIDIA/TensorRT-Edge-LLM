@@ -8,6 +8,7 @@ Guided decoding constrains generation so the output is *guaranteed* to match a s
 - Six modes: `json_object`, `json_schema`, `regex`, `ebnf`, `structural_tag`, `choice`
 - Two request surfaces: the low-level `guided_decoding` field, and the OpenAI-compatible `response_format` on the server
 - Per-request and per-slot: constrained and unconstrained requests can share a batch
+- Optional per-request jump-forward appends grammar-forced tokens without forward passes
 - Compiled grammars are cached, so repeating a schema across requests costs one lookup
 
 ---
@@ -143,6 +144,72 @@ Setting both surfaces on one request is an error rather than one silently winnin
 
 ---
 
+## Jump-forward
+
+When the grammar allows exactly one continuation, such as the `{"name": "` that opens a schema-constrained object, the runtime appends it without a forward pass and brings the KV cache up to date in one multi-token pass. Set `jump_forward` inside `guided_decoding`; it is off by default and works with every mode.
+
+Request file:
+
+```json
+{
+    "requests": [
+        {
+            "messages": [{"role": "user", "content": "Give me a person record."}],
+            "guided_decoding": {
+                "json_schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+                    "required": ["name", "age"]
+                },
+                "jump_forward": true
+            }
+        }
+    ]
+}
+```
+
+`llm_inference --jump-forward` and `llm_stream --jump-forward` set the flag on every request in the file that has `guided_decoding`.
+
+OpenAI-compatible server:
+
+```json
+{
+    "model": "my-model",
+    "messages": [{"role": "user", "content": "Answer yes or no."}],
+    "guided_decoding": {"choice": ["yes", "no"], "jump_forward": true}
+}
+```
+
+`response_format` has no equivalent flag; use `guided_decoding`.
+
+### How it runs
+
+Vanilla decoding appends the forced tokens and catches up on them in one multi-token step. A speculative decoder grafts them into its draft before the verify round, so they are verified together with the draft; a request that falls back to vanilla decoding (`disable_spec_decode`, or non-greedy sampling the decoder hands to vanilla decoding) still jumps through the catch-up step.
+
+### Build requirements
+
+| Drafting | Requirement |
+|---|---|
+| Tree: EAGLE3; MTP, DFlash, DFlash2, JetSpec, Domino, DSpark with `--spec-draft-top-k` above 1 | Base built with `max_spec_verify_tokens` above `--spec-verify-tokens`, since grafted tokens take extra verify rows. DSpark trees jump only on a base without linear-attention layers. |
+| Chain: MTP, Gemma4 MTP, DFlash, DFlash2, Domino, DSpark with `--spec-draft-top-k 1` | No verify headroom: grafted tokens replace draft tokens. An MTP draft needs `max_spec_draft_tokens` above `--spec-draft-step`; Gemma4 MTP jumps with at most 15 draft steps. |
+
+### When the flag is ignored
+
+The request runs with its guide but without jumps, and the runtime logs one warning per reason:
+
+- non-greedy sampling on a speculative decoder that keeps such requests (DSpark and DFlash2 chain drafting);
+- a speculative decoder under in-flight batching (the OpenAI-compatible server and `RuntimeSession`); the blocking request path grafts;
+- a deployment that misses a build requirement above;
+- block-diffusion engines, vision-block attention, and engines whose context chunk holds a single token.
+
+### Effects
+
+- A request with the flag reserves KV cache for the widest grafting round, so its maximum generation length can be up to `max_spec_verify_tokens - verify tokens` shorter; requests without the flag keep their KV budget. A speculative deployment that can jump sizes its verify buffers, grammar bitmask rows and CUDA graphs for the widest round at load time, whether or not any request sets the flag.
+- Forced tokens get a logprob of 0 and are their only top-k candidate. A draft token the forced text would respell is left alone (`respell_refused` in the statistics), and a forced run shorter than the draft it would cut is not grafted (`draft_longer`).
+- Free text after a jump, and the output of other requests in the same batch, can differ from an unconstrained run.
+
+---
+
 ## Schema Support
 
 XGrammar enforces most of JSON Schema, but a few keywords are *accepted and then ignored*. Since silently returning output that violates the schema is worse than refusing the request, these are rejected up front with a message naming the keyword:
@@ -157,15 +224,16 @@ The check only inspects schema keywords, so a property genuinely *named* `contai
 
 ## Speculative decoding
 
-Every speculative decoding mode is supported, with no request-side configuration.
+Every speculative decoding mode is supported, with no request-side configuration. [Jump-forward](#jump-forward) runs on greedy requests in every geometry below; its build requirements are listed there.
 
 | Mode | Geometry |
 |---|---|
 | MTP | chain and tree |
 | EAGLE3 | tree |
 | DFlash | linear and DDTree |
-| DFlash2 | chain |
+| DFlash2 | chain, greedy or sampled; DDTree, greedy |
 | JetSpec | DDTree |
+| Domino | linear and DDTree |
 | DSpark | chain and tree, greedy or sampled |
 | Gemma4 MTP | chain |
 

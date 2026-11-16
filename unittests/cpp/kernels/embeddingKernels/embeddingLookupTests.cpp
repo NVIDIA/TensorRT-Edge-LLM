@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cuda_fp16.h>
 #if SUPPORTS_FP8
 #include <cuda_fp8.h>
@@ -32,6 +33,7 @@
 #include <gtest/gtest.h>
 #include <iomanip>
 #include <iostream>
+#include <string>
 #include <vector>
 
 using namespace trt_edgellm;
@@ -204,6 +206,56 @@ std::vector<half> embeddingLookupMultimodalFP8Ref(std::vector<int32_t> const& in
 
     return result;
 }
+
+float decodeE2m1Ref(uint8_t value)
+{
+    static constexpr float kValues[8] = {0.0F, 0.5F, 1.0F, 1.5F, 2.0F, 3.0F, 4.0F, 6.0F};
+    float const magnitude = kValues[value & 0x7U];
+    return (value & 0x8U) != 0U ? -magnitude : magnitude;
+}
+
+kernel::EmbeddingTableDescriptor makeNvfp4Descriptor(
+    int32_t vocabSize, int64_t hiddenSize, int64_t groupSize, float multiplierScale, float outputScale)
+{
+    kernel::EmbeddingTableDescriptor descriptor;
+    descriptor.format = kernel::EmbeddingTableFormat::kNVFP4;
+    descriptor.logicalShape = {vocabSize, hiddenSize};
+    descriptor.packedShape = {vocabSize, hiddenSize / 2};
+    descriptor.packedDataType = trt_edgellm::DataType::kUINT8;
+    descriptor.groupSize = groupSize;
+    descriptor.scaleShape = {vocabSize, hiddenSize / groupSize};
+    descriptor.scaleDataType = trt_edgellm::DataType::kFP8;
+    descriptor.multiplierGlobalScale = multiplierScale;
+    descriptor.modelOutputScale = outputScale;
+    return descriptor;
+}
+
+std::vector<half> embeddingLookupNvfp4Ref(std::vector<int32_t> const& inputIds, std::vector<uint8_t> const& packedTable,
+    std::vector<__nv_fp8_e4m3> const& scales, int32_t vocabSize, int64_t hiddenSize, int64_t groupSize,
+    float multiplierScale, float outputScale)
+{
+    std::vector<half> output(inputIds.size() * hiddenSize, __float2half(0.0F));
+    int64_t const packedWidth = hiddenSize / 2;
+    int64_t const nGroups = hiddenSize / groupSize;
+    for (size_t token = 0; token < inputIds.size(); ++token)
+    {
+        int32_t const tokenId = inputIds[token];
+        if (tokenId < 0 || tokenId >= vocabSize)
+        {
+            continue;
+        }
+        for (int64_t column = 0; column < hiddenSize; ++column)
+        {
+            uint8_t const packed = packedTable[static_cast<int64_t>(tokenId) * packedWidth + column / 2];
+            uint8_t const nibble = column % 2 == 0 ? packed & 0xFU : packed >> 4U;
+            float const scale
+                = static_cast<float>(scales[static_cast<int64_t>(tokenId) * nGroups + column / groupSize]);
+            output[token * hiddenSize + column]
+                = __float2half(decodeE2m1Ref(nibble) * scale * multiplierScale * outputScale);
+        }
+    }
+    return output;
+}
 #endif
 
 } // namespace
@@ -253,13 +305,13 @@ TEST_F(EmbeddingLookupTest, StandardEmbeddingLookupAccuracy)
 
         // Create tensors
         rt::Coords inputShape{batchSize, seqLen};
-        rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
         rt::Coords embeddingShape{vocabSize, hiddenSize};
-        rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         rt::Coords outputShape{batchSize, seqLen, hiddenSize};
-        rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         // Copy data to GPU
         copyHostToDevice(inputIdsTensor, inputIds);
@@ -291,9 +343,9 @@ TEST_F(EmbeddingLookupTest, TokenMajorOutputAccuracy)
     std::vector<half> embeddingTable(vocabSize * hiddenSize);
     uniformFloatInitialization<half>(embeddingTable, -1.0F, 1.0F);
 
-    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor embeddingTableTensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor outputTensor({batchSize * seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor embeddingTableTensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor outputTensor({batchSize * seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
     copyHostToDevice(inputIdsTensor, inputIds);
     copyHostToDevice(embeddingTableTensor, embeddingTable);
 
@@ -305,6 +357,125 @@ TEST_F(EmbeddingLookupTest, TokenMajorOutputAccuracy)
 }
 
 #if SUPPORTS_FP8
+TEST_F(EmbeddingLookupTest, NVFP4EmbeddingLookupAccuracy)
+{
+    // Given a packed NVFP4 table with distinct nibbles, block scales, and both scalar scale stages,
+    // when valid and invalid token IDs are looked up, then selected rows are decoded in provider order and invalid
+    // tokens are zero-filled.
+    constexpr int64_t batchSize = 1;
+    constexpr int64_t seqLen = 5;
+    constexpr int32_t vocabSize = 3;
+    constexpr int64_t hiddenSize = 32;
+    constexpr int64_t groupSize = 16;
+    constexpr float multiplierScale = 0.5F;
+    constexpr float outputScale = 1.5F;
+
+    std::vector<int32_t> inputIds{0, 2, -1, vocabSize, 1};
+    std::vector<uint8_t> packedTable(vocabSize * hiddenSize / 2);
+    for (size_t i = 0; i < packedTable.size(); ++i)
+    {
+        // Deliberately use different low/high nibbles to verify the provider's nibble order.
+        packedTable[i] = static_cast<uint8_t>(((15U - i) & 0xFU) << 4U) | static_cast<uint8_t>(i & 0xFU);
+    }
+    std::vector<__nv_fp8_e4m3> scales{
+        __nv_fp8_e4m3(0.5F),
+        __nv_fp8_e4m3(2.0F),
+        __nv_fp8_e4m3(1.0F),
+        __nv_fp8_e4m3(4.0F),
+        __nv_fp8_e4m3(2.0F),
+        __nv_fp8_e4m3(0.25F),
+    };
+
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor tableTensor({vocabSize, hiddenSize / 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8);
+    rt::Tensor scalesTensor({vocabSize, hiddenSize / groupSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    copyHostToDevice(inputIdsTensor, inputIds);
+    copyHostToDevice(tableTensor, packedTable);
+    CUDA_CHECK(cudaMemcpy(
+        scalesTensor.rawPointer(), scales.data(), scales.size() * sizeof(__nv_fp8_e4m3), cudaMemcpyHostToDevice));
+
+    auto const descriptor = makeNvfp4Descriptor(vocabSize, hiddenSize, groupSize, multiplierScale, outputScale);
+    kernel::embeddingLookup(
+        inputIdsTensor, tableTensor, rt::OptionalInputTensor{scalesTensor}, descriptor, outputTensor, stream);
+
+    auto const gpuResult = copyDeviceToHost<half>(outputTensor);
+    auto const cpuResult = embeddingLookupNvfp4Ref(
+        inputIds, packedTable, scales, vocabSize, hiddenSize, groupSize, multiplierScale, outputScale);
+    EXPECT_TRUE(compareResults(cpuResult, gpuResult, "NVFP4 Embedding Lookup Accuracy Test"));
+}
+
+TEST_F(EmbeddingLookupTest, NVFP4MultimodalInsertionAccuracy)
+{
+    // Given packed text embeddings and FP16 image/audio embeddings, when a mixed token sequence is looked up, then
+    // text rows are decoded and each multimodal placeholder receives the selected FP16 row.
+    constexpr int64_t batchSize = 1;
+    constexpr int64_t seqLen = 4;
+    constexpr int32_t vocabSize = 3;
+    constexpr int64_t hiddenSize = 16;
+    constexpr int64_t groupSize = 16;
+    constexpr int32_t imageTokenId = 10;
+    constexpr int32_t audioTokenId = 11;
+
+    std::vector<int32_t> inputIds{0, imageTokenId, audioTokenId, -1};
+    std::vector<int32_t> multimodalIndices{-1, 0, 0, -1};
+    std::vector<uint8_t> packedTable(vocabSize * hiddenSize / 2, 0x21U);
+    std::vector<__nv_fp8_e4m3> scales(vocabSize, __nv_fp8_e4m3(1.0F));
+    std::vector<half> imageEmbeds(hiddenSize, __float2half(3.0F));
+    std::vector<half> audioEmbeds(hiddenSize, __float2half(-2.0F));
+
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor tableTensor({vocabSize, hiddenSize / 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8);
+    rt::Tensor scalesTensor({vocabSize, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+    rt::Tensor indicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor imageTensor({1, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor audioTensor({1, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    copyHostToDevice(inputIdsTensor, inputIds);
+    copyHostToDevice(tableTensor, packedTable);
+    copyHostToDevice(indicesTensor, multimodalIndices);
+    copyHostToDevice(imageTensor, imageEmbeds);
+    copyHostToDevice(audioTensor, audioEmbeds);
+    CUDA_CHECK(cudaMemcpy(
+        scalesTensor.rawPointer(), scales.data(), scales.size() * sizeof(__nv_fp8_e4m3), cudaMemcpyHostToDevice));
+
+    auto const descriptor = makeNvfp4Descriptor(vocabSize, hiddenSize, groupSize, 1.0F, 1.0F);
+    kernel::embeddingLookup(inputIdsTensor, tableTensor, rt::OptionalInputTensor{scalesTensor}, descriptor,
+        outputTensor, stream, rt::OptionalInputTensor{indicesTensor}, imageTokenId,
+        rt::OptionalInputTensor{imageTensor}, audioTokenId, rt::OptionalInputTensor{audioTensor});
+
+    auto const result = copyDeviceToHost<half>(outputTensor);
+    EXPECT_FLOAT_EQ(__half2float(result[0]), 0.5F); // low nibble is the even element
+    EXPECT_FLOAT_EQ(__half2float(result[1]), 1.0F); // high nibble is the odd element
+    for (int64_t column = 0; column < hiddenSize; ++column)
+    {
+        EXPECT_FLOAT_EQ(__half2float(result[hiddenSize + column]), 3.0F);
+        EXPECT_FLOAT_EQ(__half2float(result[2 * hiddenSize + column]), -2.0F);
+        EXPECT_FLOAT_EQ(__half2float(result[3 * hiddenSize + column]), 0.0F);
+    }
+}
+
+TEST_F(EmbeddingLookupTest, NVFP4DescriptorValidation)
+{
+    // Given an NVFP4 descriptor with required metadata missing or non-finite, when lookup is requested, then the
+    // launch fails before reading the packed tensors.
+    constexpr int32_t vocabSize = 2;
+    constexpr int64_t hiddenSize = 16;
+    rt::Tensor inputIdsTensor({1, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor tableTensor({vocabSize, hiddenSize / 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kUINT8);
+    rt::Tensor scalesTensor({vocabSize, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+    rt::Tensor outputTensor({1, 1, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    auto descriptor = makeNvfp4Descriptor(vocabSize, hiddenSize, hiddenSize, 1.0F, 1.0F);
+
+    EXPECT_THROW(kernel::embeddingLookup(inputIdsTensor, tableTensor, std::nullopt, descriptor, outputTensor, stream),
+        std::runtime_error);
+
+    descriptor.multiplierGlobalScale = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_THROW(kernel::embeddingLookup(inputIdsTensor, tableTensor, rt::OptionalInputTensor{scalesTensor}, descriptor,
+                     outputTensor, stream),
+        std::runtime_error);
+}
+
 // Test FP8 embedding lookup accuracy with various configurations
 TEST_F(EmbeddingLookupTest, FP8EmbeddingLookupAccuracy)
 {
@@ -339,10 +510,10 @@ TEST_F(EmbeddingLookupTest, FP8EmbeddingLookupAccuracy)
         quantizeToFP8PerGroup(embeddingTableFp16, embeddingTableFp8, scales, vocabSize, hiddenSize, blockSize);
 
         // Create GPU tensors
-        rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-        rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8);
-        rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-        rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+        rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         // Copy data to GPU
         CUDA_CHECK(cudaMemcpy(
@@ -371,6 +542,33 @@ TEST_F(EmbeddingLookupTest, FP8EmbeddingLookupAccuracy)
     }
 }
 
+TEST_F(EmbeddingLookupTest, FP8ModelOptVocabularyBlocks)
+{
+    constexpr int32_t vocabSize = 256;
+    constexpr int64_t hiddenSize = 128;
+    std::vector<int32_t> inputIds{0, 127, 128, 255};
+    std::vector<__nv_fp8_e4m3> table(vocabSize * hiddenSize, __nv_fp8_e4m3(1.0F));
+    std::vector<float> scales{0.5F, 2.0F};
+    rt::Tensor inputTensor({1, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor tableTensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+    rt::Tensor scaleTensor({2, 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor outputTensor({1, 4, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    copyHostToDevice(inputTensor, inputIds);
+    copyHostToDevice(tableTensor, table);
+    copyHostToDevice(scaleTensor, scales);
+
+    kernel::embeddingLookup(inputTensor, tableTensor, rt::OptionalInputTensor{scaleTensor}, outputTensor, stream);
+    auto const actual = copyDeviceToHost<half>(outputTensor);
+    for (size_t row = 0; row < inputIds.size(); ++row)
+    {
+        float const expected = row < 2 ? 0.5F : 2.0F;
+        for (int64_t col = 0; col < hiddenSize; ++col)
+        {
+            EXPECT_EQ(__half2float(actual[row * hiddenSize + col]), expected);
+        }
+    }
+}
+
 // Test FP8 embedding lookup with out-of-bounds tokens (should produce zero embeddings)
 TEST_F(EmbeddingLookupTest, FP8OutOfBoundsTokenHandling)
 {
@@ -394,10 +592,10 @@ TEST_F(EmbeddingLookupTest, FP8OutOfBoundsTokenHandling)
     quantizeToFP8PerGroup(embeddingTableFp16, embeddingTableFp8, scales, vocabSize, hiddenSize, blockSize);
 
     // Create GPU tensors
-    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8);
-    rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+    rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Copy data to GPU
     copyHostToDevice(inputIdsTensor, inputIds);
@@ -447,10 +645,10 @@ TEST_F(EmbeddingLookupTest, FP8UnevenHiddenSizeError)
     std::vector<__nv_fp8_e4m3> embeddingTableFp8(vocabSize * hiddenSize);
     std::vector<float> scales(vocabSize * nGroups, 1.0f);
 
-    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8);
-    rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+    rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     copyHostToDevice(inputIdsTensor, inputIds);
     CUDA_CHECK(cudaMemcpy(tableFp8Tensor.rawPointer(), embeddingTableFp8.data(),
@@ -480,10 +678,10 @@ TEST_F(EmbeddingLookupTest, FP8UnevenBlockSizeError)
     std::vector<__nv_fp8_e4m3> embeddingTableFp8(vocabSize * hiddenSize);
     std::vector<float> scales(vocabSize * nGroups, 1.0f);
 
-    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8);
-    rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+    rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     copyHostToDevice(inputIdsTensor, inputIds);
     CUDA_CHECK(cudaMemcpy(tableFp8Tensor.rawPointer(), embeddingTableFp8.data(),
@@ -575,13 +773,13 @@ TEST_F(EmbeddingLookupTest, FP8MultimodalAccuracy)
         uniformFloatInitialization<half>(audioEmbeds, -1.0f, 1.0f);
 
         // Create GPU tensors
-        rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-        rt::Tensor multimodalIndicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-        rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8);
-        rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-        rt::Tensor imageEmbedsTensor({imageTokenLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-        rt::Tensor audioEmbedsTensor({audioTokenLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-        rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        rt::Tensor multimodalIndicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+        rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        rt::Tensor imageEmbedsTensor({imageTokenLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        rt::Tensor audioEmbedsTensor({audioTokenLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         // Copy data to GPU
         copyHostToDevice(inputIdsTensor, inputIds);
@@ -653,12 +851,12 @@ TEST_F(EmbeddingLookupTest, FP8MultimodalImageOnly)
     uniformFloatInitialization<half>(imageEmbeds, -1.0f, 1.0f);
 
     // Create GPU tensors
-    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor multimodalIndicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8);
-    rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor imageEmbedsTensor({imageTokenLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor multimodalIndicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+    rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor imageEmbedsTensor({imageTokenLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Copy data to GPU
     copyHostToDevice(inputIdsTensor, inputIds);
@@ -707,10 +905,10 @@ TEST_F(EmbeddingLookupTest, FP8MultimodalTextOnly)
     quantizeToFP8PerGroup(embeddingTableFp16, embeddingTableFp8, scales, vocabSize, hiddenSize, blockSize);
 
     // Create GPU tensors
-    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8);
-    rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor tableFp8Tensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFP8);
+    rt::Tensor scalesTensor({vocabSize, nGroups}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Copy data to GPU
     copyHostToDevice(inputIdsTensor, inputIds);
@@ -751,13 +949,13 @@ TEST_F(EmbeddingLookupTest, UnevenHiddenSizeError)
 
     // Create tensors
     rt::Coords inputShape{batchSize, seqLen};
-    rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
     rt::Coords embeddingShape{vocabSize, hiddenSize};
-    rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     rt::Coords outputShape{batchSize, seqLen, hiddenSize};
-    rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Copy data to GPU
     copyHostToDevice(inputIdsTensor, inputIds);
@@ -788,13 +986,13 @@ TEST_F(EmbeddingLookupTest, OutOfBoundsTokenHandling)
 
     // Create tensors
     rt::Coords inputShape{batchSize, seqLen};
-    rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
     rt::Coords embeddingShape{vocabSize, hiddenSize};
-    rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     rt::Coords outputShape{batchSize, seqLen, hiddenSize};
-    rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Copy data to GPU
     copyHostToDevice(inputIdsTensor, inputIds);
@@ -851,13 +1049,13 @@ TEST_F(EmbeddingLookupTest, DeepstackUnevenHiddenSizeError)
 
     // Create tensors
     rt::Coords inputShape{batchSize, seqLen};
-    rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
     rt::Coords featuresShape{numImageTokens, hiddenSize};
-    rt::Tensor deepstackFeaturesTensor(featuresShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor deepstackFeaturesTensor(featuresShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     rt::Coords outputShape{batchSize, seqLen, hiddenSize};
-    rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Copy data to GPU
     copyHostToDevice(inputIdsTensor, inputIds);
@@ -885,10 +1083,10 @@ TEST_F(EmbeddingLookupTest, DeepstackEmbeddingExplicitImageTokenId)
     std::vector<half> deepstackFeatures(numImageTokens * hiddenSize);
     uniformFloatInitialization<half>(deepstackFeatures, -1.0f, 1.0f);
 
-    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor indicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor featuresTensor({numImageTokens, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor indicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor featuresTensor({numImageTokens, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor outputTensor({batchSize, seqLen, hiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     copyHostToDevice(inputIdsTensor, inputIds);
     copyHostToDevice(indicesTensor, multimodalIndices);
@@ -984,20 +1182,20 @@ TEST_F(EmbeddingLookupTest, MultimodalAccuracy)
 
         // Create tensors
         rt::Coords inputShape{batchSize, seqLen};
-        rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-        rt::Tensor multimodalIndicesTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        rt::Tensor multimodalIndicesTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
         rt::Coords embeddingShape{vocabSize, hiddenSize};
-        rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         rt::Coords imageShape{imageTokenLen, hiddenSize};
-        rt::Tensor imageEmbedsTensor(imageShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor imageEmbedsTensor(imageShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         rt::Coords audioShape{audioTokenLen, hiddenSize};
-        rt::Tensor audioEmbedsTensor(audioShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor audioEmbedsTensor(audioShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         rt::Coords outputShape{batchSize, seqLen, hiddenSize};
-        rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         // Copy data to GPU
         copyHostToDevice(inputIdsTensor, inputIds);
@@ -1083,20 +1281,20 @@ TEST_F(EmbeddingLookupTest, MultimodalOutOfBounds)
 
     // Create tensors
     rt::Coords inputShape{batchSize, seqLen};
-    rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor multimodalIndicesTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor multimodalIndicesTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
     rt::Coords embeddingShape{vocabSize, hiddenSize};
-    rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     rt::Coords imageShape{imageTokenLen, hiddenSize};
-    rt::Tensor imageEmbedsTensor(imageShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor imageEmbedsTensor(imageShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     rt::Coords audioShape{audioTokenLen, hiddenSize};
-    rt::Tensor audioEmbedsTensor(audioShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor audioEmbedsTensor(audioShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     rt::Coords outputShape{batchSize, seqLen, hiddenSize};
-    rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Copy data to GPU
     copyHostToDevice(inputIdsTensor, inputIds);
@@ -1183,20 +1381,20 @@ TEST_F(EmbeddingLookupTest, MultimodalUnevenHiddenSizeError)
 
     // Create tensors
     rt::Coords inputShape{batchSize, seqLen};
-    rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor multimodalIndicesTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor multimodalIndicesTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
     rt::Coords embeddingShape{vocabSize, hiddenSize};
-    rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     rt::Coords imageShape{imageTokenLen, hiddenSize};
-    rt::Tensor imageEmbedsTensor(imageShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor imageEmbedsTensor(imageShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     rt::Coords audioShape{audioTokenLen, hiddenSize};
-    rt::Tensor audioEmbedsTensor(audioShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor audioEmbedsTensor(audioShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     rt::Coords outputShape{batchSize, seqLen, hiddenSize};
-    rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Copy data to GPU
     copyHostToDevice(inputIdsTensor, inputIds);
@@ -1287,20 +1485,20 @@ TEST_F(EmbeddingLookupTest, MultimodalOptionalInputs)
 
         // Create tensors
         rt::Coords inputShape{batchSize, seqLen};
-        rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-        rt::Tensor multimodalIndicesTensor(inputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        rt::Tensor inputIdsTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        rt::Tensor multimodalIndicesTensor(inputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
         rt::Coords embeddingShape{vocabSize, hiddenSize};
-        rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor embeddingTableTensor(embeddingShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         rt::Coords imageShape{imageTokenLen, hiddenSize};
-        rt::Tensor imageEmbedsTensor(imageShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor imageEmbedsTensor(imageShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         rt::Coords audioShape{audioTokenLen, hiddenSize};
-        rt::Tensor audioEmbedsTensor(audioShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor audioEmbedsTensor(audioShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         rt::Coords outputShape{batchSize, seqLen, hiddenSize};
-        rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+        rt::Tensor outputTensor(outputShape, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
         // Copy data to GPU
         copyHostToDevice(inputIdsTensor, inputIds);
@@ -1358,8 +1556,8 @@ TEST_F(EmbeddingLookupTest, GenerateMultimodalIndicesGlobalAccumulation)
     // batch 1: [text, image, text, audio]  -> image index 2 (global), audio index 0
     std::vector<int32_t> inputIds = {10, kImageTok, kImageTok, 20, 30, kImageTok, 40, kAudioTok};
 
-    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor indicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor indicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     copyHostToDevice(inputIdsTensor, inputIds);
 
     kernel::generateMultimodalIndices(inputIdsTensor, indicesTensor, kImageTok, kAudioTok, stream);
@@ -1385,10 +1583,10 @@ TEST_F(EmbeddingLookupTest, GenerateMultimodalIndicesPerRowOffsets)
     std::vector<int32_t> imageOffsets = {3, 7};
     std::vector<int32_t> audioOffsets = {0, 2};
 
-    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor indicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor imageOffsetTensor({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor audioOffsetTensor({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor indicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor imageOffsetTensor({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor audioOffsetTensor({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
     copyHostToDevice(inputIdsTensor, inputIds);
     copyHostToDevice(imageOffsetTensor, imageOffsets);
@@ -1421,9 +1619,9 @@ TEST_F(EmbeddingLookupTest, GenerateMultimodalIndicesContextReuseScenario)
     std::vector<int32_t> inputIds = {kImageTok, kImageTok, 20, kImageTok, 30, 40};
     std::vector<int32_t> imageOffsets = {10, 5}; // cumulative tokens consumed by prefix
 
-    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor indicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor imageOffsetTensor({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor indicesTensor({batchSize, seqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor imageOffsetTensor({batchSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
     copyHostToDevice(inputIdsTensor, inputIds);
     copyHostToDevice(imageOffsetTensor, imageOffsets);
@@ -1437,4 +1635,89 @@ TEST_F(EmbeddingLookupTest, GenerateMultimodalIndicesContextReuseScenario)
     // Row 1: image=5, text=-1, text=-1
     std::vector<int32_t> expected = {10, 11, -1, 5, -1, -1};
     EXPECT_EQ(result, expected);
+}
+
+TEST_F(EmbeddingLookupTest, FlatCandidateIdsNeedNoTokenStaging)
+{
+    // Given flat candidate IDs, when embedding directly, then the selected rows
+    // match the checkpoint table without a second token buffer.
+    rt::Tensor ids({3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor table({4, 8}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor output({3, 8}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    std::vector<half> hostTable(32);
+    for (size_t i = 0; i < hostTable.size(); ++i)
+    {
+        hostTable[i] = __float2half(static_cast<float>(i));
+    }
+    copyHostToDevice<int32_t>(ids, {3, 0, 2});
+    copyHostToDevice(table, hostTable);
+    kernel::embeddingLookup(ids, table, std::nullopt, output, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    std::vector<half> expected;
+    for (int32_t const row : {3, 0, 2})
+    {
+        expected.insert(expected.end(), hostTable.begin() + row * 8, hostTable.begin() + (row + 1) * 8);
+    }
+    EXPECT_TRUE(compareResults(expected, copyDeviceToHost<half>(output)));
+}
+
+// Given image and audio tables whose selected rows start beyond 2^32 elements (index x hiddenSize > 2^32)
+// When the multimodal lookup gathers those rows
+// Then each output row is the selected row, not the row its offset aliases modulo 2^32
+TEST_F(EmbeddingLookupTest, MultimodalRowsPast32BitElementOffsetsAreGathered)
+{
+    constexpr int64_t kHidden{4096};
+    // Row (kRows - 8 + k) * kHidden lands past 2^32 elements; its 32-bit truncation is row k.
+    constexpr int64_t kRows{(int64_t{1} << 20) + 8};
+    size_t freeBytes{};
+    size_t totalBytes{};
+    CUDA_CHECK(cudaMemGetInfo(&freeBytes, &totalBytes));
+    if (freeBytes < static_cast<size_t>(kRows * kHidden) * sizeof(half) + (size_t{1} << 30))
+    {
+        GTEST_SKIP() << "needs 8 GiB of free device memory plus 1 GiB headroom";
+    }
+    // Row seed s holds s + (column % 64) / 8: exact in FP16 and distinct per seed.
+    auto const pattern = [](float seed) {
+        std::vector<half> row(kHidden);
+        for (int64_t col = 0; col < kHidden; ++col)
+        {
+            row[col] = __float2half(seed + static_cast<float>(col % 64) * 0.125F);
+        }
+        return row;
+    };
+    auto const bits = [](half const* values) {
+        std::vector<uint16_t> result(kHidden);
+        std::memcpy(result.data(), values, kHidden * sizeof(half));
+        return result;
+    };
+    int32_t const farImage = static_cast<int32_t>(kRows - 8 + 3);
+    int32_t const farAudio = static_cast<int32_t>(kRows - 8 + 5);
+    // The wide table serves as both the image and the audio reservation; rows 3 and 5 are what 32-bit offsets read.
+    rt::Tensor wide({kRows, kHidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    std::vector<std::pair<int64_t, float>> const rows{
+        {3, 1.0F}, {5, 2.0F}, {7, 3.0F}, {farImage, -4.0F}, {farAudio, -5.0F}};
+    for (auto const& [row, seed] : rows)
+    {
+        CUDA_CHECK(cudaMemcpy(wide.dataPointer<half>() + row * kHidden, pattern(seed).data(), kHidden * sizeof(half),
+            cudaMemcpyHostToDevice));
+    }
+    std::vector<half> table(4 * kHidden);
+    uniformFloatInitialization<half>(table, -1.0F, 1.0F);
+    rt::Tensor tableTensor({4, kHidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor ids({1, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor indices({1, 4}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor output({1, 4, kHidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    copyHostToDevice(tableTensor, table);
+    copyHostToDevice<int32_t>(ids, {11, 12, 11, 1});
+    copyHostToDevice<int32_t>(indices, {farImage, farAudio, 7, 0});
+
+    kernel::embeddingLookup(
+        ids, tableTensor, std::nullopt, output, stream, std::ref(indices), 11, std::ref(wide), 12, std::ref(wide));
+
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    std::vector<half> const result = copyDeviceToHost<half>(output);
+    EXPECT_EQ(bits(result.data()), bits(pattern(-4.0F).data()));
+    EXPECT_EQ(bits(result.data() + kHidden), bits(pattern(-5.0F).data()));
+    EXPECT_EQ(bits(result.data() + 2 * kHidden), bits(pattern(3.0F).data()));
+    EXPECT_EQ(bits(result.data() + 3 * kHidden), bits(table.data() + kHidden));
 }

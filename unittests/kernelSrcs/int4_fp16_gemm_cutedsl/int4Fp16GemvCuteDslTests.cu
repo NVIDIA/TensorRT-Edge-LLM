@@ -55,7 +55,6 @@ namespace
 
 #define ASSERT_CUDA_OK(expr) ASSERT_EQ((expr), cudaSuccess) << cudaGetErrorString(cudaGetLastError())
 
-constexpr int32_t kGroupSize = 128;
 constexpr int32_t kBN = 128; // fragment N-block (shared with the GEMM)
 constexpr int32_t kBK = 64;  // fragment K-tile
 
@@ -161,15 +160,15 @@ bool loadModules()
         SET_2D_TENSOR(tS, scales, scaleRows, N);                                                                       \
         PREFIX##_Tensor_mOut_t tOut{};                                                                                 \
         SET_2D_TENSOR(tOut, Out, M, N);                                                                                \
-        ret = cute_dsl_##PREFIX##_wrapper(&g_##PREFIX, &tA, &tQW, &tS, &tOut, stream);                                 \
+        ret = cute_dsl_##PREFIX##_wrapper(&g_##PREFIX, &tA, &tQW, &tS, &tOut, groupSize, stream);                      \
     } while (0)
 
-int launchVariant(
-    int32_t M, void const* A, void const* QW, void const* scales, void* Out, int32_t N, int32_t K, cudaStream_t stream)
+int launchVariant(int32_t M, void const* A, void const* QW, void const* scales, void* Out, int32_t N, int32_t K,
+    int32_t groupSize, cudaStream_t stream)
 {
     int32_t const kn = (kBK / 16) * (kBN / 64);
     int32_t const qwRows = ceilDiv(N, kBN) * ceilDiv(K, kBK) * kn;
-    int32_t const scaleRows = ceilDiv(K, kGroupSize);
+    int32_t const scaleRows = ceilDiv(K, groupSize);
     int32_t ret = -1;
 #define DISPATCH_ONE(prefix, VM)                                                                                       \
     if (M == (VM))                                                                                                     \
@@ -290,6 +289,7 @@ struct Int4GemvTestConfig
     int32_t M;
     int32_t N;
     int32_t K;
+    int32_t groupSize;
 };
 
 std::vector<Int4GemvTestConfig> buildConfigs()
@@ -297,12 +297,12 @@ std::vector<Int4GemvTestConfig> buildConfigs()
     std::vector<Int4GemvTestConfig> v;
     // (N, K) shapes: a canonical square-ish shape and Qwen2.5-0.5B projections
     // (incl. tall-K down_proj) -- N unconstrained, K % 64 == 0.
-    int32_t const shapes[][2] = {{160, 256}, {256, 1024}, {896, 896}, {4864, 896}, {896, 4864}};
+    int32_t const shapes[][3] = {{160, 256, 128}, {256, 1024, 128}, {896, 896, 64}, {4864, 896, 128}, {896, 4864, 128}};
     for (int32_t M = 1; M <= 8; ++M)
     {
         for (auto const& s : shapes)
         {
-            v.push_back(Int4GemvTestConfig{M, s[0], s[1]});
+            v.push_back(Int4GemvTestConfig{M, s[0], s[1], s[2]});
         }
     }
     return v;
@@ -321,7 +321,7 @@ TEST_P(Int4Fp16GemvCuteDslTest, CorrectnessVsFp32Reference)
 {
     auto const& cfg = GetParam();
     int32_t const M = cfg.M, N = cfg.N, K = cfg.K;
-    int32_t const groupSize = kGroupSize;
+    int32_t const groupSize = cfg.groupSize;
 
     int32_t smMajor{}, smMinor{};
     ASSERT_CUDA_OK(cudaDeviceGetAttribute(&smMajor, cudaDevAttrComputeCapabilityMajor, 0));
@@ -374,7 +374,7 @@ TEST_P(Int4Fp16GemvCuteDslTest, CorrectnessVsFp32Reference)
     ASSERT_CUDA_OK(cudaMemset(dOutput.ptr, 0, static_cast<size_t>(M) * N * sizeof(half)));
 
     // ---- Run ----
-    ASSERT_EQ(launchVariant(M, dA.ptr, dQW.ptr, dScales.ptr, dOutput.ptr, N, K, /*stream=*/nullptr), 0)
+    ASSERT_EQ(launchVariant(M, dA.ptr, dQW.ptr, dScales.ptr, dOutput.ptr, N, K, groupSize, /*stream=*/nullptr), 0)
         << "INT4 FP16 GEMV kernel launch failed";
     ASSERT_CUDA_OK(cudaDeviceSynchronize());
 
@@ -399,7 +399,8 @@ TEST_P(Int4Fp16GemvCuteDslTest, CorrectnessVsFp32Reference)
 INSTANTIATE_TEST_SUITE_P(Int4Fp16GemvAllVariants, Int4Fp16GemvCuteDslTest, ::testing::ValuesIn(buildConfigs()),
     [](testing::TestParamInfo<Int4GemvTestConfig> const& info) {
         auto const& c = info.param;
-        return "M" + std::to_string(c.M) + "_N" + std::to_string(c.N) + "_K" + std::to_string(c.K);
+        return "M" + std::to_string(c.M) + "_N" + std::to_string(c.N) + "_K" + std::to_string(c.K) + "_G"
+            + std::to_string(c.groupSize);
     });
 
 } // namespace

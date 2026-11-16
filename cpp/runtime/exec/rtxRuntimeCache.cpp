@@ -21,7 +21,6 @@
 
 #include <NvInferRuntime.h>
 
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -169,42 +168,16 @@ void RtxRuntimeCache::persist() const noexcept
     {
         return;
     }
-
-    // Write to a per-process temporary file and rename it over the target so a crash or a second
-    // runtime sharing the path can never observe a partial or interleaved blob. Replacement is
-    // last-writer-wins, which is safe for a cache: a stale winner only costs a rebuild.
-    std::string const tmpPath = mCachePath + ".tmp."
-        + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "."
-        + std::to_string(reinterpret_cast<std::uintptr_t>(this));
-
+    std::ofstream out(mCachePath, std::ios::binary | std::ios::trunc);
+    if (out)
     {
-        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
-        if (!out)
-        {
-            LOG_WARNING("failed to open temporary runtime cache file %s", tmpPath.c_str());
-            return;
-        }
         out.write(static_cast<char const*>(blob->data()), static_cast<std::streamsize>(blob->size()));
-        out.flush();
-        if (!out)
-        {
-            std::error_code rmEc;
-            std::filesystem::remove(tmpPath, rmEc);
-            LOG_WARNING("failed to write TRT-RTX runtime cache to %s", tmpPath.c_str());
-            return;
-        }
+        LOG_INFO("persisted TRT-RTX runtime cache (%zu bytes) to %s", blob->size(), mCachePath.c_str());
     }
-
-    std::error_code ec;
-    std::filesystem::rename(tmpPath, mCachePath, ec);
-    if (ec)
+    else
     {
-        std::error_code rmEc;
-        std::filesystem::remove(tmpPath, rmEc);
-        LOG_WARNING("failed to replace TRT-RTX runtime cache %s: %s", mCachePath.c_str(), ec.message().c_str());
-        return;
+        LOG_WARNING("failed to write TRT-RTX runtime cache to %s", mCachePath.c_str());
     }
-    LOG_INFO("persisted TRT-RTX runtime cache (%zu bytes) to %s", blob->size(), mCachePath.c_str());
 }
 
 } // namespace rt

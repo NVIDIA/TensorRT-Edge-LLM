@@ -35,9 +35,9 @@ def _load_build_module():
     return module
 
 
-def _load_kernel_module(relative_path):
+def _load_kernel_module(relative_path, kernel_subdir="gdn_cutedsl"):
     pytest.importorskip("cutlass")
-    kernel_dir = _KERNEL_SRCS / "gdn_cutedsl"
+    kernel_dir = _KERNEL_SRCS / kernel_subdir
     for path in (_KERNEL_SRCS, kernel_dir):
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
@@ -235,3 +235,33 @@ def test_qsa_decode_aot_tensors_are_storage_free():
     assert tensors["partial_output"].element_type == module.cutlass.Float32
     assert tensors["partial_stats"].element_type == module.cutlass.Float32
     assert tensors["counters"].element_type == module.cutlass.Int32
+
+
+def test_blackwell_fmha_compile_command_carries_target_sm(tmp_path):
+    """All Blackwell FMHA exports receive the deployment SM."""
+    build_cutedsl = _load_build_module()
+    variants = [
+        v for v in build_cutedsl.KERNEL_VARIANTS
+        if v.script == "fmha_cutedsl_blackwell/fmha.py"
+    ]
+    assert variants
+    for variant in variants:
+        command = build_cutedsl._compile_command(variant, tmp_path, "sm_110a",
+                                                 "linux-aarch64", 110)
+        assert "--target_sm" in command, variant.name
+        assert command[command.index("--target_sm") + 1] == "110", variant.name
+
+
+@pytest.mark.parametrize("target_sm", [None, 110])
+def test_fmha_cli_target_without_device(monkeypatch, target_sm):
+    """CLI target parsing works without a GPU or environment fallback."""
+    pytest.importorskip("cupy")
+    module = _load_kernel_module("fmha.py", "fmha_cutedsl_blackwell")
+    argv = ["fmha.py"]
+    if target_sm is not None:
+        argv += ["--target_sm", str(target_sm)]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setenv("CUTE_DSL_ARCH", "sm_103a")
+    monkeypatch.setattr(module.cp.cuda, "Device",
+                        lambda: pytest.fail("Unexpected GPU query"))
+    assert module._get_target_sm() == target_sm

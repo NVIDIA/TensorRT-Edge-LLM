@@ -21,8 +21,9 @@ import math
 import os
 import pathlib
 
-from experimental.server import config as server_config
-from experimental.server.runtime import engine, engine_build
+from experimental.frontend import agent
+from tensorrt_edgellm.server import config as server_config
+from tensorrt_edgellm.server.runtime import engine, engine_build
 
 RUNTIME_OPTIONS = {
     "cache_dir": str,
@@ -33,12 +34,15 @@ RUNTIME_OPTIONS = {
     "clear_engine_cache": bool,
     "draft_top_k": int,
     "draft_step": int,
-    "verify_tree_size": int,
+    "proposal_tokens": int,
+    "verify_tokens": int,
     "speculative_config": dict,
     "context_cache_config": dict,
 }
 BUILD_OPTIONS = {
     "tp_size": int,
+    "max_spec_verify_tokens": int,
+    "max_spec_draft_tokens": int,
     "max_image_tokens": int,
     "max_image_tokens_per_image": int,
     "plugin_path": str,
@@ -69,6 +73,7 @@ TEXT_OPTIONS = (
 )
 BOOL_OPTIONS = ("verbose", "timings", "no_color", "no_metrics")
 OPTION_TYPES = {
+    "agentic": bool,
     **RUNTIME_OPTIONS,
     **BUILD_OPTIONS,
     **SAMPLING_OPTIONS,
@@ -118,12 +123,17 @@ OPTION_HELP = {
     "Maximum total tokens per sequence, including prompt and generated tokens",
     "max_batch_size":
     "Engine batch capacity. Interactive requests remain serial",
+    "max_spec_verify_tokens":
+    "Base-engine speculative verification capacity",
+    "max_spec_draft_tokens":
+    "Draft-engine speculative proposal capacity",
     "speculative_config":
     'JSON: {"method":"mtp","num_speculative_tokens":3}. Paired drafts also use "model"',
     "context_cache_config":
     'JSON context-cache settings, including "enabled" and "max_records"',
     "guided_decoding":
-    'JSON with one mode: json_schema, json_object, regex, ebnf, or choice',
+    'JSON with one mode: json_schema, json_object, regex, ebnf, or choice; '
+    'optional "jump_forward": true',
     "logit_bias":
     'JSON mapping token IDs to biases in [-100, 100]',
     "clear_engine_cache":
@@ -152,6 +162,7 @@ class Config:
     sampling: engine.SamplingParams
     messages: list
     prompt: str | None = None
+    agentic: bool = False
     verbose: bool = False
     timings: bool = False
     no_color: bool = False
@@ -182,7 +193,7 @@ def parser(prog="trtedge chat") -> argparse.ArgumentParser:
     }.items():
         if name in ("enable_thinking", "reasoning_effort",
                     "disable_spec_decode", "speculative_config", "draft_top_k",
-                    "draft_step", "verify_tree_size"):
+                    "draft_step", "proposal_tokens", "verify_tokens"):
             group = groups["Thinking and speculation"]
         elif name in SAMPLING_OPTIONS:
             group = groups["Generation"]
@@ -217,6 +228,11 @@ def parser(prog="trtedge chat") -> argparse.ArgumentParser:
         metavar="PATH",
         help=("Path to a JSON file containing an array of initial "
               "role/content messages"))
+    inputs.add_argument(
+        "--agentic",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Let the model call the device_status tool for GPU telemetry")
     groups["Generation"].add_argument(
         "--json-schema", help="Constrain output using a JSON Schema file")
     for name in BOOL_OPTIONS:
@@ -363,10 +379,15 @@ def resolve(args: argparse.Namespace) -> Config:
             message for message in messages if message["role"] != "system"
         ]
         messages.insert(0, {"role": "system", "content": values["system"]})
+    agentic = values.get("agentic", False)
+    if agentic:
+        messages = agent.with_system_prompt(messages)
     sampling = engine.SamplingParams(
         **{name: values[name]
            for name in SAMPLING_OPTIONS if name in values})
     sampling.logit_bias = engine._normalize_logit_bias(sampling.logit_bias)
+    sampling.jump_forward = engine._normalize_jump_forward(
+        sampling.guided_decoding)
     sampling.guided_decoding = engine._normalize_guided_decoding(
         sampling.guided_decoding)
     if "json_schema" in values:
@@ -376,12 +397,15 @@ def resolve(args: argparse.Namespace) -> Config:
         if not isinstance(schema, (dict, bool)):
             raise ValueError("JSON Schema must be an object or boolean")
         sampling.guided_decoding = ("json_schema", json.dumps(schema))
+    if agentic and sampling.guided_decoding is not None:
+        raise ValueError("agentic does not support guided decoding")
     return Config(
         model=model,
         runtime=_runtime_options(values, model),
         sampling=sampling,
         messages=messages,
         prompt=values.get("prompt"),
+        agentic=agentic,
         **{name: values.get(name, False)
            for name in BOOL_OPTIONS},
     )

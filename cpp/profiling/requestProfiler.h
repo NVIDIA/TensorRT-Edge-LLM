@@ -68,6 +68,11 @@ public:
     LLMRequestMetrics snapshot(int32_t processedPromptTokens) const
     {
         LLMRequestMetrics result = mMetrics;
+        if (mPrefillStarted)
+        {
+            result.prefillStartNs
+                = std::chrono::duration_cast<std::chrono::nanoseconds>(mPrefillStarted->time_since_epoch()).count();
+        }
         if (mPrefillFinished)
         {
             result.processedPromptTokens = processedPromptTokens;

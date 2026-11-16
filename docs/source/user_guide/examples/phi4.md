@@ -10,7 +10,7 @@ Phi-4-Multimodal requires merging its vision LoRA adapter into the base model be
 
 ## Step 1: Merge, Quantize, and Export (x86 Host)
 
-Install the `tools` extra from a [published wheel](../getting_started/installation.md#optional-python-dependencies)
+Install the `quantize,export` extras from a [published wheel](../getting_started/installation.md#optional-python-dependencies)
 or the source checkout. The later C++ engine-build and inference steps require
 the source workflow.
 
@@ -64,7 +64,7 @@ export MODEL_NAME=Phi-4-multimodal-instruct
 cd /path/to/TensorRT-Edge-LLM
 
 # Build language model engine
-./build/examples/llm/llm_build \
+./build/bin/llm_build \
   --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/llm \
   --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
   --max-batch-size 1 \
@@ -72,7 +72,7 @@ cd /path/to/TensorRT-Edge-LLM
   --max-kv-cache-capacity 2048
 
 # Build visual encoder engine
-./build/examples/multimodal/visual_build \
+./build/bin/visual_build \
   --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/visual \
   --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
   --min-image-tokens 256 \
@@ -85,7 +85,7 @@ cd /path/to/TensorRT-Edge-LLM
 ```bash
 cd /path/to/TensorRT-Edge-LLM
 
-./build/examples/llm/llm_inference \
+./build/bin/llm_inference \
   --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
   --multimodal-engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/visual \
   --input-file $WORKSPACE_DIR/input.json \

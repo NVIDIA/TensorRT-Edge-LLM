@@ -51,12 +51,13 @@ public:
         return false;
     }
 
-    DecodingKvHeadroom requiredKvHeadroom() const override
+    DecodingKvHeadroomPolicy kvHeadroom() const override
     {
         // Every denoise step materializes a full canvas in the base KV cache, irrespective of
         // how many positions are eventually committed. Reserve it before prefill so decode
         // cannot overrun a capacity that was sized only for the accepted prefix.
-        return {/*.baseExtraTokens=*/mCanvasLen, /*.draftExtraTokens=*/0};
+        DecodingKvHeadroom const headroom{/*.baseExtraTokens=*/mCanvasLen, /*.draftExtraTokens=*/0};
+        return {/*.plain=*/headroom, /*.jumpForward=*/headroom};
     }
 
     DecodingTokenStateContract tokenStateContract() const noexcept override
@@ -69,20 +70,6 @@ public:
 
     int64_t getRequiredContextMemorySize() const noexcept override;
     void setContextMemory(Tensor& memory) override;
-
-    bool hasSystemPromptKVCache(SystemPromptCacheKey const&) const override
-    {
-        return false;
-    }
-    void restoreSystemPromptKVCache(SystemPromptCacheKey const&, int32_t, cudaStream_t) override {}
-    bool runSystemPromptPrefill(DecodingInferenceContext&) override
-    {
-        return true;
-    }
-    void saveSystemPromptKVCache(SystemPromptCacheKey const&, std::string const&, std::vector<tokenizer::Rank> const&,
-        int32_t, cudaStream_t) override
-    {
-    }
 
     void resetForNewSequences(Tensor&, cudaStream_t) override {}
     void onBatchEvict(std::vector<int32_t> const&, int32_t, int32_t, Tensor&, cudaStream_t) override {}

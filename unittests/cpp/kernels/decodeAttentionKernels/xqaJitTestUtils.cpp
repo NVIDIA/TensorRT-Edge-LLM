@@ -39,7 +39,7 @@ CacheKey makeCacheKey(XQAJitKey const& key)
 
 } // namespace
 
-bool loadXQAJitKernelForTest(int32_t smVersion, nvinfer1::DataType dataType, nvinfer1::DataType kvDataType,
+bool loadXQAJitKernelForTest(int32_t smVersion, trt_edgellm::DataType dataType, trt_edgellm::DataType kvDataType,
     int32_t headSize, int32_t numQHeads, int32_t numKVHeads, bool slidingWindow, bool specDecode, int32_t tokensPerPage,
     bool contiguousQuerySwa)
 {
@@ -61,9 +61,8 @@ bool loadXQAJitKernelForTest(int32_t smVersion, nvinfer1::DataType dataType, nvi
         return true;
     }
 
-    XQAJitResult const jitResult = compileXQAKernel(key);
-    bool const loaded
-        = DecoderXQARunner::loadDecodeXQAKernelFromCubin(key, jitResult.cubin.data(), jitResult.cubin.size());
+    XQAJitKernel const kernel = compileXQAKernel(key);
+    bool const loaded = DecoderXQARunner::loadDecodeXQAKernelFromCubin(key, kernel.cubin.data(), kernel.cubin.size());
     if (loaded)
     {
         sLoadedKeys.insert(cacheKey);

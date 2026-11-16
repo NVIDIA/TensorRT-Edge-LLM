@@ -18,6 +18,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <cuda_fp16.h>
 
 namespace trt_edgellm
@@ -37,6 +38,12 @@ inline size_t alignSpeculativeWorkspaceSize(size_t size)
 __device__ __forceinline__ float clampUniform(float uniform)
 {
     return fminf(fmaxf(uniform, 0.0F), 0.99999994F);
+}
+
+//! Strict candidate order of the speculative top-K lists: score descending, then token ascending.
+__device__ __forceinline__ bool isBetterCandidate(float lhsScore, int32_t lhsToken, float rhsScore, int32_t rhsToken)
+{
+    return lhsScore > rhsScore || (lhsScore == rhsScore && lhsToken < rhsToken);
 }
 
 __device__ __forceinline__ float toFloat(float value)

@@ -20,11 +20,13 @@
 #include "common/tensor.h"
 #include "profiling/metrics.h"
 #include "runtime/config/deploymentConfig.h"
-#include "runtime/generationBoundary.h"
+#include "runtime/config/deploymentOptions.h"
+#include "runtime/config/runtimeResources.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/modelArtifacts.h"
 #include "runtime/multiDevice/parallelConfig.h"
 #include "runtime/preprocess/visualTokenPruner.h"
+#include "runtime/sessionOptions.h"
 #include "runtime/state/contextCache/contextCacheConfig.h"
 #include "runtime/state/contextCache/contextCacheMetrics.h"
 
@@ -41,8 +43,7 @@ namespace trt_edgellm
 namespace rt
 {
 
-class SteppedExecution;
-class SteppedRequest;
+class RuntimeSession;
 
 class LLMRankRuntime;
 class RuntimeCoordinator;
@@ -58,37 +59,29 @@ class RuntimeCoordinator;
 class LLMInferenceRuntime
 {
 public:
-    //! Options for constructing the unified runtime with explicit parallel execution settings.
-    struct ParallelExecutionConfig
-    {
-        ParallelConfig parallelConfig{};
-        std::optional<SpecDecodeDraftingConfig> draftingConfig{};
-        ContextCacheConfig contextCacheConfig{};
-        std::string checkpointDir{};
-        std::string draftCheckpointDir{};
-        std::vector<int32_t> localRanks{};
-        std::unordered_map<int32_t, int32_t> localRankDevices{};
-        std::vector<cudaStream_t> localStreams{};
-        bool ownsLocalStreams{true};
-        std::vector<ParallelBackendHandles> backendHandles{};
-        //! TRT-RTX runtime cache file path.
-        std::optional<std::filesystem::path> runtimeCachePath{};
-    };
+    //! Construct a single-device runtime using a caller-owned stream.
+    LLMInferenceRuntime(DeploymentOptions options, cudaStream_t stream);
+
+    //! Construct a runtime with explicit rank placement and execution-resource ownership.
+    explicit LLMInferenceRuntime(DeploymentOptions options, RuntimeResources resources = {});
+
+    //! Assemble using artifact-owned model/source configuration and caller-owned runtime policies.
+    //! Nonempty load options must agree with the artifacts; omitted drafting inherits their resolved mode.
+    LLMInferenceRuntime(ModelArtifacts&& artifacts, DeploymentOptions options, cudaStream_t stream);
 
     LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap,
         SpecDecodeDraftingConfig const& draftingConfig, cudaStream_t stream,
         ContextCacheConfig const& contextCacheConfig = {}, std::string const& checkpointDir = "",
         std::string const& draftCheckpointDir = "",
-        std::optional<std::filesystem::path> const& runtimeCachePath = std::nullopt);
+        std::optional<std::filesystem::path> const& runtimeCachePath = std::nullopt,
+        PleRuntimeConfig const& pleConfig = {});
 
     LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap, cudaStream_t stream,
         ContextCacheConfig const& contextCacheConfig = {}, std::string const& checkpointDir = "",
-        std::optional<std::filesystem::path> const& runtimeCachePath = std::nullopt);
-
-    LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
-        std::unordered_map<std::string, std::string> const& loraWeightsMap, ParallelExecutionConfig config);
+        std::optional<std::filesystem::path> const& runtimeCachePath = std::nullopt,
+        PleRuntimeConfig const& pleConfig = {});
 
     LLMInferenceRuntime(ModelArtifacts&& artifacts, std::string const& engineDir,
         std::string const& multimodalEngineDir, std::unordered_map<std::string, std::string> const& loraWeightsMap,
@@ -100,13 +93,13 @@ public:
     bool captureDecodingCUDAGraph(cudaStream_t stream);
 
     bool handleRequest(LLMGenerationRequest const& request, LLMGenerationResponse& response, cudaStream_t stream,
-        bool outputThinkerEmbeddings = false, GenerationBoundaryHook const& boundaryHook = {});
+        bool outputThinkerEmbeddings = false);
+
+    //! Empty while reusable; a permanent failure reason until the process restarts otherwise.
+    std::string unavailableReason() const;
 
     /*! \brief Return the input size for an explicit text token-count request. */
     std::vector<int32_t> countPromptTokens(LLMGenerationRequest const& request) const;
-
-    bool genAndSaveSystemPromptKVCache(
-        std::string const& prompt, std::string const& loraWeightsName, cudaStream_t stream);
 
     void setActionNoiseSeed(int32_t seed);
 
@@ -116,6 +109,7 @@ public:
     metrics::LLMPrefillMetrics const& getPrefillMetrics() const;
     metrics::SpecDecodeGenerationMetrics const& getSpecDecodeGenerationMetrics() const;
     char const* getSpeculativeDecodingStrategyName() const;
+    char const* getDefaultDecodingStrategyName() const;
     metrics::LLMGenerationMetrics const& getGenerationMetrics() const;
     std::optional<ContextCacheMetrics> getContextCacheMetrics() const;
     metrics::MultimodalMetrics getMultimodalMetrics() const;
@@ -131,17 +125,15 @@ public:
     //! @brief The engine's built batch dimension (see LLMRankRuntime::maxBatchSize).
     int32_t maxBatchSize() const;
 
-    //! True when in-flight admission can ride this runtime's boundary hooks: single rank, or
-    //! thread-launched tensor parallelism where scheduling decisions are relayed across the rank
-    //! threads. MPI-launched ranks are other processes and are not covered.
-    bool supportsBoundaryScheduling() const noexcept;
-
-    //! True when this runtime can hand out stepped requests (inline single-rank only in this release).
+    //! True when this runtime can host a runtime session (inline single-rank only in this release).
     bool supportsSteppedExecution() const noexcept;
 
-    //! Open one request under the stepped control plane; see RuntimeCoordinator::beginStepped.
-    std::unique_ptr<SteppedExecution> beginStepped(
-        LLMGenerationRequest const& request, RequestId requestId, cudaStream_t stream);
+    //! Open the runtime session a scheduler drives for the engine's life; see RuntimeSession and
+    //! RuntimeCoordinator::openSession. Null when the runtime refuses: a request is in flight, the
+    //! deployment cannot seat sequences into a running batch (supportsSeatedAdmission), or the
+    //! session's own setup fails. @p options choose whether the session may run compact steps (see
+    //! SessionOptions).
+    std::unique_ptr<RuntimeSession> openSession(cudaStream_t stream, SessionOptions options = {});
 
     //! @brief Ranks this runtime spans. 1 when it runs on a single device.
     //!
@@ -154,8 +146,7 @@ public:
     bool ownsGlobalRank(int32_t globalRank) const noexcept;
 
 private:
-    void initializeCoordinator(std::string const& engineDir, std::string const& multimodalEngineDir,
-        std::unordered_map<std::string, std::string> const& loraWeightsMap, ParallelExecutionConfig config,
+    void initializeCoordinator(DeploymentOptions options, RuntimeResources resources,
         std::unique_ptr<ModelArtifacts> modelArtifacts = nullptr);
 
     LLMRankRuntime& rootRuntime();

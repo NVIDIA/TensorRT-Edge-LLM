@@ -18,8 +18,8 @@
 #pragma once
 
 #include "stringUtils.h"
-#include <NvInferRuntime.h>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -34,6 +34,16 @@ namespace trt_edgellm
 
 namespace logger
 {
+
+//! Log severity. The values equal nvinfer1::ILogger::Severity's (checked in common/trtInterop.h).
+enum class Severity : int32_t
+{
+    kINTERNAL_ERROR = 0,
+    kERROR = 1,
+    kWARNING = 2,
+    kINFO = 3,
+    kVERBOSE = 4,
+};
 
 /*!
  * @brief Source code location information for automatic tracking
@@ -61,23 +71,23 @@ struct SourceLocation
 };
 
 /**
- * @brief Enhanced Logger with automatic location tracking and nvinfer1 compatibility
+ * @brief Enhanced Logger with automatic location tracking
  *
  * Features:
  * - Automatic source location tracking (file:line:function)
  * - Configurable formatting (timestamps, location info)
- * - nvinfer1::ILogger interface for TensorRT integration
+ * - TensorRT messages arrive through TrtLogger (common/trtInterop.h)
  * - Multiple log levels with performance optimizations
  */
-class EdgeLLMLogger : public nvinfer1::ILogger
+class EdgeLLMLogger
 {
 public:
     /*!
      * @brief Access the process-wide logger singleton.
      *
-     * The instance is intentionally never destroyed (immortal singleton). TensorRT retains a
-     * reference to this ILogger inside its global plugin registry, which is a process-lifetime
-     * singleton. If the logger were destroyed at static-destruction time (as a normal global
+     * The instance is intentionally never destroyed (immortal singleton). TensorRT's global plugin
+     * registry, a process-lifetime singleton, retains TrtLogger, which forwards here. If the logger
+     * were destroyed at static-destruction time (as a normal global
      * object is), the registry could still emit through it from another thread during runtime
      * teardown or plugin-creator lookup, causing a use-after-free. Never destructing the logger
      * removes that race. The single fixed allocation is reclaimed by the OS at process exit; the
@@ -100,11 +110,11 @@ public:
     EdgeLLMLogger& operator=(EdgeLLMLogger&&) = delete;
 
     /*!
-     * @brief nvinfer1::ILogger interface implementation for TensorRT integration
+     * @brief Log a message from TensorRT (through TrtLogger)
      * @param severity Log severity level
      * @param msg Log message
      */
-    void log(nvinfer1::ILogger::Severity severity, char const* msg) noexcept override
+    void log(Severity severity, char const* msg) noexcept
     {
         try
         {
@@ -124,7 +134,7 @@ public:
      * @param msg Log message
      * @param loc Source location information
      */
-    void logWithLocation(nvinfer1::ILogger::Severity level, std::string const& msg, SourceLocation const& loc)
+    void logWithLocation(Severity level, std::string const& msg, SourceLocation const& loc)
     {
         if (!shouldLog(level))
         {
@@ -133,7 +143,7 @@ public:
 
         // Format and output the message
         std::string formattedMsg = formatLogEntry(level, msg, loc);
-        std::ostream& stream = (level <= nvinfer1::ILogger::Severity::kWARNING) ? std::cerr : std::cout;
+        std::ostream& stream = (level <= Severity::kWARNING) ? std::cerr : std::cout;
         stream << formattedMsg << std::endl;
     }
 
@@ -144,7 +154,7 @@ public:
      */
     void debug(std::string const& msg, SourceLocation const& loc)
     {
-        logWithLocation(nvinfer1::ILogger::Severity::kVERBOSE, msg, loc);
+        logWithLocation(Severity::kVERBOSE, msg, loc);
     }
 
     /*!
@@ -154,7 +164,7 @@ public:
      */
     void info(std::string const& msg, SourceLocation const& loc)
     {
-        logWithLocation(nvinfer1::ILogger::Severity::kINFO, msg, loc);
+        logWithLocation(Severity::kINFO, msg, loc);
     }
 
     /*!
@@ -164,7 +174,7 @@ public:
      */
     void warning(std::string const& msg, SourceLocation const& loc)
     {
-        logWithLocation(nvinfer1::ILogger::Severity::kWARNING, msg, loc);
+        logWithLocation(Severity::kWARNING, msg, loc);
     }
 
     /*!
@@ -174,14 +184,14 @@ public:
      */
     void error(std::string const& msg, SourceLocation const& loc)
     {
-        logWithLocation(nvinfer1::ILogger::Severity::kERROR, msg, loc);
+        logWithLocation(Severity::kERROR, msg, loc);
     }
 
     /*!
      * @brief Set minimum logging level
      * @param level Minimum severity level to log
      */
-    void setLevel(nvinfer1::ILogger::Severity level) noexcept
+    void setLevel(Severity level) noexcept
     {
         mMinLevel = level;
     }
@@ -190,7 +200,7 @@ public:
      * @brief Get current logging level
      * @return Current minimum severity level
      */
-    nvinfer1::ILogger::Severity getLevel() const noexcept
+    Severity getLevel() const noexcept
     {
         return mMinLevel;
     }
@@ -233,28 +243,27 @@ private:
             std::string_view const value{level};
             if (value == "WARNING")
             {
-                mMinLevel = nvinfer1::ILogger::Severity::kWARNING;
+                mMinLevel = Severity::kWARNING;
             }
             else if (value == "DEBUG")
             {
-                mMinLevel = nvinfer1::ILogger::Severity::kVERBOSE;
+                mMinLevel = Severity::kVERBOSE;
             }
         }
     }
-    ~EdgeLLMLogger() noexcept override = default;
+    ~EdgeLLMLogger() noexcept = default;
 
-    nvinfer1::ILogger::Severity mMinLevel = nvinfer1::ILogger::Severity::kINFO;
+    Severity mMinLevel = Severity::kINFO;
     bool mShowTimestamp = true;
     bool mShowLocation = true;
     bool mShowFunction = true;
 
-    bool shouldLog(nvinfer1::ILogger::Severity level) const noexcept
+    bool shouldLog(Severity level) const noexcept
     {
         return level <= mMinLevel; // Note: lower values are more severe in TensorRT
     }
 
-    std::string formatLogEntry(
-        nvinfer1::ILogger::Severity level, std::string const& msg, SourceLocation const& loc) const
+    std::string formatLogEntry(Severity level, std::string const& msg, SourceLocation const& loc) const
     {
         std::ostringstream oss;
 
@@ -306,14 +315,14 @@ private:
         return oss.str();
     }
 
-    char const* getLevelString(nvinfer1::ILogger::Severity level) const noexcept
+    char const* getLevelString(Severity level) const noexcept
     {
         switch (level)
         {
-        case nvinfer1::ILogger::Severity::kVERBOSE: return "DEBUG";
-        case nvinfer1::ILogger::Severity::kINFO: return "INFO";
-        case nvinfer1::ILogger::Severity::kWARNING: return "WARNING";
-        case nvinfer1::ILogger::Severity::kERROR: return "ERROR";
+        case Severity::kVERBOSE: return "DEBUG";
+        case Severity::kINFO: return "INFO";
+        case Severity::kWARNING: return "WARNING";
+        case Severity::kERROR: return "ERROR";
         default: return "UNKNOWN";
         }
     }

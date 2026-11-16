@@ -30,3 +30,11 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/precheck-jobs.yml
+
+  cutedsl:
+    name: CuTeDSL image
+    needs: prechecks
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/cutedsl-jobs.yml

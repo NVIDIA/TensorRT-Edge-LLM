@@ -20,12 +20,11 @@ import argparse
 import importlib
 import json
 import platform
-import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from . import assemble, base, cutedsl, oss, payload, verify
+from . import assemble, base, cutedsl, oss, payload, verify, wheel_artifact
 from .config import CONTRACT, REPO_ROOT, load_matrix
 
 
@@ -75,7 +74,6 @@ def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "Fresh directory for generated base and selected payload artifacts.")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--build-jobs", type=_positive_int)
-    parser.add_argument("--toolchain-file", type=Path)
     parser.add_argument("--target-sysroot", type=Path)
     parser.add_argument("--target-python-include-dir", type=Path)
     parser.add_argument(
@@ -91,14 +89,6 @@ def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         type=Path,
                         default=REPO_ROOT / "packaging" / "variants.toml")
     return parser.parse_args(argv)
-
-
-def _python_abi() -> str:
-    tag = getattr(sys.implementation, "cache_tag", "") or ""
-    match = re.fullmatch(r"cpython-(\d{2,3})", tag)
-    if match is None:
-        raise RuntimeError(f"Unsupported build interpreter cache tag {tag!r}.")
-    return f"cp{match.group(1)}"
 
 
 def _host_arch() -> str:
@@ -189,7 +179,7 @@ def _base_arguments(args: argparse.Namespace, output: Path) -> List[str]:
     return values
 
 
-def _payload_arguments(args: argparse.Namespace, variant: str, python_abi: str,
+def _payload_arguments(args: argparse.Namespace, variant: str,
                        output: Path) -> List[str]:
     if args.trt_package_dir is None:
         raise RuntimeError("--trt-package-dir is required.")
@@ -197,7 +187,7 @@ def _payload_arguments(args: argparse.Namespace, variant: str, python_abi: str,
         "--variant",
         variant,
         "--python-abi",
-        python_abi,
+        wheel_artifact.PYTHON_TAG,
         "--trt-package-dir",
         str(args.trt_package_dir),
         "--output-dir",
@@ -206,7 +196,6 @@ def _payload_arguments(args: argparse.Namespace, variant: str, python_abi: str,
         str(args.matrix),
     ]
     optional_paths = (
-        ("--toolchain-file", args.toolchain_file),
         ("--target-sysroot", args.target_sysroot),
         ("--target-python-include-dir", args.target_python_include_dir),
     )
@@ -238,7 +227,7 @@ def _verify_payload(args: argparse.Namespace, stage: Path) -> None:
 
 def _build_selected_payloads(args: argparse.Namespace,
                              rows: Sequence[Mapping[str, Any]],
-                             python_abi: str, work_dir: Path) -> Path:
+                             work_dir: Path) -> Path:
     if args.trt_package_dir is None:
         raise RuntimeError(
             "--trt-package-dir is required with --local or --variant.")
@@ -254,15 +243,14 @@ def _build_selected_payloads(args: argparse.Namespace,
             "--matrix",
             str(args.matrix),
         ])
-        stage = payload_root / f"{variant}-{python_abi}"
-        payload.main(_payload_arguments(args, variant, python_abi, stage))
+        stage = payload_root / variant
+        payload.main(_payload_arguments(args, variant, stage))
         _verify_payload(args, stage)
     return payload_root
 
 
-def _base_wheel(args: argparse.Namespace, python_abi: str,
-                work_dir: Path) -> Path:
-    output = work_dir / "base" / python_abi
+def _base_wheel(args: argparse.Namespace, work_dir: Path) -> Path:
+    output = work_dir / "base"
     base.main(_base_arguments(args, output))
     metadata = json.loads(
         (output / "base-wheel.json").read_text(encoding="utf-8"))
@@ -271,7 +259,7 @@ def _base_wheel(args: argparse.Namespace, python_abi: str,
 
 
 def _assemble_arguments(args: argparse.Namespace, base_wheel: Path,
-                        payload_root: Path, cpu_arch: str, python_abi: str,
+                        payload_root: Path, cpu_arch: str,
                         variants: Sequence[str]) -> List[str]:
     values = [
         "--base-wheel",
@@ -280,8 +268,6 @@ def _assemble_arguments(args: argparse.Namespace, base_wheel: Path,
         str(payload_root),
         "--cpu-arch",
         cpu_arch,
-        "--python-abi",
-        python_abi,
         "--output-dir",
         str(args.output_dir),
         "--matrix",
@@ -297,10 +283,7 @@ def _assemble_arguments(args: argparse.Namespace, base_wheel: Path,
 def main(argv: Sequence[str] | None = None) -> None:
     """Build selected payloads or assemble a complete architecture wheel."""
     args = _arguments(argv)
-    matrix, all_rows = load_matrix(args.matrix.resolve())
-    python_abi = _python_abi()
-    if python_abi not in matrix["qualified_python_abis"]:
-        raise RuntimeError(f"Unqualified build interpreter ABI {python_abi}.")
+    _, all_rows = load_matrix(args.matrix.resolve())
     work_dir = _clean_work_dir(args.work_dir)
     if args.all_for_arch:
         if args.payload_root is None:
@@ -315,14 +298,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         selected = ([_local_variant(all_rows)] if args.local else
                     _requested_variants(all_rows, args.variants or []))
         cpu_arch = str(selected[0]["cpu_arch"])
-        if cpu_arch != _host_arch() and args.toolchain_file is None:
-            raise RuntimeError(
-                f"Building {cpu_arch} from {_host_arch()} requires --toolchain-file."
-            )
         selected_names = [str(row["variant_id"]) for row in selected]
-        payload_root = _build_selected_payloads(args, selected, python_abi,
-                                                work_dir)
-    base_wheel = _base_wheel(args, python_abi, work_dir)
+        payload_root = _build_selected_payloads(args, selected, work_dir)
+    base_wheel = _base_wheel(args, work_dir)
     assemble.main(
         _assemble_arguments(args, base_wheel, payload_root, cpu_arch,
-                            python_abi, selected_names))
+                            selected_names))

@@ -74,7 +74,7 @@ void initializeLongRopeCosSin(float* shortCosSinCache, float* longCosSinCache, f
  * @param rotaryEmbeddingMaxPositions Maximum positions
  * @param stream CUDA stream
  */
-void initializeYarnCosSin(float* cosSinCache, float* invFreq, float mscale, int32_t rotaryDim,
+void initializeYarnCosSin(float* cosSinCache, float const* invFreq, float mscale, int32_t rotaryDim,
     int32_t rotaryEmbeddingMaxPositions, cudaStream_t stream);
 
 /*!
@@ -93,10 +93,12 @@ void initializeYarnCosSin(float* cosSinCache, float* invFreq, float mscale, int3
  * @param sectionH Number of frequency pairs for height dimension
  * @param sectionW Number of frequency pairs for width dimension
  * @param stream CUDA stream
+ * @param invFreq Optional device array of rotaryDim/2 inverse frequencies (e.g. YaRN); replaces rotaryBaseFrequency
+ * @param mscale Scale applied to cos/sin when invFreq is set
  */
 void initializeMRopeCosSin(float* cosSinCache, int64_t* mropePositionIds, float rotaryBaseFrequency, int64_t rotaryDim,
     int64_t rotaryEmbeddingMaxPositions, int64_t batchSize, bool interleaved, int32_t sectionH, int32_t sectionW,
-    cudaStream_t stream);
+    cudaStream_t stream, float const* invFreq = nullptr, float mscale = 1.0F);
 
 /*!
  * @brief Float-position overload of initializeMRopeCosSin.
@@ -106,7 +108,7 @@ void initializeMRopeCosSin(float* cosSinCache, int64_t* mropePositionIds, float 
  */
 void initializeMRopeCosSin(float* cosSinCache, float* mropePositionIds, float rotaryBaseFrequency, int64_t rotaryDim,
     int64_t rotaryEmbeddingMaxPositions, int64_t batchSize, bool interleaved, int32_t sectionH, int32_t sectionW,
-    cudaStream_t stream);
+    cudaStream_t stream, float const* invFreq = nullptr, float mscale = 1.0F);
 
 /*!
  * @brief Initialize MRoPE cos/sin cache for text-only inputs with sequential positions.
@@ -121,9 +123,11 @@ void initializeMRopeCosSin(float* cosSinCache, float* mropePositionIds, float ro
  * @param maxPositions Maximum number of positions
  * @param batchSize Number of batch slots to initialize
  * @param stream CUDA stream
+ * @param invFreq Optional device array of rotaryDim/2 inverse frequencies (e.g. YaRN); replaces rotaryBaseFrequency
+ * @param mscale Scale applied to cos/sin when invFreq is set
  */
 void initializeTextOnlyMRopeCosSin(float* cosSinCache, float rotaryBaseFrequency, int64_t rotaryDim,
-    int64_t maxPositions, int64_t batchSize, cudaStream_t stream);
+    int64_t maxPositions, int64_t batchSize, cudaStream_t stream, float const* invFreq = nullptr, float mscale = 1.0F);
 
 } // namespace kernel
 } // namespace trt_edgellm

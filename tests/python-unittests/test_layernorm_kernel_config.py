@@ -238,7 +238,7 @@ def test_every_supported_sm_has_an_explicit_schedule():
                for schedule in layernorm_config.SCHEDULE_BY_SM.values())
 
 
-@pytest.mark.parametrize("target_sm,hidden_size", [(89, 4096), (103, 4096),
+@pytest.mark.parametrize("target_sm,hidden_size", [(75, 4096), (89, 4096),
                                                    (110, 4095), (110, 8193)])
 def test_unsupported_targets_are_rejected(target_sm, hidden_size):
     """An unsupported SM or hidden size fails loudly rather than guessing."""

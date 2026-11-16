@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include "forceAcceptanceKernels.h"
 #include "kernels/speculative/speculativeSamplingKernels.h"
 
 #include "common/cudaUtils.h"
@@ -435,25 +436,37 @@ void launchSparseAccept(float const* targetProbabilities, int32_t const* targetI
     int32_t const* proposalIds, int32_t const* proposalTokenIds, int32_t const* proposalLengths, float const* uniforms,
     int32_t* acceptedTokenIds, int32_t* acceptLength, int32_t* acceptedTokenIndices, int32_t batchSize,
     int32_t proposalStride, int32_t verifyProposalLen, int32_t targetSupportSize, int32_t proposalSupportSize,
-    cudaStream_t stream, int32_t const* maxAcceptLengths)
+    cudaStream_t stream, int32_t const* maxAcceptLengths, int32_t forcedAcceptanceLength)
 {
     sparseAcceptKernel<<<batchSize, kWarpSize, 0, stream>>>(targetProbabilities, targetIds, proposalProbabilities,
         proposalIds, proposalTokenIds, proposalLengths, uniforms, acceptedTokenIds, acceptLength, acceptedTokenIndices,
         proposalStride, verifyProposalLen, targetSupportSize, proposalSupportSize, maxAcceptLengths);
     CUDA_CHECK(cudaGetLastError());
+    if (forcedAcceptanceLength > 0)
+    {
+        launchForceSamplingAcceptance(targetProbabilities, targetIds, proposalTokenIds, proposalLengths, uniforms,
+            acceptedTokenIds, acceptedTokenIndices, acceptLength, batchSize, proposalStride, verifyProposalLen + 1,
+            targetSupportSize, maxAcceptLengths, forcedAcceptanceLength, stream);
+    }
 }
 
 void launchDenseTargetAccept(float const* targetProbabilities, float const* proposalProbabilities,
     int32_t const* proposalIds, int32_t const* proposalTokenIds, int32_t const* proposalLengths, float const* uniforms,
     int32_t* acceptedTokenIds, int32_t* acceptLength, int32_t* acceptedTokenIndices, int32_t batchSize,
     int32_t proposalStride, int32_t verifyProposalLen, int32_t vocabSize, int32_t proposalSupportSize,
-    cudaStream_t stream, int32_t const* maxAcceptLengths)
+    cudaStream_t stream, int32_t const* maxAcceptLengths, int32_t forcedAcceptanceLength)
 {
     constexpr int32_t kBlockSize{256};
     denseTargetAcceptKernel<kBlockSize><<<batchSize, kBlockSize, 0, stream>>>(targetProbabilities,
         proposalProbabilities, proposalIds, proposalTokenIds, proposalLengths, uniforms, acceptedTokenIds, acceptLength,
         acceptedTokenIndices, proposalStride, verifyProposalLen, vocabSize, proposalSupportSize, maxAcceptLengths);
     CUDA_CHECK(cudaGetLastError());
+    if (forcedAcceptanceLength > 0)
+    {
+        launchForceSamplingAcceptance(targetProbabilities, nullptr, proposalTokenIds, proposalLengths, uniforms,
+            acceptedTokenIds, acceptedTokenIndices, acceptLength, batchSize, proposalStride, verifyProposalLen + 1,
+            vocabSize, maxAcceptLengths, forcedAcceptanceLength, stream);
+    }
 }
 
 void launchNormalizeTopKTopP(float const* topKValues, float* probabilities, int32_t rows, int32_t topK,

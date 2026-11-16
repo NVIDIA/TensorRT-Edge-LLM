@@ -27,13 +27,13 @@ void launchSparseAccept(float const* targetProbabilities, int32_t const* targetI
     int32_t const* proposalIds, int32_t const* proposalTokenIds, int32_t const* proposalLengths, float const* uniforms,
     int32_t* acceptedTokenIds, int32_t* acceptLength, int32_t* acceptedTokenIndices, int32_t batchSize,
     int32_t proposalStride, int32_t verifyProposalLen, int32_t targetSupportSize, int32_t proposalSupportSize,
-    cudaStream_t stream, int32_t const* maxAcceptLengths);
+    cudaStream_t stream, int32_t const* maxAcceptLengths, int32_t forcedAcceptanceLength);
 
 void launchDenseTargetAccept(float const* targetProbabilities, float const* proposalProbabilities,
     int32_t const* proposalIds, int32_t const* proposalTokenIds, int32_t const* proposalLengths, float const* uniforms,
     int32_t* acceptedTokenIds, int32_t* acceptLength, int32_t* acceptedTokenIndices, int32_t batchSize,
     int32_t proposalStride, int32_t verifyProposalLen, int32_t vocabSize, int32_t proposalSupportSize,
-    cudaStream_t stream, int32_t const* maxAcceptLengths);
+    cudaStream_t stream, int32_t const* maxAcceptLengths, int32_t forcedAcceptanceLength);
 
 void launchNormalizeTopKTopP(float const* topKValues, float* probabilities, int32_t rows, int32_t topK,
     float temperature, float topP, cudaStream_t stream);

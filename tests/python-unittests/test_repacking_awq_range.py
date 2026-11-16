@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 import torch
 
-from experimental.builder.weight_packing import int4
+from tensorrt_edgellm.builder.weight_packing import int4
 from tensorrt_edgellm.checkpoint import repacking
 
 

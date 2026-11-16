@@ -23,7 +23,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 import tensorrt_edgellm.model as model_module
-import tensorrt_edgellm.scripts.export as export_script
+import tensorrt_edgellm.onnx.cli as export_script
 from tensorrt_edgellm.checkpoint.checkpoint_utils import \
     build_runtime_llm_config_dict
 from tensorrt_edgellm.checkpoint.loader import load_weights
@@ -34,7 +34,7 @@ from tensorrt_edgellm.model import _inherit_dflash_lm_head_quant
 from tensorrt_edgellm.models.dflash2 import DFlash2DraftModel
 from tensorrt_edgellm.models.ops import dflash2_grouped_dynamic_conv
 from tensorrt_edgellm.models.qwen3_5.modeling_qwen3_5_text import \
-    _is_spec_tree_base_export
+    _is_recurrent_spec_base_export
 from tensorrt_edgellm.onnx.export import _export_model
 
 
@@ -251,13 +251,10 @@ def test_dflash2_base_does_not_emit_legacy_dflash_metadata(tmp_path):
 
 def test_dflash_base_exports_tree_metadata_for_linear_and_branching_modes():
     config = SimpleNamespace(dflash_base=False,
-                             dflash_tree_base=False,
-                             jetspec_tree_base=False,
-                             mtp_tree_base=False,
                              dflash_version=DFlashVersion.V2)
     config.dflash_base = True
 
-    assert _is_spec_tree_base_export(config)
+    assert _is_recurrent_spec_base_export(config)
 
 
 def test_shared_lm_head_inherits_base_group_size(tmp_path):
@@ -383,6 +380,30 @@ def test_dflash2_official_export_writes_runtime_selector_sidecar(tmp_path):
                                selector.predecessor_codebook)
     torch.testing.assert_close(tensors["successor_codebook"],
                                selector.successor_codebook)
+
+
+def test_dflash2_cli_draft_export_still_writes_selector_sidecar(
+        tmp_path, monkeypatch):
+    """The CLI draft export of a selector DFlash2 checkpoint writes dflash2_selector.safetensors."""
+    draft_dir = tmp_path / "draft"
+    draft_dir.mkdir()
+    _write_dflash2_config(draft_dir)
+    model = SimpleNamespace(candidate_selector=SimpleNamespace(
+        predecessor_codebook=torch.zeros(3, 2, dtype=torch.float16),
+        successor_codebook=torch.ones(3, 2, dtype=torch.float16)),
+                            config=SimpleNamespace(vocab_size=3,
+                                                   dflash2_selector_rank=2,
+                                                   reduced_vocab_size=0))
+    monkeypatch.setattr(model_module.AutoModel, "from_pretrained",
+                        lambda *args, **kwargs: model)
+    monkeypatch.setattr("tensorrt_edgellm.onnx.export.export_onnx",
+                        lambda *args, **kwargs: None)
+    out_dir = tmp_path / "onnx"
+
+    export_script._export_dflash_draft(str(tmp_path / "base"), str(out_dir),
+                                       str(draft_dir))
+
+    assert (out_dir / "dflash2_selector.safetensors").is_file()
 
 
 def test_dflash2_onnx_leaves_candidate_selection_to_runtime(tmp_path):

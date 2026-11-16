@@ -61,8 +61,9 @@ class FmhaStaticTileSchedulerParams:
 
     :ivar is_persistent: Whether to use persistent kernel mode.
     :type is_persistent: bool
-    :ivar problem_shape_mbh: Problem shape in (M, B, H) format.
+    :ivar problem_shape_mbh: Problem shape in (query tiles, heads, batch) order.
     :type problem_shape_mbh: cute.Shape
+    :ivar head_first: Visit heads before advancing the query tile.
     """
 
     def __init__(
@@ -70,6 +71,7 @@ class FmhaStaticTileSchedulerParams:
         is_persistent: bool,
         problem_shape_mbh: cute.Shape,
         *,
+        head_first: bool = False,
         loc=None,
         ip=None,
     ):
@@ -78,11 +80,12 @@ class FmhaStaticTileSchedulerParams:
 
         :param is_persistent: Whether to use persistent kernel mode.
         :type is_persistent: bool
-        :param problem_shape_mbh: Problem shape in (M, B, H) format.
+        :param problem_shape_mbh: Shape in (query tiles, heads, batch) order.
         :type problem_shape_mbh: cute.Shape
         """
         self.is_persistent = is_persistent
         self.problem_shape_mbh = problem_shape_mbh
+        self.head_first = head_first
         self._loc = loc
         self._ip = ip
 
@@ -101,6 +104,7 @@ class FmhaStaticTileSchedulerParams:
             values = values[n_items:]
         return FmhaStaticTileSchedulerParams(self.is_persistent,
                                              *(tuple(obj_list)),
+                                             head_first=self.head_first,
                                              loc=self._loc)
 
 
@@ -121,7 +125,7 @@ class FmhaStaticTileScheduler:
     :type _is_persistent: bool
     :ivar _current_work_linear_idx: Current linear work index.
     :type _current_work_linear_idx: Int32
-    :ivar _problem_shape_mbh: Problem shape in (M, B, H) format.
+    :ivar _problem_shape_mbh: Layout of (query tiles, heads, batch).
     :type _problem_shape_mbh: cute.Layout
     :ivar _num_blocks: Number of blocks in the problem.
     :type _num_blocks: Int32
@@ -158,9 +162,13 @@ class FmhaStaticTileScheduler:
         self._grid_shape = grid_shape
         self._is_persistent = params.is_persistent
         self._current_work_linear_idx = current_work_linear_idx
-        self._problem_shape_mbh = cute.make_layout(params.problem_shape_mbh,
-                                                   loc=loc,
-                                                   ip=ip)
+        if params.head_first:
+            self._problem_shape_mbh = cute.make_ordered_layout(
+                params.problem_shape_mbh, order=(1, 0, 2), loc=loc, ip=ip)
+        else:
+            self._problem_shape_mbh = cute.make_layout(params.problem_shape_mbh,
+                                                       loc=loc,
+                                                       ip=ip)
         self._num_blocks = cute.size(self._problem_shape_mbh, loc=loc, ip=ip)
         self._is_first_block = True
         self.num_persistent_sm = cute.size(grid_shape, loc=loc, ip=ip)
@@ -186,7 +194,7 @@ class FmhaStaticTileScheduler:
         :param params: Scheduler parameters.
         :type params: FmhaStaticTileSchedulerParams
 
-        :return: Grid shape as (M, B, H) tuple.
+        :return: Grid shape as (query tiles, heads, batch) tuple.
         :rtype: cute.Shape
         """
         if params.is_persistent:
@@ -250,7 +258,7 @@ class FmhaStaticTileScheduler:
         else:
             blk_coord = self._blk_coord
 
-        # cur_tile_coord is (mid, 0, (bid, hid))
+        # cur_tile_coord is (query tile, 0, (head, batch)).
         cur_tile_coord = (
             blk_coord[0],
             0,
@@ -340,19 +348,22 @@ def create_fmha_static_tile_scheduler(
 def create_fmha_static_tile_scheduler_params(
     is_persistent: bool,
     problem_shape_mbh: cute.Shape,
+    *,
+    head_first: bool = False,
 ) -> FmhaStaticTileSchedulerParams:
     """
     Create FMHA static tile scheduler parameters.
 
     :param is_persistent: Whether to use persistent kernel mode.
     :type is_persistent: bool
-    :param problem_shape_mbh: Problem shape in (M, B, H) format.
+    :param problem_shape_mbh: Shape in (query tiles, heads, batch) order.
     :type problem_shape_mbh: cute.Shape
 
     :return: New FmhaStaticTileSchedulerParams instance.
     :rtype: FmhaStaticTileSchedulerParams
     """
-    return FmhaStaticTileSchedulerParams(is_persistent, problem_shape_mbh)
+    return FmhaStaticTileSchedulerParams(is_persistent, problem_shape_mbh,
+                                       head_first=head_first)
 
 
 def compute_grid(
@@ -361,6 +372,8 @@ def compute_grid(
     is_persistent: bool,
     sm_count: Optional[Int32] = None,
     head_dim_ctas: int = 1,
+    *,
+    head_first: bool = False,
 ) -> Tuple[FmhaStaticTileSchedulerParams, Tuple[int, int, int]]:
     """
     Compute grid parameters for FMHA operation.
@@ -396,6 +409,7 @@ def compute_grid(
             cute.size(o_shape[2][0]) * head_dim_ctas,
             cute.size(o_shape[2][1]),
         ),
+        head_first=head_first,
     )
     grid = FmhaStaticTileScheduler.get_grid_shape(tile_sched_params, sm_count)
 
@@ -1249,6 +1263,27 @@ def cvt_f32x4_to_f8x4(fp32x4, fp8x4, *, loc=None, ip=None):
 # the d256-per-CTA kernel (…HeadDimPerCta256). Both sides are pure functions of
 # their arguments — the per-kernel wiring (SMEM exchange buffer, pipeline
 # ordering, PV-skip branch) stays in each kernel class.
+
+
+@cute.jit
+def skip_softmax_threshold_log2_from_table(skip_softmax_scale_table, seqlen_k):
+    """Per-sequence skip-softmax threshold log2(lambda), lambda = S / seqlen_k,
+    with S the floor-bin lookup of seqlen_k in the flattened
+    [bin_0, S_0, bin_1, S_1, ...] table (bins ascending; a flat S is the
+    one-row table [0, S]). Below the first bin, or when S >= seqlen_k
+    (lambda >= 1 would pass every tile), returns -inf so no tile can win the
+    vote: the sequence runs dense (to fp16 rounding) inside the skip cubin.
+    Runs once per work tile, off the KV loop."""
+    num_rows = cute.size(skip_softmax_scale_table) // 2
+    scale = Int32(0)
+    for row in cutlass.range(num_rows, unroll=1):
+        if skip_softmax_scale_table[2 * row] <= seqlen_k:
+            scale = skip_softmax_scale_table[2 * row + 1]
+    threshold_log2 = -Float32.inf
+    if scale > 0 and scale < seqlen_k:
+        threshold_log2 = cute.math.log2(Float32(scale), fastmath=True) - cute.math.log2(
+            Float32(seqlen_k), fastmath=True)
+    return threshold_log2
 
 
 @cute.jit

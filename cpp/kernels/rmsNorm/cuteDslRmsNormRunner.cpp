@@ -20,6 +20,7 @@
 #include "cuteDslRmsNormRunner.h"
 
 #include "common/logger.h"
+#include "kernels/cuteDslModuleLoader.h"
 
 #include <cmath>
 #include <cstdint>
@@ -55,53 +56,16 @@ namespace
 #if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM)
 constexpr int32_t kARTIFACT_SM{CUTE_DSL_RMSNORM_ARTIFACT_SM};
 static_assert(kARTIFACT_SM == 80 || kARTIFACT_SM == 86 || kARTIFACT_SM == 87 || kARTIFACT_SM == 90
-        || kARTIFACT_SM == 100 || kARTIFACT_SM == 101 || kARTIFACT_SM == 110 || kARTIFACT_SM == 120
-        || kARTIFACT_SM == 121,
-    "CUTE_DSL_RMSNORM_ARTIFACT_SM must be one of 80, 86, 87, 90, 100, 101, 110, 120, or 121");
+        || kARTIFACT_SM == 100 || kARTIFACT_SM == 101 || kARTIFACT_SM == 103 || kARTIFACT_SM == 110
+        || kARTIFACT_SM == 120 || kARTIFACT_SM == 121,
+    "CUTE_DSL_RMSNORM_ARTIFACT_SM must be one of 80, 86, 87, 90, 100, 101, 103, 110, 120, or 121");
 #endif
 
-bool isArtifactSm(int32_t smVersion) noexcept
-{
-#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM)
-    return smVersion == kARTIFACT_SM;
-#else
-    switch (smVersion)
-    {
-#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_80)
-    case 80: return true;
-#endif
-#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_86)
-    case 86: return true;
-#endif
-#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_87)
-    case 87: return true;
-#endif
-#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_90)
-    case 90: return true;
-#endif
-#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_100)
-    case 100: return true;
-#endif
-#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_101)
-    case 101: return true;
-#endif
-#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_110)
-    case 110: return true;
-#endif
-#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_120)
-    case 120: return true;
-#endif
-#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_121)
-    case 121: return true;
-#endif
-    default: return false;
-    }
-#endif
-}
+constexpr std::initializer_list<int32_t> kARTIFACT_SMS{CUTE_DSL_RMSNORM_ARTIFACT_SMS};
 
-bool isSupportedDataType(nvinfer1::DataType dataType) noexcept
+bool isSupportedDataType(trt_edgellm::DataType dataType) noexcept
 {
-    return dataType == nvinfer1::DataType::kHALF || dataType == nvinfer1::DataType::kBF16;
+    return dataType == trt_edgellm::DataType::kHALF || dataType == trt_edgellm::DataType::kBF16;
 }
 
 template <typename XTensor, typename GammaTensor, typename OutputTensor, auto Wrapper, typename Module>
@@ -171,17 +135,17 @@ int32_t launchWbc1Variant(
 } // namespace
 
 bool CuteDslRmsNormRunner::canImplement(
-    int32_t rows, int32_t hiddenSize, int32_t smVersion, nvinfer1::DataType dataType) noexcept
+    int32_t rows, int32_t hiddenSize, int32_t smVersion, trt_edgellm::DataType dataType) noexcept
 {
-    return rows >= kMinRows && rows <= kMaxRows && isSupportedHiddenSize(hiddenSize) && isArtifactSm(smVersion)
-        && isSupportedDataType(dataType);
+    return rows >= kMinRows && rows <= kMaxRows && isSupportedHiddenSize(hiddenSize)
+        && detail::isArtifactSm(smVersion, kARTIFACT_SMS) && isSupportedDataType(dataType);
 }
 
 CuteDslRmsNormRunner::Variant CuteDslRmsNormRunner::selectVariant(
-    int32_t hiddenSize, nvinfer1::DataType dataType, int32_t weightBeforeCast) noexcept
+    int32_t hiddenSize, trt_edgellm::DataType dataType, int32_t weightBeforeCast) noexcept
 {
     bool const wbc1 = weightBeforeCast != 0;
-    if (dataType == nvinfer1::DataType::kHALF)
+    if (dataType == trt_edgellm::DataType::kHALF)
     {
         switch (hiddenSize)
         {
@@ -192,7 +156,7 @@ CuteDslRmsNormRunner::Variant CuteDslRmsNormRunner::selectVariant(
         default: return Variant::kNone;
         }
     }
-    if (dataType == nvinfer1::DataType::kBF16)
+    if (dataType == trt_edgellm::DataType::kBF16)
     {
         switch (hiddenSize)
         {

@@ -81,11 +81,11 @@ void assembleDraftTreeDescReference(std::vector<int8_t> const& draftTreeMask,
     std::vector<int32_t>& packedDraftTreeMask, std::vector<int32_t>& tensorPositionIndices,
     int32_t paddedDraftTreeSize);
 
-void prepareEagleDraftProposalMiscInputReference(std::vector<int32_t> const& draftTreeLength,
+void prepareSpecDraftProposalMiscInputReference(std::vector<int32_t> const& draftTreeLength,
     std::vector<int32_t> const& sequenceStartIndex, std::vector<int32_t>& sequenceContextLengths,
     std::vector<int64_t>& selectTokenIndices, int32_t selectTokenLength, int32_t paddedDraftTreeSize);
 
-void prepareEaglePrefillInputReference(
+void prepareSpecPrefillInputReference(
     std::vector<int32_t>& sequenceContextLengths, std::vector<int64_t>& selectTokenIndices, int32_t sequenceLength);
 
 void prepareEagleAcceptDecodeTokenInputReference(std::vector<int32_t> const& sequenceStartIndices,
@@ -103,13 +103,18 @@ struct EagleAcceptResult
 {
     std::vector<int32_t> acceptedTokenIds;
     std::vector<int32_t> acceptedLogitsIndices;
+    //! [batch, maxAcceptLength]: 1 where the emitted token is a forced child's, not the prediction.
+    std::vector<int8_t> acceptedForced;
     std::vector<int32_t> acceptLengths;
     int32_t maxAcceptLength;
 };
 
+//! forcedFlags [batch, numTokens]: a flagged child is taken over a token match and its token emitted; the logits
+//! index stays the parent. validCounts [batch]: nodes at or past the count are never candidates.
 EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<int32_t> const& tokenIds,
     std::vector<int8_t> const& attentionMask, int32_t batchSize, int32_t numTokens, int32_t vocabSize, int32_t maxDepth,
-    std::vector<int32_t> const& vocabMappingTable = {});
+    std::vector<int32_t> const& vocabMappingTable = {}, std::vector<int8_t> const& forcedFlags = {},
+    std::vector<int32_t> const& validCounts = {});
 
 // Image utility reference functions
 void transposeToPatchQwenReference(std::vector<half> const& originalImage, std::vector<half>& patch,

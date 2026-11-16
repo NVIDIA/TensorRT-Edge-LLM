@@ -29,6 +29,8 @@ using namespace nvinfer1;
 
 namespace trt_edgellm::plugins
 {
+using nvinfer1::DataType;
+
 namespace
 {
 constexpr char const* kPLUGIN_NAME{"QkvConcatPlugin"};

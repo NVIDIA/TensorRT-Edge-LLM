@@ -14,6 +14,7 @@
 # limitations under the License.
 """Resolve test checkpoints from local storage or Hugging Face."""
 
+import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,6 +27,10 @@ else:
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHECKPOINT_FILES = ("*.safetensors", "*.bin")
+# Components of a modular pipeline that carry weights; tokenizer, processor and
+# scheduler directories hold only configuration.
+_MODULAR_WEIGHT_COMPONENTS = ("text_encoder", "transformer", "vae",
+                              "audio_vae")
 CHECKPOINTS_BY_ID = {}
 PRIVATE_CHECKPOINT_IDS = frozenset()
 
@@ -63,10 +68,11 @@ def _build_alias_index(*, quantized: bool) -> dict[str, str]:
             paths = checkpoint.get("torch", ())
             metadata = checkpoint.get("quantized")
             family_aliases = () if not metadata else (metadata["name"], )
-            aliases = (checkpoint_id, checkpoint_id.rsplit("/",
-                                                           maxsplit=1)[-1],
-                       *paths, *(Path(path).name
-                                 for path in paths), *family_aliases)
+            default_aliases = (checkpoint_id.rsplit("/", maxsplit=1)[-1],
+                               *paths, *(Path(path).name
+                                         for path in paths), *family_aliases)
+            aliases = (checkpoint_id,
+                       *checkpoint.get("aliases", default_aliases))
 
         for alias in aliases:
             previous = index.setdefault(alias, checkpoint_id)
@@ -105,10 +111,56 @@ def is_hf_checkpoint_id(value: str) -> bool:
             and all(part not in ("", ".", "..") for part in parts))
 
 
+def _diffusers_weights_complete(path: Path) -> bool:
+    """Return whether every shard named by the root safetensors index exists."""
+    try:
+        weight_map = json.loads(
+            (path / "model.safetensors.index.json").read_text())["weight_map"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    shards = set(weight_map.values())
+    return bool(shards) and all((path / shard).is_file() for shard in shards)
+
+
+def _component_weights_complete(component: Path) -> bool:
+    """Return whether a component directory holds weights and every indexed shard."""
+    if not any(any(component.glob(pattern)) for pattern in _CHECKPOINT_FILES):
+        return False
+    for index in component.glob("*.safetensors.index.json"):
+        try:
+            shards = set(json.loads(index.read_text())["weight_map"].values())
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        if not all((component / shard).is_file() for shard in shards):
+            return False
+    return True
+
+
 def is_checkpoint_dir(path: Path) -> bool:
-    """Return whether path contains a complete Hugging Face checkpoint."""
-    return (path.is_dir() and (path / "config.json").is_file()
-            and any(any(path.glob(pattern)) for pattern in _CHECKPOINT_FILES))
+    """Return whether path contains a complete Hugging Face checkpoint.
+
+    Accepts a standard HF layout (config.json + top-level weight shards), a
+    diffusers layout (config.json + model_index.json, weights nested per
+    component, e.g. Cosmos3-Edge) whose root `model.safetensors.index.json`
+    lists only shards that exist, or a modular pipeline without a top-level
+    config.json (model_index.json + one directory per component, e.g.
+    MiniMax-H3) in which every component in `_MODULAR_WEIGHT_COMPONENTS` holds
+    its weights.
+
+    The modular check only looks for weight files and the shards their index
+    names. It does not validate file sizes or contents, so it is not a
+    complete integrity check.
+    """
+    if not path.is_dir():
+        return False
+    if (path / "config.json").is_file():
+        if any(any(path.glob(pattern)) for pattern in _CHECKPOINT_FILES):
+            return True
+        return ((path / "model_index.json").is_file()
+                and _diffusers_weights_complete(path))
+    return ((path / "model_index.json").is_file() and all(
+        _component_weights_complete(path / component)
+        for component in _MODULAR_WEIGHT_COMPONENTS))
 
 
 def _find_in_roots(relative_paths: Sequence[str],
@@ -167,13 +219,33 @@ def _managed_download_path(hf_id: str,
     return root, root.joinpath(*parts)
 
 
-def _download_from_hf(hf_id: str, download_root: str) -> str:
+def _download_from_hf(hf_id: str,
+                      download_root: Optional[str],
+                      *,
+                      local_files_only: bool = False) -> str:
     try:
         from huggingface_hub import snapshot_download
     except ImportError as error:
         raise RuntimeError(
-            "huggingface_hub is required when checkpoint downloading is enabled"
+            "huggingface_hub is required to resolve a Hugging Face checkpoint"
         ) from error
+
+    if not download_root:
+        try:
+            checkpoint = Path(
+                snapshot_download(repo_id=hf_id,
+                                  local_files_only=local_files_only))
+        except Exception as error:
+            if local_files_only:
+                raise ValueError(
+                    f"Checkpoint {hf_id} is not in the Hugging Face cache and "
+                    "EDGE_LLM_ALLOW_HF_DOWNLOAD=0") from error
+            raise
+        if not is_checkpoint_dir(checkpoint):
+            raise RuntimeError(
+                f"Hugging Face cache does not contain a complete checkpoint: "
+                f"{checkpoint}")
+        return str(checkpoint)
 
     root, local_dir = _managed_download_path(hf_id, download_root)
     namespace, model = hf_id.split("/")
@@ -271,7 +343,9 @@ def resolve_checkpoint(
     if not checkpoint:
         declared_paths = (checkpoint_id, checkpoint_id.rsplit("/",
                                                               maxsplit=1)[-1])
-    found = _find_in_roots(declared_paths, torch_roots)
+    ordered_roots = (tuple(reversed(torch_roots)) if checkpoint_id
+                     in PRIVATE_CHECKPOINT_IDS else torch_roots)
+    found = _find_in_roots(declared_paths, ordered_roots)
     if found:
         return found
 
@@ -285,10 +359,9 @@ def resolve_checkpoint(
         if is_checkpoint_dir(managed_path):
             return str(managed_path)
     if allow_download:
-        if not download_root:
-            raise ValueError("HF_CHECKPOINT_DOWNLOAD_DIR is required when "
-                             "EDGE_LLM_ALLOW_HF_DOWNLOAD is enabled")
         return _download_from_hf(checkpoint_id, download_root)
+    if not download_root:
+        return _download_from_hf(checkpoint_id, None, local_files_only=True)
 
     raise ValueError(
         f"Checkpoint {checkpoint_id} was not found in TRT-LLM roots "

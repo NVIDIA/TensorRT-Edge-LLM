@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include "dataType.h"
 #include "logger.h"
 #include "stringUtils.h"
 #include <NvInfer.h>
@@ -68,18 +69,11 @@ inline void* getDynamicLibrarySymbol(void* handle, char const* name) noexcept
     return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), name));
 }
 
-//! @brief Return storage for the non-owning Edge-LLM plugin module handle.
-inline void*& loadedEdgellmPluginHandle() noexcept
-{
-    static void* sHandle = nullptr;
-    return sHandle;
-}
-
 //! @brief Resolve a symbol from the loaded TensorRT Edge-LLM plugin library.
 inline void* getLoadedEdgellmPluginSymbol(char const* name) noexcept
 {
-    void* const handle = loadedEdgellmPluginHandle();
-    return handle == nullptr ? nullptr : getDynamicLibrarySymbol(handle, name);
+    HMODULE const module = GetModuleHandleA(kDEFAULT_EDGELLM_PLUGIN_PATH);
+    return module == nullptr ? nullptr : getDynamicLibrarySymbol(static_cast<void*>(module), name);
 }
 #else
 inline constexpr char kDEFAULT_EDGELLM_PLUGIN_PATH[] = "build/libNvInfer_edgellm_plugin.so";
@@ -137,44 +131,13 @@ struct DlDeleter
 /*!
  * @brief Load TensorRT Edge-LLM plugin library.
  *
- * Loads the plugin library from EDGELLM_PLUGIN_PATH. If unset, uses the
- * platform-native plugin filename from the current working directory.
+ * Loads the plugin library from EDGELLM_PLUGIN_PATH when set. Otherwise, the
+ * library is resolved relative to the calling Edge-LLM binary or module.
  *
  * @return Unique pointer to library handle, or nullptr on failure.
  */
-inline std::unique_ptr<void, DlDeleter> loadEdgellmPluginLib(void) noexcept
-{
-    char const* pluginPath = std::getenv("EDGELLM_PLUGIN_PATH");
+std::unique_ptr<void, DlDeleter> loadEdgellmPluginLib(void) noexcept;
 
-    if (pluginPath != nullptr)
-    {
-        LOG_INFO("EDGELLM_PLUGIN_PATH: %s", pluginPath);
-    }
-    else
-    {
-        pluginPath = kDEFAULT_EDGELLM_PLUGIN_PATH;
-        LOG_INFO("EDGELLM_PLUGIN_PATH is not set. Defaulting to %s", pluginPath);
-    }
-
-    auto handle = std::unique_ptr<void, DlDeleter>(openDynamicLibrary(pluginPath));
-    if (!handle)
-    {
-        logDynamicLibraryOpenError(pluginPath);
-        return std::unique_ptr<void, DlDeleter>(nullptr);
-    }
-#if defined(_WIN32)
-    loadedEdgellmPluginHandle() = handle.get();
-#endif
-
-    using InitPluginsFn = bool (*)(void*, char const*);
-    auto initPlugins = reinterpret_cast<InitPluginsFn>(getDynamicLibrarySymbol(handle.get(), "initEdgellmPlugins"));
-    if (initPlugins)
-    {
-        initPlugins(static_cast<nvinfer1::ILogger*>(&gLogger), "");
-    }
-
-    return handle;
-}
 //! Capture a TensorRT CUDA graph from an execution context and stream.
 //! @return Pair of graph and graph exec on success, std::nullopt on failure
 std::optional<std::pair<cudaGraph_t, cudaGraphExec_t>> captureTRTCudaGraph(
@@ -265,31 +228,6 @@ std::string printEngineInfo(nvinfer1::ICudaEngine const* engine, int32_t profile
 std::unique_ptr<nvinfer1::ICudaEngine> deserializeCudaEngineFromFile(
     nvinfer1::IRuntime& runtime, std::filesystem::path const& enginePath);
 
-//! Short, human-readable name for a TensorRT data type (e.g. "FLOAT16").
-//! Used in logs and error messages; not intended for serialization.
-constexpr char const* getDataTypeString(nvinfer1::DataType const dataType) noexcept
-{
-    switch (dataType)
-    {
-    case nvinfer1::DataType::kINT64: return "INT64";
-    case nvinfer1::DataType::kINT32: return "INT32";
-    case nvinfer1::DataType::kFLOAT: return "FLOAT32";
-    case nvinfer1::DataType::kHALF: return "FLOAT16";
-    case nvinfer1::DataType::kBF16: return "BFLOAT16";
-    case nvinfer1::DataType::kFP8: return "FLOAT8_E4M3";
-    case nvinfer1::DataType::kINT8: return "INT8";
-    case nvinfer1::DataType::kUINT8: return "UINT8";
-    case nvinfer1::DataType::kBOOL: return "BOOL";
-#if IS_TRT_RTX || NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 12)
-    case nvinfer1::DataType::kE8M0: return "FLOAT8_E8M0";
-#endif
-#if IS_TRT_RTX || NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 8)
-    case nvinfer1::DataType::kFP4: return "FLOAT4";
-#endif
-    case nvinfer1::DataType::kINT4: return "INT4";
-    }
-    return "UNKNOWN";
-}
 //! Whether the engine exposes an output binding with the given name.
 //! Use this instead of getTensorIOMode(name) when probing for an optional binding
 //! — getTensorIOMode logs a spurious TensorRT ERROR for unknown names.

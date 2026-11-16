@@ -6,26 +6,4 @@ prompt-toolkit>=3.0.43,<4
 parameterized>=0.9.0
 pyyaml>=6.0
 psutil>=5.9.0
-packaging>=24.2
-pillow>=12.2.0
-logbar>=0.1.7
-accelerate>=1.10.1
-threadpoolctl>=3.6.0
-tokenicer>=0.0.5
-pypcre>=0.2.5
-device-smi>=0.5.1
-optimum==2.1.0
-nvidia-modelopt==0.45.0
-requests>=2.32.0
-# ONNX export toolchain: the few-layer validation runs `export` inside
-# the pipeline-test runner, unlike other pipeline tests which reuse the ONNX
-# pre-exported by the checkpoint_export job. This template installs only
-# tests/requirements.txt (not the top-level requirements.txt nor `pip install
-# -e .`), so these must be pinned here too (kept in sync with requirements.txt).
-transformers==5.14.1
-datasets>=4.0.0
-onnx==1.19.0
-onnxscript==0.7.1
-onnx-graphsurgeon==0.6.1
-fastapi==0.136.1
-httpx>=0.27.0
+pydantic==2.14.1

@@ -36,8 +36,6 @@
 #include <cstddef>
 #include <cstdint>
 
-using namespace nvinfer1;
-
 namespace trt_edgellm
 {
 namespace kernel

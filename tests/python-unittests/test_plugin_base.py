@@ -34,11 +34,15 @@ Usage:
 
 import ctypes
 import os
+import re
 from dataclasses import dataclass
 from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import pytest
+
+from tensorrt_edgellm.builder.core.compact_build_report import \
+    build_with_compact_report
 
 # Conditional imports for the GPU/TensorRT dependencies, so the module imports
 # cleanly (and its tests skip) on a host where TensorRT or a CUDA-capable torch
@@ -91,13 +95,13 @@ def _fail_unsupported(msg: str):
 _PLUGIN_LIB_NAME = "libNvInfer_edgellm_plugin.so"
 # Default build directory. Set EDGELLM_PLUGIN_LIB to point at the library
 # directly if it was built elsewhere.
-_plugins_loaded = False
+_plugin_library = None
 
 
 def find_plugin_library() -> Optional[str]:
     """Locate the Edge-LLM plugin shared library, or return None if missing.
 
-    Honors EDGELLM_PLUGIN_LIB when set, then looks under build/ relative to the
+    Honors EDGELLM_PLUGIN_LIB when set, then looks under build/lib relative to the
     current working directory and to this file's repository root (the project
     is built into build/, see tests/README).
     """
@@ -105,8 +109,8 @@ def find_plugin_library() -> Optional[str]:
     if env_path:
         return os.path.abspath(env_path) if os.path.exists(env_path) else None
     candidates = [
-        os.path.join("build", _PLUGIN_LIB_NAME),
-        os.path.join(os.path.dirname(__file__), "..", "..", "build",
+        os.path.join("build", "lib", _PLUGIN_LIB_NAME),
+        os.path.join(os.path.dirname(__file__), "..", "..", "build", "lib",
                      _PLUGIN_LIB_NAME),
     ]
     for path in candidates:
@@ -120,15 +124,14 @@ def load_edgellm_plugins(logger) -> str:
 
     Returns the resolved library path. Raises RuntimeError if not found.
     """
-    global _plugins_loaded
+    global _plugin_library
     path = find_plugin_library()
     if path is None:
         raise RuntimeError(
             f"Could not find {_PLUGIN_LIB_NAME}. Build the project first, or "
             f"set EDGELLM_PLUGIN_LIB to the library path.")
-    ctypes.CDLL(path)
+    _plugin_library = ctypes.CDLL(path)
     trt.init_libnvinfer_plugins(logger, "")
-    _plugins_loaded = True
     return path
 
 
@@ -218,9 +221,10 @@ class PluginRunner:
 
     def __init__(self, verbose: bool = False):
         self.logger = _get_logger(verbose)
-        if not _plugins_loaded:
+        if _plugin_library is None:
             load_edgellm_plugins(self.logger)
         self.engine = None
+        self.compact_execution = False
         self.context = None
         self.device = torch.device("cuda")
 
@@ -240,6 +244,7 @@ class PluginRunner:
         plugin_namespace: str = "",
         workspace_bytes: int = 1 << 30,
         expect_unsupported: bool = False,
+        layer_name: Optional[str] = None,
     ):
         """Construct the engine.
 
@@ -256,6 +261,9 @@ class PluginRunner:
         interleave with regular inputs). Defaults to all inputs in
         ``input_specs`` order followed by all constants in ``constant_specs``
         order.
+
+        ``layer_name`` is the name the plugin is created with; it defaults to
+        ``plugin_name``.
         """
         builder = trt.Builder(self.logger)
         network = builder.create_network(
@@ -307,7 +315,8 @@ class PluginRunner:
                 f"{plugin_name} v{plugin_version} not found in plugin registry"
             )
         fc = trt.PluginFieldCollection(list(plugin_fields))
-        plugin = creator.create_plugin(plugin_name, fc,
+        self.layer_name = plugin_name if layer_name is None else layer_name
+        plugin = creator.create_plugin(self.layer_name, fc,
                                        trt.TensorRTPhase.BUILD)
         if plugin is None:
             # Not built for this architecture (e.g. a CuTe DSL plugin
@@ -338,7 +347,9 @@ class PluginRunner:
             profile.set_shape(name, lo, opt, hi)
         config.add_optimization_profile(profile)
 
-        serialized = builder.build_serialized_network(network, config)
+        serialized, self.compact_execution = build_with_compact_report(
+            _plugin_library,
+            lambda: builder.build_serialized_network(network, config))
         if serialized is None:
             # Unbuildable on this device (e.g. FP8 KV cache without FP8
             # tensor cores) -- expected only when the caller opts in;
@@ -387,6 +398,38 @@ class PluginRunner:
             stream.synchronize()
         if not ok:
             raise RuntimeError("execute_async_v3 returned False")
+
+
+def assert_execute_rejected(capfd, message: str, execute):
+    """Assert ``execute()`` fails its enqueue and the plugin logged ``message``.
+
+    Plugins report the rejection reason through the Edge-LLM logger, which
+    writes to the process stdout/stderr file descriptors rather than to the
+    TensorRT ILogger, so ``capfd`` (pytest's fd capture) observes it.
+    """
+    capfd.readouterr()
+    with pytest.raises(RuntimeError, match="execute_async_v3"):
+        execute()
+    captured = capfd.readouterr()
+    assert message in captured.out + captured.err, (
+        f"enqueue failed without logging {message!r}; captured stderr:\n"
+        f"{captured.err}")
+
+
+def assert_compact_workspace(runner: "PluginRunner", reserved: bool,
+                             capfd) -> None:
+    """Assert the build of ``runner``'s single-plugin engine was found built
+    for compact execution exactly when its layer reserved the compact
+    workspace, and that a build whose layer did not logged a WARNING naming
+    the layer (``capfd`` holds the build's log)."""
+    assert runner.compact_execution == reserved, \
+        f"built for compact execution: {runner.compact_execution}, expected " \
+        f"reserved={reserved}"
+    log = "".join(capfd.readouterr())
+    named = re.search(
+        r"\[WARNING\].*did not reserve the compact workspace: .*'" +
+        re.escape(runner.layer_name) + "'", log)
+    assert (named is not None) != reserved, log
 
 
 # --------------------------------------------------------------------------- #

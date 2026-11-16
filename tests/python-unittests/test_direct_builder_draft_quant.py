@@ -19,9 +19,9 @@ import pytest
 
 safetensors_numpy = pytest.importorskip("safetensors.numpy")
 
-from experimental.builder.core import quantization
-from experimental.builder.core.weights import Weights
-from experimental.builder.models.qwen3_5 import weights as qwen3_5_weights
+from tensorrt_edgellm.builder.core import quantization
+from tensorrt_edgellm.builder.core.weights import Weights
+from tensorrt_edgellm.builder.models.qwen3_5 import weights as qwen3_5_weights
 
 _BASE = "model.language_model.layers.0.mlp."
 

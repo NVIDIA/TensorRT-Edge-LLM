@@ -145,18 +145,18 @@ TEST(RegistryBuilderTest, RaggedLLMUsesTokenMajorAbiBindings)
     struct ExpectedInput
     {
         char const* name;
-        nvinfer1::DataType dtype;
+        trt_edgellm::DataType dtype;
         int64_t InferenceDims::* extent;
     };
-    std::vector<ExpectedInput> const expected{{bn::kPositions, nvinfer1::DataType::kINT32, &InferenceDims::seqLen},
-        {bn::kQueryStartOffsets, nvinfer1::DataType::kINT32, &InferenceDims::queryOffsetLen},
-        {bn::kQueryLengths, nvinfer1::DataType::kINT32, &InferenceDims::batch},
-        {bn::kPastLengths, nvinfer1::DataType::kINT32, &InferenceDims::batch},
-        {bn::kAttentionSequenceLengths, nvinfer1::DataType::kINT32, &InferenceDims::batch},
-        {bn::kStateIndices, nvinfer1::DataType::kINT32, &InferenceDims::batch},
-        {bn::kLogitsIndices, nvinfer1::DataType::kINT64, &InferenceDims::selectLen},
-        {bn::kExecutionPhaseMarker, nvinfer1::DataType::kINT32, &InferenceDims::executionPhaseLen},
-        {bn::kContextSequenceCountCarrier, nvinfer1::DataType::kINT32, &InferenceDims::contextSequenceCount}};
+    std::vector<ExpectedInput> const expected{{bn::kPositions, trt_edgellm::DataType::kINT32, &InferenceDims::seqLen},
+        {bn::kQueryStartOffsets, trt_edgellm::DataType::kINT32, &InferenceDims::queryOffsetLen},
+        {bn::kQueryLengths, trt_edgellm::DataType::kINT32, &InferenceDims::batch},
+        {bn::kPastLengths, trt_edgellm::DataType::kINT32, &InferenceDims::batch},
+        {bn::kAttentionSequenceLengths, trt_edgellm::DataType::kINT32, &InferenceDims::batch},
+        {bn::kStateIndices, trt_edgellm::DataType::kINT32, &InferenceDims::batch},
+        {bn::kLogitsIndices, trt_edgellm::DataType::kINT64, &InferenceDims::selectLen},
+        {bn::kExecutionPhaseMarker, trt_edgellm::DataType::kINT32, &InferenceDims::executionPhaseLen},
+        {bn::kContextSequenceCountCarrier, trt_edgellm::DataType::kINT32, &InferenceDims::contextSequenceCount}};
     for (auto const& item : expected)
     {
         auto const it = find(item.name);
@@ -199,7 +199,7 @@ TEST(RegistryBuilderTest, DiffusionBackboneHasSelectorAndPhaseTensors)
         = std::find_if(specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == bn::kLogits; });
     ASSERT_NE(logits, specs.end());
     EXPECT_EQ(logits->io, TensorIO::kOutput);
-    EXPECT_EQ(logits->dtype, nvinfer1::DataType::kFLOAT);
+    EXPECT_EQ(logits->dtype, trt_edgellm::DataType::kFLOAT);
     ASSERT_EQ(logits->shape.size(), 2u);
     EXPECT_TRUE(logits->shape[0].isSymbolic());
     EXPECT_EQ(logits->shape[0].symbol, &InferenceDims::selectLen);
@@ -238,7 +238,7 @@ TEST(RegistryBuilderTest, DiffusionBackboneUnifiedConditioningAddsInputs)
         specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == bn::kPrevSelfConditioningEmbeds; });
     ASSERT_NE(prevFeedback, specs.end());
     EXPECT_EQ(prevFeedback->io, TensorIO::kInput);
-    EXPECT_EQ(prevFeedback->dtype, nvinfer1::DataType::kHALF);
+    EXPECT_EQ(prevFeedback->dtype, trt_edgellm::DataType::kHALF);
     ASSERT_EQ(prevFeedback->shape.size(), 2u);
     EXPECT_EQ(prevFeedback->shape[0].symbol, &InferenceDims::seqLen);
     EXPECT_EQ(prevFeedback->shape[1].value, cfg.hiddenSize);
@@ -247,7 +247,7 @@ TEST(RegistryBuilderTest, DiffusionBackboneUnifiedConditioningAddsInputs)
         specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == bn::kNextSelfConditioningEmbeds; });
     ASSERT_NE(nextFeedback, specs.end());
     EXPECT_EQ(nextFeedback->io, TensorIO::kOutput);
-    EXPECT_EQ(nextFeedback->dtype, nvinfer1::DataType::kHALF);
+    EXPECT_EQ(nextFeedback->dtype, trt_edgellm::DataType::kHALF);
     ASSERT_EQ(nextFeedback->shape.size(), 2u);
     EXPECT_EQ(nextFeedback->shape[0].symbol, &InferenceDims::selectLen);
     EXPECT_EQ(nextFeedback->shape[1].value, cfg.hiddenSize);
@@ -278,7 +278,7 @@ TEST(RegistryBuilderTest, StandardLLMHasCorrectSpecAttributes)
     auto it = std::find_if(specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == "inputs_embeds"; });
     ASSERT_NE(it, specs.end());
     EXPECT_EQ(it->io, TensorIO::kInput);
-    EXPECT_EQ(it->dtype, nvinfer1::DataType::kHALF);
+    EXPECT_EQ(it->dtype, trt_edgellm::DataType::kHALF);
     EXPECT_EQ(it->shape.size(), 2u);
     EXPECT_TRUE(it->shape[0].isSymbolic());
     EXPECT_EQ(it->shape[0].symbol, &InferenceDims::seqLen);
@@ -288,7 +288,7 @@ TEST(RegistryBuilderTest, StandardLLMHasCorrectSpecAttributes)
     auto logIt = std::find_if(specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == "logits"; });
     ASSERT_NE(logIt, specs.end());
     EXPECT_EQ(logIt->io, TensorIO::kOutput);
-    EXPECT_EQ(logIt->dtype, nvinfer1::DataType::kFLOAT);
+    EXPECT_EQ(logIt->dtype, trt_edgellm::DataType::kFLOAT);
 }
 
 // =====================================================================
@@ -328,7 +328,7 @@ TEST(RegistryBuilderTest, DeepstackShapeMatchesConfig)
         = std::find_if(specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == "deepstack_embeds_0"; });
     ASSERT_NE(it, specs.end());
     EXPECT_EQ(it->io, TensorIO::kInput);
-    EXPECT_EQ(it->dtype, nvinfer1::DataType::kHALF);
+    EXPECT_EQ(it->dtype, trt_edgellm::DataType::kHALF);
     EXPECT_EQ(it->shape.size(), 2u);
     EXPECT_TRUE(it->shape[0].isSymbolic());
     EXPECT_EQ(it->shape[0].symbol, &InferenceDims::seqLen);
@@ -359,8 +359,8 @@ TEST(RegistryBuilderTest, SpecDecodeBaseAddsProposalTensors)
     cfg.numAttentionLayers = 2;
     cfg.numDecoderLayers = 2;
     cfg.isSpecDecodeBase = true;
-    cfg.maxVerifyTreeSize = 16;
-    cfg.maxDraftTreeSize = 16;
+    cfg.maxSpecVerifyTokens = 16;
+    cfg.maxSpecDraftTokens = 16;
 
     populateHybridFieldsFromScalars(cfg);
     auto reg = buildRegistryForLLM(cfg);
@@ -517,7 +517,7 @@ TEST(RegistryBuilderTest, AllFeaturesEnabled)
     auto reg = buildRegistryForLLM(cfg);
     auto names = reg.allTensorNames();
 
-    EXPECT_EQ(names.size(), 34u);
+    EXPECT_EQ(names.size(), 35u);
     EXPECT_TRUE(hasName(names, trt_edgellm::binding_names::kExecutionPhaseMarker));
     EXPECT_TRUE(hasName(names, "intermediate_recurrent_state_0"));
     EXPECT_TRUE(hasName(names, "intermediate_recurrent_state_1"));
@@ -527,13 +527,13 @@ TEST(RegistryBuilderTest, AllFeaturesEnabled)
 
 TEST(RegistryBuilderTest, MtpBaseAddsIntermediateStateOutputs)
 {
-    // Hybrid MTP base → engine emits intermediate state outputs per mamba layer.
+    // Hybrid spec base → engine emits intermediate state outputs per mamba layer.
     LLMEngineConfig cfg = makeBasicLLMConfig();
     cfg.numAttentionLayers = 2;
     cfg.numDecoderLayers = 4;
     cfg.isSpecDecodeBase = true;
     cfg.specDecodeType = SpecDecodeMode::kMTP;
-    cfg.maxVerifyTreeSize = 4;
+    cfg.maxSpecVerifyTokens = 4;
     cfg.numLinearAttnLayers = 2;
     cfg.recurrentStateNumHeads = 16;
     cfg.recurrentStateHeadDim = 64;
@@ -639,8 +639,8 @@ TEST(RegistryBuilderTest, DraftEngineHasExpectedTensors)
     cfg.numAttentionLayers = 4;
     cfg.numDecoderLayers = 4;
     cfg.isSpecDecodeBase = true;
-    cfg.maxVerifyTreeSize = 16;
-    cfg.maxDraftTreeSize = 16;
+    cfg.maxSpecVerifyTokens = 16;
+    cfg.maxSpecDraftTokens = 16;
 
     populateHybridFieldsFromScalars(cfg);
     DeploymentConfig bundle;
@@ -746,7 +746,7 @@ TEST(RegistryBuilderTest, SpecDraftRegistriesKVPageTableRowsTrackActiveBatch)
     LLMEngineConfig draft = makeBasicLLMConfig();
     draft.numAttentionLayers = 2;
     draft.numDecoderLayers = 2;
-    draft.maxDraftTreeSize = 16;
+    draft.maxSpecDraftTokens = 16;
 
     populateHybridFieldsFromScalars(draft);
     DeploymentConfig bundle;
@@ -754,7 +754,7 @@ TEST(RegistryBuilderTest, SpecDraftRegistriesKVPageTableRowsTrackActiveBatch)
     SpecDecodeConfig specConfig{};
     specConfig.baseOutputHiddenDim = 4096;
     specConfig.draftHiddenSize = 4096;
-    specConfig.dflashBlockSize = 8;
+    specConfig.draftBlockSize = 8;
     bundle.specConfig = specConfig;
 
     auto checkPageTable = [&](TensorRegistry const& reg, char const* registryName) {
@@ -764,7 +764,7 @@ TEST(RegistryBuilderTest, SpecDraftRegistriesKVPageTableRowsTrackActiveBatch)
             specs.begin(), specs.end(), [](TensorSpec const& spec) { return spec.name == "kv_page_table"; });
         ASSERT_NE(pageTableIt, specs.end());
         EXPECT_EQ(pageTableIt->io, TensorIO::kInput);
-        EXPECT_EQ(pageTableIt->dtype, nvinfer1::DataType::kINT32);
+        EXPECT_EQ(pageTableIt->dtype, trt_edgellm::DataType::kINT32);
         ASSERT_EQ(pageTableIt->shape.size(), 3u);
         EXPECT_EQ(pageTableIt->shape[0].symbol, &InferenceDims::batch);
         EXPECT_EQ(pageTableIt->shape[1].value, 2);
@@ -824,7 +824,7 @@ TEST(RegistryBuilderTest, DFlash2RegistryExposesRuntimeSelectorIntermediates)
     SpecDecodeConfig specConfig{};
     specConfig.baseOutputHiddenDim = draft.hiddenSize;
     specConfig.draftHiddenSize = draft.hiddenSize;
-    specConfig.dflashBlockSize = 16;
+    specConfig.draftBlockSize = 16;
     bundle.specConfig = specConfig;
 
     auto const specs = buildRegistryForDFlashDraft(bundle).allExpandedSpecs();
@@ -989,6 +989,7 @@ TEST(RegistryBuilderTest, SwaCapableRegistryUsesActivePageCountAndAlwaysCarriesM
     EXPECT_EQ(swa->shape[1].value, cfg.numSwaPages);
     EXPECT_NE(full->shape[1].value, swa->shape[1].value);
     ASSERT_EQ(mode->shape.size(), 1U);
+    EXPECT_EQ(mode->dtype, trt_edgellm::DataType::kINT32);
     EXPECT_EQ(mode->shape[0].symbol, &InferenceDims::swaKVCacheModeLen);
     EXPECT_TRUE(hasName(buildRegistryForLLM(cfg).allTensorNames(), trt_edgellm::binding_names::kSwaKVPageTable));
 
@@ -1032,13 +1033,13 @@ TEST(RegistryBuilderTest, SymbolicDimsCanBeResolved)
     EXPECT_EQ(resolved.d[1], 4096);
 }
 
-class RegistryBuilderKVDtypeTest : public ::testing::TestWithParam<nvinfer1::DataType>
+class RegistryBuilderKVDtypeTest : public ::testing::TestWithParam<trt_edgellm::DataType>
 {
 };
 
 TEST_P(RegistryBuilderKVDtypeTest, KVCacheBindingDtypeMatchesConfigPluginPath)
 {
-    nvinfer1::DataType const kvDtype = GetParam();
+    trt_edgellm::DataType const kvDtype = GetParam();
 
     LLMEngineConfig cfg = makeBasicLLMConfig();
     cfg.kvCacheDtype = kvDtype;
@@ -1070,7 +1071,7 @@ TEST_P(RegistryBuilderKVDtypeTest, KVCacheBindingDtypeMatchesConfigPluginPath)
 
 TEST_P(RegistryBuilderKVDtypeTest, DraftEngineKVCacheBindingDtypeMatchesConfig)
 {
-    nvinfer1::DataType const kvDtype = GetParam();
+    trt_edgellm::DataType const kvDtype = GetParam();
 
     LLMEngineConfig cfg = makeBasicLLMConfig();
     cfg.kvCacheDtype = kvDtype;
@@ -1102,4 +1103,4 @@ TEST_P(RegistryBuilderKVDtypeTest, DraftEngineKVCacheBindingDtypeMatchesConfig)
 }
 
 INSTANTIATE_TEST_SUITE_P(AllKVDtypes, RegistryBuilderKVDtypeTest,
-    ::testing::Values(nvinfer1::DataType::kHALF, nvinfer1::DataType::kFP8, nvinfer1::DataType::kBF16));
+    ::testing::Values(trt_edgellm::DataType::kHALF, trt_edgellm::DataType::kFP8, trt_edgellm::DataType::kBF16));

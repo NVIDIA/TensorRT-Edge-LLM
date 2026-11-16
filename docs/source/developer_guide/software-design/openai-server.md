@@ -5,9 +5,9 @@
 The experimental inference server is an adapter over the TensorRT Edge-LLM
 high-level runtime. It owns HTTP protocol behavior and request lifecycle, while
 model execution and device memory remain owned by the C++ runtime. The public
-wire contracts are the OpenAI-compatible Chat, Audio, and Models APIs and the
-Anthropic Messages API; those names identify protocols, not implementation
-ownership.
+wire contracts are the OpenAI-compatible Chat, Text Completions, Audio, and
+Models APIs and the Anthropic Messages API; those names identify protocols,
+not implementation ownership.
 
 The protocol frontend is deliberately separated from model preparation and the
 native runtime. HTTP code does not own engines, weights, or generation state.

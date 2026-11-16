@@ -16,6 +16,7 @@
  */
 
 #include "runtime/state/pipelineIO.h"
+#include "profiling/timer.h"
 
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
@@ -97,61 +98,67 @@ void allocateBasicIO(PipelineIO& io, int32_t maxBatch, int32_t vocabSize)
     // same dtype for canvas logits because final logit softcapping exports an
     // F32 logits binding.
     io.outputLogits
-        = Tensor({maxBatch, vocabSize}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "PipelineIO::outputLogits");
+        = Tensor({maxBatch, vocabSize}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "PipelineIO::outputLogits");
     io.selectTokenIndices
-        = Tensor({maxBatch, 1}, DeviceType::kGPU, nvinfer1::DataType::kINT64, "PipelineIO::selectTokenIndices");
-    io.phaseIsEncoder = Tensor({1}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::phaseIsEncoder");
+        = Tensor({maxBatch, 1}, DeviceType::kGPU, trt_edgellm::DataType::kINT64, "PipelineIO::selectTokenIndices");
+    io.phaseIsEncoder = Tensor({1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::phaseIsEncoder");
     io.contextMaskSelector
-        = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::contextMaskSelector");
-    io.contextLengths = Tensor({maxBatch}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::contextLengths");
+        = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::contextMaskSelector");
+    io.contextLengths
+        = Tensor({maxBatch}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::contextLengths");
     io.hostContextLengths
-        = Tensor({maxBatch}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "PipelineIO::hostContextLengths");
+        = Tensor({maxBatch}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "PipelineIO::hostContextLengths");
     io.hostSelectTokenIndices
-        = Tensor({maxBatch, 1}, DeviceType::kCPU, nvinfer1::DataType::kINT64, "PipelineIO::hostSelectTokenIndices");
-    io.hostPhaseIsEncoder = Tensor({1}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "PipelineIO::hostPhaseIsEncoder");
+        = Tensor({maxBatch, 1}, DeviceType::kCPU, trt_edgellm::DataType::kINT64, "PipelineIO::hostSelectTokenIndices");
+    io.hostPhaseIsEncoder
+        = Tensor({1}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "PipelineIO::hostPhaseIsEncoder");
 }
 
 void allocateRaggedMetadata(PipelineIO& io, int32_t maxTokens, int32_t maxSequences, int32_t maxLogitsRows,
     int32_t maxKVCacheCapacity, int32_t hiddenSize)
 {
     io.inputsEmbeds
-        = Tensor({maxTokens, hiddenSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF, "PipelineIO::inputsEmbeds");
-    io.positions = Tensor({maxTokens}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::positions");
+        = Tensor({maxTokens, hiddenSize}, DeviceType::kGPU, trt_edgellm::DataType::kHALF, "PipelineIO::inputsEmbeds");
+    io.positions = Tensor({maxTokens}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::positions");
     io.queryStartOffsets
-        = Tensor({maxSequences + 1}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::queryStartOffsets");
-    io.queryLengths = Tensor({maxSequences}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::queryLengths");
-    io.pastLengths = Tensor({maxSequences}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::pastLengths");
-    io.attentionSequenceLengths
-        = Tensor({maxSequences}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::attentionSequenceLengths");
-    io.stateIndices = Tensor({maxSequences}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::stateIndices");
+        = Tensor({maxSequences + 1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::queryStartOffsets");
+    io.queryLengths
+        = Tensor({maxSequences}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::queryLengths");
+    io.pastLengths = Tensor({maxSequences}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::pastLengths");
+    io.attentionSequenceLengths = Tensor(
+        {maxSequences}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::attentionSequenceLengths");
+    io.stateIndices
+        = Tensor({maxSequences}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::stateIndices");
     io.logitsIndices
-        = Tensor({maxLogitsRows}, DeviceType::kGPU, nvinfer1::DataType::kINT64, "PipelineIO::logitsIndices");
+        = Tensor({maxLogitsRows}, DeviceType::kGPU, trt_edgellm::DataType::kINT64, "PipelineIO::logitsIndices");
     io.raggedKVPageTable = Tensor({maxSequences, 2, computeMaxPagesPerSeq(maxKVCacheCapacity)}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "PipelineIO::raggedKVPageTable");
+        trt_edgellm::DataType::kINT32, "PipelineIO::raggedKVPageTable");
     io.raggedSwaKVPageTable = Tensor({maxSequences, 2, computeMaxPagesPerSeq(maxKVCacheCapacity)}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "PipelineIO::raggedSwaKVPageTable");
+        trt_edgellm::DataType::kINT32, "PipelineIO::raggedSwaKVPageTable");
     io.executionPhaseMarker = Tensor({static_cast<int32_t>(ExecutionPhase::kMixedPrefillDecode)}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "PipelineIO::executionPhaseMarker");
+        trt_edgellm::DataType::kINT32, "PipelineIO::executionPhaseMarker");
     io.contextSequenceCountCarrier = Tensor(
-        {maxSequences}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::contextSequenceCountCarrier");
+        {maxSequences}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::contextSequenceCountCarrier");
 
-    io.hostPositions = Tensor({maxTokens}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "PipelineIO::hostPositions");
-    io.hostQueryStartOffsets
-        = Tensor({maxSequences + 1}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "PipelineIO::hostQueryStartOffsets");
+    io.hostPositions
+        = Tensor({maxTokens}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "PipelineIO::hostPositions");
+    io.hostQueryStartOffsets = Tensor(
+        {maxSequences + 1}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "PipelineIO::hostQueryStartOffsets");
     io.hostQueryLengths
-        = Tensor({maxSequences}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "PipelineIO::hostQueryLengths");
+        = Tensor({maxSequences}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "PipelineIO::hostQueryLengths");
     io.hostPastLengths
-        = Tensor({maxSequences}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "PipelineIO::hostPastLengths");
+        = Tensor({maxSequences}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "PipelineIO::hostPastLengths");
     io.hostAttentionSequenceLengths = Tensor(
-        {maxSequences}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "PipelineIO::hostAttentionSequenceLengths");
+        {maxSequences}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "PipelineIO::hostAttentionSequenceLengths");
     io.hostStateIndices
-        = Tensor({maxSequences}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "PipelineIO::hostStateIndices");
+        = Tensor({maxSequences}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "PipelineIO::hostStateIndices");
     io.hostLogitsIndices
-        = Tensor({maxLogitsRows}, DeviceType::kCPU, nvinfer1::DataType::kINT64, "PipelineIO::hostLogitsIndices");
+        = Tensor({maxLogitsRows}, DeviceType::kCPU, trt_edgellm::DataType::kINT64, "PipelineIO::hostLogitsIndices");
 }
 
 void PipelineIO::uploadRaggedMetadata(RaggedExecutionBatch const& batch, cudaStream_t stream)
 {
+    gTimer.setPastLengths(batch.pastLengths);
     mRaggedMetadataUploadFence.wait();
     int32_t const tokens = batch.shape.physicalTokens;
     int32_t const sequences = batch.shape.numSequences;
@@ -256,8 +263,8 @@ void prepareRaggedExecutionBindings(PipelineIO& io, SharedResources& resources, 
     prepareRaggedRope(io, resources, cfg, batch.shape.physicalTokens, batch.shape.numSequences, stream);
 }
 
-void allocateDeepstackEmbeds(
-    PipelineIO& io, int32_t numFeatures, int32_t maxBatch, int32_t maxSeq, int32_t hiddenSize, nvinfer1::DataType dtype)
+void allocateDeepstackEmbeds(PipelineIO& io, int32_t numFeatures, int32_t maxBatch, int32_t maxSeq, int32_t hiddenSize,
+    trt_edgellm::DataType dtype)
 {
     io.deepstackEmbeds.clear();
     io.deepstackEmbeds.reserve(numFeatures);
@@ -269,7 +276,7 @@ void allocateDeepstackEmbeds(
 }
 
 void allocateSpecDecodeHiddenStates(PipelineIO& io, int32_t maxBatch, int32_t maxSeq, int32_t baseHiddenDim,
-    int32_t draftHiddenDim, nvinfer1::DataType dtype, bool allocateDraftHiddenStates)
+    int32_t draftHiddenDim, trt_edgellm::DataType dtype, bool allocateDraftHiddenStates)
 {
     io.baseHiddenStates
         = Tensor({maxBatch, maxSeq, baseHiddenDim}, DeviceType::kGPU, dtype, "PipelineIO::baseHiddenStates");
@@ -283,14 +290,47 @@ void allocateSpecDecodeHiddenStates(PipelineIO& io, int32_t maxBatch, int32_t ma
         = Tensor({maxBatch, maxSeq, draftHiddenDim}, DeviceType::kGPU, dtype, "PipelineIO::draftHiddenStatesOut");
 }
 
+//! Uploads one skip-softmax scale table once. An empty table still gets one zeroed element: a
+//! zero-volume Tensor isEmpty() and never enters the TensorMap, which would leave the engine's
+//! binding unset; the step's dims bind it at [0] regardless of this storage.
+Tensor uploadSkipSoftmaxScaleTable(std::vector<int32_t> table, char const* name, cudaStream_t stream)
+{
+    table.resize(std::max<size_t>(1, table.size()), 0);
+    Tensor tensor({static_cast<int32_t>(table.size())}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, name);
+    CUDA_CHECK(cudaMemcpyAsync(
+        tensor.rawPointer(), table.data(), table.size() * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    return tensor;
+}
+
+void allocateSkipSoftmaxScaleTables(PipelineIO& io, LLMEngineConfig const& cfg, cudaStream_t stream)
+{
+    io.skipSoftmaxPrefillScale = uploadSkipSoftmaxScaleTable(
+        cfg.flattenedSkipSoftmaxPrefillScaleTable(), "PipelineIO::skipSoftmaxPrefillScale", stream);
+    io.skipSoftmaxDecodeScale = uploadSkipSoftmaxScaleTable(
+        cfg.flattenedSkipSoftmaxDecodeScaleTable(), "PipelineIO::skipSoftmaxDecodeScale", stream);
+}
+
 void allocateMRope(
     PipelineIO& io, int32_t residentRows, int32_t activeRows, int32_t maxKVCacheCapacity, int32_t rotaryDim)
 {
-    io.mropeCosSin = Tensor({residentRows, maxKVCacheCapacity, rotaryDim}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT,
-        "PipelineIO::mropeCosSin");
+    io.mropeCosSin = Tensor({residentRows, maxKVCacheCapacity, rotaryDim}, DeviceType::kGPU,
+        trt_edgellm::DataType::kFLOAT, "PipelineIO::mropeCosSin");
     io.mropeActiveCosSin = Tensor({activeRows, maxKVCacheCapacity, rotaryDim}, DeviceType::kGPU,
-        nvinfer1::DataType::kFLOAT, "PipelineIO::mropeActiveCosSin");
+        trt_edgellm::DataType::kFLOAT, "PipelineIO::mropeActiveCosSin");
 }
+
+namespace
+{
+//! Fill the first `rows` rows of `cache` with sequential text positions.
+void fillTextOnlyMRope(
+    Tensor& cache, Tensor const& invFreq, LLMEngineConfig const& cfg, int32_t rows, cudaStream_t stream)
+{
+    kernel::initializeTextOnlyMRopeCosSin(cache.dataPointer<float>(), cfg.ropeConfig.rotaryTheta, cfg.rotaryDim,
+        cfg.maxKVCacheCapacity, rows, stream, invFreq.isEmpty() ? nullptr : invFreq.dataPointer<float>(),
+        cfg.ropeConfig.yarn.has_value() ? cfg.ropeConfig.yarn->mscale : 1.0F);
+}
+} // namespace
 
 void prepareTextOnlyMRope(PipelineIO& io, LLMEngineConfig const& cfg, int32_t activeRows, cudaStream_t stream)
 {
@@ -298,8 +338,7 @@ void prepareTextOnlyMRope(PipelineIO& io, LLMEngineConfig const& cfg, int32_t ac
         "Text-only MRoPE preparation received an invalid active-row count");
     check::check(io.mropeActiveCosSin.reshape({activeRows, cfg.maxKVCacheCapacity, cfg.rotaryDim}),
         "Text-only MRoPE scratch reshape failed");
-    kernel::initializeTextOnlyMRopeCosSin(io.mropeActiveCosSin.dataPointer<float>(), cfg.ropeConfig.rotaryTheta,
-        cfg.rotaryDim, cfg.maxKVCacheCapacity, activeRows, stream);
+    fillTextOnlyMRope(io.mropeActiveCosSin, io.mropeInvFreq, cfg, activeRows, stream);
 }
 
 void allocateRaggedRopeBuffers(PipelineIO& io, int32_t genericRows, int32_t dualRows, int32_t rotaryDim,
@@ -309,15 +348,15 @@ void allocateRaggedRopeBuffers(PipelineIO& io, int32_t genericRows, int32_t dual
     {
         check::check(genericRows > 0, "Generic RoPE allocation requires a positive row capacity");
         io.raggedRopeCosSin = Tensor(
-            {genericRows, rotaryDim}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "PipelineIO::raggedRopeCosSin");
+            {genericRows, rotaryDim}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "PipelineIO::raggedRopeCosSin");
     }
     if (slidingRotaryDim > 0 || fullRotaryDim > 0)
     {
         check::check(dualRows > 0 && slidingRotaryDim > 0 && fullRotaryDim > 0,
             "Dual RoPE allocation requires positive row capacity and rotary dimensions");
-        io.raggedRopeCosSinSliding = Tensor({dualRows, slidingRotaryDim}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT,
-            "PipelineIO::raggedRopeCosSinSliding");
-        io.raggedRopeCosSinFull = Tensor({dualRows, fullRotaryDim}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT,
+        io.raggedRopeCosSinSliding = Tensor({dualRows, slidingRotaryDim}, DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT, "PipelineIO::raggedRopeCosSinSliding");
+        io.raggedRopeCosSinFull = Tensor({dualRows, fullRotaryDim}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT,
             "PipelineIO::raggedRopeCosSinFull");
     }
 }
@@ -417,6 +456,7 @@ void bindUnifiedDecoderMetadata(TensorMap& map, PipelineIO& io)
     map.set(binding_names::kAttentionSequenceLengths, io.attentionSequenceLengths);
     map.set(binding_names::kStateIndices, io.stateIndices);
     map.set(binding_names::kExecutionPhaseMarker, io.executionPhaseMarker);
+    map.set(binding_names::kSpecVerifyLayout, io.specVerifyLayout);
     map.set(binding_names::kContextSequenceCountCarrier, io.contextSequenceCountCarrier);
 }
 } // namespace
@@ -424,7 +464,7 @@ void bindUnifiedDecoderMetadata(TensorMap& map, PipelineIO& io)
 void StreamingPrefillBuffers::populateFromPrefill(Tensor const& liveInputEmbeds, Tensor const& liveEngineHiddenStates,
     int32_t batch, int32_t prefillLen, int32_t hiddenSize, int32_t maxBatch, int32_t maxSeq, cudaStream_t stream)
 {
-    auto const dtype = nvinfer1::DataType::kHALF;
+    auto const dtype = trt_edgellm::DataType::kHALF;
     if (inputEmbeds.isEmpty())
     {
         inputEmbeds = Tensor(
@@ -519,9 +559,8 @@ static void buildTensorMapImpl(
             map.set(binding_names::formatConvStateName(localMambaIdx, /*isPast=*/false), conv);
             // Spec-decode hybrid base: bind the per-layer intermediate state outputs.
             // `hasIntermediateRecurrentStates()` is true iff the MambaCacheManager
-            // was built with `maxIntermediateSeqLen > 0` (set by createForSpecDecode
-            // for hybrid MTP bases). EAGLE3 base lacks recurrent layers entirely,
-            // so this branch wouldn't fire for it regardless.
+            // was built with `maxIntermediateSeqLen > 0`, which createForSpecDecode
+            // does when `needsBaseVerifyIntermediateStates()` (sharedResources.cpp) holds.
             if (mambaMgr.hasIntermediateRecurrentStates())
             {
                 if (mambaMgr.recurrentUsesReplay())
@@ -554,6 +593,20 @@ static void buildTensorMapImpl(
         else
         {
             check::check(false, format::fmtstr("buildTensorMap: unknown LayerType at absolute layer index %d", absIdx));
+        }
+    }
+
+    // The n-gram injection's convolution state, indexed over the injected layers rather than over
+    // the layer types above; past and present alias, so the engine advances it in place.
+    for (int32_t auxIdx = 0; auxIdx < cacheMgr.numAuxConvStates(); ++auxIdx)
+    {
+        auto& state = cacheMgr.getAuxConvState(auxIdx);
+        map.set(binding_names::formatNgramConvStateName(auxIdx, /*isPast=*/true), state);
+        map.set(binding_names::formatNgramConvStateName(auxIdx, /*isPast=*/false), state);
+        if (cacheMgr.hasIntermediateAuxConvStates())
+        {
+            map.set(binding_names::formatIntermediateNgramConvStateName(auxIdx),
+                cacheMgr.getIntermediateAuxConvState(auxIdx));
         }
     }
 
@@ -622,9 +675,13 @@ static void buildTensorMapImpl(
         map.set(binding_names::kAttentionMask, io.packedAttentionMask);
         map.set(binding_names::kAttentionPosId, io.specDecodePositionIds);
     }
-    if (!io.skipSoftmaxScale.isEmpty())
+    if (!io.skipSoftmaxPrefillScale.isEmpty())
     {
-        map.set(binding_names::kSkipSoftmaxScale, io.skipSoftmaxScale);
+        map.set(binding_names::kSkipSoftmaxPrefillScale, io.skipSoftmaxPrefillScale);
+    }
+    if (!io.skipSoftmaxDecodeScale.isEmpty())
+    {
+        map.set(binding_names::kSkipSoftmaxDecodeScale, io.skipSoftmaxDecodeScale);
     }
     if (!io.specTreeParentIds.isEmpty())
     {
@@ -737,23 +794,23 @@ PipelineIO PipelineIO::createForLLM(LLMEngineConfig const& cfg, cudaStream_t str
     {
         int32_t const maxCanvasLen = cfg.diffusionCanvasLength;
         io.outputLogits = Tensor({cfg.maxSupportedBatchSize * maxCanvasLen, cfg.outputVocabSize}, DeviceType::kGPU,
-            nvinfer1::DataType::kFLOAT, "PipelineIO::outputLogits");
+            trt_edgellm::DataType::kFLOAT, "PipelineIO::outputLogits");
         io.selectTokenIndices = Tensor({cfg.maxSupportedBatchSize * maxCanvasLen}, DeviceType::kGPU,
-            nvinfer1::DataType::kINT64, "PipelineIO::selectTokenIndices");
+            trt_edgellm::DataType::kINT64, "PipelineIO::selectTokenIndices");
         io.hostSelectTokenIndices = Tensor({cfg.maxSupportedBatchSize * maxCanvasLen}, DeviceType::kCPU,
-            nvinfer1::DataType::kINT64, "PipelineIO::hostSelectTokenIndices");
+            trt_edgellm::DataType::kINT64, "PipelineIO::hostSelectTokenIndices");
     }
 
     if (cfg.useVisionBidirectionalAttention)
     {
         io.visionBlockIds = Tensor(
-            {cfg.maxPhysicalTokens}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "PipelineIO::visionBlockIds");
+            {cfg.maxPhysicalTokens}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::visionBlockIds");
     }
 
     if (hasDeepstackFeatures(cfg))
     {
         allocateDeepstackEmbeds(
-            io, cfg.numDeepstackFeatures, 1, cfg.maxPhysicalTokens, cfg.hiddenSize, nvinfer1::DataType::kHALF);
+            io, cfg.numDeepstackFeatures, 1, cfg.maxPhysicalTokens, cfg.hiddenSize, trt_edgellm::DataType::kHALF);
         LOG_INFO("Allocated %d token-major deepstack tensors with shape [%d, %d]", cfg.numDeepstackFeatures,
             cfg.maxPhysicalTokens, cfg.hiddenSize);
     }
@@ -762,21 +819,22 @@ PipelineIO PipelineIO::createForLLM(LLMEngineConfig const& cfg, cudaStream_t str
     // streaming consumers (Qwen3-Omni Talker) read it; if the engine emits
     // hidden_states but no consumer is set, the buffer is harmless write-target;
     // if the engine has no hidden_states output the binding is silently skipped.
-    io.outputHiddenStates = Tensor({cfg.maxPhysicalTokens, cfg.hiddenSize}, DeviceType::kGPU, nvinfer1::DataType::kHALF,
-        "PipelineIO::outputHiddenStates");
+    io.outputHiddenStates = Tensor({cfg.maxPhysicalTokens, cfg.hiddenSize}, DeviceType::kGPU,
+        trt_edgellm::DataType::kHALF, "PipelineIO::outputHiddenStates");
 
     if (cfg.ropeConfig.type == RopeType::kMRope)
     {
         int32_t const ropeRows = cfg.recurrentPoolRows;
         allocateMRope(io, ropeRows, cfg.maxSupportedBatchSize, cfg.maxKVCacheCapacity, cfg.rotaryDim);
+        if (cfg.ropeConfig.yarn.has_value())
+        {
+            io.mropeInvFreq = uploadYarnInvFreq(cfg.ropeConfig, cfg.rotaryDim, stream);
+        }
         // Give every resident slot valid sequential positions before any multimodal request publishes into it.
-        kernel::initializeTextOnlyMRopeCosSin(io.mropeCosSin.dataPointer<float>(), cfg.ropeConfig.rotaryTheta,
-            cfg.rotaryDim, cfg.maxKVCacheCapacity, ropeRows, stream);
+        fillTextOnlyMRope(io.mropeCosSin, io.mropeInvFreq, cfg, ropeRows, stream);
     }
 
-    // Runtime skip-softmax override carrier (shape-only).
-    io.skipSoftmaxScale = Tensor({1}, DeviceType::kGPU, nvinfer1::DataType::kINT8, "PipelineIO::skipSoftmaxScale");
-    CUDA_CHECK(cudaMemsetAsync(io.skipSoftmaxScale.rawPointer(), 0, io.skipSoftmaxScale.getMemoryCapacity(), stream));
+    allocateSkipSoftmaxScaleTables(io, cfg, stream);
 
     return io;
 }
@@ -790,17 +848,19 @@ PipelineIO PipelineIO::createForSpecDecode(DeploymentConfig const& bundle, int32
 
     PipelineIO io;
 
-    int32_t const maxDraftProposalSize = bundle.specConfig->maxDraftProposalSize;
+    int32_t const maxDraftTokens = bundle.specConfig->maxDraftTokens;
     int32_t const draftHiddenSize = bundle.specConfig->draftHiddenSize;
     int32_t const baseOutputHiddenDim = bundle.specConfig->baseOutputHiddenDim;
+    // An MTP draft adds its draft-feedback input to the base hidden states, so both share one width.
+    SpecDecodeMode const mode = bundle.specDecodeMode();
     int32_t const draftRuntimeHiddenSize
-        = bundle.specDecodeMode() == SpecDecodeMode::kGemma4MTP ? baseOutputHiddenDim : draftHiddenSize;
+        = mode == SpecDecodeMode::kGemma4MTP || mode == SpecDecodeMode::kMTP ? baseOutputHiddenDim : draftHiddenSize;
     int32_t const draftVocabSize = bundle.draft->vocabSize;
 
     // Use max of base and draft dimensions for shared tensors
     int32_t const maxInputLength = std::max(bundle.base.maxSupportedInputLength, bundle.draft->maxSupportedInputLength);
-    int32_t const effectiveMaxDraftProposalSize
-        = std::max({maxDraftProposalSize, bundle.specConfig->verifySize, bundle.specConfig->dflashBlockSize});
+    int32_t const effectiveMaxDraftProposalSize = std::max({maxDraftTokens, bundle.specConfig->verifyTokenCount,
+        bundle.specConfig->draftBlockSize, bundle.specConfig->jumpVerifyTokenCount});
     int32_t const maxLogitsSize = maxRuntimeBatchSize * effectiveMaxDraftProposalSize;
     int32_t const maxVocabSize = std::max(bundle.base.outputVocabSize, draftVocabSize);
     int32_t const maxTensorSeqLen = std::max(maxInputLength, effectiveMaxDraftProposalSize);
@@ -812,6 +872,7 @@ PipelineIO PipelineIO::createForSpecDecode(DeploymentConfig const& bundle, int32
     int32_t const maxKVCacheCapacity = std::max(bundle.base.maxKVCacheCapacity, bundle.draft->maxKVCacheCapacity);
     int32_t const maxHiddenSize = std::max(bundle.base.hiddenSize, bundle.draft->hiddenSize);
     allocateRaggedMetadata(io, maxPhysicalTokens, maxSequences, maxLogitsSize, maxKVCacheCapacity, maxHiddenSize);
+    io.specVerifyLayout = Tensor({2}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "PipelineIO::specVerifyLayout");
 
     int32_t const genericRows = std::max(bundle.base.useDualRope ? 0 : bundle.base.maxPhysicalTokens,
         bundle.draft->useDualRope ? 0 : bundle.draft->maxPhysicalTokens);
@@ -828,13 +889,13 @@ PipelineIO PipelineIO::createForSpecDecode(DeploymentConfig const& bundle, int32
     // Override outputLogits to support proposal-sized outputs: [maxLogitsSize, maxVocabSize].
     // dtype is kFLOAT (matching allocateBasicIO); only the shape changes for SpecDecode.
     io.outputLogits = rt::Tensor(
-        {maxLogitsSize, maxVocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "PipelineIO::outputLogits");
+        {maxLogitsSize, maxVocabSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "PipelineIO::outputLogits");
 
     // Allocate hidden states for SpecDecode. Cached block-draft modes bind the
     // draft target-hidden input to compact base hidden states, so they do not
     // need the generic EAGLE/MTP draft hidden-state ping-pong buffers.
     allocateSpecDecodeHiddenStates(io, maxRuntimeBatchSize, maxTensorSeqLen, baseOutputHiddenDim,
-        draftRuntimeHiddenSize, nvinfer1::DataType::kHALF, !isCachedBlockDraftMode(bundle.specDecodeMode()));
+        draftRuntimeHiddenSize, trt_edgellm::DataType::kHALF, !isCachedBlockDraftMode(bundle.specDecodeMode()));
 
     // Accept-layer hidden states for the Qwen3-Omni Talker, only when the base
     // engine can actually fill them. Sized on the base hidden size, not
@@ -843,13 +904,13 @@ PipelineIO PipelineIO::createForSpecDecode(DeploymentConfig const& bundle, int32
     if (hasAcceptHiddenOutput)
     {
         io.outputHiddenStates = Tensor({maxRuntimeBatchSize, maxTensorSeqLen, bundle.base.hiddenSize}, DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "PipelineIO::outputHiddenStates");
+            trt_edgellm::DataType::kHALF, "PipelineIO::outputHiddenStates");
     }
 
     if (hasDeepstackFeatures(bundle.base))
     {
         allocateDeepstackEmbeds(io, bundle.base.numDeepstackFeatures, maxRuntimeBatchSize, maxInputLength,
-            bundle.base.hiddenSize, nvinfer1::DataType::kHALF);
+            bundle.base.hiddenSize, trt_edgellm::DataType::kHALF);
         LOG_INFO("Allocated %d deepstack embeds tensors with shape [%d, %d, %d]", bundle.base.numDeepstackFeatures,
             maxRuntimeBatchSize, maxInputLength, bundle.base.hiddenSize);
     }
@@ -858,45 +919,47 @@ PipelineIO PipelineIO::createForSpecDecode(DeploymentConfig const& bundle, int32
     {
         int32_t const residentRows = bundle.base.recurrentPoolRows;
         allocateMRope(io, residentRows, maxRuntimeBatchSize, bundle.base.maxKVCacheCapacity, bundle.base.rotaryDim);
-        kernel::initializeTextOnlyMRopeCosSin(io.mropeCosSin.dataPointer<float>(), bundle.base.ropeConfig.rotaryTheta,
-            bundle.base.rotaryDim, bundle.base.maxKVCacheCapacity, residentRows, stream);
+        if (bundle.base.ropeConfig.yarn.has_value())
+        {
+            io.mropeInvFreq = uploadYarnInvFreq(bundle.base.ropeConfig, bundle.base.rotaryDim, stream);
+        }
+        fillTextOnlyMRope(io.mropeCosSin, io.mropeInvFreq, bundle.base, residentRows, stream);
     }
 
     // SpecDecode-specific engine I/O: token-aligned attention metadata and a
     // proposal-sized selectTokenIndices override.
     int64_t const packedMaskLen = static_cast<int64_t>(divUp(effectiveMaxDraftProposalSize, 32));
     io.packedAttentionMask = Tensor({maxRuntimeBatchSize, maxTensorSeqLen, packedMaskLen}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "PipelineIO::packedAttentionMask");
+        trt_edgellm::DataType::kINT32, "PipelineIO::packedAttentionMask");
     CUDA_CHECK(
         cudaMemsetAsync(io.packedAttentionMask.rawPointer(), 0, io.packedAttentionMask.getMemoryCapacity(), stream));
 
     io.specDecodePositionIds = Tensor({maxRuntimeBatchSize, maxTensorSeqLen}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT32, "PipelineIO::specDecodePositionIds");
+        trt_edgellm::DataType::kINT32, "PipelineIO::specDecodePositionIds");
     CUDA_CHECK(cudaMemsetAsync(
         io.specDecodePositionIds.rawPointer(), 0, io.specDecodePositionIds.getMemoryCapacity(), stream));
 
     io.selectTokenIndices = Tensor({maxRuntimeBatchSize, effectiveMaxDraftProposalSize}, DeviceType::kGPU,
-        nvinfer1::DataType::kINT64, "PipelineIO::selectTokenIndices");
+        trt_edgellm::DataType::kINT64, "PipelineIO::selectTokenIndices");
     CUDA_CHECK(
         cudaMemsetAsync(io.selectTokenIndices.rawPointer(), 0, io.selectTokenIndices.getMemoryCapacity(), stream));
 
-    io.skipSoftmaxScale = Tensor({1}, DeviceType::kGPU, nvinfer1::DataType::kINT8, "PipelineIO::skipSoftmaxScale");
-    CUDA_CHECK(cudaMemsetAsync(io.skipSoftmaxScale.rawPointer(), 0, io.skipSoftmaxScale.getMemoryCapacity(), stream));
+    allocateSkipSoftmaxScaleTables(io, bundle.base, stream);
 
-    SpecDecodeMode const mode = bundle.specDecodeMode();
-    bool const useSpecTree = mode == SpecDecodeMode::kDFlash
+    bool const useSpecTree = mode == SpecDecodeMode::kEAGLE || mode == SpecDecodeMode::kDFlash
+        || mode == SpecDecodeMode::kDomino
         || ((isCachedBlockDraftMode(mode) || mode == SpecDecodeMode::kMTP || mode == SpecDecodeMode::kGemma4MTP
                 || mode == SpecDecodeMode::kDSpark)
-            && bundle.specConfig->draftingTopK > 1);
+            && bundle.specConfig->draftTopK > 1);
     if (useSpecTree || hasTreeMetadataInputs)
     {
         io.specTreeParentIds = Tensor({maxRuntimeBatchSize, maxTensorSeqLen}, DeviceType::kGPU,
-            nvinfer1::DataType::kINT32, "PipelineIO::specTreeParentIds");
+            trt_edgellm::DataType::kINT32, "PipelineIO::specTreeParentIds");
         CUDA_CHECK(
             cudaMemsetAsync(io.specTreeParentIds.rawPointer(), 0, io.specTreeParentIds.getMemoryCapacity(), stream));
 
-        io.specTreeDepths = Tensor({maxRuntimeBatchSize, maxTensorSeqLen}, DeviceType::kGPU, nvinfer1::DataType::kINT32,
-            "PipelineIO::specTreeDepths");
+        io.specTreeDepths = Tensor({maxRuntimeBatchSize, maxTensorSeqLen}, DeviceType::kGPU,
+            trt_edgellm::DataType::kINT32, "PipelineIO::specTreeDepths");
         CUDA_CHECK(cudaMemsetAsync(io.specTreeDepths.rawPointer(), 0, io.specTreeDepths.getMemoryCapacity(), stream));
     }
 

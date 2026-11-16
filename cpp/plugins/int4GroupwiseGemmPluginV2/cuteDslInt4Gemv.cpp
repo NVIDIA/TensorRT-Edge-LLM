@@ -66,8 +66,6 @@ INT4_FP16_GEMV_VARIANTS(DECL_MODULE)
 bool gLoaded = false;
 std::mutex gLoadMutex;
 
-// GEMV group size is baked at 128 (matches build_cutedsl.py); scale rows = ceil(K/128).
-constexpr int32_t kGemvGroupSize = 128;
 constexpr int32_t kBN = 128; // fragment N-block (shared with the GEMM)
 constexpr int32_t kBK = 64;  // fragment K-tile
 } // namespace
@@ -111,14 +109,14 @@ bool cuteDslInt4GemvLoadModules()
     } while (0)
 
 int32_t cuteDslInt4GemvLaunch(int32_t M, void const* A, void const* fragW, void const* scales, void* Out, int32_t N,
-    int32_t K, cudaStream_t stream)
+    int32_t K, int32_t groupSize, cudaStream_t stream)
 {
-    if (!gLoaded)
+    if (!gLoaded || groupSize < kBK || groupSize % kBK != 0 || K % groupSize != 0)
     {
         return -1;
     }
     int32_t const qwRows = divUp(N, kBN) * divUp(K, kBK) * (kBK / 16) * (kBN / 64);
-    int32_t const scaleRows = divUp(K, kGemvGroupSize);
+    int32_t const scaleRows = divUp(K, groupSize);
 #define DISPATCH(prefix, VM)                                                                                           \
     if (M == (VM))                                                                                                     \
     {                                                                                                                  \
@@ -130,7 +128,7 @@ int32_t cuteDslInt4GemvLaunch(int32_t M, void const* A, void const* fragW, void 
         SET_2D(tS, scales, scaleRows, N);                                                                              \
         prefix##_Tensor_mOut_t tOut{};                                                                                 \
         SET_2D(tOut, Out, M, N);                                                                                       \
-        return cute_dsl_##prefix##_wrapper(&g_##prefix, &tA, &tW, &tS, &tOut, stream);                                 \
+        return cute_dsl_##prefix##_wrapper(&g_##prefix, &tA, &tW, &tS, &tOut, groupSize, stream);                      \
     }
     INT4_FP16_GEMV_VARIANTS(DISPATCH)
 #undef DISPATCH

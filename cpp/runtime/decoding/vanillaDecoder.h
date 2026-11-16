@@ -18,12 +18,24 @@
 #pragma once
 
 #include "runtime/decoding/decodingStrategy.h"
+#include "runtime/decoding/jumpForward.h"
+
+#include <optional>
+#include <vector>
 
 namespace trt_edgellm
 {
 namespace rt
 {
 
+/*!
+ * @brief One sampled token per step, plus grammar jump-forward.
+ *
+ * A slot's pending tokens (DecodingInferenceContext::pendingTokens) are the tail of its token list without KV.
+ * A plain step feeds one per slot on the decode profile. After a jump appended forced tokens, the next step is a
+ * catch-up step: every slot runs as a context-chunk row covering its pending tokens on the prefill profile, eager,
+ * and samples from its last row. Either step ends in the same sampling, grammar and logprobs tail.
+ */
 class VanillaDecoder final : public DecodingStrategy
 {
 public:
@@ -53,25 +65,25 @@ public:
     }
     void setContextMemory(Tensor&) override {}
 
-    bool hasSystemPromptKVCache(SystemPromptCacheKey const&) const override
-    {
-        return false;
-    }
-    void restoreSystemPromptKVCache(SystemPromptCacheKey const&, int32_t, cudaStream_t) override {}
-    bool runSystemPromptPrefill(DecodingInferenceContext&) override
-    {
-        return true;
-    }
-    void saveSystemPromptKVCache(SystemPromptCacheKey const&, std::string const&, std::vector<tokenizer::Rank> const&,
-        int32_t, cudaStream_t) override
-    {
-    }
-
     void resetForNewSequences(Tensor&, cudaStream_t) override {}
     void onBatchEvict(std::vector<int32_t> const&, int32_t, int32_t, Tensor&, cudaStream_t) override {}
 
 private:
+    //! Whether any active slot carries more than one pending token.
+    static bool needsChunkStep(DecodingInferenceContext const& context) noexcept;
+    //! The one-token decode forward on the decode profile; commits one KV position per slot.
+    bool runDecodeForward(DecodingInferenceContext& context);
+    //! The catch-up forward: one context-chunk row per slot over its pending tokens; commits that many positions.
+    bool runChunkForward(DecodingInferenceContext& context);
+    //! Bias, mask, sample and append one token per slot from the step's logits, advance the grammars, collect
+    //! logprobs, then append grammar-forced tokens where a slot allows it.
+    bool sampleAndAppend(DecodingInferenceContext& context, bool chunkStep);
+    //! Jump every slot whose only token without KV is the one just sampled; a jump raises its pending count.
+    void collectJumps(DecodingInferenceContext& context);
+    void ensureCoordinator();
+
     DecodingRuntimeContext& mRuntime;
+    std::optional<JumpForwardCoordinator> mCoordinator;
 };
 
 } // namespace rt

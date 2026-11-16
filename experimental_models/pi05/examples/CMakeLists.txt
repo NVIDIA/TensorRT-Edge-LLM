@@ -25,9 +25,8 @@ add_cross_build_link_options(pi05_policy_build)
 add_executable(pi05_policy_inference pi05_policy_inference.cpp
                                      pi05_inference_io.cpp)
 target_link_libraries(
-  pi05_policy_inference PRIVATE pi05Experimental edgellmCore exampleUtils
-                                commonLibraryExt)
-target_include_directories(
-  pi05_policy_inference PRIVATE ${CMAKE_SOURCE_DIR}/cpp ${COMMON_INCLUDE_DIRS}
-                                ${CMAKE_SOURCE_DIR}/examples/utils)
+  pi05_policy_inference PRIVATE pi05Experimental edgellmCore
+                                edgellmApplicationSupport commonLibraryExt)
+target_include_directories(pi05_policy_inference PRIVATE ${CMAKE_SOURCE_DIR}/cpp
+                                                         ${COMMON_INCLUDE_DIRS})
 add_cross_build_link_options(pi05_policy_inference)

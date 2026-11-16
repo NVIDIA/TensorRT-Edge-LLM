@@ -30,7 +30,7 @@ import traceback
 from tensorrt_edgellm.scripts import _dependency_errors
 
 
-@_dependency_errors.optional_dependencies("tools")
+@_dependency_errors.optional_dependencies("onnx")
 def main(argv=None, *, prog="tensorrt-edgellm-process-lora") -> None:
     """
     Main function that parses command line arguments and processes LoRA weights.

@@ -101,7 +101,7 @@ class Qwen3_5MtpDecoderLayer(nn.Module):
             attention_scale=attn.attention_scale,
             enable_context_mask_selector=False,
             enable_vision_block_attention=False,
-            skip_softmax_scale_factor=0.0,
+            skip_softmax_prefill_input=0,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
             qkv_scales=getattr(attn, "_qkv_scales_float", [1.0, 1.0, 1.0]),
@@ -335,7 +335,7 @@ class Qwen3_5MtpDraftModel(nn.Module):
         present_key_values = []
         for idx, layer in enumerate(self.layers):
             hidden_states, present = layer.forward_ragged(
-                hidden_states, past_key_values[idx], **metadata)
+                hidden_states, past_key_value=past_key_values[idx], **metadata)
             present_key_values.append(present)
         selected_hidden = self.norm(
             torch.index_select(hidden_states, 0, logits_indices))

@@ -302,7 +302,7 @@ void initializeLongRopeCosSin(float* shortCosSinCache, float* longCosSinCache, f
 
 template <int32_t RotaryDim>
 __global__ void initializeYarnCosSinKernel(
-    float* cosSinCache, float* invFreq, float mscale, int32_t rotaryEmbeddingMaxPositions)
+    float* cosSinCache, float const* invFreq, float mscale, int32_t rotaryEmbeddingMaxPositions)
 {
     // Same launch geometry as the LongRope kernel: each half-warp (16 threads)
     // fills one position, 8 positions per CTA. invFreq is the precomputed
@@ -341,7 +341,7 @@ __global__ void initializeYarnCosSinKernel(
     }
 }
 
-void initializeYarnCosSin(float* cosSinCache, float* invFreq, float mscale, int32_t rotaryDim,
+void initializeYarnCosSin(float* cosSinCache, float const* invFreq, float mscale, int32_t rotaryDim,
     int32_t rotaryEmbeddingMaxPositions, cudaStream_t stream)
 {
     dim3 block(16, 8);
@@ -369,9 +369,10 @@ void initializeYarnCosSin(float* cosSinCache, float* invFreq, float mscale, int3
     CUDA_CHECK(cudaLaunchKernel(kernelPtr, grid, block, kernelArgs, 0, stream));
 }
 
-template <int32_t RotaryDim, typename TPos>
+template <int32_t RotaryDim, typename TPos, bool UseInvFreq>
 __global__ void initializeMRopeCosSinKernel(float* cosSinCache, TPos* mropePositionIds, float rotaryBaseFrequency,
-    int64_t rotaryEmbeddingMaxPositions, bool interleaved, int32_t sectionH, int32_t sectionW)
+    float const* invFreqTable, float mscale, int64_t rotaryEmbeddingMaxPositions, bool interleaved, int32_t sectionH,
+    int32_t sectionW)
 {
     // mropePositionIds: [bs, 3, rotaryEmbeddingMaxPositions]
     //     Represent [T, H, W] information for each token position
@@ -403,13 +404,21 @@ __global__ void initializeMRopeCosSinKernel(float* cosSinCache, TPos* mropePosit
     int32_t const nonInterleavedTEnd = numTemporalPairs / 8;
     int32_t const nonInterleavedHEnd = nonInterleavedTEnd + sectionH / 8;
 
+    // Per-dimension divisors theta^(2d/RotaryDim); inverse frequencies instead when UseInvFreq.
     float ropeConstants[RotaryDim / 16];
 
 #pragma unroll
     for (uint32_t i = 0; i < RotaryDim / 16; ++i)
     {
         uint32_t zid = tIdx + i * 8;
-        ropeConstants[i] = pow(rotaryBaseFrequency, 2 * zid / (float) RotaryDim);
+        if constexpr (UseInvFreq)
+        {
+            ropeConstants[i] = invFreqTable[zid];
+        }
+        else
+        {
+            ropeConstants[i] = pow(rotaryBaseFrequency, 2 * zid / (float) RotaryDim);
+        }
     }
 
     for (uint32_t posIdx = startPosIdx; posIdx < rotaryEmbeddingMaxPositions; posIdx += posStride)
@@ -456,9 +465,20 @@ __global__ void initializeMRopeCosSinKernel(float* cosSinCache, TPos* mropePosit
             TPos const mropePosIdx
                 = mropePositionIds[batchPositionIdsOffset + groupIdx * rotaryEmbeddingMaxPositions + posIdx];
 
-            float invFreq = mropePosIdx / ropeConstants[i];
-            float cosVal = cos(invFreq);
-            float sinVal = sin(invFreq);
+            float cosVal{};
+            float sinVal{};
+            if constexpr (UseInvFreq)
+            {
+                float const angle = mropePosIdx * ropeConstants[i];
+                cosVal = cos(angle) * mscale;
+                sinVal = sin(angle) * mscale;
+            }
+            else
+            {
+                float invFreq = mropePosIdx / ropeConstants[i];
+                cosVal = cos(invFreq);
+                sinVal = sin(invFreq);
+            }
 
             cosSinCache[cosSinOffset + zid] = cosVal;
             cosSinCache[cosSinOffset + zid + RotaryDim / 2] = sinVal;
@@ -469,7 +489,7 @@ __global__ void initializeMRopeCosSinKernel(float* cosSinCache, TPos* mropePosit
 template <typename TPos>
 void initializeMRopeCosSinImpl(float* cosSinCache, TPos* mropePositionIds, float rotaryBaseFrequency, int64_t rotaryDim,
     int64_t rotaryEmbeddingMaxPositions, int64_t batchSize, bool interleaved, int32_t sectionH, int32_t sectionW,
-    cudaStream_t stream)
+    cudaStream_t stream, float const* invFreq, float mscale)
 {
     if (!interleaved)
     {
@@ -487,11 +507,18 @@ void initializeMRopeCosSinImpl(float* cosSinCache, TPos* mropePositionIds, float
     CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, 0));
     int32_t const numSMs = deviceProp.multiProcessorCount;
 
+    bool const useInvFreq = invFreq != nullptr;
     void* kernelPtr{nullptr};
     switch (rotaryDim)
     {
-    case 64: kernelPtr = (void*) initializeMRopeCosSinKernel<64, TPos>; break;
-    case 128: kernelPtr = (void*) initializeMRopeCosSinKernel<128, TPos>; break;
+    case 64:
+        kernelPtr = useInvFreq ? (void*) initializeMRopeCosSinKernel<64, TPos, true>
+                               : (void*) initializeMRopeCosSinKernel<64, TPos, false>;
+        break;
+    case 128:
+        kernelPtr = useInvFreq ? (void*) initializeMRopeCosSinKernel<128, TPos, true>
+                               : (void*) initializeMRopeCosSinKernel<128, TPos, false>;
+        break;
     default:
         throw std::runtime_error("Un-implemented rotaryDim for initializeMRopeCosSin: " + std::to_string(rotaryDim));
     }
@@ -503,36 +530,45 @@ void initializeMRopeCosSinImpl(float* cosSinCache, TPos* mropePositionIds, float
     dim3 grid(numBlocks, batchSize);
 
     void* kernelArgs[] = {reinterpret_cast<void*>(&cosSinCache), reinterpret_cast<void*>(&mropePositionIds),
-        static_cast<void*>(&rotaryBaseFrequency), static_cast<void*>(&rotaryEmbeddingMaxPositions),
-        static_cast<void*>(&interleaved), static_cast<void*>(&sectionH), static_cast<void*>(&sectionW)};
+        static_cast<void*>(&rotaryBaseFrequency), static_cast<void*>(&invFreq), static_cast<void*>(&mscale),
+        static_cast<void*>(&rotaryEmbeddingMaxPositions), static_cast<void*>(&interleaved),
+        static_cast<void*>(&sectionH), static_cast<void*>(&sectionW)};
     CUDA_CHECK(cudaLaunchKernel(kernelPtr, grid, block, kernelArgs, 0, stream));
 }
 
 void initializeMRopeCosSin(float* cosSinCache, int64_t* mropePositionIds, float rotaryBaseFrequency, int64_t rotaryDim,
     int64_t rotaryEmbeddingMaxPositions, int64_t batchSize, bool interleaved, int32_t sectionH, int32_t sectionW,
-    cudaStream_t stream)
+    cudaStream_t stream, float const* invFreq, float mscale)
 {
     initializeMRopeCosSinImpl(cosSinCache, mropePositionIds, rotaryBaseFrequency, rotaryDim,
-        rotaryEmbeddingMaxPositions, batchSize, interleaved, sectionH, sectionW, stream);
+        rotaryEmbeddingMaxPositions, batchSize, interleaved, sectionH, sectionW, stream, invFreq, mscale);
 }
 
 void initializeMRopeCosSin(float* cosSinCache, float* mropePositionIds, float rotaryBaseFrequency, int64_t rotaryDim,
     int64_t rotaryEmbeddingMaxPositions, int64_t batchSize, bool interleaved, int32_t sectionH, int32_t sectionW,
-    cudaStream_t stream)
+    cudaStream_t stream, float const* invFreq, float mscale)
 {
     initializeMRopeCosSinImpl(cosSinCache, mropePositionIds, rotaryBaseFrequency, rotaryDim,
-        rotaryEmbeddingMaxPositions, batchSize, interleaved, sectionH, sectionW, stream);
+        rotaryEmbeddingMaxPositions, batchSize, interleaved, sectionH, sectionW, stream, invFreq, mscale);
 }
 
 void initializeTextOnlyMRopeCosSin(float* cosSinCache, float rotaryBaseFrequency, int64_t rotaryDim,
-    int64_t maxPositions, int64_t batchSize, cudaStream_t stream)
+    int64_t maxPositions, int64_t batchSize, cudaStream_t stream, float const* invFreq, float mscale)
 {
     // When all 3 MRoPE sections (T, H, W) use sequential positions pos[i] = i, the MRoPE
-    // formula reduces to standard RoPE with rotaryScale=1. Reuse initializeNormalRopeCosSin
+    // formula reduces to 1-D RoPE over the same frequencies. Reuse the 1-D initializers
     // to avoid constructing temporary position ID buffers. Initialize one slice and
     // replicate it across batch slots so later runtime reshape([activeBatch, ...]) is valid.
-    initializeNormalRopeCosSin(cosSinCache, rotaryBaseFrequency, 1.0f, 1.0f, static_cast<int32_t>(rotaryDim),
-        static_cast<int32_t>(maxPositions), stream);
+    if (invFreq != nullptr)
+    {
+        initializeYarnCosSin(
+            cosSinCache, invFreq, mscale, static_cast<int32_t>(rotaryDim), static_cast<int32_t>(maxPositions), stream);
+    }
+    else
+    {
+        initializeNormalRopeCosSin(cosSinCache, rotaryBaseFrequency, 1.0f, 1.0f, static_cast<int32_t>(rotaryDim),
+            static_cast<int32_t>(maxPositions), stream);
+    }
 
     if (batchSize <= 1)
     {

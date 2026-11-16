@@ -17,6 +17,7 @@
 
 #include "runtime/decoding/guidedDecoder.h"
 #include "profiling/nvtx_wrapper.h"
+#include "runtime/decoding/specDecodeUtils.h"
 
 #include "common/checkMacros.h"
 #include "common/cudaUtils.h"
@@ -32,6 +33,7 @@
 #include <chrono>
 #include <cstring>
 #include <nlohmann/json.hpp>
+#include <numeric>
 
 #include <xgrammar/xgrammar.h>
 
@@ -77,6 +79,17 @@ void failSlot(DecodingInferenceContext& context, int32_t slot, char const* what)
     context.slotStreams[slot].terminalReason = FinishReason::kError;
     LOG_ERROR("Request %d: %s; ending the request and keeping the %d tokens generated so far.", slot, what,
         context.currentGenerateLengths[slot]);
+}
+
+void finishCompletedJson(GuidedDecoder& decoder, DecodingInferenceContext& context, int32_t slot)
+{
+    if (context.finishedStates[slot] != 0 || !decoder.hasCompletedJson(slot))
+    {
+        return;
+    }
+    context.finishedStates[slot] = 1;
+    context.slotStreams[slot].terminalReason = FinishReason::kEndId;
+    LOG_DEBUG("Request %d finished after completing its JSON guide.", slot);
 }
 
 } // namespace
@@ -168,6 +181,10 @@ void advanceGuidedDecoding(
             // The mask should have made this impossible.
             failSlot(context, slot, "the grammar rejected a token the mask should have forbidden");
         }
+        else
+        {
+            finishCompletedJson(decoder, context, slot);
+        }
     }
 }
 
@@ -209,8 +226,8 @@ void applyGuidedDecodingMaskForDraftTree(GuidedDecoder& decoder, DecodingInferen
     }
 
     decoder.fillMasksForDraftTree(activeBatchSize, rowsPerSlot, draftTokens, decoder.hostDraftParentIds(),
-        decoder.hostDraftValidCounts(), context.guidedMaskSuppressedPerSlot, context.guidedReasoningEnded,
-        context.guidedUnsatisfiableSlots, stream);
+        decoder.hostDraftValidCounts(), decoder.hostDraftForcedFlags(), context.guidedMaskSuppressedPerSlot,
+        context.guidedReasoningEnded, context.guidedUnsatisfiableSlots, stream);
 
     for (auto const slot : context.guidedUnsatisfiableSlots)
     {
@@ -241,6 +258,10 @@ void advanceGuidedDecodingForCommitted(GuidedDecoder& decoder, DecodingInference
                 context.guidedReasoningEnded[static_cast<size_t>(slot)]))
         {
             failSlot(context, slot, "the grammar rejected a token the mask should have forbidden");
+        }
+        else
+        {
+            finishCompletedJson(decoder, context, slot);
         }
     }
 }
@@ -539,7 +560,16 @@ struct GuidedDecoder::Impl
     //! expensive to pay for runs that never use guided decoding.
     std::optional<xgrammar::TokenizerInfo> tokenizerInfo;
     std::optional<xgrammar::GrammarCompiler> compiler;
-    std::vector<std::optional<xgrammar::GrammarMatcher>> matchers;
+    struct SlotGrammar
+    {
+        xgrammar::GrammarMatcher matcher;
+        bool finishOnCompletion; //!< JSON object or schema: the response ends once the value is closed
+    };
+    std::vector<std::optional<SlotGrammar>> slots;
+    std::vector<std::optional<SlotGrammar>> compactedSlots; //!< compactSlots scratch, sized in initialize
+    std::vector<int32_t> stopTokenIds;                      //!< Output space; set with tokenizerInfo
+    //! One mask row for the completion check, apart from hostBitmask rows staged for upload.
+    std::vector<int32_t> completionBitmask;
 
     Tensor deviceBitmask;      //!< [maxRows, bitmaskSize] the mask the apply kernel reads
     Tensor deviceRowNeedsMask; //!< [maxRows] per-row flag; the kernel leaves a zeroed row alone
@@ -551,18 +581,79 @@ struct GuidedDecoder::Impl
     //! the event is blocking-sync because that wait spans the drafting forwards.
     Tensor hostDraftTokens;              //!< [batch, rowsPerSlot] node tokens, full vocabulary
     Tensor hostDraftParentIds;           //!< Tree only: [batch, rowsPerSlot] parent index; -1 at root/padding
-    Tensor hostDraftValidCounts;         //!< Tree only: [batch] nodes actually built; later rows are padding
+    Tensor hostDraftValidCounts;         //!< [batch] nodes actually built; later rows are padding
+    Tensor hostDraftForcedFlags;         //!< [batch, rowsPerSlot] 1 on a grafted forced node
     bool draftIsTree{false};             //!< Whether this step's draft geometry is a tree
-    bool draftHasValidCounts{false};     //!< Whether the tree builder reports a node count at all
+    bool draftHasValidCounts{false};     //!< Whether this step's draft reports a node count at all
+    bool draftHasForcedFlags{false};     //!< Whether this step's draft carries grafted forced nodes
     cudaEvent_t draftCopyReady{nullptr}; //!< Signals that the copy has landed
     bool draftCopyPending{false};        //!< A copy is in flight; guards against a stale event
 
     std::vector<int32_t> firstChild;  //!< [rowsPerSlot] lowest-numbered child, or -1 for a leaf
     std::vector<int32_t> nextSibling; //!< [rowsPerSlot] next child of the same parent, or -1
 
+    //! [outputVocabSize] 1 when another output token has this token's piece as a strict prefix.
+    //! Built by prepareJumpForward(), or on first use.
+    std::vector<int8_t> extendable;
+
+    //! One idToPiece per output-vocabulary entry, in output-space order.
+    std::vector<std::string> outputVocabPieces() const;
     void ensureCompiler();
+    void buildExtendableTable(std::vector<std::string> const& pieces);
+    void ensureExtendableTable();
     xgrammar::CompiledGrammar compile(GuidedDecodingParams const& params);
 };
+
+std::vector<std::string> GuidedDecoder::Impl::outputVocabPieces() const
+{
+    ELLM_CHECK(tokenizer != nullptr, "GuidedDecoder used before initialize()");
+    // Null when the engine does not prune; output space is then the identity.
+    int32_t const* const outputToFull = outputToFullVocab.dataPointer<int32_t>();
+    std::vector<std::string> pieces(static_cast<size_t>(outputVocabSize));
+    for (int32_t outputId = 0; outputId < outputVocabSize; ++outputId)
+    {
+        int32_t const fullId = hasReducedVocab ? outputToFull[outputId] : outputId;
+        pieces[static_cast<size_t>(outputId)] = tokenizer->idToPiece(fullId, /*skipSpecialTokens=*/false);
+    }
+    return pieces;
+}
+
+void GuidedDecoder::Impl::ensureExtendableTable()
+{
+    if (extendable.empty())
+    {
+        buildExtendableTable(outputVocabPieces());
+    }
+}
+
+void GuidedDecoder::Impl::buildExtendableTable(std::vector<std::string> const& pieces)
+{
+    std::vector<int32_t> order(pieces.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&pieces](int32_t lhs, int32_t rhs) {
+        return pieces[static_cast<size_t>(lhs)] < pieces[static_cast<size_t>(rhs)];
+    });
+
+    // In sorted order every string that starts with a piece follows it directly, after any
+    // duplicates of the piece itself.
+    extendable.assign(pieces.size(), 0);
+    for (size_t i = 0; i < order.size();)
+    {
+        std::string const& piece = pieces[static_cast<size_t>(order[i])];
+        size_t next = i + 1;
+        while (next < order.size() && pieces[static_cast<size_t>(order[next])] == piece)
+        {
+            ++next;
+        }
+        bool const extended
+            = next < order.size() && pieces[static_cast<size_t>(order[next])].compare(0, piece.size(), piece) == 0;
+        for (size_t j = i; j < next; ++j)
+        {
+            extendable[static_cast<size_t>(order[j])] = extended ? 1 : 0;
+        }
+        i = next;
+    }
+}
 
 void GuidedDecoder::Impl::ensureCompiler()
 {
@@ -570,22 +661,14 @@ void GuidedDecoder::Impl::ensureCompiler()
     {
         return;
     }
-    ELLM_CHECK(tokenizer != nullptr, "GuidedDecoder used before initialize()");
-
     auto const start = std::chrono::steady_clock::now();
 
-    // Null when the engine does not prune; output space is then the identity.
+    std::vector<std::string> const encodedVocab = outputVocabPieces();
     int32_t const* const outputToFull = outputToFullVocab.dataPointer<int32_t>();
-    std::vector<std::string> encodedVocab(static_cast<size_t>(outputVocabSize));
-    for (int32_t outputId = 0; outputId < outputVocabSize; ++outputId)
-    {
-        int32_t const fullId = hasReducedVocab ? outputToFull[outputId] : outputId;
-        encodedVocab[static_cast<size_t>(outputId)] = tokenizer->idToPiece(fullId, /*skipSpecialTokens=*/false);
-    }
 
     // Must come from the same source the runtime uses to detect EOS; XGrammar's own
     // detection guesses by name and gets it wrong.
-    std::vector<int32_t> stopTokenIds;
+    stopTokenIds.clear();
     for (auto const fullEosId : tokenizer->getEosIds())
     {
         int32_t outputId = static_cast<int32_t>(fullEosId);
@@ -628,20 +711,22 @@ void GuidedDecoder::Impl::ensureCompiler()
 
 xgrammar::CompiledGrammar GuidedDecoder::Impl::compile(GuidedDecodingParams const& params)
 {
-    // Pinned rather than left to defaults: any_whitespace keeps the newlines a model emits
-    // after </think> legal, strict_mode forbids properties the schema does not mention.
+    // Pinned rather than left to defaults: any_whitespace keeps readable JSON legal, strict_mode forbids
+    // unmentioned properties, and max_whitespace_cnt stops greedy decoding looping on whitespace; it caps
+    // each whitespace run, newline and indentation together, so it must exceed the deepest indentation.
     constexpr bool kANY_WHITESPACE = true;
     constexpr bool kSTRICT_MODE = true;
+    constexpr int kMAX_WHITESPACE_COUNT = 64;
 
     switch (params.type)
     {
     case GuideType::kJsonObject:
         // Not CompileBuiltinJSONGrammar(): that admits any JSON value, not just an object.
         return compiler->CompileJSONSchema(
-            R"({"type":"object"})", kANY_WHITESPACE, std::nullopt, std::nullopt, kSTRICT_MODE, std::nullopt);
+            R"({"type":"object"})", kANY_WHITESPACE, std::nullopt, std::nullopt, kSTRICT_MODE, kMAX_WHITESPACE_COUNT);
     case GuideType::kJsonSchema:
         return compiler->CompileJSONSchema(
-            params.guide, kANY_WHITESPACE, std::nullopt, std::nullopt, kSTRICT_MODE, std::nullopt);
+            params.guide, kANY_WHITESPACE, std::nullopt, std::nullopt, kSTRICT_MODE, kMAX_WHITESPACE_COUNT);
     case GuideType::kRegex: return compiler->CompileRegex(params.guide);
     case GuideType::kEbnf: return compiler->CompileGrammar(params.guide, "root");
     case GuideType::kStructuralTag: return compiler->CompileStructuralTag(params.guide);
@@ -686,8 +771,10 @@ void GuidedDecoder::initialize(int32_t maxBatchSize, int32_t maxRowsPerSlot, int
     mImpl->maxBatchSize = maxBatchSize;
     mImpl->outputVocabSize = outputVocabSize;
     mImpl->bitmaskSize = xgrammar::GetBitmaskSize(outputVocabSize);
+    mImpl->completionBitmask.assign(static_cast<size_t>(mImpl->bitmaskSize), 0);
     mImpl->fullVocabSize = fullVocabSize;
-    mImpl->matchers.assign(static_cast<size_t>(maxBatchSize), std::nullopt);
+    mImpl->slots.assign(static_cast<size_t>(maxBatchSize), std::nullopt);
+    mImpl->compactedSlots.assign(static_cast<size_t>(maxBatchSize), std::nullopt);
     mImpl->warnedUnmappable.assign(static_cast<size_t>(maxBatchSize), 0);
     mImpl->reasoningEnd = reasoningEndMarkers(*tokenizer);
 
@@ -698,7 +785,7 @@ void GuidedDecoder::initialize(int32_t maxBatchSize, int32_t maxRowsPerSlot, int
         ELLM_CHECK(entries >= static_cast<size_t>(outputVocabSize),
             "Reduced vocabulary map is smaller than the engine output vocabulary");
         mImpl->outputToFullVocab = Tensor(
-            {outputVocabSize}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "GuidedDecoder::outputToFullVocab");
+            {outputVocabSize}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "GuidedDecoder::outputToFullVocab");
         CUDA_CHECK(cudaMemcpyAsync(mImpl->outputToFullVocab.rawPointer(), reducedToFullVocabMap.rawPointer(),
             static_cast<size_t>(outputVocabSize) * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
         CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -723,26 +810,28 @@ void GuidedDecoder::initialize(int32_t maxBatchSize, int32_t maxRowsPerSlot, int
     // verify node, so the buffers are sized by the deployment's verify size.
     int32_t const maxRows = maxBatchSize * maxRowsPerSlot;
     mImpl->maxRows = maxRows;
-    mImpl->deviceBitmask
-        = Tensor({maxRows, mImpl->bitmaskSize}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "GuidedDecoder::bitmask");
+    mImpl->deviceBitmask = Tensor(
+        {maxRows, mImpl->bitmaskSize}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "GuidedDecoder::bitmask");
     mImpl->deviceRowNeedsMask
-        = Tensor({maxRows}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "GuidedDecoder::rowNeedsMask");
+        = Tensor({maxRows}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "GuidedDecoder::rowNeedsMask");
     mImpl->hostBitmask = Tensor(
-        {maxRows, mImpl->bitmaskSize}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "GuidedDecoder::hostBitmask");
+        {maxRows, mImpl->bitmaskSize}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "GuidedDecoder::hostBitmask");
     mImpl->hostRowNeedsMask
-        = Tensor({maxRows}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "GuidedDecoder::hostRowNeedsMask");
+        = Tensor({maxRows}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "GuidedDecoder::hostRowNeedsMask");
     std::memset(mImpl->hostBitmask.rawPointer(), 0,
         static_cast<size_t>(maxRows) * static_cast<size_t>(mImpl->bitmaskSize) * sizeof(int32_t));
     std::memset(mImpl->hostRowNeedsMask.rawPointer(), 0, static_cast<size_t>(maxRows) * sizeof(int32_t));
 
     if (maxRowsPerSlot > 1)
     {
-        mImpl->hostDraftTokens = Tensor({maxBatchSize, maxRowsPerSlot}, DeviceType::kCPU, nvinfer1::DataType::kINT32,
+        mImpl->hostDraftTokens = Tensor({maxBatchSize, maxRowsPerSlot}, DeviceType::kCPU, trt_edgellm::DataType::kINT32,
             "GuidedDecoder::hostDraftTokens");
-        mImpl->hostDraftParentIds = Tensor({maxBatchSize, maxRowsPerSlot}, DeviceType::kCPU, nvinfer1::DataType::kINT32,
-            "GuidedDecoder::hostDraftParentIds");
+        mImpl->hostDraftParentIds = Tensor({maxBatchSize, maxRowsPerSlot}, DeviceType::kCPU,
+            trt_edgellm::DataType::kINT32, "GuidedDecoder::hostDraftParentIds");
         mImpl->hostDraftValidCounts = Tensor(
-            {maxBatchSize}, DeviceType::kCPU, nvinfer1::DataType::kINT32, "GuidedDecoder::hostDraftValidCounts");
+            {maxBatchSize}, DeviceType::kCPU, trt_edgellm::DataType::kINT32, "GuidedDecoder::hostDraftValidCounts");
+        mImpl->hostDraftForcedFlags = Tensor({maxBatchSize, maxRowsPerSlot}, DeviceType::kCPU,
+            trt_edgellm::DataType::kINT8, "GuidedDecoder::hostDraftForcedFlags");
         mImpl->firstChild.resize(static_cast<size_t>(maxRowsPerSlot));
         mImpl->nextSibling.resize(static_cast<size_t>(maxRowsPerSlot));
         CUDA_CHECK(cudaEventCreateWithFlags(&mImpl->draftCopyReady, cudaEventDisableTiming | cudaEventBlockingSync));
@@ -757,8 +846,8 @@ void GuidedDecoder::initialize(int32_t maxBatchSize, int32_t maxRowsPerSlot, int
 
 bool GuidedDecoder::prepareSlot(int32_t slot, GuidedDecodingParams const& params, std::string& failReason)
 {
-    ELLM_CHECK(slot >= 0 && slot < static_cast<int32_t>(mImpl->matchers.size()),
-        "GuidedDecoder::prepareSlot slot out of range");
+    ELLM_CHECK(
+        slot >= 0 && slot < static_cast<int32_t>(mImpl->slots.size()), "GuidedDecoder::prepareSlot slot out of range");
 
     // The only input-driven step in this class, so the only one that catches: a malformed
     // schema must fail this slot, not the process.
@@ -773,7 +862,8 @@ bool GuidedDecoder::prepareSlot(int32_t slot, GuidedDecodingParams const& params
             = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         int64_t const cacheAfter = mImpl->compiler->GetCacheSizeBytes();
 
-        mImpl->matchers[static_cast<size_t>(slot)].emplace(compiledGrammar);
+        mImpl->slots[static_cast<size_t>(slot)].emplace(Impl::SlotGrammar{xgrammar::GrammarMatcher(compiledGrammar),
+            params.type == GuideType::kJsonObject || params.type == GuideType::kJsonSchema});
         mImpl->warnedUnmappable[static_cast<size_t>(slot)] = 0;
 
         LOG_INFO("Guided decoding: compiled %s for slot %d in %.2f ms (cache %s, now %.1f KB)",
@@ -784,51 +874,79 @@ bool GuidedDecoder::prepareSlot(int32_t slot, GuidedDecodingParams const& params
     catch (std::exception const& e)
     {
         failReason = e.what();
-        mImpl->matchers[static_cast<size_t>(slot)].reset();
+        mImpl->slots[static_cast<size_t>(slot)].reset();
         return false;
     }
 }
 
 void GuidedDecoder::reset()
 {
-    std::fill(mImpl->matchers.begin(), mImpl->matchers.end(), std::nullopt);
+    std::fill(mImpl->slots.begin(), mImpl->slots.end(), std::nullopt);
 }
 
 void GuidedDecoder::compactSlots(std::vector<int32_t> const& batchMapping)
 {
-    if (mImpl->matchers.empty())
+    if (mImpl->slots.empty())
     {
         return;
     }
     // Missing this leaves slot i pointing at another request's matcher: the constraint
     // migrates silently, and the terminated-matcher gate starts reading the wrong object.
-    std::vector<std::optional<xgrammar::GrammarMatcher>> compacted(mImpl->matchers.size(), std::nullopt);
-    for (size_t oldSlot = 0; oldSlot < batchMapping.size() && oldSlot < mImpl->matchers.size(); ++oldSlot)
+    std::fill(mImpl->compactedSlots.begin(), mImpl->compactedSlots.end(), std::nullopt);
+    for (size_t oldSlot = 0; oldSlot < batchMapping.size() && oldSlot < mImpl->slots.size(); ++oldSlot)
     {
         int32_t const newSlot = batchMapping[oldSlot];
-        if (newSlot >= 0 && newSlot < static_cast<int32_t>(compacted.size()))
+        if (newSlot >= 0 && newSlot < static_cast<int32_t>(mImpl->compactedSlots.size()))
         {
-            compacted[static_cast<size_t>(newSlot)] = std::move(mImpl->matchers[oldSlot]);
+            mImpl->compactedSlots[static_cast<size_t>(newSlot)] = std::move(mImpl->slots[oldSlot]);
         }
     }
-    mImpl->matchers = std::move(compacted);
+    mImpl->slots.swap(mImpl->compactedSlots);
+    std::fill(mImpl->compactedSlots.begin(), mImpl->compactedSlots.end(), std::nullopt);
 }
 
 bool GuidedDecoder::hasAnyGrammar() const noexcept
 {
-    return std::any_of(
-        mImpl->matchers.begin(), mImpl->matchers.end(), [](auto const& matcher) { return matcher.has_value(); });
+    return std::any_of(mImpl->slots.begin(), mImpl->slots.end(), [](auto const& slot) { return slot.has_value(); });
 }
 
 bool GuidedDecoder::hasGrammar(int32_t slot) const noexcept
 {
-    return slot >= 0 && slot < static_cast<int32_t>(mImpl->matchers.size())
-        && mImpl->matchers[static_cast<size_t>(slot)].has_value();
+    return slot >= 0 && slot < static_cast<int32_t>(mImpl->slots.size())
+        && mImpl->slots[static_cast<size_t>(slot)].has_value();
 }
 
 bool GuidedDecoder::isTerminated(int32_t slot) const noexcept
 {
-    return hasGrammar(slot) && mImpl->matchers[static_cast<size_t>(slot)]->IsTerminated();
+    return hasGrammar(slot) && mImpl->slots[static_cast<size_t>(slot)]->matcher.IsTerminated();
+}
+
+bool GuidedDecoder::hasCompletedJson(int32_t slot)
+{
+    if (!hasGrammar(slot) || !mImpl->slots[static_cast<size_t>(slot)]->finishOnCompletion)
+    {
+        return false;
+    }
+    auto& matcher = mImpl->slots[static_cast<size_t>(slot)]->matcher;
+    if (matcher.IsTerminated() || !matcher.IsCompleted())
+    {
+        return false;
+    }
+    // A complete value may still grow, so finish only when nothing but a stop token fits.
+    std::array<int64_t, 2> shape{1, static_cast<int64_t>(mImpl->bitmaskSize)};
+    DLTensor bitmaskTensor{};
+    bitmaskTensor.data = mImpl->completionBitmask.data();
+    bitmaskTensor.device = DLDevice{kDLCPU, 0};
+    bitmaskTensor.ndim = 2;
+    bitmaskTensor.dtype = xgrammar::GetBitmaskDLType();
+    bitmaskTensor.shape = shape.data();
+    matcher.FillNextTokenBitmask(&bitmaskTensor, 0);
+    for (int32_t const stopId : mImpl->stopTokenIds)
+    {
+        mImpl->completionBitmask[static_cast<size_t>(stopId >> 5)] &= ~static_cast<int32_t>(1U << (stopId & 31));
+    }
+    return std::all_of(
+        mImpl->completionBitmask.begin(), mImpl->completionBitmask.end(), [](int32_t word) { return word == 0; });
 }
 
 bool GuidedDecoder::advance(int32_t slot, int32_t outputSpaceToken)
@@ -837,7 +955,7 @@ bool GuidedDecoder::advance(int32_t slot, int32_t outputSpaceToken)
     {
         return true;
     }
-    auto& matcher = *mImpl->matchers[static_cast<size_t>(slot)];
+    auto& matcher = mImpl->slots[static_cast<size_t>(slot)]->matcher;
     if (matcher.IsTerminated())
     {
         return true; // Feeding a terminated matcher only produces warnings.
@@ -885,10 +1003,10 @@ void GuidedDecoder::fillMasks(int32_t activeBatchSize, int32_t rowsPerSlot,
             && maskSuppressedPerSlot[static_cast<size_t>(slot)] != 0;
 
         // Both gates matter and they are independent. A request can finish on max-length,
-        // a stop string, or cancellation while its grammar is still mid-rule; and under
-        // EDGELLM_IGNORE_EOS the matcher terminates while the request keeps going.
+        // a stop string, or cancellation while its grammar is still mid-rule; when EOS
+        // is ignored, the matcher terminates while the request keeps going.
         // Filling a mask after termination is a hard error in XGrammar, not a no-op.
-        if (!hasGrammar(slot) || suppressed || mImpl->matchers[static_cast<size_t>(slot)]->IsTerminated())
+        if (!hasGrammar(slot) || suppressed || mImpl->slots[static_cast<size_t>(slot)]->matcher.IsTerminated())
         {
             leaveSlotUnconstrained(slot);
             continue;
@@ -899,7 +1017,7 @@ void GuidedDecoder::fillMasks(int32_t activeBatchSize, int32_t rowsPerSlot,
         for (int32_t row = 0; row < rowsPerSlot && !unsatisfiable; ++row)
         {
             int32_t const rowId = slot * rowsPerSlot + row;
-            mImpl->matchers[static_cast<size_t>(slot)]->FillNextTokenBitmask(&bitmaskTensor, rowId);
+            mImpl->slots[static_cast<size_t>(slot)]->matcher.FillNextTokenBitmask(&bitmaskTensor, rowId);
             rowNeedsMask[rowId] = 1;
 
             // All-zero means the grammar admits nothing; reachable only with a pruned
@@ -939,47 +1057,51 @@ void GuidedDecoder::fillMasks(int32_t activeBatchSize, int32_t rowsPerSlot,
         cudaMemcpyHostToDevice, stream));
 }
 
-void GuidedDecoder::captureDraftChains(
-    Tensor const& draftChainIds, int32_t activeBatchSize, int32_t rowsPerSlot, cudaStream_t stream)
+void GuidedDecoder::captureDraft(SpecVerifyInputs const& inputs, cudaStream_t stream)
 {
-    if (activeBatchSize <= 0 || rowsPerSlot <= 0 || mImpl->hostDraftTokens.isEmpty())
+    if (inputs.requestCount <= 0 || inputs.tokensPerRequest <= 0 || mImpl->hostDraftTokens.isEmpty())
     {
         return;
     }
-    auto const elements = static_cast<size_t>(activeBatchSize) * static_cast<size_t>(rowsPerSlot);
-    ELLM_CHECK(static_cast<size_t>(draftChainIds.getShape().volume()) >= elements,
-        "GuidedDecoder::captureDraftChains was given fewer chain entries than the batch needs");
-    CUDA_CHECK(cudaMemcpyAsync(mImpl->hostDraftTokens.rawPointer(), draftChainIds.rawPointer(),
-        elements * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
-    mImpl->draftIsTree = false;
-    CUDA_CHECK(cudaEventRecord(mImpl->draftCopyReady, stream));
-    mImpl->draftCopyPending = true;
-}
-
-void GuidedDecoder::captureDraftTree(Tensor const& nodeTokenIds, Tensor const& parentIds,
-    OptionalInputTensor const& validCounts, int32_t activeBatchSize, int32_t rowsPerSlot, cudaStream_t stream)
-{
-    if (activeBatchSize <= 0 || rowsPerSlot <= 0 || mImpl->hostDraftTokens.isEmpty())
+    auto const elements = static_cast<size_t>(inputs.requestCount) * static_cast<size_t>(inputs.tokensPerRequest);
+    bool const tree = inputs.layout == SpecVerifyLayout::kTree;
+    ELLM_CHECK(static_cast<size_t>(inputs.tokenIds.getShape().volume()) >= elements,
+        "GuidedDecoder::captureDraft was given fewer tokens than the batch needs");
+    ELLM_CHECK(elements <= static_cast<size_t>(mImpl->maxRows) && inputs.requestCount <= mImpl->maxBatchSize,
+        "GuidedDecoder::captureDraft exceeds allocated capacity");
+    if (tree)
     {
-        return;
+        ELLM_CHECK(
+            inputs.parentIds != nullptr && static_cast<size_t>(inputs.parentIds->getShape().volume()) >= elements,
+            "GuidedDecoder::captureDraft was given incomplete tree topology");
     }
-    auto const elements = static_cast<size_t>(activeBatchSize) * static_cast<size_t>(rowsPerSlot);
-    ELLM_CHECK(static_cast<size_t>(nodeTokenIds.getShape().volume()) >= elements
-            && static_cast<size_t>(parentIds.getShape().volume()) >= elements
-            && (!validCounts.has_value()
-                || static_cast<size_t>(validCounts->get().getShape().volume()) >= static_cast<size_t>(activeBatchSize)),
-        "GuidedDecoder::captureDraftTree was given fewer tree entries than the batch needs");
-    CUDA_CHECK(cudaMemcpyAsync(mImpl->hostDraftTokens.rawPointer(), nodeTokenIds.rawPointer(),
+    ELLM_CHECK(inputs.executionValidTokenCounts == nullptr
+            || static_cast<size_t>(inputs.executionValidTokenCounts->getShape().volume())
+                >= static_cast<size_t>(inputs.requestCount),
+        "GuidedDecoder::captureDraft was given fewer node counts than the batch needs");
+    CUDA_CHECK(cudaMemcpyAsync(mImpl->hostDraftTokens.rawPointer(), inputs.tokenIds.rawPointer(),
         elements * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaMemcpyAsync(mImpl->hostDraftParentIds.rawPointer(), parentIds.rawPointer(),
-        elements * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
-    mImpl->draftHasValidCounts = validCounts.has_value();
-    if (validCounts.has_value())
+    mImpl->draftIsTree = tree;
+    mImpl->draftHasValidCounts = inputs.executionValidTokenCounts != nullptr;
+    mImpl->draftHasForcedFlags = inputs.forcedFlags != nullptr;
+    if (tree)
     {
-        CUDA_CHECK(cudaMemcpyAsync(mImpl->hostDraftValidCounts.rawPointer(), validCounts->get().rawPointer(),
-            static_cast<size_t>(activeBatchSize) * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaMemcpyAsync(mImpl->hostDraftParentIds.rawPointer(), inputs.parentIds->rawPointer(),
+            elements * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
     }
-    mImpl->draftIsTree = true;
+    if (mImpl->draftHasValidCounts)
+    {
+        CUDA_CHECK(
+            cudaMemcpyAsync(mImpl->hostDraftValidCounts.rawPointer(), inputs.executionValidTokenCounts->rawPointer(),
+                static_cast<size_t>(inputs.requestCount) * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
+    }
+    if (mImpl->draftHasForcedFlags)
+    {
+        ELLM_CHECK(static_cast<size_t>(inputs.forcedFlags->getShape().volume()) >= elements,
+            "GuidedDecoder::captureDraft was given fewer forced flags than the batch needs");
+        CUDA_CHECK(cudaMemcpyAsync(mImpl->hostDraftForcedFlags.rawPointer(), inputs.forcedFlags->rawPointer(),
+            elements * sizeof(int8_t), cudaMemcpyDeviceToHost, stream));
+    }
     CUDA_CHECK(cudaEventRecord(mImpl->draftCopyReady, stream));
     mImpl->draftCopyPending = true;
 }
@@ -996,8 +1118,12 @@ int32_t const* GuidedDecoder::hostDraftParentIds() const
 
 int32_t const* GuidedDecoder::hostDraftValidCounts() const
 {
-    return mImpl->draftIsTree && mImpl->draftHasValidCounts ? mImpl->hostDraftValidCounts.dataPointer<int32_t>()
-                                                            : nullptr;
+    return mImpl->draftHasValidCounts ? mImpl->hostDraftValidCounts.dataPointer<int32_t>() : nullptr;
+}
+
+int8_t const* GuidedDecoder::hostDraftForcedFlags() const
+{
+    return mImpl->draftHasForcedFlags ? mImpl->hostDraftForcedFlags.dataPointer<int8_t>() : nullptr;
 }
 
 void GuidedDecoder::waitForDraftTopology()
@@ -1010,10 +1136,15 @@ void GuidedDecoder::waitForDraftTopology()
     mImpl->draftCopyPending = false;
 }
 
+bool GuidedDecoder::draftCopyPending() const noexcept
+{
+    return mImpl->draftCopyPending;
+}
+
 void GuidedDecoder::fillMasksForDraftTree(int32_t activeBatchSize, int32_t rowsPerSlot,
     int32_t const* draftTokensFullSpace, int32_t const* parentIds, int32_t const* validCounts,
-    std::vector<int8_t> const& slotSuppressed, std::vector<int8_t> const& reasoningEndedPerSlot,
-    std::vector<int32_t>& unsatisfiableSlots, cudaStream_t stream)
+    int8_t const* forcedFlags, std::vector<int8_t> const& slotSuppressed,
+    std::vector<int8_t> const& reasoningEndedPerSlot, std::vector<int32_t>& unsatisfiableSlots, cudaStream_t stream)
 {
     unsatisfiableSlots.clear();
     if (activeBatchSize <= 0 || rowsPerSlot <= 0)
@@ -1053,14 +1184,14 @@ void GuidedDecoder::fillMasksForDraftTree(int32_t activeBatchSize, int32_t rowsP
         bool const suppressed
             = slot < static_cast<int32_t>(slotSuppressed.size()) && slotSuppressed[static_cast<size_t>(slot)] != 0;
         // Both gates are independent, and filling past termination aborts inside XGrammar.
-        if (!hasGrammar(slot) || suppressed || mImpl->matchers[static_cast<size_t>(slot)]->IsTerminated())
+        if (!hasGrammar(slot) || suppressed || mImpl->slots[static_cast<size_t>(slot)]->matcher.IsTerminated())
         {
             continue;
         }
-        auto& matcher = *mImpl->matchers[static_cast<size_t>(slot)];
+        auto& matcher = mImpl->slots[static_cast<size_t>(slot)]->matcher;
 
-        // A chain is the tree with `parent[i] == i - 1` and no padding, so one walk covers both
-        // geometries and the chain path cannot drift away from the tree path.
+        // A chain is the tree with `parent[i] == i - 1`, so one walk covers both geometries and
+        // the chain path cannot drift away from the tree path.
         int32_t nodeCount = rowsPerSlot;
         if (validCounts != nullptr)
         {
@@ -1096,8 +1227,26 @@ void GuidedDecoder::fillMasksForDraftTree(int32_t activeBatchSize, int32_t rowsP
         bool const rootReasoningEnded = slot < static_cast<int32_t>(reasoningEndedPerSlot.size())
             && reasoningEndedPerSlot[static_cast<size_t>(slot)] != 0;
 
+        // A forced child replaces its parent's prediction, so the parent's row needs no mask and no sibling is
+        // reachable. The chain was validated when it was planned.
+        auto forcedChildOf = [&](int32_t node) -> int32_t {
+            if (forcedFlags == nullptr)
+            {
+                return -1;
+            }
+            for (int32_t child = firstChild[node]; child >= 0; child = nextSibling[child])
+            {
+                if (forcedFlags[base + child] != 0)
+                {
+                    return child;
+                }
+            }
+            return -1;
+        };
+        int32_t const rootForcedChild = forcedChildOf(0);
+
         // Node 0 is the token the previous step committed; the matcher already consumed it.
-        if (rootReasoningEnded)
+        if (rootReasoningEnded && rootForcedChild < 0)
         {
             matcher.FillNextTokenBitmask(&bitmaskTensor, base);
             if (!mImpl->rowHasAnyToken(base))
@@ -1113,7 +1262,7 @@ void GuidedDecoder::fillMasksForDraftTree(int32_t activeBatchSize, int32_t rowsP
 
         // Entered with the matcher standing where this node's parent left it, and left with it
         // standing there again, so a rejected branch costs its siblings nothing.
-        auto visit = [&](auto&& self, int32_t node, bool reasoningEnded) -> void {
+        auto visit = [&](auto&& self, int32_t node, bool reasoningEnded, bool forced) -> void {
             int32_t const row = base + node;
             int32_t const fullId = draftTokensFullSpace[row];
 
@@ -1135,7 +1284,7 @@ void GuidedDecoder::fillMasksForDraftTree(int32_t activeBatchSize, int32_t rowsP
                 }
                 for (int32_t child = firstChild[node]; child >= 0; child = nextSibling[child])
                 {
-                    self(self, child, reasoningEnded);
+                    self(self, child, reasoningEnded, false);
                 }
                 return;
             }
@@ -1158,8 +1307,9 @@ void GuidedDecoder::fillMasksForDraftTree(int32_t activeBatchSize, int32_t rowsP
             }
             // The parent's row is always filled and never negative: the walk starts at node 0 or
             // a separator, both of which fill their own row, and a parentless node is never linked.
+            // A forced node's parent row is not filled, and the chain needs no gate.
             int32_t const parentRow = base + (parentIds != nullptr ? parentIds[row] : node - 1);
-            if (!mImpl->rowAllows(parentRow, outputId))
+            if (!forced && !mImpl->rowAllows(parentRow, outputId))
             {
                 return; // Grammar refuses this node: it and its subtree stay unmasked.
             }
@@ -1169,20 +1319,35 @@ void GuidedDecoder::fillMasksForDraftTree(int32_t activeBatchSize, int32_t rowsP
             }
             if (!matcher.IsTerminated()) // Filling a mask past termination is a hard error, not a no-op.
             {
-                matcher.FillNextTokenBitmask(&bitmaskTensor, row);
-                rowNeedsMask[row] = 1;
-                anyRowNeedsMask = true;
-                for (int32_t child = firstChild[node]; child >= 0; child = nextSibling[child])
+                int32_t const forcedChild = forcedChildOf(node);
+                if (forcedChild >= 0)
                 {
-                    self(self, child, true);
+                    self(self, forcedChild, true, true);
+                }
+                else
+                {
+                    matcher.FillNextTokenBitmask(&bitmaskTensor, row);
+                    rowNeedsMask[row] = 1;
+                    anyRowNeedsMask = true;
+                    for (int32_t child = firstChild[node]; child >= 0; child = nextSibling[child])
+                    {
+                        self(self, child, true, false);
+                    }
                 }
             }
             matcher.Rollback(1);
         };
 
-        for (int32_t child = firstChild[0]; child >= 0; child = nextSibling[child])
+        if (rootForcedChild >= 0)
         {
-            visit(visit, child, rootReasoningEnded);
+            visit(visit, rootForcedChild, rootReasoningEnded, true);
+        }
+        else
+        {
+            for (int32_t child = firstChild[0]; child >= 0; child = nextSibling[child])
+            {
+                visit(visit, child, rootReasoningEnded, false);
+            }
         }
 
         // The walk is speculative: the grammar advances only once the step's tokens are known
@@ -1207,7 +1372,7 @@ bool GuidedDecoder::advanceCommitted(
     {
         return true;
     }
-    auto& matcher = *mImpl->matchers[static_cast<size_t>(slot)];
+    auto& matcher = mImpl->slots[static_cast<size_t>(slot)]->matcher;
     for (int32_t i = 0; i < count; ++i)
     {
         int32_t const fullId = committedFullSpace[i];
@@ -1234,6 +1399,90 @@ bool GuidedDecoder::advanceCommitted(
         }
     }
     return true;
+}
+
+std::string GuidedDecoder::forcedContinuation(int32_t slot) const
+{
+    if (!hasGrammar(slot))
+    {
+        return {};
+    }
+    auto& matcher = mImpl->slots[static_cast<size_t>(slot)]->matcher;
+    // Asking a terminated matcher is a hard error in XGrammar; a complete root rule forces nothing.
+    if (matcher.IsTerminated() || matcher.IsCompleted())
+    {
+        return {};
+    }
+    return matcher.FindJumpForwardString();
+}
+
+int32_t GuidedDecoder::acceptForced(int32_t slot, int32_t const* outputSpaceIds, int32_t count)
+{
+    if (!hasGrammar(slot) || count <= 0)
+    {
+        return 0;
+    }
+    auto& matcher = mImpl->slots[static_cast<size_t>(slot)]->matcher;
+    int32_t accepted = 0;
+    while (accepted < count && !matcher.IsTerminated() && matcher.AcceptToken(outputSpaceIds[accepted]))
+    {
+        ++accepted;
+    }
+    return accepted;
+}
+
+void GuidedDecoder::rollback(int32_t slot, int32_t count)
+{
+    if (!hasGrammar(slot) || count <= 0)
+    {
+        return;
+    }
+    mImpl->slots[static_cast<size_t>(slot)]->matcher.Rollback(count);
+}
+
+bool GuidedDecoder::completesGrammar(int32_t slot, std::string const& text) const
+{
+    if (!hasGrammar(slot))
+    {
+        return false;
+    }
+    auto& matcher = mImpl->slots[static_cast<size_t>(slot)]->matcher;
+    if (matcher.IsTerminated())
+    {
+        return false;
+    }
+    if (text.empty())
+    {
+        return matcher.IsCompleted();
+    }
+    // The whole string is one rollback step, and a rejected string leaves no trace.
+    if (!matcher.AcceptString(text))
+    {
+        return false;
+    }
+    bool const completed = matcher.IsCompleted();
+    matcher.Rollback(1);
+    return completed;
+}
+
+int32_t GuidedDecoder::toOutputSpace(int32_t fullVocabId) const
+{
+    return mImpl->toOutputSpace(fullVocabId);
+}
+
+void GuidedDecoder::prepareJumpForward()
+{
+    mImpl->ensureExtendableTable();
+}
+
+bool GuidedDecoder::isExtendable(int32_t outputSpaceId) const
+{
+    if (outputSpaceId < 0 || outputSpaceId >= mImpl->outputVocabSize)
+    {
+        return true;
+    }
+    mImpl->ensureExtendableTable();
+    return mImpl->extendable[static_cast<size_t>(outputSpaceId)] != 0;
 }
 
 void GuidedDecoder::applyMask(Tensor& logits, int32_t activeBatchSize, int32_t rowsPerSlot, cudaStream_t stream)

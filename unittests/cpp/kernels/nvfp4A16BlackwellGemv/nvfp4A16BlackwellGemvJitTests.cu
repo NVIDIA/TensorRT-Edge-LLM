@@ -17,6 +17,7 @@
 
 #include "common/checkMacros.h"
 #include "kernels/PluginJitKernels/pluginJitCompileCache.h"
+#include "kernels/PluginJitKernels/pluginJitDigest.h"
 #include "kernels/nvfp4A16BlackwellGemv/nvfp4A16BlackwellGemvJitCompiler.h"
 #include "kernels/nvfp4A16BlackwellGemv/nvfp4A16BlackwellGemvJitRunner.h"
 
@@ -32,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -355,7 +357,7 @@ TEST(Nvfp4A16BlackwellGemvJitTest, GenericSemanticKeysRemainShapeSpecific)
     Nvfp4A16BlackwellGemvJitKernel kernel;
     kernel.key = first;
     kernel.cubin = {0x7FU, 0x45U, 0x4CU, 0x46U, 0x01U};
-    kernel.digest = computeNvfp4A16BlackwellGemvJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
+    kernel.digest = computePluginJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
     auto const blob = serializeNvfp4A16BlackwellGemvJitKernel(kernel);
     auto const decoded = deserializeNvfp4A16BlackwellGemvJitKernel(blob.data(), blob.size());
     EXPECT_TRUE(decoded.key == first);
@@ -385,7 +387,7 @@ TEST(Nvfp4A16BlackwellGemvJitTest, BundleRoundTripChecksDigest)
     Nvfp4A16BlackwellGemvJitKernel kernel;
     kernel.key = makeKey(Nvfp4A16BlackwellGemvDataType::kBF16);
     kernel.cubin = {0x7FU, 0x45U, 0x4CU, 0x46U, 0x01U};
-    kernel.digest = computeNvfp4A16BlackwellGemvJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
+    kernel.digest = computePluginJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
     std::vector<uint8_t> blob = serializeNvfp4A16BlackwellGemvJitKernel(kernel);
     Nvfp4A16BlackwellGemvJitKernel const decoded = deserializeNvfp4A16BlackwellGemvJitKernel(blob.data(), blob.size());
     EXPECT_TRUE(decoded.key == kernel.key);
@@ -394,6 +396,54 @@ TEST(Nvfp4A16BlackwellGemvJitTest, BundleRoundTripChecksDigest)
 
     blob.back() ^= 1U;
     EXPECT_THROW(deserializeNvfp4A16BlackwellGemvJitKernel(blob.data(), blob.size()), std::runtime_error);
+}
+
+TEST(Nvfp4A16BlackwellGemvJitTest, RejectsMalformedBundles)
+{
+    Nvfp4A16BlackwellGemvJitKernel kernel;
+    kernel.key = makeKey(Nvfp4A16BlackwellGemvDataType::kHALF);
+    kernel.cubin = {0x7FU, 0x45U, 0x4CU, 0x46U, 0x01U};
+    kernel.digest = computePluginJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
+    std::vector<uint8_t> const blob = serializeNvfp4A16BlackwellGemvJitKernel(kernel);
+    auto const deserialize = [](std::vector<uint8_t> const& bytes) {
+        return deserializeNvfp4A16BlackwellGemvJitKernel(bytes.data(), bytes.size());
+    };
+
+    EXPECT_THROW(deserializeNvfp4A16BlackwellGemvJitKernel(nullptr, 0), std::invalid_argument);
+    std::vector<uint8_t> tampered = blob;
+    tampered[0] ^= 0xFFU; // magic word
+    EXPECT_THROW(deserialize(tampered), std::runtime_error);
+    tampered.assign(blob.begin(), blob.end() - 1); // truncated
+    EXPECT_THROW(deserialize(tampered), std::runtime_error);
+    tampered = blob;
+    tampered.push_back(0U); // trailing byte
+    EXPECT_THROW(deserialize(tampered), std::runtime_error);
+
+    kernel.cubin[0] = 0x00U; // not an ELF image
+    kernel.digest = computePluginJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
+    EXPECT_THROW(serializeNvfp4A16BlackwellGemvJitKernel(kernel), std::invalid_argument);
+}
+
+TEST(Nvfp4A16BlackwellGemvJitTest, RejectsVersionedLayoutBundlesAtTheHeader)
+{
+    Nvfp4A16BlackwellGemvJitKernel kernel;
+    kernel.key = makeKey(Nvfp4A16BlackwellGemvDataType::kHALF);
+    kernel.cubin = {0x7FU, 0x45U, 0x4CU, 0x46U, 0x01U};
+    kernel.digest = computePluginJitDigest(kernel.key, kernel.cubin.data(), kernel.cubin.size());
+    std::vector<uint8_t> const blob = serializeNvfp4A16BlackwellGemvJitKernel(kernel);
+
+    // The previous layout: magic "NVGB", format version 1, then the same record.
+    std::vector<uint8_t> legacy{0x4EU, 0x56U, 0x47U, 0x42U, 0x01U, 0x00U, 0x00U, 0x00U};
+    legacy.insert(legacy.end(), blob.begin() + sizeof(uint32_t), blob.end());
+    try
+    {
+        deserializeNvfp4A16BlackwellGemvJitKernel(legacy.data(), legacy.size());
+        FAIL() << "a versioned-layout bundle must be refused";
+    }
+    catch (std::runtime_error const& error)
+    {
+        EXPECT_NE(std::string(error.what()).find("magic word"), std::string::npos) << error.what();
+    }
 }
 
 TEST(Nvfp4A16BlackwellGemvJitTest, ConcurrentCompileCacheSharesAndRetries)

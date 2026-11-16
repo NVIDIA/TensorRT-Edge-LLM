@@ -31,7 +31,7 @@ def optional_dependencies(extra):
             try:
                 return main(*args, **kwargs)
             except ModuleNotFoundError as exc:
-                known = _dependencies.EXPORT_DEPENDENCIES if extra == "export" else _dependencies.TOOL_DEPENDENCIES
+                known = _dependencies.EXPORT_DEPENDENCIES if extra == "onnx" else _dependencies.TOOL_DEPENDENCIES
                 if exc.name not in known:
                     raise
                 raise SystemExit(

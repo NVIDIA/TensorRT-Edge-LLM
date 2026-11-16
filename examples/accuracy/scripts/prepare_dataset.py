@@ -39,6 +39,7 @@ from typing import Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from example_datasets.aime import convert_aime_dataset
+from example_datasets.alpamayo_driving import convert_physical_ai_av_dataset
 from example_datasets.coco import convert_coco_dataset
 from example_datasets.edgellm_dataset import DatasetConfig
 from example_datasets.gsm8k import convert_gsm8k_dataset
@@ -55,6 +56,8 @@ from example_datasets.mmmu import (convert_mmmu_dataset,
 from example_datasets.mmstar import convert_mmstar_dataset
 from example_datasets.mtbench import convert_mtbench_dataset
 from example_datasets.omnibench import convert_omnibench_dataset
+from example_datasets.speed_bench import (SPEED_BENCH_CONFIGS,
+                                          convert_speed_bench_dataset)
 from example_datasets.tts_eval import (convert_minimax_multilingual_dataset,
                                        convert_seed_tts_eval_dataset)
 
@@ -76,6 +79,8 @@ DEFAULT_DATASETS = {
     "MTBench": "philschmid/mt-bench",
     "MiniMaxMultilingual": "MiniMaxAI/TTS-Multilingual-Test-Set",
     "OmniBench": "m-a-p/OmniBench",
+    "PhysicalAIAV": "nvidia/PhysicalAI-Autonomous-Vehicles",
+    "SPEEDBench": "nvidia/SPEED-Bench",
 }
 
 # Datasets that require manual download — no HuggingFace auto-download.
@@ -114,6 +119,8 @@ DEFAULT_MAX_GENERATE_LENGTHS = {
     "SeedTTSEval": 2048,
     "MiniMaxMultilingual": 2048,
     "OmniBench": 128,
+    "PhysicalAIAV": 128,
+    "SPEEDBench": 128,
 }
 
 
@@ -149,7 +156,9 @@ def get_dataset_path(dataset_type: str,
 
 def get_default_sampling_params(dataset_type: str) -> Tuple[float, float, int]:
     """Return (temperature, top_p, top_k) defaults for a given dataset."""
-    if dataset_type in {"OmniBench", "SeedTTSEval", "MiniMaxMultilingual"}:
+    if dataset_type in {
+            "OmniBench", "SeedTTSEval", "MiniMaxMultilingual", "SPEEDBench"
+    }:
         return 0.0, 1.0, 1
     return 1.0, 1.0, 50
 
@@ -188,7 +197,8 @@ def main():
                             "LibriSpeech", "LibriSpeech_Lite", "MATH500",
                             "MMBench", "MMLU", "MMLU_Lite", "MMLU_Pro", "MMMU",
                             "MMMU_VLMEvalkit", "MMMU_Pro", "MMStar", "MTBench",
-                            "SeedTTSEval", "MiniMaxMultilingual", "OmniBench"
+                            "SeedTTSEval", "MiniMaxMultilingual", "OmniBench",
+                            "PhysicalAIAV", "SPEEDBench"
                         ],
                         help="Dataset type to convert")
 
@@ -208,11 +218,11 @@ def main():
     parser.add_argument(
         "--subset",
         type=str,
-        default="vision",
+        default=None,
         required=False,
-        help=
-        "Subset for MMMU_Pro dataset (vision, 'standard (10 options)', 'standard (4 options)')"
-    )
+        help=("Subset for MMMU_Pro, or SPEED-Bench throughput config "
+              "(throughput_1k, throughput_2k, throughput_8k, "
+              "throughput_16k, throughput_32k, or all)"))
 
     parser.add_argument(
         "--num_shot",
@@ -345,11 +355,12 @@ def main():
                                  vlmevalkit=True)
 
         elif args.dataset == "MMMU_Pro":
-            print(f"Using subset: {args.subset}")
+            subset = args.subset or "vision"
+            print(f"Using subset: {subset}")
             convert_mmmu_pro_dataset(config=config,
                                      dataset_name_or_dir=dataset_path,
                                      output_dir=args.output_dir,
-                                     subset=args.subset)
+                                     subset=subset)
 
         elif args.dataset == "HumanEval":
             convert_humaneval_dataset(config=config,
@@ -413,6 +424,30 @@ def main():
             convert_omnibench_dataset(config=config,
                                       dataset_name_or_dir=dataset_path,
                                       output_dir=args.output_dir)
+
+        elif args.dataset == "PhysicalAIAV":
+            convert_physical_ai_av_dataset(config=config,
+                                           dataset_name_or_dir=dataset_path,
+                                           output_dir=args.output_dir)
+
+        elif args.dataset == "SPEEDBench":
+            speed_configs = (SPEED_BENCH_CONFIGS if args.subset
+                             in {None, "all"} else (args.subset, ))
+            unknown_configs = set(speed_configs) - set(SPEED_BENCH_CONFIGS)
+            if unknown_configs:
+                supported = ", ".join((*SPEED_BENCH_CONFIGS, "all"))
+                raise ValueError(
+                    f"Unsupported SPEED-Bench subset {args.subset!r}; use "
+                    f"one of: {supported}")
+            for speed_config in speed_configs:
+                output_dir = (os.path.join(args.output_dir, speed_config)
+                              if len(speed_configs) > 1 else args.output_dir)
+                convert_speed_bench_dataset(
+                    config=config,
+                    dataset_name_or_dir=dataset_path,
+                    output_dir=output_dir,
+                    config_name=speed_config,
+                )
 
         elif args.dataset == "COCO":
             convert_coco_dataset(config=config,

@@ -45,9 +45,9 @@ def check_accuracy_with_dataset(output_json_file,
 
     # Datasets that use ROUGE score (with "reference" field)
     ROUGE_DATASETS = [
-        "gsm8k", "gsm8k_10", "mmstar", "llm_basic", "llm_lora",
-        "llm_context_reuse", "llm_sliding_window", "vlm_basic", "vlm_lora",
-        "cosmos3_reasoner"
+        "gsm8k", "gsm8k_10", "mmstar", "llm_basic", "llm_basic_sampled",
+        "llm_lora", "llm_context_reuse", "llm_sliding_window", "vlm_basic",
+        "vlm_lora", "cosmos3_reasoner"
     ]
 
     # Datasets that use correctness/accuracy (with "answer" field)
@@ -76,6 +76,7 @@ def check_accuracy_with_dataset(output_json_file,
         "gsm8k_10": (0.25, 0.20),
         "mmstar": (0.25, 0.20),
         "llm_basic": (0.25, 0.20),
+        "llm_basic_sampled": (0.25, 0.20),
         "llm_lora": (0.25, 0.20),
         "llm_context_reuse": (0.25, 0.20),
         "llm_sliding_window": (0.25, 0.20),
@@ -105,7 +106,10 @@ def check_accuracy_with_dataset(output_json_file,
     }
 
     # minADE threshold (meters). PyTorch reference: 0.82113 m on 644 clips.
-    MINADE_THRESHOLD = 0.90
+    MINADE_THRESHOLDS = {
+        "alpamayo_action_644": 0.90,
+        "alpamayo_action_chat": 0.90,
+    }
 
     # Load the output JSON to get prediction count
     with open(output_json_file, 'r', encoding='utf-8') as f:
@@ -328,7 +332,7 @@ def check_accuracy_with_dataset(output_json_file,
                     minade_6s = float(line.split("=", 1)[1])
                 elif line.startswith("MINADE_3S="):
                     minade_3s = float(line.split("=", 1)[1])
-            if minade_6s is None or math.isnan(minade_6s):
+            if minade_6s is None or not math.isfinite(minade_6s):
                 raise RuntimeError(
                     "minADE script produced no usable MINADE_6S value "
                     "(all clips skipped or output missing)")
@@ -337,10 +341,11 @@ def check_accuracy_with_dataset(output_json_file,
             result['minade_6s'] = minade_6s
             result['minade_3s'] = minade_3s
 
-            if minade_6s > MINADE_THRESHOLD:
+            threshold = MINADE_THRESHOLDS.get(test_case_name)
+            if threshold is not None and minade_6s > threshold:
                 result['threshold_failure'] = "\n".join([
                     f"minADE@6.4s above threshold for {test_case_name}",
-                    f"minADE@6.4s: {minade_6s:.5f} m (max allowed: {MINADE_THRESHOLD} m)",
+                    f"minADE@6.4s: {minade_6s:.5f} m (max allowed: {threshold} m)",
                     f"minADE@3s:   {minade_3s:.5f} m"
                     if minade_3s is not None else "minADE@3s: n/a",
                     f"PyTorch reference: 0.82113 m",

@@ -40,6 +40,18 @@
 //! passes the host logger so plugin log messages respect its level.
 extern "C" EDGELLM_PLUGIN_EXPORT bool initEdgellmPlugins(void* logger, char const* libNamespace);
 
+//! @brief Open a compact build report and return its id (0 when none could be opened). Until it ends, every attention,
+//! gated_delta_net, causal_conv1d and update_ssm_state layer whose build-time workspace TensorRT queries records
+//! whether it reserved the compact workspace. A builder opens one around one engine build. A report opened while
+//! another is open marks both, and every other report open until all have ended, as overlapped.
+extern "C" EDGELLM_PLUGIN_EXPORT uint64_t edgellmBeginCompactBuildReport() noexcept;
+
+//! @brief End report @p reportId and decide whether its engine was built for compact execution: no other report
+//! overlapped it, at least one layer was queried, and every one reserved the compact workspace on every query. The
+//! builders then write builder_config.compact_execution = true. Logs the decision.
+//! @return The decision; false also for an unknown or already ended report.
+extern "C" EDGELLM_PLUGIN_EXPORT bool edgellmEndCompactBuildReport(uint64_t reportId) noexcept;
+
 namespace trt_edgellm
 {
 namespace plugins
@@ -50,6 +62,24 @@ constexpr int32_t kDEVICE_ALIGNMENT{128};
 //! @brief Workaround for CUDA12/13 Thor SM re-numbering.
 //! @param smVersion CUDA SM version that may be normalized in-place.
 void applyThorSMRenumberWAR(int32_t& smVersion);
+
+//! Serialized kCHAR field holding the layer name a plugin was built with. TensorRT passes createPlugin() an empty
+//! name when it deserializes an engine, so the name survives only through this field.
+constexpr char const* kLAYER_NAME_FIELD{"layer_name"};
+
+//! @brief The layer name of a plugin created from @p fc: its non-empty kLAYER_NAME_FIELD, else @p name.
+std::string resolvePluginLayerName(char const* name, nvinfer1::PluginFieldCollection const* fc);
+
+//! @brief The kLAYER_NAME_FIELD entry of getFieldsToSerialize(); it points into @p layerName.
+nvinfer1::PluginField layerNameField(std::string const& layerName);
+
+//! @brief A layer in plugin error logs: "<kind> '<name>' (<shape>)", or "<kind> (<shape>)" when @p layerName is empty.
+std::string describePluginLayer(char const* kind, std::string const& layerName, std::string const& shape);
+
+//! @brief Record in the open compact build report whether the phase-8 layer @p layerName of plugin @p kind reserved
+//! the compact workspace; a no-op when no report is open. Called from getWorkspaceSize(), which TensorRT may call more
+//! than once per layer.
+void reportCompactWorkspace(char const* kind, std::string const& layerName, bool reserved) noexcept;
 
 /*!
  * @brief Convert C++ type to TensorRT PluginFieldType

@@ -29,10 +29,11 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <stdexcept>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
-using namespace nvinfer1;
 using namespace trt_edgellm;
 using namespace trt_edgellm::rt;
 
@@ -105,6 +106,13 @@ std::vector<uint8_t> copyResidentBytes(Tensor const& tensor, int32_t slot, cudaS
     return result;
 }
 
+int32_t retainedPageBegin(int32_t endpoint, int32_t windowSize)
+{
+    int32_t const publishableEndpoint = endpoint - endpoint % kTOKENS_PER_PAGE;
+    int32_t const activeBegin = std::max(0, publishableEndpoint - windowSize) / kTOKENS_PER_PAGE;
+    return std::max(0, activeBegin - kSWA_REPLAY_HALO_PAGES);
+}
+
 class BoundedSwaKVPageManagerTest : public ::testing::Test
 {
 protected:
@@ -121,7 +129,8 @@ protected:
     }
 
     void initialize(int32_t windowSize,
-        BoundedSwaKVPageManager::StreamSynchronizer synchronizer = BoundedSwaKVPageManager::StreamSynchronizer{})
+        BoundedSwaKVPageManager::StreamSynchronizer synchronizer = BoundedSwaKVPageManager::StreamSynchronizer{},
+        bool externalPageOwnership = false)
     {
         mWindowSize = windowSize;
         mCache = std::make_unique<HybridCacheManager>(makeCacheConfig(windowSize), mStream);
@@ -135,7 +144,7 @@ protected:
         mSwaPageTable->upload(mStream);
         ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
         mManager = std::make_unique<BoundedSwaKVPageManager>(
-            *mCache, *mBasePageTable, *mSwaPageTable, mStream, std::move(synchronizer));
+            *mCache, *mBasePageTable, *mSwaPageTable, mStream, std::move(synchronizer), externalPageOwnership);
     }
 
     void releaseResources()
@@ -228,7 +237,7 @@ TEST_F(BoundedSwaKVPageManagerTest, PrefillRetainsAbsoluteSparseWindowAcrossPage
         ASSERT_EQ(mManager->preparePrefill(request, {kINPUT_LENGTH}), SwaKVCacheStatus::kOk);
         ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
 
-        int32_t const retainedBegin = std::max(0, kINPUT_LENGTH - windowSize) / kTOKENS_PER_PAGE;
+        int32_t const retainedBegin = retainedPageBegin(kINPUT_LENGTH, windowSize);
         int32_t const retainedEnd = (kINPUT_LENGTH + kTOKENS_PER_PAGE - 1) / kTOKENS_PER_PAGE;
         std::vector<int32_t> expectedPages(static_cast<size_t>(retainedEnd - retainedBegin));
         std::iota(expectedPages.begin(), expectedPages.end(), retainedBegin);
@@ -256,8 +265,8 @@ TEST_F(BoundedSwaKVPageManagerTest, DecodeRotationUsesConstantDirtyPatchesAndRec
     constexpr int32_t kDECODE_STEPS{2 * kDEFAULT_WINDOW_SIZE + 1};
     BoundedSwaKVPageManager::RequestHandle request = begin({kINPUT_LENGTH});
     completePrefill(request, {kINPUT_LENGTH});
-    ASSERT_EQ(mappedLogicalPages(*mSwaPageTable, 0), std::vector<int32_t>({1, 2}));
-    PageId const firstStalePage = mSwaPageTable->hostRow(0)[1];
+    ASSERT_EQ(mappedLogicalPages(*mSwaPageTable, 0), std::vector<int32_t>({0, 1, 2}));
+    PageId const firstStalePage = mSwaPageTable->hostRow(0)[0];
     std::optional<PageId> recycledPage;
 
     for (int32_t step = 0; step < kDECODE_STEPS; ++step)
@@ -268,8 +277,8 @@ TEST_F(BoundedSwaKVPageManagerTest, DecodeRotationUsesConstantDirtyPatchesAndRec
         EXPECT_EQ(staged.pendingEndpoint, std::optional<int32_t>{nextEndpoint});
         EXPECT_LE(staged.newPageBindings.size(), 1U);
         EXPECT_LE(staged.pendingRetireBindings.size(), 1U);
-        EXPECT_LE(mSwaPageTable->lastUploadEntryCount(), 2U);
-        EXPECT_LE(mSwaPageTable->lastUploadRangeCount(), 2U);
+        EXPECT_LE(mSwaPageTable->lastUploadEntryCount(), 4U);
+        EXPECT_LE(mSwaPageTable->lastUploadRangeCount(), 4U);
         if (!staged.newPageBindings.empty() && staged.newPageBindings.front().logicalPage == 4)
         {
             recycledPage = staged.newPageBindings.front().page;
@@ -281,13 +290,158 @@ TEST_F(BoundedSwaKVPageManagerTest, DecodeRotationUsesConstantDirtyPatchesAndRec
         EXPECT_EQ(completed.exactResidentTokenCount, nextEndpoint);
         EXPECT_FALSE(completed.pendingEndpoint.has_value());
         EXPECT_LE(completed.pageBindings.size(),
-            static_cast<size_t>((mWindowSize + kTOKENS_PER_PAGE - 1) / kTOKENS_PER_PAGE + 1));
+            static_cast<size_t>(computeSwaMaxRetainedPages(mWindowSize, kTOKENS_PER_PAGE)));
     }
 
     ASSERT_TRUE(recycledPage.has_value());
     EXPECT_EQ(*recycledPage, firstStalePage);
     EXPECT_GT(mManager->state(request, 0).exactResidentTokenCount, kINPUT_LENGTH + 2 * mWindowSize);
     EXPECT_EQ(mManager->finish(request), SwaKVCacheStatus::kOk);
+}
+
+// Given a resident sequence whose next decode step writes several tokens (the pending run a jump-forward left)
+// When the decode step is prepared with that per-slot count
+// Then the window endpoint advances by exactly that many tokens in one step, a page boundary inside the run is
+//      mapped, and the next one-token step continues from there
+TEST_F(BoundedSwaKVPageManagerTest, DecodeStepAdvancesEachSlotByItsPendingTokenCount)
+{
+    constexpr int32_t kINPUT_LENGTH{kTOKENS_PER_PAGE - 2};
+    constexpr int32_t kPENDING{5}; // crosses the end of page 0
+    BoundedSwaKVPageManager::RequestHandle request = begin({kINPUT_LENGTH, kINPUT_LENGTH});
+    completePrefill(request, {kINPUT_LENGTH, kINPUT_LENGTH});
+
+    std::vector<int32_t> const advances{kPENDING, 1};
+    ASSERT_EQ(mManager->prepareDecodeStep(request, {}, &advances), SwaKVCacheStatus::kOk);
+    EXPECT_EQ(mManager->state(request, 0).pendingEndpoint, std::optional<int32_t>{kINPUT_LENGTH + kPENDING});
+    EXPECT_EQ(mManager->state(request, 1).pendingEndpoint, std::optional<int32_t>{kINPUT_LENGTH + 1});
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+    ASSERT_EQ(mManager->completeDecodeStep(request), SwaKVCacheStatus::kOk);
+    EXPECT_EQ(mManager->state(request, 0).exactResidentTokenCount, kINPUT_LENGTH + kPENDING);
+    EXPECT_EQ(mManager->state(request, 1).exactResidentTokenCount, kINPUT_LENGTH + 1);
+    EXPECT_EQ(mappedLogicalPages(*mSwaPageTable, 0), std::vector<int32_t>({0, 1}))
+        << "the run reached into page 1, which must be mapped for the write";
+    EXPECT_EQ(mappedLogicalPages(*mSwaPageTable, 1), std::vector<int32_t>({0}));
+
+    ASSERT_EQ(mManager->prepareDecodeStep(request), SwaKVCacheStatus::kOk);
+    EXPECT_EQ(mManager->state(request, 0).pendingEndpoint, std::optional<int32_t>{kINPUT_LENGTH + kPENDING + 1});
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+    ASSERT_EQ(mManager->completeDecodeStep(request), SwaKVCacheStatus::kOk);
+    EXPECT_EQ(mManager->finish(request), SwaKVCacheStatus::kOk);
+}
+
+TEST_F(BoundedSwaKVPageManagerTest, SeededReplayReplacesAndRetiresSharedPagesAfterCompletion)
+{
+    releaseResources();
+    initialize(kDEFAULT_WINDOW_SIZE, {}, /*externalPageOwnership=*/true);
+
+    SwaKVCacheState seed;
+    seed.resident = ResidentRef{0, 1};
+    seed.pageSizeTokens = kTOKENS_PER_PAGE;
+    seed.windowSizeTokens = kDEFAULT_WINDOW_SIZE;
+    seed.exactResidentTokenCount = 2 * kTOKENS_PER_PAGE;
+    seed.retainedLogicalPageBegin = 0;
+    seed.retainedLogicalPageEnd = 2;
+    seed.pageBindings = {{0, 7}, {1, 2}};
+    seed.retentionMode = SwaRetentionMode::kFullInputRewind;
+    std::unordered_set<PageId> sharedPages{7, 2};
+    size_t const reservationSize = static_cast<size_t>(mManager->privatePagesPerSequence() - 1);
+    for (PageId page = 0; seed.pageBindings.size() + seed.reservedPages.size() < reservationSize; ++page)
+    {
+        if (sharedPages.find(page) == sharedPages.end())
+        {
+            seed.reservedPages.push_back(page);
+        }
+    }
+
+    std::vector<PageId> releasedPages;
+    PageId nextReplacement = 8;
+    BoundedSwaKVPageManager::ExternalPageLifecycle lifecycle{[&](int32_t slot, PageId page) {
+                                                                 EXPECT_EQ(slot, 0);
+                                                                 return sharedPages.find(page) != sharedPages.end();
+                                                             },
+        [&](int32_t slot, PageId page) {
+            EXPECT_EQ(slot, 0);
+            EXPECT_EQ(sharedPages.erase(page), 1U);
+            releasedPages.push_back(page);
+            EXPECT_LT(nextReplacement, mSwaPageTable->numPages());
+            return nextReplacement++;
+        }};
+    BoundedSwaKVPageManager::BeginRequestResult admitted = mManager->beginRequest({std::move(seed)}, mStream);
+    ASSERT_EQ(admitted.status, SwaKVCacheStatus::kOk);
+    ASSERT_TRUE(admitted.request.has_value());
+    BoundedSwaKVPageManager::RequestHandle request = std::move(*admitted.request);
+
+    ASSERT_EQ(mManager->preparePrefill(request, {3 * kTOKENS_PER_PAGE}, lifecycle), SwaKVCacheStatus::kOk);
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+    ASSERT_EQ(mManager->completePrefill(request, lifecycle), SwaKVCacheStatus::kOk);
+    ASSERT_EQ(mappedLogicalPages(*mSwaPageTable, 0), std::vector<int32_t>({0, 1, 2}));
+    EXPECT_EQ(mSwaPageTable->hostRow(0)[0], 7);
+    EXPECT_EQ(mSwaPageTable->hostRow(0)[1], 2);
+    EXPECT_EQ(mManager->state(request, 0).retentionMode, SwaRetentionMode::kLive);
+
+    for (int32_t step = 0; step < 2 * kTOKENS_PER_PAGE; ++step)
+    {
+        ASSERT_EQ(mManager->prepareDecodeStep(request, lifecycle), SwaKVCacheStatus::kOk);
+        EXPECT_LE(mSwaPageTable->lastUploadEntryCount(), 4U);
+        EXPECT_LE(mSwaPageTable->lastUploadRangeCount(), 4U);
+        ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+        ASSERT_EQ(mManager->completeDecodeStep(request, lifecycle), SwaKVCacheStatus::kOk);
+        EXPECT_EQ(mManager->state(request, 0).pageBindings.size() + mManager->state(request, 0).reservedPages.size(),
+            reservationSize);
+    }
+
+    EXPECT_EQ(releasedPages, std::vector<PageId>({7, 2}));
+    EXPECT_TRUE(sharedPages.empty());
+    EXPECT_EQ(mManager->state(request, 0).exactResidentTokenCount, 5 * kTOKENS_PER_PAGE);
+    EXPECT_EQ(mManager->finish(request), SwaKVCacheStatus::kOk);
+}
+
+TEST_F(BoundedSwaKVPageManagerTest, FailedSecondExternalReplacementLeavesRequestCleanupSafe)
+{
+    releaseResources();
+    initialize(kDEFAULT_WINDOW_SIZE, {}, /*externalPageOwnership=*/true);
+
+    SwaKVCacheState seed;
+    seed.resident = ResidentRef{0, 1};
+    seed.pageSizeTokens = kTOKENS_PER_PAGE;
+    seed.windowSizeTokens = kDEFAULT_WINDOW_SIZE;
+    seed.exactResidentTokenCount = 3 * kTOKENS_PER_PAGE;
+    seed.retainedLogicalPageBegin = 0;
+    seed.retainedLogicalPageEnd = 3;
+    seed.pageBindings = {{0, 0}, {1, 1}, {2, 2}};
+    seed.reservedPages = {3, 4, 5, 6, 7, 8};
+    seed.retentionMode = SwaRetentionMode::kLive;
+
+    int32_t replacementCalls{};
+    BoundedSwaKVPageManager::ExternalPageLifecycle lifecycle{[](int32_t slot, PageId page) {
+                                                                 EXPECT_EQ(slot, 0);
+                                                                 EXPECT_GE(page, 0);
+                                                                 EXPECT_LE(page, 2);
+                                                                 return true;
+                                                             },
+        [&](int32_t slot, PageId page) -> PageId {
+            EXPECT_EQ(slot, 0);
+            EXPECT_EQ(page, replacementCalls);
+            ++replacementCalls;
+            if (replacementCalls == 2)
+            {
+                throw std::runtime_error("injected second SWA replacement failure");
+            }
+            return 9;
+        }};
+    BoundedSwaKVPageManager::BeginRequestResult admitted = mManager->beginRequest({std::move(seed)}, mStream);
+    ASSERT_EQ(admitted.status, SwaKVCacheStatus::kOk);
+    ASSERT_TRUE(admitted.request.has_value());
+    BoundedSwaKVPageManager::RequestHandle request = std::move(*admitted.request);
+
+    constexpr int32_t kNEXT_ENDPOINT = 7 * kTOKENS_PER_PAGE;
+    ASSERT_EQ(mManager->preparePrefill(request, {kNEXT_ENDPOINT}, lifecycle), SwaKVCacheStatus::kOk);
+    ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+    EXPECT_THROW(mManager->completePrefill(request, lifecycle), std::runtime_error);
+    EXPECT_EQ(replacementCalls, 2);
+
+    EXPECT_EQ(mManager->finish(request), SwaKVCacheStatus::kOk);
+    EXPECT_FALSE(request.valid());
 }
 
 TEST_F(BoundedSwaKVPageManagerTest, CompactionPreservesResidentRowsAndReleasesDroppedState)
@@ -351,8 +505,19 @@ TEST_F(BoundedSwaKVPageManagerTest, CompactionPreservesResidentRowsAndReleasesDr
     ASSERT_EQ(mManager->completeDecodeStep(request), SwaKVCacheStatus::kOk);
     EXPECT_EQ(mManager->state(request, 0).exactResidentTokenCount, inputLengths[0] + 1);
     EXPECT_EQ(mManager->state(request, 1).exactResidentTokenCount, inputLengths[2] + 1);
-    EXPECT_EQ(mappedLogicalPages(*mSwaPageTable, 0), std::vector<int32_t>({2, 3}));
-    EXPECT_EQ(mappedLogicalPages(*mSwaPageTable, 2), std::vector<int32_t>({2, 3}));
+    EXPECT_EQ(mappedLogicalPages(*mSwaPageTable, 0), std::vector<int32_t>({0, 1, 2, 3}));
+    EXPECT_EQ(mappedLogicalPages(*mSwaPageTable, 2), std::vector<int32_t>({0, 1, 2, 3}));
+
+    int32_t const reuseEndpoint = 5 * kTOKENS_PER_PAGE + 1;
+    while (mManager->state(request, 1).exactResidentTokenCount < reuseEndpoint)
+    {
+        ASSERT_EQ(mManager->prepareDecodeStep(request), SwaKVCacheStatus::kOk);
+        ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
+        ASSERT_EQ(mManager->completeDecodeStep(request), SwaKVCacheStatus::kOk);
+    }
+    EXPECT_TRUE(std::all_of(mSwaPageTable->hostRow(1), mSwaPageTable->hostRow(1) + rowWidth,
+        [](int32_t page) { return page == kUNUSED_PAGE_ENTRY; }));
+    EXPECT_EQ(mappedLogicalPages(*mSwaPageTable, 2), std::vector<int32_t>({2, 3, 4, 5}));
 
     EXPECT_EQ(mManager->finish(request), SwaKVCacheStatus::kOk);
     EXPECT_EQ(mManager->freePageCount(), mSwaPageTable->numPages());

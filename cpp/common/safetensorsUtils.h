@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace trt_edgellm
@@ -35,7 +36,7 @@ namespace safetensors
 struct TensorMetadata
 {
     std::string name;
-    nvinfer1::DataType dataType{};
+    trt_edgellm::DataType dataType{};
     Coords shape;
     size_t offset{0}; //!< Byte offset relative to FileMetadata::dataOffset.
     size_t bytes{0};
@@ -47,10 +48,14 @@ struct FileMetadata
 {
     size_t dataOffset{0}; //!< Byte offset of the tensor payload in the file.
     std::vector<TensorMetadata> tensors;
+    std::unordered_map<std::string, std::string> metadata;
 };
 
 //! Convert a safetensors dtype name to the corresponding TensorRT type.
-nvinfer1::DataType dataTypeFromString(std::string_view dtype);
+trt_edgellm::DataType dataTypeFromString(std::string_view dtype);
+
+//! Return the safetensors dtype name for a supported TensorRT type.
+std::string dataTypeToString(trt_edgellm::DataType dtype);
 
 //! Parse and validate a safetensors header from an existing file mapping.
 FileMetadata parseMetadata(void const* data, size_t bytes, std::string_view source);
@@ -63,10 +68,12 @@ FileMetadata parseMetadata(void const* data, size_t bytes, std::string_view sour
  * @param filePath Path to output safetensors file
  * @param tensors Vector of tensors to save
  * @param stream CUDA stream for async operations
+ * @param metadata Optional safetensors string metadata
  * @return True on success, false on failure
  * @throws std::runtime_error If CUDA operations fail or data type is unsupported
  */
-bool saveSafetensors(std::filesystem::path const& filePath, std::vector<Tensor> const& tensors, cudaStream_t stream);
+bool saveSafetensors(std::filesystem::path const& filePath, std::vector<Tensor> const& tensors, cudaStream_t stream,
+    std::unordered_map<std::string, std::string> const& metadata = {});
 
 /*!
  * @brief Load tensors from a safetensors file
@@ -79,7 +86,8 @@ bool saveSafetensors(std::filesystem::path const& filePath, std::vector<Tensor> 
  * @return True on success, false on failure
  * @throws std::runtime_error If CUDA operations fail, data type is unsupported, or tensor allocation fails
  */
-bool loadSafetensors(std::filesystem::path const& filePath, std::vector<Tensor>& tensors, cudaStream_t stream);
+bool loadSafetensors(std::filesystem::path const& filePath, std::vector<Tensor>& tensors, cudaStream_t stream,
+    DeviceType device = DeviceType::kGPU);
 
 } // namespace safetensors
 } // namespace rt

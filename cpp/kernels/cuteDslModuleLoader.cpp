@@ -19,6 +19,8 @@
 
 #include "common/logger.h"
 
+#include <unordered_map>
+
 #if defined(ENABLE_CUTEDSL_MODULE_TEST_HOOK)
 #include <cstdlib>
 #include <cstring>
@@ -62,10 +64,65 @@ cudaError_t takeCuteDslCudaError() noexcept
 namespace module_loader
 {
 
-std::mutex& getGlobalMutex() noexcept
+std::mutex& getGlobalMutex()
 {
-    static std::mutex mutex;
+    return *getGlobalMutexOwner();
+}
+
+std::shared_ptr<std::mutex> getGlobalMutexOwner()
+{
+    static auto const mutex = std::make_shared<std::mutex>();
     return mutex;
+}
+
+std::shared_ptr<void> acquireSharedModule(
+    SharedModuleFactory factory, char const* moduleName, cudaStream_t stream) noexcept
+{
+    try
+    {
+        static std::mutex mutex;
+        static std::unordered_map<SharedModuleFactory, std::shared_ptr<SharedModuleEntry>> cache;
+        std::shared_ptr<SharedModuleEntry> entry;
+        {
+            std::lock_guard<std::mutex> const lock(mutex);
+            auto& cachedEntry = cache[factory];
+            if (!cachedEntry)
+            {
+                cachedEntry = std::make_shared<SharedModuleEntry>();
+            }
+            entry = cachedEntry;
+        }
+        std::unique_lock<std::mutex> entryLock(entry->mutex);
+        auto module = entry->module.lock();
+        // An expired weak pointer can precede completion of its deleter. Finish
+        // unloading before reinitializing generated wrappers' static kernel handles.
+        while (!module && entry->resident)
+        {
+            entry->released.wait(entryLock);
+            module = entry->module.lock();
+        }
+        if (entry->poisoned)
+        {
+            logFailure(moduleName, "module cleanup failed; cache entry is poisoned");
+            return {};
+        }
+        if (!module)
+        {
+            module = factory(entry, nonNullName(moduleName), stream);
+            entry->module = module;
+            entry->resident = static_cast<bool>(module);
+        }
+        return module;
+    }
+    catch (std::exception const& error)
+    {
+        logFailure(moduleName, error.what());
+    }
+    catch (...)
+    {
+        logFailure(moduleName, "unexpected shared-module acquisition failure");
+    }
+    return {};
 }
 
 void logLoaded(char const* moduleName) noexcept
@@ -73,6 +130,17 @@ void logLoaded(char const* moduleName) noexcept
     try
     {
         LOG_DEBUG("CuTe DSL kernel module loaded: %s", nonNullName(moduleName));
+    }
+    catch (...)
+    {
+    }
+}
+
+void logUnloaded(char const* moduleName) noexcept
+{
+    try
+    {
+        LOG_DEBUG("CuTe DSL kernel module unloaded: %s", nonNullName(moduleName));
     }
     catch (...)
     {

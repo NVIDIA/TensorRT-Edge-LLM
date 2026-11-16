@@ -25,7 +25,6 @@
 #include <gtest/gtest.h>
 
 using namespace trt_edgellm;
-using namespace nvinfer1;
 
 //=============================================================================
 // gatherPagedKVToSplit tests
@@ -501,4 +500,157 @@ TEST(GatherPagedKVToHeadMajorTest, OneByteKvPreservesFp8StorageLayout)
                 ASSERT_EQ(kOut[dst], poolHost[src]);
                 ASSERT_EQ(vOut[dst], poolHost[src + static_cast<size_t>(numPages) * pageElems]);
             }
+}
+
+TEST(MergeGatheredSplitKVToHeadMajorTest, ReordersRankMajorShardsIntoGlobalHeads)
+{
+    cudaStream_t stream{nullptr};
+    constexpr int32_t kTENSOR_PARALLEL_SIZE{2};
+    constexpr int32_t kBATCH_SIZE{2};
+    constexpr int32_t kSEQUENCE_LENGTH{4};
+    constexpr int32_t kLOCAL_KV_HEADS{2};
+    constexpr int32_t kHEAD_DIM{3};
+    constexpr int32_t kGLOBAL_KV_HEADS{kTENSOR_PARALLEL_SIZE * kLOCAL_KV_HEADS};
+    constexpr int32_t kKV_COMPONENTS{2};
+    size_t const planeElements = static_cast<size_t>(kBATCH_SIZE) * kSEQUENCE_LENGTH * kLOCAL_KV_HEADS * kHEAD_DIM;
+
+    // Given rank-major all-gather output laid out as [rank, K/V, B, S, Hlocal, D].
+    std::vector<half> gatheredHost(static_cast<size_t>(kTENSOR_PARALLEL_SIZE) * kKV_COMPONENTS * planeElements);
+    for (int32_t rank = 0; rank < kTENSOR_PARALLEL_SIZE; ++rank)
+    {
+        for (int32_t kv = 0; kv < kKV_COMPONENTS; ++kv)
+        {
+            for (int32_t batch = 0; batch < kBATCH_SIZE; ++batch)
+            {
+                for (int32_t token = 0; token < kSEQUENCE_LENGTH; ++token)
+                {
+                    for (int32_t head = 0; head < kLOCAL_KV_HEADS; ++head)
+                    {
+                        for (int32_t dim = 0; dim < kHEAD_DIM; ++dim)
+                        {
+                            size_t const source
+                                = (((((static_cast<size_t>(rank) * kKV_COMPONENTS + kv) * kBATCH_SIZE + batch)
+                                            * kSEQUENCE_LENGTH
+                                        + token)
+                                           * kLOCAL_KV_HEADS
+                                       + head)
+                                      * kHEAD_DIM)
+                                + dim;
+                            gatheredHost[source] = __float2half(
+                                static_cast<float>(rank * 1000 + kv * 400 + batch * 100 + token * 20 + head * 5 + dim)
+                                / 8.0F);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    rt::Tensor gathered(
+        {kTENSOR_PARALLEL_SIZE, kKV_COMPONENTS, kBATCH_SIZE, kSEQUENCE_LENGTH, kLOCAL_KV_HEADS, kHEAD_DIM},
+        rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor kDst(
+        {kBATCH_SIZE, kGLOBAL_KV_HEADS, kSEQUENCE_LENGTH, kHEAD_DIM}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor vDst(
+        {kBATCH_SIZE, kGLOBAL_KV_HEADS, kSEQUENCE_LENGTH, kHEAD_DIM}, rt::DeviceType::kGPU, DataType::kHALF);
+    copyHostToDevice(gathered, gatheredHost);
+
+    // When the shards are converted to the action engine's head-major tensors.
+    kernel::mergeGatheredSplitKVToHeadMajor(gathered.rawPointer(), kDst.rawPointer(), vDst.rawPointer(),
+        kTENSOR_PARALLEL_SIZE, kBATCH_SIZE, kSEQUENCE_LENGTH, kSEQUENCE_LENGTH, kLOCAL_KV_HEADS, kHEAD_DIM, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    auto const kOut = copyDeviceToHost<half>(kDst);
+    auto const vOut = copyDeviceToHost<half>(vDst);
+
+    // Then every global head contains the corresponding rank-local head for both K and V.
+    for (int32_t batch = 0; batch < kBATCH_SIZE; ++batch)
+    {
+        for (int32_t globalHead = 0; globalHead < kGLOBAL_KV_HEADS; ++globalHead)
+        {
+            for (int32_t token = 0; token < kSEQUENCE_LENGTH; ++token)
+            {
+                for (int32_t dim = 0; dim < kHEAD_DIM; ++dim)
+                {
+                    int32_t const rank = globalHead / kLOCAL_KV_HEADS;
+                    int32_t const localHead = globalHead % kLOCAL_KV_HEADS;
+                    size_t const sourceK
+                        = (((((static_cast<size_t>(rank) * kKV_COMPONENTS) * kBATCH_SIZE + batch) * kSEQUENCE_LENGTH
+                                + token)
+                                   * kLOCAL_KV_HEADS
+                               + localHead)
+                              * kHEAD_DIM)
+                        + dim;
+                    size_t const sourceV = sourceK + planeElements;
+                    size_t const destination
+                        = (((static_cast<size_t>(batch) * kGLOBAL_KV_HEADS + globalHead) * kSEQUENCE_LENGTH + token)
+                              * kHEAD_DIM)
+                        + dim;
+                    ASSERT_EQ(__half_as_ushort(kOut[destination]), __half_as_ushort(gatheredHost[sourceK]));
+                    ASSERT_EQ(__half_as_ushort(vOut[destination]), __half_as_ushort(gatheredHost[sourceV]));
+                }
+            }
+        }
+    }
+}
+
+TEST(MergeGatheredSplitKVToHeadMajorTest, CompactGatherZeroFillsActionCapacity)
+{
+    // Given TP2 KV shards shorter than the action-buffer capacity.
+    cudaStream_t stream{nullptr};
+    constexpr int32_t kTP{2};
+    constexpr int32_t kBATCH{2};
+    constexpr int32_t kGATHERED_SEQ{2};
+    constexpr int32_t kACTION_SEQ{5};
+    constexpr int32_t kLOCAL_HEADS{1};
+    constexpr int32_t kHEAD_DIM{2};
+    constexpr int32_t kKV_COMPONENTS{2};
+    size_t const shardElements = static_cast<size_t>(kBATCH) * kGATHERED_SEQ * kLOCAL_HEADS * kHEAD_DIM;
+    std::vector<half> gatheredHost(static_cast<size_t>(kTP) * kKV_COMPONENTS * shardElements);
+    for (size_t i = 0; i < gatheredHost.size(); ++i)
+    {
+        gatheredHost[i] = __float2half(static_cast<float>(i + 1));
+    }
+
+    rt::Tensor gathered(
+        {kTP, kKV_COMPONENTS, kBATCH, kGATHERED_SEQ, kLOCAL_HEADS, kHEAD_DIM}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor kDst({kBATCH, kTP * kLOCAL_HEADS, kACTION_SEQ, kHEAD_DIM}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor vDst({kBATCH, kTP * kLOCAL_HEADS, kACTION_SEQ, kHEAD_DIM}, rt::DeviceType::kGPU, DataType::kHALF);
+    copyHostToDevice(gathered, gatheredHost);
+
+    // When the shards are merged into head-major action buffers.
+    kernel::mergeGatheredSplitKVToHeadMajor(gathered.rawPointer(), kDst.rawPointer(), vDst.rawPointer(), kTP, kBATCH,
+        kGATHERED_SEQ, kACTION_SEQ, kLOCAL_HEADS, kHEAD_DIM, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    auto const kOut = copyDeviceToHost<half>(kDst);
+    auto const vOut = copyDeviceToHost<half>(vDst);
+
+    // Then live K/V values are preserved and every unused position is zero.
+    for (int32_t batch = 0; batch < kBATCH; ++batch)
+    {
+        for (int32_t rank = 0; rank < kTP; ++rank)
+        {
+            for (int32_t token = 0; token < kACTION_SEQ; ++token)
+            {
+                for (int32_t dim = 0; dim < kHEAD_DIM; ++dim)
+                {
+                    size_t const dst
+                        = ((static_cast<size_t>(batch) * kTP + rank) * kACTION_SEQ + token) * kHEAD_DIM + dim;
+                    for (int32_t kv = 0; kv < kKV_COMPONENTS; ++kv)
+                    {
+                        uint16_t expected = 0;
+                        if (token < kGATHERED_SEQ)
+                        {
+                            size_t const src
+                                = ((((static_cast<size_t>(rank) * kKV_COMPONENTS + kv) * kBATCH + batch) * kGATHERED_SEQ
+                                       + token)
+                                      * kHEAD_DIM)
+                                + dim;
+                            expected = __half_as_ushort(gatheredHost[src]);
+                        }
+                        auto const& output = kv == 0 ? kOut : vOut;
+                        ASSERT_EQ(__half_as_ushort(output[dst]), expected);
+                    }
+                }
+            }
+        }
+    }
 }

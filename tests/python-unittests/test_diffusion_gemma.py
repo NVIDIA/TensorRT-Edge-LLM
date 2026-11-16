@@ -19,6 +19,7 @@ import math
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+import onnx
 import pytest
 import torch
 
@@ -30,7 +31,7 @@ from tensorrt_edgellm.models.diffusion_gemma import (
     DiffusionGemmaBackbone, make_diffusion_gemma_key_remap)
 from tensorrt_edgellm.models.gemma4.modeling_gemma4_text import (
     _gemma4_dense_moe_routing, _gemma4_uses_swa_kv_cache)
-from tensorrt_edgellm.scripts import export as export_script
+from tensorrt_edgellm.onnx import cli as export_script
 
 
 @dataclass(frozen=True)
@@ -413,6 +414,69 @@ def test_unified_backbone_with_ple_dynamic_export_succeeds(tmp_path):
     assert exported is not None
 
 
+@pytest.mark.parametrize("phase", [0, 1])
+def test_ple_pool_preserves_denoise_and_commit_values(tmp_path, phase):
+    _write_minimal_diffusion_gemma_config(tmp_path, ple=True)
+    torch.manual_seed(19)
+    model = DiffusionGemmaBackbone(_load_model_config(tmp_path)).half().eval()
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.normal_(0, 0.1)
+    spec = model.onnx_export_spec()
+    args = dict(zip(spec.input_names, spec.args))
+    assert not any(name.startswith("ple_token_embeds_") for name in args)
+    args["phase_is_encoder"].fill_(phase)
+    pool = torch.randn(17,
+                       model.config.num_hidden_layers *
+                       model.config.hidden_size_per_layer_input,
+                       dtype=torch.float16)
+    pool[0].zero_()
+    row_map = (torch.arange(args["inputs_embeds"].shape[0]) % 17).reshape(
+        -1, 1).int()
+    args["ple_cache_pool"] = pool
+    args["ple_row_map"] = row_map
+    expanded = pool[row_map.long()].reshape(row_map.shape[0],
+                                            model.config.num_hidden_layers, -1)
+    reference = dict(args)
+    reference.pop("ple_cache_pool")
+    reference.pop("ple_row_map")
+    reference["past_key_values"] = tuple(
+        reference.pop(f"past_key_values_{i}")
+        for i in range(model.config.num_hidden_layers))
+    reference["ple_token_embeds"] = tuple(
+        expanded[:, i] for i in range(model.config.num_hidden_layers))
+    with torch.no_grad():
+        expected = model(**reference)
+        actual = spec.wrapped(*(args[name] for name in spec.input_names))
+    for value, wanted in zip(actual[:2], expected[:2]):
+        torch.testing.assert_close(value, wanted, rtol=0, atol=0)
+
+
+def test_ple_pool_onnx_retains_diffusion_phase_inputs(tmp_path):
+    import onnx
+
+    from tensorrt_edgellm.onnx.export import _export_model
+
+    _write_minimal_diffusion_gemma_config(tmp_path, ple=True)
+    model = DiffusionGemmaBackbone(_load_model_config(tmp_path)).half().eval()
+    path = tmp_path / "diffusion-ple.onnx"
+    _export_model(model, str(path), optimize=False)
+    graph = onnx.load(str(path), load_external_data=False).graph
+    inputs = {value.name: value for value in graph.input}
+    assert {
+        "ple_cache_pool", "ple_row_map", "phase_is_encoder", "canvas_ids",
+        "prev_self_conditioning_embeds", "self_conditioning_temperature",
+        "context_mask_selector"
+    } <= inputs.keys()
+    assert inputs["ple_row_map"].type.tensor_type.shape.dim[
+        0].dim_param == inputs["inputs_embeds"].type.tensor_type.shape.dim[
+            0].dim_param
+    assert inputs["ple_cache_pool"].type.tensor_type.shape.dim[
+        0].dim_param != inputs["inputs_embeds"].type.tensor_type.shape.dim[
+            0].dim_param
+    assert [node.op_type for node in graph.node].count("PleGatherPlugin") == 1
+
+
 def test_unified_backbone_with_heterogeneous_attention_exports(tmp_path):
     _write_minimal_diffusion_gemma_config(tmp_path,
                                           heterogeneous_attention=True)
@@ -636,6 +700,36 @@ def test_gemma4_dense_moe_routing_matches_vllm_semantics():
     assert torch.equal(expert_ids, ref_ids)
     assert torch.allclose(weights, ref_weights)
     assert not torch.allclose(weights, biased)
+
+
+def test_gemma4_dense_moe_routing_casts_indexed_scale_for_onnx(tmp_path):
+    """Keep the dynamic expert-scale gather in FP32 for TensorRT."""
+
+    class RoutingModule(torch.nn.Module):
+
+        def __init__(self):
+            super().__init__()
+            self.per_expert_scale = torch.nn.Parameter(
+                torch.tensor([1.0, 0.5, 2.0, 3.0], dtype=torch.float16))
+
+        def forward(self, logits):
+            return _gemma4_dense_moe_routing(logits, 2,
+                                             self.per_expert_scale)[0]
+
+    output = tmp_path / "routing.onnx"
+    torch.onnx.export(RoutingModule(),
+                      (torch.randn(2, 4, dtype=torch.float16), ),
+                      output,
+                      dynamo=True)
+
+    graph = onnx.load(output, load_external_data=False).graph
+    producers = {name: node for node in graph.node for name in node.output}
+    multiply = producers[graph.output[0].name]
+    expert_scale_cast = producers[multiply.input[1]]
+
+    assert multiply.op_type == "Mul"
+    assert expert_scale_cast.op_type == "Cast"
+    assert producers[expert_scale_cast.input[0]].op_type == "GatherND"
 
 
 def test_entropy_bound_reference_sampler_and_soft_embeds():

@@ -14,7 +14,7 @@
 
 Install a wheel to run Edge-LLM without downloading or compiling its source code.
 
-Use CPython 3.10–3.12 on a target listed in the
+Use GIL CPython 3.10–3.14 on a target listed in the
 [wheel support matrix](support-matrix.md#wheel-packaging-matrix). Install the
 required NVIDIA driver, CUDA, and TensorRT, including its Python bindings,
 before continuing. See the [TensorRT installation guide](https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/installing.html)
@@ -29,7 +29,9 @@ to make it available in your Python environment.
 (install-and-chat)=
 ### Install
 
-The `[server]` extra installs Python dependencies for chat and HTTP serving.
+Release wheels use one `cp310-abi3` artifact per CPU architecture.
+
+The `[runtime]` extra installs Python dependencies for chat and HTTP serving.
 CUDA and TensorRT must already be installed.
 
 Run the commands below. Use a supported Python interpreter for `python3`.
@@ -41,7 +43,7 @@ in the new environment; it does not provide bindings for a different Python vers
 python3 -m venv --system-site-packages .venv-edgellm
 source .venv-edgellm/bin/activate
 python -m pip install --upgrade pip
-python -m pip install "tensorrt-edgellm[server]"
+python -m pip install "tensorrt-edgellm[runtime]"
 ```
 
 ### Verify your installation
@@ -149,20 +151,20 @@ git submodule update --init --recursive
 
 #### Optional Python frontend
 
-Skip this step for the C++ and ONNX workflow. To also use the experimental
-checkpoint-direct builder or OpenAI-compatible server, create the Python
-environment and install the binding build dependency before configuring CMake:
+Skip this step for C++ inference, ONNX export, and checkpoint-direct engine
+builds. Python inference and the OpenAI-compatible server need runtime
+bindings. Create the environment and install nanobind before configuring CMake:
 
 ```bash
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
-python -m pip install pybind11==3.0.4
+python -m pip install nanobind==3.1.0 nanobind-backend==1.0.0
 ```
 
 Retain every argument from the complete platform command in Step 4 and append
 `-DBUILD_PYTHON_BINDINGS=ON` and
-`-Dpybind11_DIR="$(python -m pybind11 --cmakedir)"`. The directory argument is
-required because pip installs the pybind11 CMake configuration outside CMake's
+`-Dnanobind_DIR="$(python -m nanobind --cmake_dir)"`. The directory argument is
+required because pip installs the nanobind CMake configuration outside CMake's
 default search prefixes.
 
 **4. Configure Build**
@@ -356,8 +358,6 @@ cmake .. \
 > Replace `<YOUR_SM>` with the numeric compute capability, for example `80`,
 > `100`, or `120`.
 
-<a id="windows-x64-with-tensorrt-rtx"></a>
-
 **Windows x64 with TensorRT-RTX**
 
 Run CMake from an x64 Native Tools Command Prompt for Visual Studio:
@@ -399,6 +399,12 @@ The TensorRT-RTX package must include its ONNX parser component. Add the
 TensorRT-RTX `bin` directory to `PATH` when running the examples so the runtime,
 ONNX parser, and Edge-LLM plugin DLLs can be loaded.
 
+With TensorRT-RTX, the engine builders target the compute capability of the GPU
+that runs the build, so an engine runs only on GPUs with that compute
+capability. Build engines on the GPU model you deploy to. Targeting a single
+compute capability lets TensorRT-RTX use kernels that only some GPUs support,
+such as MXFP8 block-scaled GEMMs.
+
 **CMake Options:**
 
 | Option | Description | Default |
@@ -409,14 +415,14 @@ ONNX parser, and Edge-LLM plugin DLLs can be loaded.
 | `CUDA_CTK_VERSION` | CUDA Toolkit version. Use the platform command above to select `13.3`, `13.2`, or `13.0`. Do not pass `-DCUDA_VERSION`; CMake reserves that name for CUDA headers and rejects it. | target default |
 | `BUILD_UNIT_TESTS` | Build unit tests | OFF |
 | `ENABLE_COVERAGE` | Enable gcov code coverage instrumentation (see [Code Coverage](../../developer_guide/testing/code-coverage.md)) | OFF |
-| `ENABLE_CUTE_DSL` | Select generated CuTe DSL kernels: `fmha`, `ALL`, or a group list such as `gdn`, `gemm`, or `ssd`. Any selection also links `fmha`, which the attention plugins require. Use `ALL` for customer builds. | fmha |
+| `ENABLE_CUTE_DSL` | Select generated CuTe DSL kernels: `fmha`, `ALL`, or a group list such as `gdn`, `gemm`, or `ssd`. Any selection also links `fmha`, which the attention plugins require. Use `ALL` for customer builds. | ALL |
 | `CUTE_DSL_ARTIFACT_TAG` | Artifact tag under `cpp/kernels/cuteDSLArtifact/<arch>/` (`cpp/kernels/cuteDSLArtifact/windows/<arch>/` on Windows), for example `sm_87`, `sm_110`, `sm_110_sm_120`, or `sm_121`. Edge targets infer it from `EMBEDDED_TARGET`; pass it explicitly for x86 prebuilt artifacts or when multiple local tags exist for one CPU architecture. | auto |
 
 **CuTe DSL Kernel Artifacts**
 
 CuTe DSL binaries are generated with `kernelSrcs/build_cutedsl.py` before
-configuring CMake. A normal build defaults to the canonical `fmha` family and
-therefore requires a matching artifact. This family provides Context/ViT
+configuring CMake. A normal build defaults to `ALL` and requires artifacts
+for every enabled kernel group. The baseline `fmha` family provides Context/ViT
 attention on supported GPUs and adds the optimized Blackwell implementation
 on SM100/SM101/SM110 when available.
 
@@ -454,8 +460,8 @@ Build time: ~1-2 minutes depending on hardware.
 
 ```bash
 # Test C++ examples
-./examples/llm/llm_build --help
-./examples/llm/llm_inference --help
+./bin/llm_build --help
+./bin/llm_inference --help
 ```
 
 **You're done with C++ runtime setup!** You can now build engines and run inference on the Edge device.
@@ -472,11 +478,11 @@ and builds its engines on first use:
 ```bash
 cd /path/to/TensorRT-Edge-LLM
 source .venv/bin/activate
-python -m pip install -e ".[server,server-tools]"
+python -m pip install -e ".[builder,runtime]"
 trtedge serve Qwen/Qwen3.5-0.8B
 ```
 
-See [Experimental Python API and Server](../examples/experimental-server.md)
+See [Experimental Python API and Server](../examples/server.md)
 for server options, requests, and limitations.
 
 ---
@@ -564,19 +570,23 @@ Install the dependency set for the host-side ONNX workflow:
 
 ```bash
 # PyTorch/ONNX checkpoint exporter
-pip3 install -e ".[export]"
+pip3 install -e ".[onnx]"
 
 # Export plus quantization, LoRA, vocabulary, and audio tools
-pip3 install -e ".[tools]"
+pip3 install -e ".[quantize,onnx,vocab]"
 ```
 
 For other tasks, choose the extras listed in
 [Optional Python dependencies](#optional-python-dependencies).
 
-The `tools` extra includes the export dependencies. Checkpoint-direct engine
-build and Python inference use the optional Python frontend above.
+The `onnx` extra includes the export dependencies. Python inference requires
+the runtime bindings from the optional Python frontend setup above.
 
-> **Note:** Accuracy evaluation dependencies live under `examples/accuracy/requirements.txt`.
+> **Note:** Accuracy evaluation dependencies are split into
+> `requirements-runtime.txt`, `requirements-datasets.txt`, and optional task-specific
+> files under `examples/accuracy/`. See the
+> [accuracy README](../../../../examples/accuracy/README.md) to choose the dependencies
+> for your task.
 
 **3. Verify the Checkpoint Export Workflow**
 
@@ -588,10 +598,10 @@ Export an unquantized or supported pre-quantized Hugging Face checkpoint with
 need to create a quantized checkpoint from an FP16/BF16 source checkpoint.
 
 ```bash
-# Available after installing the export extra
+# Available after installing the onnx extra
 trtedge export --help
 
-# Available after installing the tools extra
+# Available after installing the corresponding optional dependencies
 trtedge quantize --help
 trtedge merge-lora --help
 trtedge reduce-vocab --help
@@ -654,36 +664,34 @@ SDK root instead of `/usr` on an x86 workstation.
 Extras are optional groups of Python dependencies available with both wheel
 and source installations. They do not install CUDA or TensorRT.
 
-The recommended wheel installation already includes `[server]`. No other
+The recommended wheel installation already includes `[runtime]`. No other
 extras are needed for chat, model downloads, the high-level Python API, or
 HTTP serving.
 
 | Install selection | When you need it |
 |---|---|
-| `[server]` | Use `trtedge chat`, `trtedge serve`, model downloads, or the high-level `LLM` API. |
-| `[export]` | Export checkpoints to ONNX. |
-| `[tools]` | Export and quantize checkpoints, or use LoRA, vocabulary, and audio tools. |
-| `[server-tools]` | Generate missing tokenizer artifacts or use Transformers-based tools. |
-| `[native-build]` | Build Python bindings from source. |
+| `[runtime]` | Use `trtedge chat`, `trtedge serve`, model downloads, or the high-level `LLM` API. |
+| `[onnx]` | Export checkpoints to ONNX. |
+| `[quantize,onnx,vocab]` | Export and quantize checkpoints, or use LoRA, vocabulary, and audio tools. |
+| `[builder]` | Generate missing tokenizer artifacts or use Transformers-based tools. |
 | [No extra](#install-without-optional-dependencies) | Call the low-level runtime or build engines directly from complete local checkpoints. |
 
-The `[tools]` extra includes the export dependencies. The `[native-build]`
-extra is not needed for the automatic engine building performed by
-`trtedge chat` and `trtedge serve` with a published wheel.
-`[builder]` and `[dev]` are compatibility extras that add no dependencies.
+Use `[quantize]` for quantization, `[onnx]` for ONNX export and LoRA helpers,
+and `[vocab]` for vocabulary preprocessing. `[builder]` supplies source-build
+and tokenizer dependencies. Published wheels include the native bindings.
 
 Combine extras in one install or add them later. To add quantization and ONNX
 export dependencies to the wheel installation above, run:
 
 ```bash
-python -m pip install "tensorrt-edgellm[server,tools]"
+python -m pip install "tensorrt-edgellm[runtime,quantize,onnx]"
 ```
 
 For a source installation, select extras after `.` instead of the package
 name. For example, from the source checkout:
 
 ```bash
-python -m pip install -e ".[tools]"
+python -m pip install -e ".[quantize,onnx,vocab]"
 ```
 
 Installing `.` or using `-e .` switches to a source installation; use these
@@ -696,7 +704,7 @@ commands only when following the source installation instructions.
 Use this option for applications that call the C++ runtime through Python and
 use local model files. It omits the optional dependencies used by chat, model
 downloads, and HTTP serving. For those features, use the
-[published wheel installation](#published-python-wheel) with `[server]`.
+[published wheel installation](#published-python-wheel) with `[runtime]`.
 
 Keep the same CUDA and TensorRT prerequisites. Create a separate environment
 so packages from an earlier installation are not included:
@@ -816,7 +824,7 @@ cmake .. \
 
 Solution: Reduce parallel jobs or even use sequential build:
 ```bash
-make -j  # Instead of make -j$(nproc)
+make -j2  # Use make without -j for a sequential build
 ```
 
 ### Getting Help

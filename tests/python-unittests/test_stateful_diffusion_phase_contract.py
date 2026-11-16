@@ -73,6 +73,7 @@ class TokenMajorMambaRunner:
                 pf_int32("nheads", h),
                 pf_int32("ngroups", g),
                 pf_int32("dt_softplus", int(c.dt_softplus)),
+                pf_int32("use_spec_verify_state", 0),
             ],
             profiles={
                 "x": ((1, h, dim), (16, h, dim), (max_tokens, h, dim)),
@@ -225,7 +226,7 @@ class TokenMajorGDNRunner:
             plugin_fields=[
                 pf_int32("k_dim", kd),
                 pf_int32("v_dim", vd),
-                pf_int32("use_mtp", 0),
+                pf_int32("use_spec_verify_state", 0),
                 pf_int32("use_diffusion_state", self.use_diffusion_state)
             ],
             profiles={

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Build one exact target and CPython native payload stage."""
+"""Build one exact target and CPython stable-ABI native payload stage."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def _arguments(argv=None) -> argparse.Namespace:
                         help="variant_id from variants.toml.")
     parser.add_argument("--python-abi",
                         required=True,
-                        help="Qualified ABI such as cp310.")
+                        help="Stable ABI floor; release payloads use cp310.")
     parser.add_argument("--trt-package-dir",
                         type=Path,
                         required=True,
@@ -75,9 +75,6 @@ def _arguments(argv=None) -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     parser.add_argument("--source-revision",
                         help="Expected full Git revision.")
-    parser.add_argument("--toolchain-file",
-                        type=Path,
-                        help="CMake toolchain override for cross compilation.")
     parser.add_argument(
         "--target-sysroot",
         type=Path,
@@ -85,7 +82,7 @@ def _arguments(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--target-python-include-dir",
         type=Path,
-        help="Target CPython headers required for a cross build.")
+        help="Target CPython headers matching the build interpreter.")
     parser.add_argument(
         "--allow-dirty-source",
         action="store_true",
@@ -132,14 +129,13 @@ def _validated_inputs(
     repo_root = args.repo_root.resolve()
     matrix, rows = load_matrix(args.matrix.resolve(), repo_root)
     row = require_variant(rows, args.variant)
-    if args.python_abi not in matrix["qualified_python_abis"]:
+    if args.python_abi != matrix["wheel_python_tag"]:
         raise RuntimeError(
-            f"Python ABI {args.python_abi!r} is not qualified by variants.toml."
-        )
+            f"Python ABI floor must be {matrix['wheel_python_tag']!r}.")
     current_abi = _current_python_abi()
-    if args.python_abi != current_abi:
+    if int(current_abi[2:]) < int(args.python_abi[2:]):
         raise RuntimeError(
-            f"Build interpreter ABI {current_abi} does not match requested {args.python_abi}."
+            f"Build interpreter ABI {current_abi} is older than {args.python_abi}."
         )
     trt_package_dir = args.trt_package_dir.resolve()
     if not (trt_package_dir / "include" / "NvInfer.h").is_file():
@@ -174,24 +170,16 @@ def _cross_cmake_options(args: argparse.Namespace,
                          row: Mapping[str, Any]) -> List[str]:
     host_arch = _host_arch()
     cross_build = host_arch != row["cpu_arch"]
-    if cross_build and args.toolchain_file is None:
-        raise RuntimeError(
-            f"Cross-building {row['cpu_arch']} from {host_arch} requires --toolchain-file."
-        )
     if cross_build and args.target_sysroot is None:
         raise RuntimeError(
             f"Cross-building {row['cpu_arch']} from {host_arch} requires --target-sysroot."
         )
     if cross_build and args.target_python_include_dir is None:
         raise RuntimeError(
-            "Cross-building the pybind11 extension requires --target-python-include-dir "
-            "for the requested CPython minor.")
+            "Cross-building the nanobind extension requires --target-python-include-dir "
+            "for the build interpreter.")
 
     options = []
-    if args.toolchain_file is not None:
-        options.append(
-            f"-DCMAKE_TOOLCHAIN_FILE={args.toolchain_file.resolve(strict=True)}"
-        )
     if args.target_sysroot is not None:
         options.append(
             f"-DCMAKE_SYSROOT={args.target_sysroot.resolve(strict=True)}")
@@ -204,29 +192,29 @@ def _cross_cmake_options(args: argparse.Namespace,
     return options
 
 
-def _pybind11_cmake_dir() -> Path:
+def _nanobind_cmake_dir() -> Path:
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pybind11", "--cmakedir"],
+            [sys.executable, "-m", "nanobind", "--cmake_dir"],
             check=True,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE)
     except (OSError, subprocess.CalledProcessError) as error:
         raise RuntimeError(
-            "pybind11 must be installed in the payload-build environment."
+            "nanobind must be installed in the payload-build environment."
         ) from error
     cmake_dir = Path(result.stdout.strip()).resolve()
-    if not (cmake_dir / "pybind11Config.cmake").is_file():
+    if not (cmake_dir / "nanobind-config.cmake").is_file():
         raise RuntimeError(
-            f"pybind11 did not report a usable CMake package: {cmake_dir}.")
+            f"nanobind did not report a usable CMake package: {cmake_dir}.")
     return cmake_dir
 
 
 def _cuda_architecture(row: Mapping[str, Any]) -> str:
     architectures = []
     for sm in CONTRACT.matrix_variant_gpu_sms(row):
-        suffix = "a" if sm in {100, 101, 110, 121} else ""
+        suffix = "a" if sm in {100, 101, 103, 110, 121} else ""
         architectures.append(f"{sm}{suffix}")
     return ";".join(architectures)
 
@@ -235,11 +223,8 @@ def _cmake_configure_command(args: argparse.Namespace, repo_root: Path,
                              build_dir: Path, trt_package_dir: Path,
                              row: Mapping[str, Any],
                              payload_rel: Path) -> List[str]:
-    abi_digits = args.python_abi[2:]
     cuda_architecture = _cuda_architecture(row)
-    extension_name = (
-        f"_edgellm_runtime.cpython-{abi_digits}-{row['cpu_arch']}-linux-gnu.so"
-    )
+    extension_name = "_edgellm_runtime.abi3.so"
     command = [
         "cmake",
         "-S",
@@ -256,12 +241,11 @@ def _cmake_configure_command(args: argparse.Namespace, repo_root: Path,
         f"-DCMAKE_CUDA_ARCHITECTURES={cuda_architecture}",
         "-DBUILD_PYTHON_BINDINGS=ON",
         f"-DTRT_PACKAGE_DIR={trt_package_dir}",
-        f"-DCUDA_CTK_VERSION={row['cuda_ctk_version']}",
         f"-DCUTE_DSL_ARTIFACT_TAG={row['cute_dsl_artifact_tag']}",
         f"-DEMBEDDED_TARGET={row['embedded_target']}",
         f"-DEDGELLM_WHEEL_PAYLOAD_DIR={payload_rel.as_posix()}",
         f"-DPython_EXECUTABLE={sys.executable}",
-        f"-Dpybind11_DIR={_pybind11_cmake_dir()}",
+        f"-Dnanobind_DIR={_nanobind_cmake_dir()}",
         f"-DEDGELLM_WHEEL_EXTENSION_NAME={extension_name}",
     ]
     driver_stub = cuda_driver_stub(row)
@@ -303,7 +287,7 @@ def _installed_binaries(output_dir: Path,
                         payload_rel: Path) -> Tuple[Path, Path]:
     payload_dir = output_dir / payload_rel
     extension = _one_file(payload_dir.glob("_edgellm_runtime*.so"),
-                          "pybind11 extension")
+                          "nanobind extension")
     plugin = _one_file(
         (payload_dir / "lib").glob("libNvInfer_edgellm_plugin.so"),
         "EdgeLLM plugin")
@@ -407,6 +391,7 @@ def _collect_evidence(output_dir: Path, build_dir: Path, archive: Path,
         _nm_symbols(path, "--defined-only") for path in debug_files)
     unresolved = "".join(
         _nm_symbols(path, "--undefined-only") for path in debug_files)
+    archive_defined = _nm_symbols(archive, "--defined-only")
 
     evidence_dir = output_dir / "evidence"
     evidence_dir.mkdir(exist_ok=True)
@@ -424,6 +409,8 @@ def _collect_evidence(output_dir: Path, build_dir: Path, archive: Path,
         "linked_symbols":
         [symbol for symbol in symbols if symbol in link_text],
         "defined_symbols": [symbol for symbol in symbols if symbol in defined],
+        "archive_defined_symbols":
+        [symbol for symbol in symbols if symbol in archive_defined],
         "unresolved_symbols":
         [symbol for symbol in symbols if symbol in unresolved],
         "link_map_sha256": {
@@ -446,7 +433,7 @@ def _payload_manifest(args: argparse.Namespace, repo_root: Path,
                       evidence_dir: Path) -> Dict[str, Any]:
     return {
         "schema_version":
-        1,
+        CONTRACT.SCHEMA_VERSION,
         "oss_policy_sha256":
         oss.policy_digest(repo_root),
         "package_version":
@@ -455,8 +442,6 @@ def _payload_manifest(args: argparse.Namespace, repo_root: Path,
         revision,
         "variant_id":
         args.variant,
-        "python_abi":
-        args.python_abi,
         "platform_family":
         row["platform_family"],
         "platform_release":
@@ -535,7 +520,7 @@ def _stage_build_source(repo_root: Path, build_dir: Path,
                                      dir=build_dir) as temp:
         incoming = oss.stage_source(repo_root, Path(temp) / "source")
         _copy_oss_kernel_inputs(repo_root, incoming, row)
-        # Preserve header timestamps so successive CPython ABIs reuse native objects.
+        # Preserve header timestamps so repeated payload builds reuse native objects.
         if (staged_source.exists() and oss.tree_digest(staged_source)
                 == oss.tree_digest(incoming)):
             return staged_source

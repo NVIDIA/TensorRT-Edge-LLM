@@ -66,7 +66,7 @@ class _UndAttn(nn.Module):
         self.k_norm_und_for_gen = RMSNorm(head_dim,
                                           rms_eps) if use_und_k_norm else None
 
-    def forward(self, h, rope_cos, rope_sin, pos):
+    def forward(self, h, rope_cos, rope_sin, pos, causal_mask):
         from tensorrt_edgellm.models.ops import attention_onnx, rope_onnx
 
         b, s, _ = h.shape
@@ -82,8 +82,8 @@ class _UndAttn(nn.Module):
         attn = attention_onnx(q,
                               k_self,
                               v,
-                              attn_mask=None,
-                              is_causal=True,
+                              attn_mask=causal_mask,
+                              is_causal=False,
                               scale=1.0)
         attn = attn.transpose(1, 2).reshape(b, s, -1)
         out = self.o_proj(attn)
@@ -138,9 +138,9 @@ class _UndLayer(nn.Module):
         self.mlp = _UndMLP(cfg["hidden_size"], cfg["intermediate_size"],
                            cfg["hidden_act"])
 
-    def forward(self, x, rope_cos, rope_sin, pos):
+    def forward(self, x, rope_cos, rope_sin, pos, causal_mask):
         attn_out, k, v = self.self_attn(self.input_layernorm(x), rope_cos,
-                                        rope_sin, pos)
+                                        rope_sin, pos, causal_mask)
         x = x + attn_out
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x, k, v
@@ -172,11 +172,19 @@ class Cosmos3UndPrefill(nn.Module):
         rope_sin = rope_rotary_cos_sin[...,
                                        half:].reshape(-1,
                                                       half).to(torch.float16)
+        # TensorRT 10.16 squares the softmax scale of an is_causal Attention
+        # built with a dynamic sequence profile, so pass the causal mask explicitly.
+        future = (attention_pos_id[:, None, None, :]
+                  > attention_pos_id[:, None, :, None])
+        causal_mask = torch.zeros_like(future,
+                                       dtype=torch.float16).masked_fill(
+                                           future, float("-inf"))
         x = inputs_embeds
         ks: List[torch.Tensor] = []
         vs: List[torch.Tensor] = []
         for layer in self.model.layers:
-            x, k, v = layer(x, rope_cos, rope_sin, attention_pos_id)
+            x, k, v = layer(x, rope_cos, rope_sin, attention_pos_id,
+                            causal_mask)
             ks.append(k)
             vs.append(v)
         hidden = self.model.norm(x)
@@ -197,7 +205,7 @@ class Cosmos3UndPrefill(nn.Module):
         pos = torch.arange(s, dtype=torch.int32, device=device).unsqueeze(0)
         args = (inputs_embeds, rope, pos)
         input_names = [
-            "inputs_embeds", "rope_rotary_cos_sin", "attention_pos_id"
+            "inputs_embeds", "rope_rotary_cos_sin", "attention_position_ids"
         ]
         output_names = ([f"und_k_layer{i:02d}" for i in range(n)] +
                         [f"und_v_layer{i:02d}"
@@ -290,7 +298,7 @@ def make_und_prefill_config(cfg: dict, max_und_len: int) -> dict:
                 "opt": [1, 16, hd],
                 "max": [1, max_und_len, hd],
             },
-            "attention_pos_id": {
+            "attention_position_ids": {
                 "min": [1, 2],
                 "opt": [1, 16],
                 "max": [1, max_und_len],
@@ -300,7 +308,7 @@ def make_und_prefill_config(cfg: dict, max_und_len: int) -> dict:
             "inputs": {
                 "inputs_embeds": ["batch", "und_len", "hidden_size"],
                 "rope_rotary_cos_sin": ["batch", "und_len", "head_dim"],
-                "attention_pos_id": ["batch", "und_len"],
+                "attention_position_ids": ["batch", "und_len"],
             },
             "outputs": {
                 "und_k_layerNN":

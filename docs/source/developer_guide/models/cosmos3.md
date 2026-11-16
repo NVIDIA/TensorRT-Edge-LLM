@@ -58,7 +58,7 @@ integration is optional and lives outside the core Python package.
 
 ```bash
 python -m experimental_models.cosmos3.robolab.policy_server \
-    --binary ./build/experimental_models/cosmos3/examples/cosmos3_policy_inference \
+    --binary ./build/bin/cosmos3_policy_inference \
     --engine-dir "$ENGINE_DIR" \
     --host 0.0.0.0 --port 8080
 ```
