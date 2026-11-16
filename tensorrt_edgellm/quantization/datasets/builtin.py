@@ -53,7 +53,7 @@ def zh_en_mixed():
                             "20231101.zh/train-00000-of-00006.parquet",
                             repo_type="dataset")
     zh_texts = pq.read_table(shard, columns=["text"]).column("text")
-    en = load_hf_split("cnn_dailymail",
+    en = load_hf_split("abisee/cnn_dailymail",
                        name="cnn_dailymail",
                        config="3.0.0",
                        split="train")
