@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Assemble verified payloads into one deterministic architecture/ABI wheel."""
+"""Assemble verified payloads into one deterministic architecture wheel."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
+from . import oss, wheel_artifact
 from .config import (CONTRACT, REPO_ROOT, load_matrix, load_toml, run_checked,
                      sha256, write_json)
 from .verify import verify
@@ -43,7 +44,6 @@ def _arguments(argv=None) -> argparse.Namespace:
     parser.add_argument("--cpu-arch",
                         choices=("x86_64", "aarch64"),
                         required=True)
-    parser.add_argument("--python-abi", required=True)
     parser.add_argument(
         "--variant",
         action="append",
@@ -86,6 +86,7 @@ def _read_json(path: Path) -> Dict[str, Any]:
 def _base_metadata(base_wheel: Path) -> Dict[str, Any]:
     metadata_path = base_wheel.parent / "base-wheel.json"
     metadata = _read_json(metadata_path)
+    oss.require_policy(metadata)
     required = {
         "schema_version", "package_version", "source_revision", "wheel",
         "wheel_sha256"
@@ -120,8 +121,7 @@ def _copy_payload(stage: Path, unpacked_root: Path, variant_id: str) -> None:
                     ignore=shutil.ignore_patterns("licenses"))
 
 
-def _set_wheel_tags(unpacked_root: Path, python_abi: str,
-                    cpu_arch: str) -> None:
+def _set_wheel_tags(unpacked_root: Path, cpu_arch: str) -> None:
     dist_infos = list(unpacked_root.glob("*.dist-info"))
     if len(dist_infos) != 1:
         raise RuntimeError(
@@ -134,7 +134,7 @@ def _set_wheel_tags(unpacked_root: Path, python_abi: str,
     ]
     lines.extend([
         "Root-Is-Purelib: false",
-        f"Tag: {python_abi}-{python_abi}-linux_{cpu_arch}",
+        f"Tag: {wheel_artifact.binary_wheel_tag(cpu_arch)}",
     ])
     wheel_metadata.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -162,9 +162,9 @@ def _wheel_members(archive: zipfile.ZipFile) -> Tuple[Set[str], str, str]:
 
 
 def _audit_wheel_metadata(archive: zipfile.ZipFile, wheel_file: str,
-                          cpu_arch: str, python_abi: str) -> None:
+                          cpu_arch: str) -> None:
     wheel_metadata = archive.read(wheel_file).decode()
-    tag = f"Tag: {python_abi}-{python_abi}-linux_{cpu_arch}"
+    tag = f"Tag: {wheel_artifact.binary_wheel_tag(cpu_arch)}"
     if tag not in wheel_metadata or "Root-Is-Purelib: false" not in wheel_metadata:
         raise RuntimeError(
             f"Final WHEEL metadata is missing {tag!r} or native-root marker.")
@@ -206,8 +206,8 @@ def _audit_user_packages(archive: zipfile.ZipFile, names: Set[str]) -> None:
     required = {
         "tensorrt_edgellm/__init__.py",
         "tensorrt_edgellm/runtime.py",
-        "experimental/builder/__init__.py",
-        "experimental/builder/cli.py",
+        "tensorrt_edgellm/builder/__init__.py",
+        "tensorrt_edgellm/builder/cli.py",
     }
     missing = sorted(required - names)
     entry_points = [
@@ -217,7 +217,7 @@ def _audit_user_packages(archive: zipfile.ZipFile, names: Set[str]) -> None:
         raise RuntimeError(
             f"Final wheel is missing build/runtime package files: {missing}.")
     content = archive.read(entry_points[0]).decode("utf-8")
-    if "tensorrt-edgellm-build = experimental.builder.cli:main" not in content:
+    if "tensorrt-edgellm-build = tensorrt_edgellm.builder.cli:main" not in content:
         raise RuntimeError(
             "Final wheel has no tensorrt-edgellm-build entry point.")
 
@@ -225,7 +225,9 @@ def _audit_user_packages(archive: zipfile.ZipFile, names: Set[str]) -> None:
 def _audit_wheel_contents(names: Set[str]) -> None:
     forbidden = [
         name for name in names
-        if name.endswith((".a", ".o", ".map", ".bin")) or "/evidence/" in name
+        if name.endswith((".a", ".o", ".map", ".bin", ".cpp", ".cu", ".cuh",
+                          ".h", ".hpp")) or "/evidence/" in name
+        or "/__pycache__/" in name or name.startswith("python/nanobind/")
     ]
     if forbidden:
         raise RuntimeError(
@@ -281,17 +283,17 @@ def _audit_unpacked_size(archive: zipfile.ZipFile,
         )
 
 
-def _audit_final_wheel(wheel: Path, cpu_arch: str, python_abi: str,
-                       expected_ids: Iterable[str],
+def _audit_final_wheel(wheel: Path, cpu_arch: str, expected_ids: Iterable[str],
                        unpacked_budget: int) -> None:
     """Validate final tags, manifest, RECORD coverage, content, and size."""
-    expected_suffix = f"-{python_abi}-{python_abi}-linux_{cpu_arch}.whl"
-    if not wheel.name.endswith(expected_suffix):
-        raise RuntimeError(
-            f"Final wheel filename does not end with {expected_suffix}.")
+    identity = wheel_artifact.parse_final_wheel_filename(wheel.name,
+                                                         allow_build_tag=True)
+    if identity.cpu_arch != cpu_arch:
+        raise RuntimeError(f"Final wheel identity does not match {cpu_arch}.")
     with zipfile.ZipFile(wheel) as archive:
+        oss.audit_archive(archive)
         names, wheel_file, record_file = _wheel_members(archive)
-        _audit_wheel_metadata(archive, wheel_file, cpu_arch, python_abi)
+        _audit_wheel_metadata(archive, wheel_file, cpu_arch)
         manifest = _load_runtime_manifest(archive, names)
         _audit_manifest_entries(manifest, names, expected_ids)
         _audit_user_packages(archive, names)
@@ -321,12 +323,12 @@ def _selected_variant_ids(rows: Iterable[Dict[str, Any]], cpu_arch: str,
     return selected, architecture_ids
 
 
-def _tag_subset_wheel(wheel: Path, python_abi: str, selected: Set[str],
+def _tag_subset_wheel(wheel: Path, selected: Set[str],
                       architecture: Set[str]) -> Path:
     if selected == architecture:
         return wheel
     digest = hashlib.sha256("\n".join(sorted(selected)).encode()).hexdigest()
-    marker = f"-{python_abi}-{python_abi}-"
+    marker = f"-{wheel_artifact.PYTHON_TAG}-{wheel_artifact.ABI_TAG}-"
     if wheel.name.count(marker) != 1:
         raise RuntimeError(f"Cannot add a subset build tag to {wheel.name}.")
     tagged_name = wheel.name.replace(marker, f"-1subset{digest[:8]}{marker}",
@@ -336,14 +338,28 @@ def _tag_subset_wheel(wheel: Path, python_abi: str, selected: Set[str],
     return tagged
 
 
+def _runtime_entries(payloads: Iterable[Dict[str, Any]],
+                     rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Expand a shared multi-SM payload into exact runtime identities."""
+    by_id = {str(row["variant_id"]): row for row in rows}
+    entries = []
+    for payload in payloads:
+        variant_id = str(payload["variant_id"])
+        row = by_id[variant_id]
+        for gpu_sm in CONTRACT.matrix_variant_gpu_sms(row):
+            entry = {key: payload.get(key) for key in sorted(_RUNTIME_FIELDS)}
+            entry["gpu_sm"] = gpu_sm
+            entries.append(entry)
+    return sorted(entries,
+                  key=lambda value: (value["variant_id"], value["gpu_sm"]))
+
+
 def main(argv=None) -> None:
     """Verify selected payloads, inject them, retag them, and pack one wheel."""
     args = _arguments(argv)
     base_wheel = args.base_wheel.resolve(strict=True)
     base = _base_metadata(base_wheel)
     matrix, rows = load_matrix(args.matrix.resolve())
-    if args.python_abi not in matrix["qualified_python_abis"]:
-        raise RuntimeError(f"Unqualified Python ABI {args.python_abi!r}.")
     expected_ids, architecture_ids = _selected_variant_ids(
         rows, args.cpu_arch, args.variants or [])
     payloads: List[Dict[str, Any]] = []
@@ -353,7 +369,6 @@ def main(argv=None) -> None:
         stage = metadata_path.parent
         payload = _read_json(metadata_path)
         if (payload.get("cpu_arch") != args.cpu_arch
-                or payload.get("python_abi") != args.python_abi
                 or str(payload.get("variant_id")) not in expected_ids):
             continue
         verified = verify(stage,
@@ -370,7 +385,7 @@ def main(argv=None) -> None:
     found_ids = set(stages)
     if found_ids != expected_ids:
         raise RuntimeError(
-            f"Incomplete {args.cpu_arch}/{args.python_abi} fan-in: "
+            f"Incomplete {args.cpu_arch} fan-in: "
             f"missing={sorted(expected_ids - found_ids)}, extra={sorted(found_ids - expected_ids)}."
         )
     for payload in payloads:
@@ -410,11 +425,7 @@ def main(argv=None) -> None:
         for payload in sorted(payloads, key=lambda value: value["variant_id"]):
             _copy_payload(stages[payload["variant_id"]], root,
                           payload["variant_id"])
-        runtime_entries = [{
-            key: payload.get(key)
-            for key in sorted(_RUNTIME_FIELDS)
-        } for payload in sorted(payloads,
-                                key=lambda value: value["variant_id"])]
+        runtime_entries = _runtime_entries(payloads, rows)
         for entry in runtime_entries:
             prefix = f"_native/payloads/{entry['variant_id']}/"
             if entry["plugin"] != prefix + "lib/libNvInfer_edgellm_plugin.so":
@@ -423,13 +434,14 @@ def main(argv=None) -> None:
                 )
         write_json(
             root / "tensorrt_edgellm" / "_native" / "variants.json", {
-                "schema_version": 1,
+                "schema_version": CONTRACT.SCHEMA_VERSION,
+                "oss_policy_sha256": base["oss_policy_sha256"],
                 "package_version": base["package_version"],
                 "source_revision": base["source_revision"],
                 "source_provenance_sha256": base["source_provenance_sha256"],
                 "variants": runtime_entries,
             })
-        _set_wheel_tags(root, args.python_abi, args.cpu_arch)
+        _set_wheel_tags(root, args.cpu_arch)
         _normalize_mtimes(root)
         before = set(output_dir.glob("*.whl"))
         environment = dict(os.environ)
@@ -444,14 +456,13 @@ def main(argv=None) -> None:
         if len(produced) != 1:
             raise RuntimeError(
                 f"Expected one assembled wheel, found {produced}.")
-    wheel = _tag_subset_wheel(produced[0], args.python_abi, expected_ids,
-                              architecture_ids)
+    wheel = _tag_subset_wheel(produced[0], expected_ids, architecture_ids)
     budgets = load_toml(args.size_budget)["wheel"][args.cpu_arch]
     try:
         if wheel.stat().st_size > int(budgets["compressed_bytes"]):
             raise RuntimeError(
                 f"Wheel {wheel} exceeds compressed size budget.")
-        _audit_final_wheel(wheel, args.cpu_arch, args.python_abi, expected_ids,
+        _audit_final_wheel(wheel, args.cpu_arch, expected_ids,
                            int(budgets["unpacked_bytes"]))
         digest = sha256(wheel)
         if args.expected_sha256 and digest != args.expected_sha256:

@@ -31,11 +31,18 @@ Architecture::
     hidden_states_from_base -----------> pre_fc_norm_hidden ------+
 
 The single decoder layer is a Qwen3.5 gated-attention block with QK-norm
-and SwiGLU MLP.
+and SwiGLU MLP. Dense Qwen3 checkpoints (no ``attn_output_gate`` in the HF
+config, e.g. AngelSlim/Qwen3-8B-MTP) use a plain QK-norm attention block and
+Llama-style RMSNorm instead.
+
+The Qwen4-Exp draft lives in :mod:`mtp_draft_qwen4_exp`. ``quantize_mtp_from_base``
+picks the draft class by the base's ``model_type`` through :func:`_draft_classes`;
+every draft derives from :class:`MtpDraftBase`.
 """
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, Optional, Union
 
@@ -44,16 +51,132 @@ import torch
 from safetensors.torch import load_file, safe_open
 from torch import nn
 from tqdm import tqdm
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from tensorrt_edgellm._safetensors_io import save_file
 from tensorrt_edgellm.checkpoint.fused_weights import (
     split_fused_moe_experts, split_fused_shared_expert)
+from tensorrt_edgellm.config import _MTP_CONFIG_MODEL_TYPES
 
 from ..datasets import TextDataset, dataset_name, resolve_dataset
-from ..quantization_configs import build_quant_config
+from ..quantization_configs import (build_quant_config,
+                                    split_lm_head_calibration)
 from .attention_scale import resolve_attention_scale
 from .layers import RotaryEmbedding, SwiGLUMLP, apply_rotary_pos_emb, repeat_kv
+
+# ---------------------------------------------------------------------------
+# Checkpoint I/O shared by all drafts
+# ---------------------------------------------------------------------------
+
+
+def _text_config(config):
+    """Descend to the text config that declares the MTP head.
+
+    Omni nests it under ``thinker_config.text_config``; other multimodal
+    models expose a direct ``text_config``; plain LLMs are already there.
+    """
+    if hasattr(config, "thinker_config"):
+        config = config.thinker_config
+    if hasattr(config, "text_config"):
+        config = config.text_config
+    return config
+
+
+def _read_mtp_state_dict(model_dir: str,
+                         device: str) -> Dict[str, torch.Tensor]:
+    """``mtp.*`` tensors with the prefix stripped, plus the base ``lm_head``.
+
+    ``lm_head.weight`` comes from the checkpoint's own head, or is tied from
+    ``embed_tokens`` when the checkpoint ships none.
+    """
+    state_dict: Dict[str, torch.Tensor] = {}
+    for sf_path in sorted(Path(model_dir).glob("*.safetensors")):
+        with safe_open(str(sf_path), framework="pt", device=device) as f:
+            for key in f.keys():
+                # Standalone LLMs store the head as ``mtp.*``; Omni
+                # checkpoints nest it under the Thinker (``thinker.mtp.*``).
+                prefix = next(
+                    (p for p in ("mtp.", "thinker.mtp.") if key.startswith(p)),
+                    None)
+                if prefix is not None:
+                    state_dict[key[len(prefix):]] = f.get_tensor(key)
+                elif key == "lm_head.weight":
+                    state_dict["lm_head.weight"] = f.get_tensor(key)
+                elif key in ("model.embed_tokens.weight",
+                             "model.language_model.embed_tokens.weight"):
+                    if "lm_head.weight" not in state_dict:
+                        state_dict["lm_head.weight"] = f.get_tensor(key)
+
+    if not any(k != "lm_head.weight" for k in state_dict):
+        raise RuntimeError(
+            f"No 'mtp.*' tensors found under {model_dir} — nothing to "
+            "load for the draft head; check that the checkpoint is "
+            "complete and carries the MTP draft weights.")
+    return state_dict
+
+
+def _split_fused_mtp_weights(state_dict: Dict[str, torch.Tensor],
+                             model: nn.Module) -> None:
+    """Expand fused checkpoint tensors into the calibration module layout."""
+    mlp = model.layers[0].mlp
+    shared_expert = getattr(mlp, "shared_expert", None)
+    for key in list(state_dict):
+        tensor = state_dict[key]
+        split_weights = split_fused_moe_experts(key, tensor)
+        if split_weights is None and shared_expert is not None:
+            split_weights = split_fused_shared_expert(
+                key, tensor, shared_expert.gate_proj.in_features,
+                shared_expert.gate_proj.out_features)
+        if split_weights is None:
+            continue
+        del state_dict[key]
+        state_dict.update(split_weights)
+
+
+def _load_mtp_state_dict(model: nn.Module, state_dict: Dict[str, torch.Tensor],
+                         expected_absent: tuple) -> None:
+    """Load the draft weights; only ``expected_absent`` prefixes may be missing."""
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    real_missing = [k for k in missing if not k.startswith(expected_absent)]
+    if real_missing:
+        raise RuntimeError(
+            f"MTP draft has {len(real_missing)} unloaded weight(s); "
+            f"first keys: {real_missing[:10]}")
+    if unexpected:
+        raise RuntimeError(
+            f"MTP draft checkpoint has {len(unexpected)} unsupported "
+            f"weight(s); first keys: {unexpected[:10]}")
+
+
+class MtpDraftBase(nn.Module):
+    """What ``quantize_mtp_from_base`` needs from a draft.
+
+    Subclasses build their modules under the checkpoint's ``mtp.*`` names,
+    own an ``lm_head`` and an ``embed_tokens`` slot the calibration code
+    shares from the base, and implement ``is_moe`` and
+    ``calibration_forward``. ``expected_absent`` lists the parameter prefixes
+    a checkpoint may omit (the head is borrowed from the base at export).
+    """
+
+    expected_absent: tuple = ("lm_head", )
+
+    @property
+    def is_moe(self) -> bool:
+        raise NotImplementedError
+
+    def calibration_forward(self, base_model, input_ids):
+        """Run the base, then the draft on the base's output for the same tokens."""
+        raise NotImplementedError
+
+    @classmethod
+    def from_pretrained(cls, model_dir, config, device="cuda"):
+        """Build from the loaded base's text ``config`` and load ``mtp.*`` weights."""
+        model = cls(config)
+        state_dict = _read_mtp_state_dict(model_dir, device)
+        _split_fused_mtp_weights(state_dict, model)
+        _load_mtp_state_dict(model, state_dict, cls.expected_absent)
+        return model.to(device)
+
 
 # ---------------------------------------------------------------------------
 # Qwen3.5-specific building blocks
@@ -177,6 +300,99 @@ class Qwen3_5GatedAttention(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Dense Qwen3 building blocks (calibration-only, no KV-cache)
+# ---------------------------------------------------------------------------
+
+
+class RMSNorm(nn.Module):
+    """Llama-style RMSNorm: ``weight * RMSNorm(x)``, weight initialised to one."""
+
+    def __init__(self, hidden_size, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.eps = eps
+
+    def forward(self, x):
+        input_dtype = x.dtype
+        hidden = x.to(torch.float32)
+        variance = hidden.pow(2).mean(-1, keepdim=True)
+        hidden = hidden * torch.rsqrt(variance + self.eps)
+        return (self.weight.float() * hidden).to(input_dtype)
+
+
+class Qwen3Attention(nn.Module):
+    """Plain GQA attention with per-head QK-norm (Qwen3 convention, no gate)."""
+
+    def __init__(self,
+                 hidden_size,
+                 num_heads,
+                 num_kv_heads,
+                 head_dim,
+                 rms_norm_eps,
+                 bias,
+                 attention_scale=None):
+        super().__init__()
+        self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
+        self.head_dim = head_dim
+        self.kv_groups = num_heads // num_kv_heads
+        self.attention_scale = (resolve_attention_scale({}, "", head_dim) if
+                                attention_scale is None else attention_scale)
+
+        self.q_proj = nn.Linear(hidden_size, num_heads * head_dim, bias=bias)
+        self.k_proj = nn.Linear(hidden_size,
+                                num_kv_heads * head_dim,
+                                bias=bias)
+        self.v_proj = nn.Linear(hidden_size,
+                                num_kv_heads * head_dim,
+                                bias=bias)
+        self.o_proj = nn.Linear(num_heads * head_dim, hidden_size, bias=False)
+
+        self.q_norm = RMSNorm(head_dim, eps=rms_norm_eps)
+        self.k_norm = RMSNorm(head_dim, eps=rms_norm_eps)
+
+    def forward(self, x, cos, sin):
+        B, L, _ = x.size()
+        query_states = self.q_proj(x).view(B, L, self.num_heads, self.head_dim)
+        key_states = self.k_proj(x).view(B, L, self.num_kv_heads,
+                                         self.head_dim)
+        value_states = self.v_proj(x).view(B, L, self.num_kv_heads,
+                                           self.head_dim)
+
+        query_states = self.q_norm(query_states).transpose(1, 2)
+        key_states = self.k_norm(key_states).transpose(1, 2)
+        value_states = value_states.transpose(1, 2)
+
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states, key_states, cos, sin)
+        key_states = repeat_kv(key_states, self.kv_groups)
+        value_states = repeat_kv(value_states, self.kv_groups)
+
+        w = (torch.matmul(query_states, key_states.transpose(2, 3)) *
+             self.attention_scale)
+        if L > 1:
+            mask = torch.triu(
+                torch.ones(1, 1, L, L, device=x.device, dtype=torch.bool), 1)
+            w.masked_fill_(mask, torch.finfo(w.dtype).min)
+        w = nn.functional.softmax(w, dim=-1,
+                                  dtype=torch.float32).to(query_states.dtype)
+        attn_output = torch.matmul(w, value_states)
+        attn_output = attn_output.transpose(1,
+                                            2).contiguous().reshape(B, L, -1)
+        return self.o_proj(attn_output)
+
+
+def _uses_plain_layers(config) -> bool:
+    """Only dense Qwen3 heads use plain attention and Llama-style norms.
+
+    Keyed on model_type rather than ``attn_output_gate``: transformers' Qwen3.5
+    config classes do not define that attribute, so a checkpoint omitting it
+    must still get the gated block.
+    """
+    return getattr(config, "model_type", "") == "qwen3"
+
+
+# ---------------------------------------------------------------------------
 # MTP MLPs, Decoder Layer, and Model
 # ---------------------------------------------------------------------------
 
@@ -263,13 +479,14 @@ class MtpDecoderLayer(nn.Module):
                  attention_scale=None):
         super().__init__()
         hidden_size = config.hidden_size
-        self.input_layernorm = Qwen3_5RMSNorm(hidden_size, eps=rms_norm_eps)
-        self.self_attn = Qwen3_5GatedAttention(hidden_size, num_heads,
-                                               num_kv_heads, head_dim,
-                                               rms_norm_eps, bias,
-                                               attention_scale)
-        self.post_attention_layernorm = Qwen3_5RMSNorm(hidden_size,
-                                                       eps=rms_norm_eps)
+        plain = _uses_plain_layers(config)
+        norm_cls = RMSNorm if plain else Qwen3_5RMSNorm
+        attn_cls = Qwen3Attention if plain else Qwen3_5GatedAttention
+        self.input_layernorm = norm_cls(hidden_size, eps=rms_norm_eps)
+        self.self_attn = attn_cls(hidden_size, num_heads, num_kv_heads,
+                                  head_dim, rms_norm_eps, bias,
+                                  attention_scale)
+        self.post_attention_layernorm = norm_cls(hidden_size, eps=rms_norm_eps)
         if _num_experts(config) > 0:
             self.mlp = MtpSparseMoeBlock(config)
         else:
@@ -285,13 +502,16 @@ class MtpDecoderLayer(nn.Module):
         return residual + hidden_states
 
 
-class MtpDraftModel(nn.Module):
+class Qwen3_5MtpDraftModel(MtpDraftBase):
     """Standalone Qwen3.5 MTP draft model for quantization.
 
     Fully self-contained — uses only basic ``torch.nn`` modules.
     Module names match HuggingFace checkpoint keys (after stripping
     the ``mtp.`` prefix) so weights load without remapping.
     """
+
+    # Rotary tables are buffers rebuilt at init; the head is the base's.
+    expected_absent = ("rotary_emb", "lm_head")
 
     def __init__(self, config):
         super().__init__()
@@ -304,9 +524,9 @@ class MtpDraftModel(nn.Module):
             config, getattr(config, "model_type", ""), head_dim)
 
         # MTP fusion layers
-        self.pre_fc_norm_embedding = Qwen3_5RMSNorm(hs,
-                                                    eps=config.rms_norm_eps)
-        self.pre_fc_norm_hidden = Qwen3_5RMSNorm(hs, eps=config.rms_norm_eps)
+        norm_cls = RMSNorm if _uses_plain_layers(config) else Qwen3_5RMSNorm
+        self.pre_fc_norm_embedding = norm_cls(hs, eps=config.rms_norm_eps)
+        self.pre_fc_norm_hidden = norm_cls(hs, eps=config.rms_norm_eps)
         self.fc = nn.Linear(hs * 2, hs, bias=False)
 
         # Single decoder layer
@@ -316,7 +536,7 @@ class MtpDraftModel(nn.Module):
                             config.rms_norm_eps, bias, attention_scale)
         ])
 
-        self.norm = Qwen3_5RMSNorm(hs, eps=config.rms_norm_eps)
+        self.norm = norm_cls(hs, eps=config.rms_norm_eps)
         self.lm_head = nn.Linear(hs, config.vocab_size, bias=False)
 
         # Shared with base model — set by calibration code
@@ -363,87 +583,39 @@ class MtpDraftModel(nn.Module):
         # Final norm + lm_head on last token
         return self.lm_head(self.norm(hidden_states[:, -1]))
 
-    @classmethod
-    def from_pretrained(cls, model_dir, device="cuda"):
-        """Load MTP draft weights from a Qwen3.5 checkpoint.
+    @property
+    def is_moe(self) -> bool:
+        return isinstance(self.layers[0].mlp, MtpSparseMoeBlock)
 
-        Reads ``mtp.*`` keys from safetensors, strips the ``mtp.`` prefix,
-        and loads them into the model.  ``lm_head`` is loaded from the
-        checkpoint's ``lm_head.weight`` (or tied from ``embed_tokens``).
-        """
-        config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
-        # Descend to the text config that declares the MTP head: Omni nests it
-        # under ``thinker_config.text_config``; other multimodal models expose
-        # a direct ``text_config``; plain LLMs are already at that level.
-        if hasattr(config, "thinker_config"):
-            config = config.thinker_config
-        if hasattr(config, "text_config"):
-            config = config.text_config
-        model = cls(config)
-
-        mtp_state_dict = {}
-        for sf_path in sorted(Path(model_dir).glob("*.safetensors")):
-            with safe_open(str(sf_path), framework="pt", device=device) as f:
-                for key in f.keys():
-                    # Standalone LLMs store the head as ``mtp.*``; Omni
-                    # checkpoints nest it under the Thinker (``thinker.mtp.*``).
-                    prefix = next((p for p in ("mtp.", "thinker.mtp.")
-                                   if key.startswith(p)), None)
-                    if prefix is not None:
-                        mtp_state_dict[key[len(prefix):]] = f.get_tensor(key)
-                    elif key == "lm_head.weight":
-                        mtp_state_dict["lm_head.weight"] = f.get_tensor(key)
-                    elif key in ("model.embed_tokens.weight",
-                                 "model.language_model.embed_tokens.weight"):
-                        if "lm_head.weight" not in mtp_state_dict:
-                            mtp_state_dict["lm_head.weight"] = f.get_tensor(
-                                key)
-
-        if not any(k != "lm_head.weight" for k in mtp_state_dict):
-            raise RuntimeError(
-                f"No 'mtp.*' tensors found under {model_dir} — nothing to "
-                "load for the draft head; check that the checkpoint is "
-                "complete and carries the MTP draft weights.")
-
-        _split_fused_mtp_weights(mtp_state_dict, model)
-
-        missing, unexpected = model.load_state_dict(mtp_state_dict,
-                                                    strict=False)
-        # Omni checkpoints ship no ``mtp.lm_head``: the draft borrows the
-        # base head at export, or --lm_head_quantization copies it in.
-        expected_absent = ("rotary_emb", "lm_head")
-        real_missing = [
-            k for k in missing if not k.startswith(expected_absent)
-        ]
-        if real_missing:
-            raise RuntimeError(
-                f"MTP draft has {len(real_missing)} unloaded weight(s); "
-                f"first keys: {real_missing[:10]}")
-        if unexpected:
-            raise RuntimeError(
-                f"MTP draft checkpoint has {len(unexpected)} unsupported "
-                f"weight(s); first keys: {unexpected[:10]}")
-
-        model.to(device)
-        return model
+    def calibration_forward(self, base_model, input_ids):
+        outputs = base_model(input_ids, output_hidden_states=True)
+        return self(input_ids, outputs["hidden_states"][-1])
 
 
-def _split_fused_mtp_weights(state_dict: Dict[str, torch.Tensor],
-                             model: nn.Module) -> None:
-    """Expand fused checkpoint tensors into the calibration module layout."""
-    mlp = model.layers[0].mlp
-    shared_expert = getattr(mlp, "shared_expert", None)
-    for key in list(state_dict):
-        tensor = state_dict[key]
-        split_weights = split_fused_moe_experts(key, tensor)
-        if split_weights is None and shared_expert is not None:
-            split_weights = split_fused_shared_expert(
-                key, tensor, shared_expert.gate_proj.in_features,
-                shared_expert.gate_proj.out_features)
-        if split_weights is None:
-            continue
-        del state_dict[key]
-        state_dict.update(split_weights)
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+
+
+def _draft_classes() -> Dict[str, type]:
+    """Draft class by the base's text ``model_type``.
+
+    Kept in step with ``_MTP_CONFIG_MODEL_TYPES``, which is what makes the quantizer look for a
+    draft. The Qwen4-Exp draft derives from :class:`MtpDraftBase`, so it is imported here.
+    """
+    from .mtp_draft_qwen4_exp import Qwen4ExpMtpDraftModel
+    classes = {
+        "qwen3": Qwen3_5MtpDraftModel,
+        "qwen3_5": Qwen3_5MtpDraftModel,
+        "qwen3_5_text": Qwen3_5MtpDraftModel,
+        "qwen3_5_moe": Qwen3_5MtpDraftModel,
+        "qwen3_5_moe_text": Qwen3_5MtpDraftModel,
+        "qwen3_omni_next_text": Qwen3_5MtpDraftModel,
+        "qwen3_omni_next_text_moe": Qwen3_5MtpDraftModel,
+        "qwen4_exp_text": Qwen4ExpMtpDraftModel,
+    }
+    assert set(classes) == set(_MTP_CONFIG_MODEL_TYPES)
+    return classes
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +665,7 @@ def quantize_mtp_from_base(
     *,
     text_dataset: Union[str, TextDataset, None] = None,
     num_samples: int = 512,
-) -> "MtpDraftModel":
+) -> nn.Module:
     """Load and quantize the MTP draft using the unquantized base model.
 
     Called *before* base model quantization so the unquantized base can
@@ -505,7 +677,13 @@ def quantize_mtp_from_base(
     from modelopt.torch.quantization.utils import is_quantized
 
     torch_dtype = torch.float16 if dtype == "fp16" else torch.bfloat16
-    mtp_draft = MtpDraftModel.from_pretrained(model_dir, device)
+    text_config = _text_config(base_model.config)
+    model_type = getattr(text_config, "model_type", "")
+    draft_classes = _draft_classes()
+    if model_type not in draft_classes:
+        raise ValueError(f"No MTP draft implementation for {model_type!r}")
+    mtp_draft = draft_classes[model_type].from_pretrained(
+        model_dir, text_config, device)
     mtp_draft = mtp_draft.eval().to(torch_dtype)
 
     if is_quantized(mtp_draft):
@@ -528,7 +706,7 @@ def quantize_mtp_from_base(
 
     quant_cfg = build_quant_config(quantization, lm_head_quantization,
                                    kv_cache_quantization)
-    is_moe = isinstance(mtp_draft.layers[0].mlp, MtpSparseMoeBlock)
+    is_moe = mtp_draft.is_moe
     if is_moe:
         quant_cfg["quant_cfg"].extend({
             "quantizer_name": pattern,
@@ -550,13 +728,13 @@ def quantize_mtp_from_base(
 
     def _calib(draft):
         for data in tqdm(loader, desc="Calibrating MTP draft"):
-            data = data.to(device)
             with torch.no_grad():
-                outputs = base_model(data, output_hidden_states=True)
-            last_hidden = outputs["hidden_states"][-1]
-            draft(data, last_hidden)
+                draft.calibration_forward(base_model, data.to(device))
 
+    lm_head_cfg = split_lm_head_calibration(quant_cfg, lm_head_quantization)
     mtq.quantize(mtp_draft, quant_cfg, forward_loop=_calib)
+    if lm_head_cfg:
+        mtq.quantize(mtp_draft, lm_head_cfg, forward_loop=_calib)
 
     if is_moe:
         # Top-k routing leaves un-fired experts without a calibration amax, and
@@ -571,7 +749,7 @@ def quantize_mtp_from_base(
     return mtp_draft
 
 
-def export_quantized_mtp_state_dict(mtp_draft: "MtpDraftModel",
+def export_quantized_mtp_state_dict(mtp_draft: nn.Module,
                                     dtype: str) -> Dict[str, torch.Tensor]:
     """Return quantized MTP tensors in unified-checkpoint key format."""
     from modelopt.torch.export.quant_utils import get_quant_config
@@ -600,7 +778,7 @@ def export_quantized_mtp_state_dict(mtp_draft: "MtpDraftModel",
     return mtp_tensors
 
 
-def save_quantized_mtp(mtp_draft: "MtpDraftModel", output_dir: str,
+def save_quantized_mtp(mtp_draft: nn.Module, output_dir: str,
                        dtype: str) -> None:
     """Extract quantized MTP weights and merge into the base checkpoint.
 
@@ -670,6 +848,66 @@ def _merge_tensors_into_safetensors(output_dir, tensors):
         save_file(existing, single_path)
     else:
         save_file(tensors, os.path.join(output_dir, "mtp.safetensors"))
+
+
+def _quantized_layer_entries(tensors):
+    """Describe each quantized ``mtp.*`` module from its tensors, experts by their container."""
+    entries = {}
+    for key, weight in tensors.items():
+        if not key.endswith(".weight") or weight.dim() < 2:
+            continue
+        module = key[:-len(".weight")]
+        scale = tensors.get(module + ".weight_scale")
+        if scale is None:
+            continue
+        if weight.dtype == torch.uint8 and module + ".weight_scale_2" in tensors:
+            entry = {
+                "quant_algo": "NVFP4",
+                "group_size": 2 * weight.shape[-1] // scale.shape[-1]
+            }
+        elif weight.dtype == torch.float8_e4m3fn and scale.numel() == 1:
+            entry = {"quant_algo": "FP8"}
+        elif (weight.dtype == torch.uint8
+              and module + ".pre_quant_scale" in tensors):
+            # W4A16_AWQ weights are packed along out: [out // 2, in].
+            entry = {
+                "quant_algo": "W4A16_AWQ",
+                "group_size": weight.shape[-1] // scale.shape[-1],
+                "has_zero_point": False,
+                "pre_quant_scale": True
+            }
+        else:
+            raise ValueError(f"Unrecognized quantized MTP layout: {module}")
+        entries[re.sub(r"\.experts\.\d+\.[^.]+$", ".experts", module)] = entry
+    return entries
+
+
+def list_quantized_mtp_layers(output_dir, tensors):
+    """Add the quantized MTP modules to ``quantized_layers`` where the exported config lists layers.
+
+    A uniform recipe has no list and the draft inherits ``quant_algo``; a mixed-precision
+    export reads unlisted modules as unquantized.
+    """
+    entries = None
+    for cfg_file, path_to_section in [
+        ("config.json", ("quantization_config", )),
+        ("hf_quant_config.json", ("quantization", )),
+    ]:
+        cfg_path = os.path.join(output_dir, cfg_file)
+        if not os.path.exists(cfg_path):
+            continue
+        with open(cfg_path, "r") as f:
+            cfg = json.load(f)
+        section = cfg
+        for key in path_to_section:
+            section = section.get(key, {})
+        if not section.get("quantized_layers"):
+            continue
+        if entries is None:
+            entries = _quantized_layer_entries(tensors)
+        section["quantized_layers"].update(entries)
+        with open(cfg_path, "w") as f:
+            json.dump(cfg, f, indent=2)
 
 
 def _patch_quant_exclude_list(output_dir, module_names):

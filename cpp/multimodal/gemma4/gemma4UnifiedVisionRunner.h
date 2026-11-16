@@ -45,7 +45,7 @@ struct Gemma4UnifiedVisionConfig
 class Gemma4UnifiedVisionRunner : public MultimodalRunner
 {
 public:
-    Gemma4UnifiedVisionRunner(std::string const& engineDir, cudaStream_t stream);
+    Gemma4UnifiedVisionRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
     ~Gemma4UnifiedVisionRunner() noexcept = default;
 
     bool preprocess(rt::LLMGenerationRequest const& request, std::vector<std::vector<int32_t>>& batchedInputIds,
@@ -70,12 +70,9 @@ private:
     rt::Tensor mVisualInput{};
     rt::Tensor mPixelPositionIds{};
     rt::Tensor mPixelPositionIdsHost{};
-    rt::Tensor mImageMean{};
-    rt::Tensor mImageStd{};
-    rt::Tensor mImageDevice{};
-    rt::Tensor mRescaledImageDevice{};
-    rt::Tensor mRawImageDevice{};  //!< Raw (pre-resize) image device buffer for the GPU resize path
-    rt::Tensor mResizeTmpDevice{}; //!< Float scratch (horizontal pass) for the GPU resize
+    std::array<float, 3> mImageMean{}; //!< Per-channel normalisation mean, RGB
+    std::array<float, 3> mImageStd{};  //!< Per-channel normalisation standard deviation, RGB
+    rt::Tensor mRescaledImageDevice{}; //!< Preprocessed frame, [1, H, W, 3] HALF
 };
 
 } // namespace rt

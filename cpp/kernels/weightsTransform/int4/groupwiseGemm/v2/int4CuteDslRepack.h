@@ -35,11 +35,11 @@ cudaError_t launchModelOptInt4CuteDslRepack(
 //! Repack GPTQ ``[K/8,N]`` weights directly from checkpoint storage.
 cudaError_t launchGptqInt4CuteDslRepack(int32_t const* qweightK8N, int32_t const* qzerosGN8,
     int32_t const* activationPermutation, int8_t* fragmentRows512, int32_t N, int32_t K, int32_t numGroups,
-    int32_t groupSize, int32_t zeroPointOffset, cudaStream_t stream);
+    int32_t groupSize, int32_t zeroPointOffset, bool outputMajor, cudaStream_t stream);
 
 //! Repack classic AWQ ``[K,N/8]`` weights directly from checkpoint storage.
-cudaError_t launchAwqInt4CuteDslRepack(int32_t const* qweightKN8, int32_t const* qzerosGN8, int8_t* fragmentRows512,
-    int32_t N, int32_t K, int32_t numGroups, int32_t groupSize, cudaStream_t stream);
+cudaError_t launchAwqInt4CuteDslRepack(
+    int32_t const* qweightKN8, int8_t* fragmentRows512, int32_t N, int32_t K, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

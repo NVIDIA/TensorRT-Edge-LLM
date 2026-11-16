@@ -107,26 +107,25 @@ cudaError_t launchModelOptInt4PluginV1Repack(
 
 cudaError_t launchGptqInt4PluginV1Repack(int32_t const* qweightK8N, int32_t const* qzerosGN8,
     int32_t const* activationPermutation, int8_t* packedNhalfK, int32_t N, int32_t K, int32_t numGroups,
-    int32_t groupSize, int32_t zeroPointOffset, cudaStream_t stream)
+    int32_t groupSize, int32_t zeroPointOffset, bool outputMajor, cudaStream_t stream)
 {
     if (qweightK8N == nullptr || (qzerosGN8 != nullptr && (numGroups <= 0 || numGroups * groupSize != K)))
     {
         return cudaErrorInvalidValue;
     }
     return launchDirectInt4PluginV1Repack(
-        GptqInt4Accessor{qweightK8N, qzerosGN8, activationPermutation, N, groupSize, zeroPointOffset}, packedNhalfK, N,
-        K, stream);
+        GptqInt4Accessor{qweightK8N, qzerosGN8, activationPermutation, N, K, groupSize, zeroPointOffset, outputMajor},
+        packedNhalfK, N, K, stream);
 }
 
-cudaError_t launchAwqInt4PluginV1Repack(int32_t const* qweightKN8, int32_t const* qzerosGN8, int8_t* packedNhalfK,
-    int32_t N, int32_t K, int32_t numGroups, int32_t groupSize, cudaStream_t stream)
+cudaError_t launchAwqInt4PluginV1Repack(
+    int32_t const* qweightKN8, int8_t* packedNhalfK, int32_t N, int32_t K, cudaStream_t stream)
 {
-    if (qweightKN8 == nullptr || qzerosGN8 == nullptr || numGroups <= 0 || numGroups * groupSize != K)
+    if (qweightKN8 == nullptr)
     {
         return cudaErrorInvalidValue;
     }
-    return launchDirectInt4PluginV1Repack(
-        AwqInt4Accessor{qweightKN8, qzerosGN8, N, groupSize}, packedNhalfK, N, K, stream);
+    return launchDirectInt4PluginV1Repack(AwqInt4Accessor{qweightKN8, N}, packedNhalfK, N, K, stream);
 }
 
 } // namespace kernel

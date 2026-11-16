@@ -9,10 +9,30 @@ Supported benchmark types:
 
 ## Prerequisites
 
-Install required dependencies:
+Install only the profile for the work being run:
+
 ```bash
-pip install -r requirements.txt
+# Score existing inference outputs
+pip install -r requirements-runtime.txt
+
+# Download or convert benchmark datasets
+pip install -r requirements-datasets.txt
+
+# Prepare PhysicalAI-AV requests for Alpamayo-R1
+pip install -r requirements-physical-ai-av.txt
+
+# Add multilingual TTS scoring support
+pip install -r requirements-runtime.txt -r requirements-tts.txt
 ```
+
+The profiles are intentionally scoped:
+
+- `requirements-runtime.txt` provides inference metrics without PyTorch or TTS models.
+- `requirements-datasets.txt` provides dataset download and conversion tools.
+- `requirements-physical-ai-av.txt` provides the PhysicalAI-AV dataset kit for Alpamayo-R1 requests.
+- `requirements-tts.txt` is the optional TTS add-on. English speaker scoring
+  also uses the PyTorch and TorchAudio versions supplied by the chosen NVIDIA
+  framework container.
 
 For ROUGE tests, also install vLLM:
 ```bash
@@ -25,12 +45,12 @@ Build engines under the tensorrt_edgellm root directory. Use large sequence leng
 
 ### Text-only Models:
 ```bash
-./build/examples/llm/llm_build \
-  --onnxDir /path/to/text/onnx/model/ \
-  --engineDir /path/to/text/engine/ \
-  --maxInputLen 8192 \
-  --maxKVCacheCapacity 10240 \
-  --maxBatchSize 1
+./build/bin/llm_build \
+  --onnx-dir /path/to/text/onnx/model/ \
+  --engine-dir /path/to/text/engine/ \
+  --max-input-len 8192 \
+  --max-kv-cache-capacity 10240 \
+  --max-batch-size 1
 ```
 
 ### Multimodal Models (MMMU, MMMU_Pro):
@@ -38,21 +58,21 @@ Build both visual encoder and text engines:
 
 **Visual Encoder:**
 ```bash
-./build/examples/multimodal/visual_build \
-  --onnxDir /path/to/visual/onnx/model/ \
-  --engineDir /path/to/visual/engine/ \
-  --minImageTokens 256 \
-  --maxImageTokens 8192
+./build/bin/visual_build \
+  --onnx-dir /path/to/visual/onnx/model/ \
+  --engine-dir /path/to/visual/engine/ \
+  --min-image-tokens 256 \
+  --max-image-tokens 8192
 ```
 
 **Text Engine:**
 ```bash
-./build/examples/llm/llm_build \
-  --onnxDir /path/to/text/onnx/model/ \
-  --engineDir /path/to/text/engine/ \
-  --maxInputLen 8192 \
-  --maxKVCacheCapacity 10240 \
-  --maxBatchSize 1
+./build/bin/llm_build \
+  --onnx-dir /path/to/text/onnx/model/ \
+  --engine-dir /path/to/text/engine/ \
+  --max-input-len 8192 \
+  --max-kv-cache-capacity 10240 \
+  --max-batch-size 1
 ```
 
 ## Benchmark Types
@@ -69,11 +89,11 @@ python3 scripts/prepare_dataset.py \
   --output_dir /path/to/datasets/mmlu_output
 
 # 2. Run inference (under tensorrt_edgellm root dir)
-./build/examples/llm/llm_inference \
-  --engineDir /path/to/engines/text_engine/ \
-  --multimodalEngineDir /path/to/multimodal/engine/ \  # For multimodal models
-  --inputFile /path/to/datasets/mmlu_output/mmlu_dataset.json \
-  --outputFile /path/to/outputs/mmlu_predictions.json
+./build/bin/llm_inference \
+  --engine-dir /path/to/engines/text_engine/ \
+  --multimodal-engine-dir /path/to/multimodal/engine/ \  # For multimodal models
+  --input-file /path/to/datasets/mmlu_output/mmlu_dataset.json \
+  --output-file /path/to/outputs/mmlu_predictions.json
 
 # 3. Calculate accuracy
 python3 scripts/calculate_correctness.py \
@@ -82,7 +102,7 @@ python3 scripts/calculate_correctness.py \
 ```
 
 **DART visual-token pruning comparison** (`run_dart_accuracy.py`): [visual-token pruning](../../docs/source/user_guide/features/visual-token-pruning.md)
-removes redundant visual tokens before VLM prefill (`llm_inference --visualPrune`), trading a
+removes redundant visual tokens before VLM prefill (`llm_inference --visual-prune`), trading a
 small, ratio-dependent accuracy cost for prefill speedup. This script quantifies the accuracy
 side of that trade-off: it runs a prepared multiple-choice VLM dataset (MMStar / MMMU) through
 `llm_inference` once without pruning and once per `--ratios` value, scores every run, and prints
@@ -90,7 +110,7 @@ a per-dataset markdown table — score (Δ vs baseline), average text/visual tok
 the *estimated* prefill speedup (the linear token-count ratio `baseline_ISL / pruned_ISL`).
 Pass several `--dataset_files` for one table row per dataset. It intentionally reports no timing
 — the sequential single-pass runs are not a fair benchmark; measure real latency with
-`llm_inference --dumpProfile --warmup N`:
+`llm_inference --dump-profile --warmup N`:
 
 ```bash
 python3 scripts/prepare_dataset.py --dataset MMStar --output_dir tmp/mmstar_output
@@ -116,10 +136,10 @@ python3 scripts/generate_reference.py \
   --output_file /path/to/references.json
 
 # 2. Run inference (under tensorrt_edgellm root dir)
-./build/examples/llm/llm_inference \
-  --engineDir /path/to/engine/ \
-  --inputFile /path/to/dataset.json \
-  --outputFile /path/to/predictions.json
+./build/bin/llm_inference \
+  --engine-dir /path/to/engine/ \
+  --input-file /path/to/dataset.json \
+  --output-file /path/to/predictions.json
 
 # 3. Calculate ROUGE scores
 python scripts/calculate_rouge_score.py \
@@ -146,7 +166,34 @@ Located in `example_datasets/` directory. Use `scripts/prepare_dataset.py` to co
 **Conversational:**
 - **MTBench** (`mtbench.py`): Multi-Turn Benchmark
 
+**Performance:**
+- **SPEED-Bench** (`speed_bench.py`): Speculative-decoding throughput prompts
+  in nominal 1K, 2K, 8K, 16K, and 32K input-length buckets. Download and
+  convert every bucket with:
+
+```bash
+python3 scripts/prepare_dataset.py \
+  --dataset SPEEDBench \
+  --subset all \
+  --output_dir /path/to/datasets/speed_bench
+```
+
+Rows masked by the dataset provider are skipped.
+
 ### Multimodal Datasets
+
+**Driving (Alpamayo-R1):**
+- **PhysicalAIAV** (`alpamayo_driving.py`): 4-camera, 4-timestep requests with
+  egomotion history from [PhysicalAI-AV](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles).
+  Requires the dataset license and `hf auth login`. Only the selected clips
+  are streamed; `--max_samples` sets the clip count (default 1):
+
+```bash
+python3 scripts/prepare_dataset.py \
+  --dataset PhysicalAIAV \
+  --max_samples 1 \
+  --output_dir /path/to/datasets/physical_ai_av
+```
 
 **Vision + Language:**
 - **MMBench** (`mmbench.py`): Multimodal benchmark, EN dev split (letter-match accuracy; the
@@ -159,6 +206,10 @@ Located in `example_datasets/` directory. Use `scripts/prepare_dataset.py` to co
 - **SeedTTSEval** (`tts_eval.py`): [Seed-TTS-eval](https://github.com/BytedanceSpeech/seed-tts-eval) benchmark (test-zh, test-en, test-hard)
 - **MiniMaxMultilingual** (`tts_eval.py`): [MiniMax TTS Multilingual Test Set](https://huggingface.co/datasets/MiniMaxAI/TTS-Multilingual-Test-Set) (24 languages)
 - **OmniBench** (`omnibench.py`): [OmniBench](https://huggingface.co/datasets/m-a-p/OmniBench) audio+image+text multimodal understanding (1142 samples)
+
+**Audio ASR:**
+- **LibriSpeech** (`librispeech.py`): Full test-clean split (2620 utterances)
+- **LibriSpeech_Lite** (`librispeech.py`): Deterministic per-speaker JSON subset of an existing Full dataset (524 utterances by default); audio files stay in Full
 
 ### Framework
 - **EdgeLLM Dataset** (`edgellm_dataset.py`): Base class for custom dataset implementations
@@ -183,128 +234,10 @@ Located in `example_datasets/` directory. Use `scripts/prepare_dataset.py` to co
 
 - **Engine Building**: Use `llm_build` for text engines, `visual_build` for visual encoders
 - **Sequence Lengths**: Use large values (8192-10240) for accuracy datasets
-- **Multimodal Models**: Build both LLM and visual engines, use `--multimodalEngineDir` parameter for inference
+- **Multimodal Models**: Build both LLM and visual engines, use `--multimodal-engine-dir` parameter for inference
 - **Dataset Format**: All inputs must be in Edge LLM JSON format
 - **Binary Location**: Run inference binaries from tensorrt_edgellm root directory
 
 ## Appendix: Reproducing HuggingFace MMMU Benchmark with VLMEvalKit
 
-The default **MMMU** dataset (`mmmu.py`) uses the [MMMU-Benchmark](https://github.com/MMMU-Benchmark/MMMU) prompt format, expecting short outputs with option letters directly (e.g., "A", "B", "C", "D").
-
-Most HuggingFace VLM models report official MMMU scores using [VLMEvalKit](https://github.com/open-compass/VLMEvalKit). This framework uses long-form generation with reasoning and evaluates via OpenAI API (e.g., GPT-3.5). It achieves higher scores but requires longer inference and evaluation time.
-
-### 1. Check VLMEvalKit Inference Configurations
-
-Model repositories may provide benchmark configurations. For example, see [Qwen3-VL/evaluation/mmmu](https://github.com/QwenLM/Qwen3-VL/tree/main/evaluation/mmmu).
-
-For default configurations, refer to VLMEvalKit's [`config.py`](https://github.com/open-compass/VLMEvalKit/blob/main/vlmeval/config.py):
-```python
-"Qwen3-VL-4B-Instruct": partial(
-    Qwen3VLChat,
-    model_path="Qwen/Qwen3-VL-4B-Instruct",
-    use_custom_prompt=False,
-    use_vllm=True,
-    temperature=0.7, 
-    max_new_tokens=16384,
-    repetition_penalty=1.0,
-    presence_penalty=1.5,
-    top_p=0.8,
-    top_k=20
-),
-```
-
-### 2. Prepare MMMU Dataset (VLMEvalKit Format)
-
-```bash
-python3 scripts/prepare_dataset.py \
-  --dataset MMMU_VLMEvalkit \
-  --output_dir /path/to/datasets/mmmu_vlmevalkit \
-  --top_p 0.8 --top_k 20 --temperature 0.7
-```
-
-### 3. Building TensorRT Engines
-
-VLMEvalKit requires larger image sizes, input lengths, and output lengths than default settings. For example, [Qwen3-VL](https://github.com/QwenLM/Qwen3-VL/issues/1617#issuecomment-3421734724) uses MIN_PIXELS=1,003,520 and MAX_PIXELS=4,014,080, translating to 980–3920 tokens per image. With up to 5 images per MMMU input: `maxImageTokens` = 3920 × 5 = 19600.
-
-**Visual Encoder:**
-```bash
-./build/examples/multimodal/visual_build \
-  --onnxDir /path/to/visual/onnx/model/ \
-  --engineDir /path/to/visual/engine/ \
-  --minImageTokens 980 \
-  --maxImageTokens 19600 \
-  --maxImageTokensPerImage 3920
-```
-
-**Text Engine:**
-```bash
-./build/examples/llm/llm_build \
-  --onnxDir /path/to/text/onnx/model/ \
-  --engineDir /path/to/text/engine/ \
-  --maxInputLen 21000 \
-  --maxKVCacheCapacity 30000 \
-  --maxBatchSize 1 \
-  --vlm \
-  --minImageTokens 980 \
-  --maxImageTokens 19600
-```
-
-### 4. Run Inference
-
-**Inference:**
-```bash
-./build/examples/llm/llm_inference \
-  --engineDir /path/to/text/engine/ \
-  --multimodalEngineDir /path/to/visual/engine/ \
-  --inputFile /path/to/datasets/mmmu_vlmevalkit/mmmu_dataset.json \
-  --outputFile /path/to/outputs/mmmu_predictions.json \
-  --batchSize 1 \
-  --maxGenerateLength 8192
-```
-
-**Prepare Output:**
-
-Download VLMEvalKit MMMU metadata file:
-```bash
-wget https://opencompass.openxlab.space/utils/VLMEval/MMMU_DEV_VAL.tsv
-```
-
-Combine the TSV metadata with JSON predictions to create the xlsx file for VLMEvalKit:
-```bash
-python3 scripts/prepare_mmmu_vlmevalkit.py \
-  --tsv_file /path/to/MMMU_DEV_VAL.tsv \
-  --json_file /path/to/outputs/mmmu_predictions.json \
-  --output_file /path/to/outputs/${Model}_MMMU_DEV_VAL.xlsx 
-```
-
-### 5. Evaluate with VLMEvalKit
-
-Download and install [VLMEvalKit](https://github.com/open-compass/VLMEvalKit). Refer to the official [documentation](https://github.com/open-compass/VLMEvalKit/blob/main/docs/en/Quickstart.md) for setup instructions and usage.
-
-**Evaluate TensorRT Edge LLM output:**
-
-Run in eval-only mode. VLMEvalKit reads `${Model}_MMMU_DEV_VAL.xlsx` from `--work-dir` and outputs accuracy scores (`_acc.xlsx`) and evaluation results (`_results.xlsx`):
-```bash
-cd /path/to/VLMEvalKit
-
-python3 run.py \
-  --data MMMU_DEV_VAL \
-  --model ${Model} \
-  --work-dir /path/to/outputs \
-  --mode eval \
-  --verbose \
-  --reuse
-```
-
-**(Optional) Verify PyTorch Baseline:**
-
-Compare TensorRT Edge LLM results against PyTorch/vLLM baseline using VLMEvalKit with the same configuration.
-
-```bash
-python3 run.py \
-  --data MMMU_DEV_VAL \
-  --model ${Model} \
-  --work-dir /path/to/outputs \
-  --mode all \
-  --verbose
-```
+Follow [Score MMMU Offline](../../docs/source/user_guide/examples/integration/vlmevalkit.md#score-mmmu-offline).

@@ -47,6 +47,7 @@ std::optional<SpecReuseContract> resolveSpecReuseContract(DeploymentConfig const
         break;
     case SpecDecodeMode::kDFlash:
     case SpecDecodeMode::kJetSpec:
+    case SpecDecodeMode::kDomino:
         contract = SpecReuseContract{/*ownsPagedSpecState=*/true, /*futureDependencyTokens=*/0};
         break;
     case SpecDecodeMode::kDSpark:

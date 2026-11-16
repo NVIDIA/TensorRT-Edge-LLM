@@ -19,6 +19,7 @@
 
 #include "runtime/state/contextCache/blockHash.h"
 #include "runtime/state/contextCache/contextCacheTypes.h"
+#include "runtime/state/swaKVCacheState.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -112,9 +113,10 @@ namespace rt
 
 //! Complete reusable state retained at one publication endpoint.
 //!
-//! A record stores a full base path, optional method-specific speculative state, and any recurrent or partial-page
-//! snapshots. ContextCacheManager gives each listed resource one cache reference, so evicting a branch releases only
-//! that record's ownership while shared ancestors remain resident through other records.
+//! A record stores a full base path, optional method-specific speculative state, an optional bounded-SWA endpoint, and
+//! any recurrent or partial-page snapshots. ContextCacheManager gives each listed resource one cache reference, so
+//! evicting a branch releases only that record's ownership while shared ancestors remain resident through other
+//! records.
 struct CacheRecord
 {
     RecordId id{};
@@ -125,6 +127,7 @@ struct CacheRecord
     std::optional<int32_t> recurrentSnapshotSlot;
     std::optional<int32_t> partialKvSnapshotSlot;
     std::optional<int32_t> exactCheckpointLength;
+    std::optional<SwaWindowState> swaWindowState;
 
     std::vector<ResourceId> resources() const;
     std::optional<HybridCheckpointKey> hybridKey() const;

@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Metrics used by inference pipelines. This profile intentionally excludes
+# PyTorch, exporter, dataset-preparation, and TTS model dependencies.
+numpy>=2.2.6,<3
+evaluate==0.4.6
+datasets==5.0.0
+rouge-score==0.1.2
+six>=1.16.0
+jiwer==4.0.0
+absl-py==2.4.0
+huggingface-hub==1.15.0

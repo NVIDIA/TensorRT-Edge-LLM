@@ -30,12 +30,13 @@
 #include <cstdint>
 #include <vector>
 
-using namespace nvinfer1;
 using namespace trt_edgellm;
 
 namespace
 {
 
+// Given contiguous vision blocks, text, and padded sequences, when ranges are built,
+// then valid runs expand to inclusive bounds and text/padding uses (-1, -2).
 TEST(VisionBlockRangeBuilderTest, ExpandsContiguousBlocksAndMasksPadding)
 {
     int32_t constexpr batchSize = 2;
@@ -78,22 +79,22 @@ TEST(VisionBlockRangeBuilderTest, ExpandsContiguousBlocksAndMasksPadding)
         -1,
     };
     std::vector<int32_t> const expectedEnd{
-        -1,
+        -2,
         3,
         3,
         3,
-        -1,
+        -2,
         6,
         6,
-        -1,
+        -2,
         1,
         1,
-        -1,
+        -2,
         5,
         5,
         5,
-        -1,
-        -1,
+        -2,
+        -2,
     };
 
     rt::Tensor blockIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, DataType::kINT32);

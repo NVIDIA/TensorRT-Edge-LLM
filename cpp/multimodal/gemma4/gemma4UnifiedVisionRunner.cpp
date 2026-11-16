@@ -18,6 +18,7 @@
 #include "multimodal/gemma4/gemma4UnifiedVisionRunner.h"
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
+#include "common/trtInterop.h"
 #include "kernels/preprocessKernels/imageUtilKernels.h"
 #include "multimodal/common/imageUtils.h"
 #include "profiling/metrics.h"
@@ -36,8 +37,9 @@ namespace trt_edgellm
 namespace rt
 {
 
-Gemma4UnifiedVisionRunner::Gemma4UnifiedVisionRunner(std::string const& engineDir, cudaStream_t stream)
-    : MultimodalRunner(engineDir, stream)
+Gemma4UnifiedVisionRunner::Gemma4UnifiedVisionRunner(
+    std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
+    : MultimodalRunner(engineDir, stream, checkpointDir)
 {
     ELLM_CHECK(validateAndFillConfig(engineDir), "Gemma4UnifiedVisionRunner: invalid configuration or engine");
     ELLM_CHECK(allocateBuffer(stream), "Gemma4UnifiedVisionRunner: failed to allocate buffers");
@@ -106,9 +108,9 @@ bool Gemma4UnifiedVisionRunner::validateAndFillConfig(std::string const& engineD
         LOG_ERROR("Gemma4 Unified visual engine is missing required input/output bindings");
         return false;
     }
-    if (mVisualEngine->getTensorDataType(binding_names::kVisualInput) != nvinfer1::DataType::kHALF
-        || mVisualEngine->getTensorDataType(binding_names::kPixelPositionIds) != nvinfer1::DataType::kINT64
-        || mVisualEngine->getTensorDataType(binding_names::kVisualOutput) != nvinfer1::DataType::kHALF)
+    if (fromTrt(mVisualEngine->getTensorDataType(binding_names::kVisualInput)) != trt_edgellm::DataType::kHALF
+        || fromTrt(mVisualEngine->getTensorDataType(binding_names::kPixelPositionIds)) != trt_edgellm::DataType::kINT64
+        || fromTrt(mVisualEngine->getTensorDataType(binding_names::kVisualOutput)) != trt_edgellm::DataType::kHALF)
     {
         LOG_ERROR("Gemma4 Unified visual engine requires FP16 input/output and INT64 pixel_position_ids");
         return false;
@@ -208,14 +210,14 @@ bool Gemma4UnifiedVisionRunner::validateAndFillConfig(std::string const& engineD
 
 bool Gemma4UnifiedVisionRunner::allocateBuffer([[maybe_unused]] cudaStream_t stream)
 {
-    mVisualInput = rt::Tensor({mConfig.maxPatches, mConfig.inputDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
-        "Gemma4UnifiedVisionRunner::mVisualInput");
-    mPixelPositionIds = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64,
+    mVisualInput = rt::Tensor({mConfig.maxPatches, mConfig.inputDim}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kHALF, "Gemma4UnifiedVisionRunner::mVisualInput");
+    mPixelPositionIds = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64,
         "Gemma4UnifiedVisionRunner::mPixelPositionIds");
-    mPixelPositionIdsHost = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64,
+    mPixelPositionIdsHost = rt::Tensor({mConfig.maxPatches, 2}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
         "Gemma4UnifiedVisionRunner::mPixelPositionIdsHost");
     mOutputEmbedding = rt::Tensor({mConfig.maxPatches, mConfig.outputHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Gemma4UnifiedVisionRunner::mOutputEmbedding");
+        trt_edgellm::DataType::kHALF, "Gemma4UnifiedVisionRunner::mOutputEmbedding");
 
     bool status = true;
     status &= mVisualContext->setTensorAddress(binding_names::kVisualInput, mVisualInput.rawPointer());
@@ -227,32 +229,13 @@ bool Gemma4UnifiedVisionRunner::allocateBuffer([[maybe_unused]] cudaStream_t str
         return false;
     }
 
-    std::vector<float> const mean(3, 0.0F);
-    std::vector<float> const stddev(3, 1.0F);
-    mImageMean
-        = rt::Tensor({3}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "Gemma4UnifiedVisionRunner::mImageMean");
-    mImageStd
-        = rt::Tensor({3}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "Gemma4UnifiedVisionRunner::mImageStd");
-    CUDA_CHECK(cudaMemcpy(mImageMean.rawPointer(), mean.data(), mean.size() * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(
-        cudaMemcpy(mImageStd.rawPointer(), stddev.data(), stddev.size() * sizeof(float), cudaMemcpyHostToDevice));
+    // This model rescales to [0, 1] only: mean 0, std 1.
+    mImageMean = {0.0F, 0.0F, 0.0F};
+    mImageStd = {1.0F, 1.0F, 1.0F};
 
     int64_t const maxSpatialPixels = mConfig.maxPatchesPerImage * mConfig.modelPatchSize * mConfig.modelPatchSize;
-    mImageDevice = rt::Tensor({maxSpatialPixels * 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8,
-        "Gemma4UnifiedVisionRunner::mImageDevice");
-    mRescaledImageDevice = rt::Tensor({maxSpatialPixels * 3}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
+    mRescaledImageDevice = rt::Tensor({maxSpatialPixels * 3}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
         "Gemma4UnifiedVisionRunner::mRescaledImageDevice");
-
-    // GPU image-resize scratch.
-    int64_t const kMaxRawPixels = kernel::kGpuResizeMaxRawDim * kernel::kGpuResizeMaxRawDim;
-    // Horizontal-pass scratch holds [rawH, outW, 3] floats. gemma4UnifiedResizeTarget preserves aspect
-    // ratio, so rawH * outW <= sqrt(maxSpatialPixels * rawH * rawW) <= sqrt(maxSpatialPixels *
-    // kMaxRawPixels).
-    int64_t const kMaxResizeTmpElems
-        = static_cast<int64_t>(
-              std::sqrt(static_cast<double>(maxSpatialPixels) * kMaxRawPixels) * kernel::kGpuResizeScratchMargin)
-        * 3;
-    kernel::allocateResizeScratch(3, kMaxResizeTmpElems, mRawImageDevice, mResizeTmpDevice);
     return true;
 }
 
@@ -272,9 +255,8 @@ void Gemma4UnifiedVisionRunner::formatImage(rt::imageUtils::ImageData const& ima
     ELLM_CHECK(gridHeight <= mConfig.positionEmbeddingSize && gridWidth <= mConfig.positionEmbeddingSize,
         "Gemma4 Unified patch position exceeds mm_posemb_size");
 
-    // mImageDevice already holds the [1, image.height, image.width, 3] image filled by the caller.
+    // mRescaledImageDevice already holds the [1, image.height, image.width, 3] preprocessed image.
     check::check(mRescaledImageDevice.reshape({1, image.height, image.width, 3}), "Tensor reshape failed");
-    kernel::normalizeImage(mImageDevice, mImageMean, mImageStd, mRescaledImageDevice, stream);
     kernel::transposeToPatchGemma4ViT(
         mRescaledImageDevice, mVisualInput, patchOffset * mConfig.inputDim, mConfig.modelPatchSize, stream);
 
@@ -331,16 +313,15 @@ void Gemma4UnifiedVisionRunner::imagePreprocess(rt::LLMGenerationRequest const& 
             {
                 auto const [resizedHeight, resizedWidth] = rt::imageUtils::gemma4UnifiedResizeTarget(image.height,
                     image.width, mConfig.maxPatchesPerImage, mConfig.modelPatchSize, mConfig.positionEmbeddingSize);
-                kernel::copyImageToDeviceAndResize(image.data(), image.frames, image.height, image.width,
-                    image.channels, mRawImageDevice, mResizeTmpDevice, mImageDevice, resizedHeight, resizedWidth,
-                    stream);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, image.frames, mImageMean, mImageStd,
+                    mRescaledImageDevice, resizedHeight, resizedWidth, stream);
                 formatImage(image.resizedMeta(resizedHeight, resizedWidth), totalPatches, imageTokenLengths, stream);
             }
             else
             {
                 LOG_DEBUG("Skipping resize for pre-resized image %ldx%ld", image.height, image.width);
-                kernel::copyImageToDeviceAndResize(image.data(), image.frames, image.height, image.width,
-                    image.channels, mRawImageDevice, mResizeTmpDevice, mImageDevice, image.height, image.width, stream);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, image.frames, mImageMean, mImageStd,
+                    mRescaledImageDevice, image.height, image.width, stream);
                 formatImage(image, totalPatches, imageTokenLengths, stream);
             }
         }
@@ -445,8 +426,8 @@ bool Gemma4UnifiedVisionRunner::preprocess(rt::LLMGenerationRequest const& reque
         {
             LOG_ERROR("Gemma4 Unified vision preprocessing failed: %s", e.what());
         }
-        // Drain async H2D copies that may still read the request's image buffers, so the caller can
-        // safely release them after the failure -- including when the error propagates.
+        // Preprocessing reads the request's image buffers in place, so drain the stream before the
+        // caller may release them after the failure -- including when the error propagates.
         cudaStreamSynchronize(stream);
         if (actionable)
         {
@@ -464,9 +445,8 @@ bool Gemma4UnifiedVisionRunner::infer(cudaStream_t stream) noexcept
     }
     TIME_STAGE(metrics::StageNames::kVISION_ENCODER, stream);
     bool status = true;
-    status &= mVisualContext->setInputShape(binding_names::kVisualInput, mVisualInput.getShape().getTRTDims());
-    status
-        &= mVisualContext->setInputShape(binding_names::kPixelPositionIds, mPixelPositionIds.getShape().getTRTDims());
+    status &= mVisualContext->setInputShape(binding_names::kVisualInput, toTrtDims(mVisualInput.getShape()));
+    status &= mVisualContext->setInputShape(binding_names::kPixelPositionIds, toTrtDims(mPixelPositionIds.getShape()));
     if (!status)
     {
         LOG_ERROR("Failed to set Gemma4 Unified visual input shapes");

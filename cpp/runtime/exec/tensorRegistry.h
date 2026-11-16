@@ -47,11 +47,11 @@ enum class TensorIO : uint8_t
  */
 struct TensorSpec
 {
-    std::string name;                                    //!< Tensor name (may contain "%d" for per-layer)
-    TensorIO io{TensorIO::kInput};                       //!< Binding direction
-    nvinfer1::DataType dtype{nvinfer1::DataType::kHALF}; //!< Data type
-    std::vector<ShapeDim> shape;                         //!< Shape template
-    int32_t perLayer{0};                                 //!< >0: expand "%d" for 0..perLayer-1
+    std::string name;                                          //!< Tensor name (may contain "%d" for per-layer)
+    TensorIO io{TensorIO::kInput};                             //!< Binding direction
+    trt_edgellm::DataType dtype{trt_edgellm::DataType::kHALF}; //!< Data type
+    std::vector<ShapeDim> shape;                               //!< Shape template
+    int32_t perLayer{0};                                       //!< >0: expand "%d" for 0..perLayer-1
 };
 
 /*!

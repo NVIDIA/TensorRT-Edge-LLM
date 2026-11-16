@@ -32,6 +32,9 @@ tests:
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Llama-3.1-8B-Instruct-nvfp4-lmfp8]
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Llama-3.1-8B-Instruct-nvfp4-fp8kv]
 
+  # Gemma4 bounded SWA FP8 KV export used by the Thor pipeline
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_export_with_quantization[gemma-4-E2B-it-fp16-fp8kv]
+
   # Phi-4 base visual-language exports
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Phi-4-multimodal-instruct-nvfp4-merge_lora]
 

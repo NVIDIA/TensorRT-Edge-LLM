@@ -21,6 +21,7 @@
 #include "runtime/decoding/blockDiffusionDecoder.h"
 #include "runtime/decoding/dflashDecodeUtils.h"
 #include "runtime/decoding/dflashDecoder.h"
+#include "runtime/decoding/dominoDecoder.h"
 #include "runtime/decoding/dsparkDecoder.h"
 #include "runtime/decoding/eagleDecoder.h"
 #include "runtime/decoding/gemma4MTPDecoder.h"
@@ -37,13 +38,17 @@ namespace trt_edgellm
 namespace rt
 {
 
-bool shouldSelectDefaultDecoder(
-    DecodingStrategyKind speculativeDecoderKind, LLMGenerationRequest const& request) noexcept
+bool shouldSelectDefaultDecoder(DecodingStrategyKind speculativeDecoderKind,
+    DecodingStrategyCapabilities const& speculativeCapabilities, LLMGenerationRequest const& request) noexcept
 {
+    bool const nonGreedySampling = shouldUseNonGreedySampling(request.temperature, request.topK, request.topP);
     // EAGLE verification currently assumes greedy sampling; vanilla preserves non-greedy request semantics.
-    bool const nonGreedyEagleFallback = speculativeDecoderKind == DecodingStrategyKind::kEAGLE
-        && shouldUseNonGreedySampling(request.temperature, request.topK, request.topP);
-    return request.disableSpecDecode || nonGreedyEagleFallback;
+    bool const nonGreedyUnsupportedFallback = nonGreedySampling
+        && (speculativeDecoderKind == DecodingStrategyKind::kEAGLE
+            || speculativeCapabilities.fallbackToVanillaForNonGreedySampling);
+    bool const boundedSamplingFallback = speculativeCapabilities.supportsLosslessSampling && nonGreedySampling
+        && speculativeCapabilities.maxSamplingSupport > 0 && request.topK > speculativeCapabilities.maxSamplingSupport;
+    return request.disableSpecDecode || nonGreedyUnsupportedFallback || boundedSamplingFallback;
 }
 
 DecoderRegistry::DecoderRegistry(DecodingRuntimeContext& runtime, DecoderRegistryInit init)
@@ -64,14 +69,20 @@ DecoderRegistry::DecoderRegistry(DecodingRuntimeContext& runtime, DecoderRegistr
         switch (runtime.deployment.specDecodeMode())
         {
         case SpecDecodeMode::kMTP:
-            mSpeculativeDecoder = std::make_unique<MTPDecoder>(runtime, *init.draftingConfig,
-                std::move(init.draftExecutor), std::move(init.draftWeights), init.stream);
+            mSpeculativeDecoder = std::make_unique<MTPDecoder>(
+                runtime, init.engineDir, std::move(init.draftExecutor), std::move(init.draftWeights), init.stream);
             break;
         case SpecDecodeMode::kEAGLE:
-            mSpeculativeDecoder = std::make_unique<EagleDecoder>(runtime, init.engineDir, *init.draftingConfig,
-                std::move(init.draftExecutor), std::move(init.draftWeights), init.stream);
+            mSpeculativeDecoder = std::make_unique<EagleDecoder>(
+                runtime, init.engineDir, std::move(init.draftExecutor), std::move(init.draftWeights), init.stream);
             break;
         case SpecDecodeMode::kDFlash:
+        {
+            auto blockDraftConfig = dflash_utils::makeCachedBlockDraftRuntimeConfig(runtime.deployment);
+            mSpeculativeDecoder = std::make_unique<DFlashDecoder>(runtime, init.engineDir, std::move(blockDraftConfig),
+                std::move(init.draftExecutor), std::move(init.draftWeights), init.stream);
+            break;
+        }
         case SpecDecodeMode::kJetSpec:
         {
             auto blockDraftConfig = dflash_utils::makeCachedBlockDraftRuntimeConfig(runtime.deployment);
@@ -79,13 +90,20 @@ DecoderRegistry::DecoderRegistry(DecodingRuntimeContext& runtime, DecoderRegistr
                 std::move(init.draftExecutor), std::move(init.draftWeights), init.stream);
             break;
         }
-        case SpecDecodeMode::kGemma4MTP:
-            mSpeculativeDecoder = std::make_unique<Gemma4MTPDecoder>(runtime, *init.draftingConfig,
+        case SpecDecodeMode::kDomino:
+        {
+            auto blockDraftConfig = dflash_utils::makeCachedBlockDraftRuntimeConfig(runtime.deployment);
+            mSpeculativeDecoder = std::make_unique<DominoDecoder>(runtime, init.engineDir, std::move(blockDraftConfig),
                 std::move(init.draftExecutor), std::move(init.draftWeights), init.stream);
             break;
+        }
+        case SpecDecodeMode::kGemma4MTP:
+            mSpeculativeDecoder = std::make_unique<Gemma4MTPDecoder>(
+                runtime, std::move(init.draftExecutor), std::move(init.draftWeights), init.stream);
+            break;
         case SpecDecodeMode::kDSpark:
-            mSpeculativeDecoder = std::make_unique<DSparkDecoder>(runtime, init.engineDir, *init.draftingConfig,
-                std::move(init.draftExecutor), std::move(init.draftWeights), init.stream);
+            mSpeculativeDecoder = std::make_unique<DSparkDecoder>(
+                runtime, init.engineDir, std::move(init.draftExecutor), std::move(init.draftWeights), init.stream);
             break;
         case SpecDecodeMode::kNONE:
             throw std::runtime_error("SpecDecode drafting config was set but no mode is active.");
@@ -96,7 +114,8 @@ DecoderRegistry::DecoderRegistry(DecodingRuntimeContext& runtime, DecoderRegistr
 
 DecodingStrategy& DecoderRegistry::select(LLMGenerationRequest const& request) const noexcept
 {
-    if (!mSpeculativeDecoder || shouldSelectDefaultDecoder(mSpeculativeDecoder->kind(), request))
+    if (!mSpeculativeDecoder
+        || shouldSelectDefaultDecoder(mSpeculativeDecoder->kind(), mSpeculativeDecoder->capabilities(), request))
     {
         return *mDefaultDecoder;
     }
@@ -104,15 +123,11 @@ DecodingStrategy& DecoderRegistry::select(LLMGenerationRequest const& request) c
     return *mSpeculativeDecoder;
 }
 
-DecodingStrategy& DecoderRegistry::cachePrimingStrategy() const noexcept
-{
-    return mSpeculativeDecoder ? *mSpeculativeDecoder : *mDefaultDecoder;
-}
-
 bool DecoderRegistry::captureCudaGraphs(cudaStream_t stream) const
 {
-    bool const skipDefaultCapture
-        = mSpeculativeDecoder && mSpeculativeDecoder->capabilities().ownsBaseVerificationCudaGraphs;
+    bool const skipDefaultCapture = mSpeculativeDecoder
+        && mSpeculativeDecoder->capabilities().ownsBaseVerificationCudaGraphs
+        && !mSpeculativeDecoder->capabilities().requiresDefaultDecoderCudaGraphs;
     if (skipDefaultCapture)
     {
         LOG_INFO("Skipping vanilla CUDA graph capture for %s speculative runtime.", mSpeculativeDecoder->name());

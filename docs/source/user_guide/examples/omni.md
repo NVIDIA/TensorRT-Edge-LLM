@@ -51,20 +51,20 @@ head stay in FP16 by default.
 export QUANT_ROOT=$WORKSPACE_DIR/$OMNI_MODEL/nvfp4
 
 # NVFP4 backbone (default)
-tensorrt-edgellm-quantize llm \
-    --model_dir   $HF_ROOT \
-    --output_dir  $QUANT_ROOT \
+trtedge quantize llm \
+    --model-dir   $HF_ROOT \
+    --output-dir  $QUANT_ROOT \
     --quantization nvfp4
 
 # INT4 AWQ backbone
-tensorrt-edgellm-quantize llm \
-    --model_dir   $HF_ROOT \
-    --output_dir  $QUANT_ROOT \
+trtedge quantize llm \
+    --model-dir   $HF_ROOT \
+    --output-dir  $QUANT_ROOT \
     --quantization int4_awq
 ```
 
 **Output** — a single self-contained HF root (same layout as `$HF_ROOT`),
-consumable by `tensorrt-edgellm-export` in one shot:
+consumable by `trtedge export` in one shot:
 
 ```
 $QUANT_ROOT/
@@ -76,51 +76,54 @@ $QUANT_ROOT/
 ├── tokenizer + chat_template + preprocessor files
 ```
 
-### Optional: CodePredictor FP8
+### Optional: CodePredictor FP8 / NVFP4
 
 By default the CodePredictor stays FP16 (above the NVFP4 backbone path
 and in any FP16 baseline). CP is a 5-layer decoder with 15 lm_heads that
 runs 15 sequential AR steps per audio frame, so its per-frame cost is
-disproportionate to its parameter count. Adding `--cp_quantization fp8`
-quantizes only the CP body Linears (q/k/v/o + gate/up) at FP8 with
-per-channel weight + per-tensor static activation scales; `down_proj`, the
-15 lm_heads, and CP KV-cache BMM stay FP16 because static per-tensor FP8
-on the CP's `silu(gate)*up` intermediate ([-39.5, 72.4]) drops top-1 codec
-agreement below 80%.
+disproportionate to its parameter count.
 
-The flag composes with the backbone quantization from Part 1 — one
-checkpoint, one export:
+`--cp-quantization fp8` quantizes the CP body Linears (q/k/v/o + gate/up)
+at FP8 with per-channel weight + per-tensor static activation scales.
+`--cp-quantization nvfp4` uses per-16-element block weights and inputs
+with FP8 E4M3 block scales instead. Both keep `down_proj`, the 15
+lm_heads, `talker_projection`, the codec embedding tables, and the CP
+KV-cache BMM at FP16.
+
+Which one to pick depends on the memory bandwidth of the target, because
+the CP decode step is dominated by weight traffic on bandwidth-limited
+parts and by the per-call quantize/dequantize overhead everywhere else.
+NVFP4 shrinks the CP engine the most but is not a free win on every
+target, so benchmark both against FP16 on the part you ship. TTS quality
+is unchanged either way.
+
+The CP flag cannot be combined with `--quantization` on a Qwen3-Omni root
+— that combination is rejected with an explicit error. Run a CP-only pass
+against the original HF root and export just the `code_predictor`
+component from it (all other components come from the backbone-quantized
+checkpoint of Part 1):
 
 ```bash
-tensorrt-edgellm-quantize llm \
-    --model_dir   $HF_ROOT \
-    --output_dir  $QUANT_ROOT \
-    --quantization nvfp4 \
-    --cp_quantization fp8
-```
+trtedge quantize llm \
+    --model-dir  $HF_ROOT \
+    --output-dir $QUANT_ROOT/cp_quant \
+    --cp-quantization fp8 \
+    --text-dataset cnn_dailymail
 
-To reuse an existing backbone-quantized checkpoint instead, run a CP-only
-pass against the original HF root and export just the `code_predictor`
-component from it (all other components come from the existing checkpoint):
-
-```bash
-tensorrt-edgellm-quantize llm \
-    --model_dir  $HF_ROOT \
-    --output_dir $QUANT_ROOT/cp_fp8 \
-    --cp_quantization fp8 \
-    --text_dataset cnn_dailymail
-
-tensorrt-edgellm-export \
+trtedge export \
     --components code_predictor \
-    $QUANT_ROOT/cp_fp8 $ONNX
+    $QUANT_ROOT/cp_quant $ONNX
 ```
+
+Swap `fp8` for `nvfp4` above to build the NVFP4 variant; the export and
+engine-build steps are identical.
 
 
 ---
 
 ## Part 2: Export ONNX
 
-`tensorrt-edgellm-export` exports every component the input checkpoint
+`trtedge export` exports every component the input checkpoint
 supports in a single command. By default it runs every stage; pass
 `--components` to restrict to a subset (useful when iterating on one).
 
@@ -144,8 +147,12 @@ Qwen3-Omni layout override.
 
 ```bash
 mkdir -p $ONNX
-tensorrt-edgellm-export $QUANT_ROOT $ONNX
+trtedge export $QUANT_ROOT $ONNX
 ```
+
+The audio encoder's attention exports on `ViTAttentionPlugin` over the chunk
+windows. Set `USE_AUDIO_ATTN_PLUGIN=0` on the export command to get the
+dense-mask graph instead.
 
 ### Expected layout
 
@@ -155,7 +162,7 @@ $ONNX/
 │   ├── model.onnx + model.onnx.data
 │   ├── config.json                       # model: qwen3_omni_moe_text
 │   ├── embedding.safetensors
-│   ├── processed_chat_template.json
+│   ├── chat_template.jinja
 │   └── tokenizer files
 ├── llm/talker/                           # Talker MoE ONNX + sidecars
 │   ├── model.onnx + model.onnx.data
@@ -190,53 +197,57 @@ export VISUAL_ONNX=$ONNX/vision
 
 ```bash
 # 1. Thinker
-./build/examples/llm/llm_build \
-    --onnxDir $THINKER_ONNX \
-    --engineDir $ENG/thinker \
-    --maxBatchSize 1 \
-    --maxInputLen 1024 \
-    --maxKVCacheCapacity 2048
+./build/bin/llm_build \
+    --onnx-dir $THINKER_ONNX \
+    --engine-dir $ENG/thinker \
+    --max-batch-size 1 \
+    --max-input-len 1024 \
+    --max-kv-cache-capacity 2048
 
 # 2. Talker (sidecars live next to the engine; symlink or copy)
-./build/examples/llm/llm_build \
-    --onnxDir $TALKER_ONNX \
-    --engineDir $ENG/talker \
-    --maxBatchSize 1 \
-    --maxInputLen 1024 \
-    --maxKVCacheCapacity 2048
+./build/bin/llm_build \
+    --onnx-dir $TALKER_ONNX \
+    --engine-dir $ENG/talker \
+    --max-batch-size 1 \
+    --max-input-len 1024 \
+    --max-kv-cache-capacity 2048
 ln -sf $TALKER_ONNX/hidden_projection.safetensors $ENG/talker/
 ln -sf $TALKER_ONNX/text_projection.safetensors   $ENG/talker/
 
 # 3. CodePredictor — must sit next to the Talker engine (the runtime
-#    derives its path from --talkerEngineDir as <parent>/code_predictor)
-./build/examples/llm/llm_build \
-    --onnxDir $CP_ONNX \
-    --engineDir $ENG/code_predictor \
-    --maxBatchSize 1 \
-    --maxInputLen 256 \
-    --maxKVCacheCapacity 256
+#    derives its path from --talker-engine-dir as <parent>/code_predictor)
+./build/bin/llm_build \
+    --onnx-dir $CP_ONNX \
+    --engine-dir $ENG/code_predictor \
+    --max-batch-size 1 \
+    --max-input-len 256 \
+    --max-kv-cache-capacity 256
 
 # 4. Code2Wav
-./build/examples/multimodal/audio_build \
-    --onnxDir $CODE2WAV_ONNX \
-    --engineDir $ENG/code2wav \
-    --maxCodeLen 1000
+./build/bin/audio_build \
+    --onnx-dir $CODE2WAV_ONNX \
+    --engine-dir $ENG \
+    --max-code-len 1000
 
 # 5. Audio encoder
-./build/examples/multimodal/audio_build \
-    --onnxDir $AUDIO_ONNX \
-    --engineDir $ENG/multimodal/audio
+./build/bin/audio_build \
+    --onnx-dir $AUDIO_ONNX \
+    --engine-dir $ENG/multimodal
 
 # 6. Visual encoder
-./build/examples/multimodal/visual_build \
-    --onnxDir $VISUAL_ONNX \
-    --engineDir $ENG/multimodal/visual
+./build/bin/visual_build \
+    --onnx-dir $VISUAL_ONNX \
+    --engine-dir $ENG/multimodal/visual
 ```
 
-`--maxBatchSize` can be raised to the concurrency budget needed at
+`audio_build` appends `code2wav/` or `audio/` to `--engine-dir`, so these
+commands write the Code2Wav engine to `$ENG/code2wav` and the audio encoder to
+`$ENG/multimodal/audio`.
+
+`--max-batch-size` can be raised to the concurrency budget needed at
 runtime. Place the CodePredictor engine in the same parent directory as
 the Talker engine — the Qwen3-Omni runtime derives its path from
-`--talkerEngineDir` (`<parent>/code_predictor`).
+`--talker-engine-dir` (`<parent>/code_predictor`).
 
 ---
 
@@ -258,7 +269,7 @@ Supported formats: `.wav`, `.mp3`, `.flac`, `.ogg`, `.m4a`.
 ## Part 5: Run Inference
 
 `llm_inference` drives all four scenarios. Audio output is opt-in via
-`--enableAudioOutput`; without that flag only the Thinker generates text.
+`--enable-audio-output`; without that flag only the Thinker generates text.
 The runtime detects model_type from the engine config.
 
 ### Scenario A: Text input → text output
@@ -278,11 +289,11 @@ The runtime detects model_type from the engine config.
 ```
 
 ```bash
-./build/examples/llm/llm_inference \
-    --engineDir           $ENG/thinker \
-    --multimodalEngineDir $ENG/multimodal \
-    --inputFile           input_text.json \
-    --outputFile          output_text.json
+./build/bin/llm_inference \
+    --engine-dir           $ENG/thinker \
+    --multimodal-engine-dir $ENG/multimodal \
+    --input-file           input_text.json \
+    --output-file          output_text.json
 ```
 
 ### Scenario B: Audio input → text output
@@ -296,19 +307,19 @@ The runtime detects model_type from the engine config.
 ### Scenario D: Text/audio/image input → text + speech output
 
 ```bash
-./build/examples/llm/llm_inference \
-    --engineDir              $ENG/thinker \
-    --multimodalEngineDir    $ENG/multimodal \
-    --talkerEngineDir        $ENG/talker \
-    --code2wavEngineDir      $ENG/code2wav \
-    --inputFile              input.json \
-    --outputFile             output.json \
-    --outputAudioDir         ./audio_output \
-    --enableAudioOutput \
-    --enableThinkerTalkerStreaming
+./build/bin/llm_inference \
+    --engine-dir              $ENG/thinker \
+    --multimodal-engine-dir    $ENG/multimodal \
+    --talker-engine-dir        $ENG/talker \
+    --code2wav-engine-dir      $ENG/code2wav \
+    --input-file              input.json \
+    --output-file             output.json \
+    --output-audio-dir         ./audio_output \
+    --enable-audio-output \
+    --enable-thinker-talker-streaming
 ```
 
-`--enableThinkerTalkerStreaming` interleaves Talker prefill / decode with
+`--enable-thinker-talker-streaming` interleaves Talker prefill / decode with
 Thinker token generation so the first audio chunk is emitted before the
 Thinker text is fully complete, significantly reducing time-to-first-audio.
 
@@ -358,11 +369,64 @@ CLI flag remains for ad-hoc runs and takes precedence for `enable`):
 }
 ```
 
+### Run the engines with `multistage_inference`
+
+`multistage_inference` runs the engines from Part 3 as one stage graph, so one
+`--config` directory replaces the per-engine directory flags. It reads the same
+request files as `llm_inference`.
+
+1. On the machine that holds the engines, write the graph file,
+   `multistage_config.json`, into `$ENG`. This step builds nothing: it reads
+   the checkpoint's configuration from `--model-dir`, which must be a local
+   directory, and looks for each engine where Part 3 writes it.
+
+   ```bash
+   trtedge build --graph-only --model-dir $QUANT_ROOT --engine-dir $ENG
+   ```
+
+   If it does not find the Talker, CodePredictor, and Code2Wav engines there,
+   it writes a text-only graph.
+
+2. Run one request. The reply prints to stdout, and the speech is written to
+   `answer.wav`.
+
+   ```bash
+   ./build/bin/multistage_inference --config $ENG \
+       --prompt "What is the capital of France?" --out-audio answer.wav
+   ```
+
+   To ask by speech, replace `--prompt` with `--audio question.wav`. The binary
+   reads the WAV file itself, so it needs none of the preprocessing in Part 4.
+
+3. Run a request file. The speech for request `<i>`, counting from 0, is
+   written to `./audio_output/audio_req<i>.wav`.
+
+   ```bash
+   ./build/bin/multistage_inference --config $ENG \
+       --input-file input.json --output-file output.json \
+       --output-audio-dir ./audio_output
+   ```
+
+Without `--out-audio` or `--output-audio-dir`, only the Thinker runs. The
+following table lists the flags you are most likely to change;
+`multistage_inference --help` lists the rest.
+
+| Flag | Description |
+|------|-------------|
+| `--voice NAME` | Speaker: `chelsie`, `ethan`, or `aiden`. A request file's `speaker` takes precedence. |
+| `--batch-size N` | Run up to `N` requests from the file as one batch. The engines' `--max-batch-size` caps the batch. |
+| `--whole-utterance` | Vocode each reply in one pass after the Talker finishes it, when the reply fits the Code2Wav engine. By default, audio is vocoded in windows while the Talker runs. |
+| `--cp-spec-verify-size N` | Turn on [CodePredictor speculative decoding](#codepredictor-speculative-decoding). |
+
+Speech starts after the Thinker finishes; there is no Thinker-Talker streaming.
+For batching, the graph file, and other differences from `llm_inference`, see
+[Multi-Stage Graph](../../developer_guide/software-design/multi-stage-graph.md).
+
 ---
 
 ## Notes
 
-- **Calibration quality:** `--num_samples` (default 512) is split roughly
+- **Calibration quality:** `--num-samples` (default 512) is split roughly
   evenly across audio / image / text modalities. Dropping below ~128 total
   or removing modalities (audio/image) can regress both OmniBench and TTS
   WER.
@@ -374,3 +438,26 @@ CLI flag remains for ad-hoc runs and takes precedence for `enable`):
   state through a `text_projection` MLP sidecar. Build C++ with
   `-DENABLE_CUTE_DSL=gemm` — without it this MLP silently returns zeros on
   Ampere/Blackwell, producing garbled or empty Talker audio.
+## CodePredictor speculative decoding
+
+The CodePredictor loop dominates audio decode time and can speculate with no draft model and no
+retraining, reusing the `lm_head` the checkpoint already carries for each RVQ depth. It is off by
+default; add `--cp-spec-verify-size N` (one committed RVQ depth plus `N-1` drafted depths, valid
+range 2-8) to the command above:
+
+```bash
+./build/bin/llm_inference \
+    --engine-dir $ENG/thinker \
+    --multimodal-engine-dir $ENG/multimodal \
+    --enable-audio-output \
+    --talker-engine-dir $ENG/talker \
+    --code2wav-engine-dir $ENG/code2wav \
+    --input-file $WORKSPACE_DIR/input.json \
+    --output-file $WORKSPACE_DIR/output.json \
+    --output-audio-dir $WORKSPACE_DIR/audio \
+    --cp-spec-verify-size 3
+```
+
+Engines need no special build step, and the sampled output distribution is unchanged. See
+[CodePredictor Speculative Decoding](../features/codepredictor-speculative-decoding.md) for the
+design, the acceptance behaviour, and the limitations.

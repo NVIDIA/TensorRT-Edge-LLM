@@ -19,6 +19,7 @@
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
 #include "common/mathUtils.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 #include "kernels/posEncoding/initializeCosSinCache.h"
 #include "kernels/preprocessKernels/imageUtilKernels.h"
@@ -40,9 +41,9 @@ namespace trt_edgellm
 namespace rt
 {
 
-QwenViTRunner::QwenViTRunner(
-    std::string const& engineDir, int32_t llmMaxBatchSize, int32_t llmMaxSequenceLength, cudaStream_t stream)
-    : MultimodalRunner(engineDir, stream)
+QwenViTRunner::QwenViTRunner(std::string const& engineDir, int32_t llmMaxBatchSize, int32_t llmMaxSequenceLength,
+    cudaStream_t stream, std::string const& checkpointDir)
+    : MultimodalRunner(engineDir, stream, checkpointDir)
     , mEngineDir(engineDir)
     , mLLMMaxBatchSize(llmMaxBatchSize)
     , mLLMMaxSequenceLength(llmMaxSequenceLength)
@@ -91,25 +92,59 @@ bool QwenViTRunner::validateAndFillConfig(std::string const& engineDir)
     if (mModelType != multimodal::ModelType::QWEN2_5_VL && mModelType != multimodal::ModelType::QWEN2_VL
         && mModelType != multimodal::ModelType::QWEN3_VL && mModelType != multimodal::ModelType::QWEN3_5
         && mModelType != multimodal::ModelType::QWEN3_OMNI_VISION_ENCODER
-        && mModelType != multimodal::ModelType::COSMOS3_EDGE)
+        && mModelType != multimodal::ModelType::COSMOS3_EDGE && mModelType != multimodal::ModelType::MUSE_GLIMMER)
     {
         LOG_ERROR("Invalid model type: %s", modelTypeStr.c_str());
         return false;
     }
 
-    mConfig.visionStartTokenId = jsonConfig["vision_start_token_id"].get<int32_t>();
+    bool const isMuseGlimmer = mModelType == multimodal::ModelType::MUSE_GLIMMER;
+    if (isMuseGlimmer)
+    {
+        mConfig.visionStartTokenId = jsonConfig.value("vision_start_token_id", 0);
+    }
+    else
+    {
+        mConfig.visionStartTokenId = jsonConfig["vision_start_token_id"].get<int32_t>();
+    }
     mConfig.visionEndTokenId = jsonConfig.value("vision_end_token_id", 0);
     mConfig.imageTokenId = jsonConfig["image_token_id"].get<int32_t>();
-    mConfig.videoTokenId = jsonConfig["video_token_id"].get<int32_t>();
+    mConfig.videoTokenId
+        = isMuseGlimmer ? jsonConfig.value("video_token_id", 0) : jsonConfig["video_token_id"].get<int32_t>();
 
     auto const& subConfig = (jsonConfig.contains("text_config") && jsonConfig["text_config"].is_object())
         ? jsonConfig["text_config"]
         : jsonConfig;
-    mConfig.vocabSize = subConfig["vocab_size"].get<int32_t>();
-    mConfig.mropeTheta = subConfig["rope_theta"].get<float>();
+    // Cosmos3-Edge stores RoPE fields under text_config.rope_parameters.
+    auto const& ropeParams = (subConfig.contains("rope_scaling") && subConfig["rope_scaling"].is_object())
+        ? subConfig["rope_scaling"]
+        : (subConfig.contains("rope_parameters") && subConfig["rope_parameters"].is_object())
+        ? subConfig["rope_parameters"]
+        : subConfig;
+    if (isMuseGlimmer)
+    {
+        mConfig.vocabSize = subConfig.value("vocab_size", int32_t{0});
+        mConfig.mropeTheta = subConfig.value("rope_theta", 10000.0F);
+    }
+    else
+    {
+        mConfig.vocabSize = subConfig["vocab_size"].get<int32_t>();
+        if (subConfig.contains("rope_theta") && subConfig["rope_theta"].is_number())
+        {
+            mConfig.mropeTheta = subConfig["rope_theta"].get<float>();
+        }
+        else if (ropeParams.contains("rope_theta") && ropeParams["rope_theta"].is_number())
+        {
+            mConfig.mropeTheta = ropeParams["rope_theta"].get<float>();
+        }
+        else
+        {
+            LOG_ERROR("Failed to parse rope_theta in text_config");
+            return false;
+        }
+    }
 
-    // Read mrope_section from rope_parameters or rope_scaling
-    auto const& ropeParams = subConfig.contains("rope_scaling") ? subConfig["rope_scaling"] : subConfig;
+    // Read mrope_section from rope_parameters or rope_scaling.
     if (ropeParams.contains("mrope_section"))
     {
         auto section = ropeParams["mrope_section"].get<std::vector<int32_t>>();
@@ -119,7 +154,20 @@ bool QwenViTRunner::validateAndFillConfig(std::string const& engineDir)
             mConfig.mropeSectionW = section[2];
         }
     }
-    if (mConfig.mropeSectionH <= 0 || mConfig.mropeSectionW <= 0)
+    if (isMuseGlimmer)
+    {
+        // Muse-Glimmer uses 1D RoPE; image tokens take sequential positions, so
+        // the spatial mrope_section split does not apply. Default to 1.
+        if (mConfig.mropeSectionH <= 0)
+        {
+            mConfig.mropeSectionH = 1;
+        }
+        if (mConfig.mropeSectionW <= 0)
+        {
+            mConfig.mropeSectionW = 1;
+        }
+    }
+    else if (mConfig.mropeSectionH <= 0 || mConfig.mropeSectionW <= 0)
     {
         LOG_ERROR("Failed to parse mrope_section in text_config. Got H=%d, W=%d", mConfig.mropeSectionH,
             mConfig.mropeSectionW);
@@ -209,25 +257,25 @@ bool QwenViTRunner::validateAndFillConfig(std::string const& engineDir)
 bool QwenViTRunner::allocateBuffer(cudaStream_t stream)
 {
     bool setTensorAddressStatus{true};
-    mVitInput = rt::Tensor(
-        {mConfig.maxHW, mConfig.inputDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "QwenViTRunner::mVitInput");
+    mVitInput = rt::Tensor({mConfig.maxHW, mConfig.inputDim}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
+        "QwenViTRunner::mVitInput");
     setTensorAddressStatus &= mVisualContext->setTensorAddress(binding_names::kVisualInput, mVitInput.rawPointer());
 
     if (mHasRotaryPosEmb)
     {
         mRotaryPosEmb = rt::Tensor({mConfig.maxHW, mConfig.vitPosEmbDim}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kFLOAT, "QwenViTRunner::mRotaryPosEmb");
+            trt_edgellm::DataType::kFLOAT, "QwenViTRunner::mRotaryPosEmb");
         setTensorAddressStatus
             &= mVisualContext->setTensorAddress(binding_names::kRotaryPosEmb, mRotaryPosEmb.rawPointer());
     }
 
     // The size of the tensor is maxNumImages + 1 because the first element is 0.
     mCuSeqlens = rt::Tensor(
-        {mConfig.maxNumImages + 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "QwenViTRunner::mCuSeqlens");
+        {mConfig.maxNumImages + 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "QwenViTRunner::mCuSeqlens");
     setTensorAddressStatus &= mVisualContext->setTensorAddress(binding_names::kCuSeqlens, mCuSeqlens.rawPointer());
     // Pre-allocate host tensor for cumulative sequence lengths.
-    mCuSeqlensHost = rt::Tensor(
-        {mConfig.maxNumImages + 1}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "QwenViTRunner::mCuSeqlensHost");
+    mCuSeqlensHost = rt::Tensor({mConfig.maxNumImages + 1}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32,
+        "QwenViTRunner::mCuSeqlensHost");
 
     // kv_lengths is required when using TRT-native attention (TRT >= 11).
     // TRT IAttentionV2 requires query_lengths and kv_lengths to be distinct tensors,
@@ -240,8 +288,8 @@ bool QwenViTRunner::allocateBuffer(cudaStream_t stream)
             LOG_ERROR("Config has use_trt_native_vit_attn=true but engine is missing kv_lengths binding");
             return false;
         }
-        mKvLengths = rt::Tensor(
-            {mConfig.maxNumImages + 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "QwenViTRunner::mKvLengths");
+        mKvLengths = rt::Tensor({mConfig.maxNumImages + 1}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32,
+            "QwenViTRunner::mKvLengths");
         setTensorAddressStatus &= mVisualContext->setTensorAddress(binding_names::kKvLengths, mKvLengths.rawPointer());
     }
 
@@ -249,7 +297,7 @@ bool QwenViTRunner::allocateBuffer(cudaStream_t stream)
     if (mHasMaxSeqLenCarrier)
     {
         mMaxSeqLenCarrier = rt::Tensor(
-            {mConfig.maxHW}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "QwenViTRunner::mMaxSeqLenCarrier");
+            {mConfig.maxHW}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "QwenViTRunner::mMaxSeqLenCarrier");
         setTensorAddressStatus
             &= mVisualContext->setTensorAddress(binding_names::kMaxSeqLenCarrier, mMaxSeqLenCarrier.rawPointer());
     }
@@ -257,7 +305,7 @@ bool QwenViTRunner::allocateBuffer(cudaStream_t stream)
     // In Qwen-VL, VIT input mHW is always numImageTokens * spatial_merge_size ** 2.
     auto const maxImageTokens = mConfig.maxHW / (mConfig.mergeSize * mConfig.mergeSize);
     mOutputEmbedding = rt::Tensor({maxImageTokens, mConfig.outHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "QwenViTRunner::mOutputEmbedding");
+        trt_edgellm::DataType::kHALF, "QwenViTRunner::mOutputEmbedding");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kVisualOutput, mOutputEmbedding.rawPointer());
 
@@ -270,41 +318,30 @@ bool QwenViTRunner::allocateBuffer(cudaStream_t stream)
         return false;
     }
 
-    // Copy image mean and std to device to be used in normalizeImage
-    auto nbBytes = mConfig.imageMean.size() * sizeof(float);
-    auto channels = math::cast<int64_t>(mConfig.imageMean.size());
-    mImageMean = rt::Tensor({channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "QwenViTRunner::mImageMean");
-    mImageStd = rt::Tensor({channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "QwenViTRunner::mImageStd");
-    CUDA_CHECK(
-        cudaMemcpyAsync(mImageMean.rawPointer(), mConfig.imageMean.data(), nbBytes, cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(
-        cudaMemcpyAsync(mImageStd.rawPointer(), mConfig.imageStd.data(), nbBytes, cudaMemcpyHostToDevice, stream));
+    ELLM_CHECK(mConfig.imageMean.size() == 3 && mConfig.imageStd.size() == 3,
+        "QwenViTRunner: image mean and std shall each have three components.");
+    mImageMean = {mConfig.imageMean[0], mConfig.imageMean[1], mConfig.imageMean[2]};
+    mImageStd = {mConfig.imageStd[0], mConfig.imageStd[1], mConfig.imageStd[2]};
 
-    // Pre-allocate temporary image buffers for preprocessing
     int64_t const maxImagePixels = mVitInput.getShape().volume();
-    mImageDevice
-        = rt::Tensor({maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8, "QwenViTRunner::mImageDevice");
     mNormalizedImageDevice = rt::Tensor(
-        {maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "QwenViTRunner::mNormalizedImageDevice");
-
-    // GPU image-resize scratch, sized for the actual dimensions per request.
-    int64_t const kMaxRawPixels = kernel::kGpuResizeMaxRawDim * kernel::kGpuResizeMaxRawDim;
-    // Horizontal-pass scratch holds [rawH, outW, C] floats. smart resize preserves aspect ratio, so
-    // rawH * outW <= sqrt(frameBudget * rawH * rawW) <= sqrt(frameBudget * kMaxRawPixels).
-    int64_t const frameBudget = mConfig.maxHW * mConfig.patchSize * mConfig.patchSize;
-    int64_t const kMaxResizeTmpElems = static_cast<int64_t>(std::sqrt(static_cast<double>(frameBudget) * kMaxRawPixels)
-                                           * kernel::kGpuResizeScratchMargin)
-        * channels;
-    kernel::allocateResizeScratch(channels, kMaxResizeTmpElems, mRawImageDevice, mResizeTmpDevice);
+        {maxImagePixels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "QwenViTRunner::mNormalizedImageDevice");
 
     // Pre-allocate tensors for MRoPE position IDs
-    auto const mropePosType = usesFractionalMRopePositions() ? nvinfer1::DataType::kFLOAT : nvinfer1::DataType::kINT64;
+    auto const mropePosType
+        = usesFractionalMRopePositions() ? trt_edgellm::DataType::kFLOAT : trt_edgellm::DataType::kINT64;
     mMropePositionIdsHost = rt::Tensor({mLLMMaxBatchSize, 3, mLLMMaxSequenceLength}, rt::DeviceType::kCPU, mropePosType,
         "QwenViTRunner::mMropePositionIdsHost");
     mMropePositionIdsDevice = rt::Tensor({mLLMMaxBatchSize, 3, mLLMMaxSequenceLength}, rt::DeviceType::kGPU,
         mropePosType, "QwenViTRunner::mMropePositionIdsDevice");
 
     return true;
+}
+
+void QwenViTRunner::setMropeYarnFrequencies(rt::Tensor const& invFreq, float mscale)
+{
+    mMropeInvFreq = &invFreq;
+    mMropeScale = mscale;
 }
 
 std::tuple<int64_t, int64_t> QwenViTRunner::computeVisionSpans(
@@ -346,7 +383,7 @@ void QwenViTRunner::formatPatch(
     auto const [totalSeqLen, totalGridT] = computeVisionSpans(image, prevPatchBase, spans);
 
     ELLM_CHECK(prevPatchBase + totalSeqLen <= mConfig.maxHW,
-        "Visual token count " + std::to_string(prevPatchBase + totalSeqLen)
+        "EDGELLM_INPUT_TOO_LONG: visual token count " + std::to_string(prevPatchBase + totalSeqLen)
             + " exceeds the ViT engine budget maxHW = " + std::to_string(mConfig.maxHW)
             + " (for video this grows with frame count; rebuild the visual engine with a larger --maxImageTokens).");
     patchBase += totalSeqLen;
@@ -355,22 +392,21 @@ void QwenViTRunner::formatPatch(
     int64_t const nSourceFrames = image.frames;
     int64_t const tPadded = totalGridT * mConfig.temporalPatchSize;
 
-    check::check(mImageDevice.reshape({tPadded, height, width, channels}), "Tensor reshape failed");
     check::check(mNormalizedImageDevice.reshape({tPadded, height, width, channels}), "Tensor reshape failed");
 
-    // imagePreprocess resized the source frames into the leading slots; replicate the last one into the
-    // temporal-padding slots (device-to-device).
-    int64_t const resizedFrameBytes = height * width * channels;
-    auto* const base = static_cast<unsigned char*>(mImageDevice.rawPointer());
+    // imagePreprocess preprocessed the source frames into the leading slots; replicate the last one into
+    // the temporal-padding slots (device-to-device).
+    int64_t const resizedFrameBytes = height * width * channels * static_cast<int64_t>(sizeof(half));
+    auto* const base = static_cast<unsigned char*>(mNormalizedImageDevice.rawPointer());
     for (int64_t i = nSourceFrames; i < tPadded; ++i)
     {
         CUDA_CHECK(cudaMemcpyAsync(base + i * resizedFrameBytes, base + (nSourceFrames - 1) * resizedFrameBytes,
             resizedFrameBytes, cudaMemcpyDeviceToDevice, stream));
     }
 
-    kernel::normalizeImage(mImageDevice, mImageMean, mImageStd, mNormalizedImageDevice, stream);
     kernel::transposeToPatchQwenViT(mNormalizedImageDevice, mVitInput, prevPatchBase * mConfig.inputDim,
-        mConfig.temporalPatchSize, mConfig.patchSize, mConfig.mergeSize, stream);
+        mConfig.temporalPatchSize, mConfig.patchSize, vitInputMergeSize(), vitPatchTemporalFirst(),
+        vitPatchChannelLast(), stream);
 }
 
 void QwenViTRunner::buildCuSeqlens(
@@ -390,8 +426,9 @@ void QwenViTRunner::buildCuSeqlens(
         for (int64_t t = 0; t < g.gridT; ++t)
         {
             ELLM_CHECK(cuSeqlensSize < cuSeqlensCapacity,
-                "cuSeqlens frame count exceeds buffer capacity " + std::to_string(cuSeqlensCapacity)
-                    + " (maxNumImages = " + std::to_string(mConfig.maxNumImages) + ") of VIT engine.");
+                "EDGELLM_INPUT_TOO_LONG: cuSeqlens frame count exceeds buffer capacity "
+                    + std::to_string(cuSeqlensCapacity) + " (maxNumImages = " + std::to_string(mConfig.maxNumImages)
+                    + ") of VIT engine.");
             runningCuSeqlen += blockSeqLen;
             cuSeqlensData[cuSeqlensSize++] = static_cast<int32_t>(runningCuSeqlen);
         }
@@ -406,7 +443,7 @@ std::tuple<int64_t, int64_t> QwenViTRunner::getResizedImageSize(int64_t const /*
         mConfig.minImageTokensPerImage, mConfig.maxImageTokensPerImage, maxRatio);
 }
 
-void QwenViTRunner::imagePreprocessSpansOnly(
+int64_t QwenViTRunner::imagePreprocessSpansOnly(
     rt::LLMGenerationRequest const& request, std::vector<VisionSpan>& spans, std::vector<int64_t>& spansPerRequest)
 {
     int64_t totalSeqLength = 0;
@@ -415,11 +452,10 @@ void QwenViTRunner::imagePreprocessSpansOnly(
         size_t const spansBefore = spans.size();
         for (auto const& image : req.imageBuffers)
         {
-            auto const meta = image.doResize
-                ? image.resizedMeta(
-                      std::get<0>(getResizedImageSize(image.frames, image.isVideo, image.height, image.width)),
-                      std::get<1>(getResizedImageSize(image.frames, image.isVideo, image.height, image.width)))
-                : image.resizedMeta(image.height, image.width);
+            auto const [height, width] = image.doResize
+                ? getResizedImageSize(image.frames, image.isVideo, image.height, image.width)
+                : std::make_tuple(image.height, image.width);
+            auto const meta = image.resizedMeta(height, width);
             auto const [seqLen, unused] = computeVisionSpans(meta, totalSeqLength, spans);
             static_cast<void>(unused);
             totalSeqLength += seqLen;
@@ -427,17 +463,14 @@ void QwenViTRunner::imagePreprocessSpansOnly(
         spansPerRequest.push_back(static_cast<int64_t>(spans.size() - spansBefore));
     }
 
-    // Reshape output embedding so the cache memcpy has a valid destination.
-    if (totalSeqLength > 0)
-    {
-        int64_t const totalImageTokens = totalSeqLength / (mConfig.mergeSize * mConfig.mergeSize);
-        check::check(mOutputEmbedding.reshape({totalImageTokens, mConfig.outHiddenSize}), "Tensor reshape failed");
-    }
+    return totalSeqLength;
 }
 
 void QwenViTRunner::imagePreprocess(rt::LLMGenerationRequest const& request, std::vector<VisionSpan>& spans,
-    std::vector<int64_t>& spansPerRequest, cudaStream_t stream)
+    std::vector<int64_t>& spansPerRequest, cudaStream_t stream, bool recordMetrics,
+    std::optional<std::pair<size_t, size_t>> imageRange)
 {
+    ELLM_CHECK(!imageRange || request.requests.size() == 1, "An image range requires a single request.");
     // Marshal each buffer's frames into the ViT scratch and append its spans. totalSeqLength doubles as the running
     // patch offset threaded across buffers, so after the loop it is the total ViT patch count.
     int64_t totalSeqLength = 0;
@@ -445,23 +478,26 @@ void QwenViTRunner::imagePreprocess(rt::LLMGenerationRequest const& request, std
     for (auto const& req : request.requests)
     {
         size_t const spansBefore = spans.size();
-        for (auto const& image : req.imageBuffers)
+        size_t const begin = imageRange ? imageRange->first : 0;
+        size_t const end = imageRange ? imageRange->second : req.imageBuffers.size();
+        ELLM_CHECK(begin <= end && end <= req.imageBuffers.size(), "Invalid image range.");
+        for (size_t imageIndex = begin; imageIndex < end; ++imageIndex)
         {
+            auto const& image = req.imageBuffers[imageIndex];
             if (image.doResize)
             {
                 auto [resizedHeight, resizedWidth]
                     = getResizedImageSize(image.frames, image.isVideo, image.height, image.width);
-                kernel::copyImageToDeviceAndResize(image.data(), image.frames, image.height, image.width,
-                    image.channels, mRawImageDevice, mResizeTmpDevice, mImageDevice, resizedHeight, resizedWidth,
-                    stream);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, image.frames, mImageMean, mImageStd,
+                    mNormalizedImageDevice, resizedHeight, resizedWidth, stream);
                 formatPatch(image.resizedMeta(resizedHeight, resizedWidth), spans, totalSeqLength, stream);
             }
             else
             {
                 LOG_DEBUG("Skipping resize for pre-resized image/video %ldx%ld (frames=%ld)", image.height, image.width,
                     image.frames);
-                kernel::copyImageToDeviceAndResize(image.data(), image.frames, image.height, image.width,
-                    image.channels, mRawImageDevice, mResizeTmpDevice, mImageDevice, image.height, image.width, stream);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, image.frames, mImageMean, mImageStd,
+                    mNormalizedImageDevice, image.height, image.width, stream);
                 formatPatch(image, spans, totalSeqLength, stream);
             }
             ++imageCount;
@@ -475,16 +511,22 @@ void QwenViTRunner::imagePreprocess(rt::LLMGenerationRequest const& request, std
         return;
     }
 
-    ELLM_CHECK(totalSeqLength >= mConfig.minHW && totalSeqLength <= mConfig.maxHW,
-        "totalSeqLength " + std::to_string(totalSeqLength) + " exceeds the limitation, max = "
-            + std::to_string(mConfig.maxHW) + ", min = " + std::to_string(mConfig.minHW) + " of VIT engine.");
+    ELLM_CHECK(totalSeqLength >= mConfig.minHW,
+        "totalSeqLength " + std::to_string(totalSeqLength)
+            + " is below the limitation, min = " + std::to_string(mConfig.minHW) + " of VIT engine.");
+    ELLM_CHECK(totalSeqLength <= mConfig.maxHW,
+        "EDGELLM_INPUT_TOO_LONG: totalSeqLength " + std::to_string(totalSeqLength)
+            + " exceeds the limitation, max = " + std::to_string(mConfig.maxHW) + " of VIT engine.");
 
     // Reshape tensors
     int64_t totalImageTokens = totalSeqLength / (mConfig.mergeSize * mConfig.mergeSize);
     check::check(mVitInput.reshape({totalSeqLength, mConfig.inputDim}), "Tensor reshape failed");
     check::check(mOutputEmbedding.reshape({totalImageTokens, mConfig.outHiddenSize}), "Tensor reshape failed");
-    // Record performance data
-    mMultimodalMetrics.recordRun(imageCount, totalImageTokens);
+    // The data-parallel path records full-request metrics after computing global span metadata.
+    if (recordMetrics)
+    {
+        mMultimodalMetrics.recordRun(imageCount, totalImageTokens);
+    }
 
     /*
      * Cache optimization for cu_seqlens, rotary position embeddings, and other image grid dependent
@@ -521,11 +563,7 @@ void QwenViTRunner::imagePreprocess(rt::LLMGenerationRequest const& request, std
         if (mHasRotaryPosEmb)
         {
             check::check(mRotaryPosEmb.reshape({totalSeqLength, mConfig.vitPosEmbDim}), "Tensor reshape failed");
-            for (auto const& s : spans)
-            {
-                kernel::initRotaryPosEmbQwenViT(mRotaryPosEmb, {s.vit.gridT, s.vit.gridH, s.vit.gridW},
-                    mConfig.mergeSize, s.vit.patchStart, 10000.0f, 1.0f, stream);
-            }
+            buildRotaryPosEmb(spans, stream);
         }
 
         // Build model-specific ViT inputs.
@@ -669,10 +707,11 @@ void QwenViTRunner::generateMropeParams(std::vector<std::vector<int32_t>> const&
     check::check(
         ropeRotaryCosSinDevice.reshape({activeBatchSize, maxPositionEmbeddings, rotaryDim}), "Tensor reshape failed");
     bool interleaved = mConfig.mropeInterleaved;
+    float const* const invFreq = mMropeInvFreq == nullptr ? nullptr : mMropeInvFreq->dataPointer<float>();
     auto launch = [&](auto* positions) {
         kernel::initializeMRopeCosSin(ropeRotaryCosSinDevice.dataPointer<float>(), positions, mConfig.mropeTheta,
             rotaryDim, maxPositionEmbeddings, activeBatchSize, interleaved, mConfig.mropeSectionH,
-            mConfig.mropeSectionW, stream);
+            mConfig.mropeSectionW, stream, invFreq, mMropeScale);
     };
     if (fractional)
     {
@@ -756,7 +795,13 @@ bool QwenViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     {
         if (skipEncoderWork)
         {
-            imagePreprocessSpansOnly(request, spans, spansPerRequest);
+            int64_t const totalSeqLength = imagePreprocessSpansOnly(request, spans, spansPerRequest);
+            if (totalSeqLength > 0)
+            {
+                int64_t const totalImageTokens = totalSeqLength / (mConfig.mergeSize * mConfig.mergeSize);
+                check::check(
+                    mOutputEmbedding.reshape({totalImageTokens, mConfig.outHiddenSize}), "Tensor reshape failed");
+            }
         }
         else
         {
@@ -764,13 +809,25 @@ bool QwenViTRunner::preprocess(rt::LLMGenerationRequest const& request,
         }
         if (!imageOnly)
         {
-            if (!mropeCosSinOut.has_value())
-            {
-                LOG_ERROR("mropeCosSinOut is required when imageOnly=false.");
-                return false;
-            }
+            // Splice the image-token placeholders into the input IDs for all
+            // models (needed so image embeddings land at the right positions).
             textPreprocess(request, batchedInputIds, spans, spansPerRequest, tokenizer);
-            generateMropeParams(batchedInputIds, spans, spansPerRequest, mropeCosSinOut.value().get(), stream);
+            if (mModelType == multimodal::ModelType::MUSE_GLIMMER)
+            {
+                // Muse-Glimmer uses 1D per-layer RoPE with standard sequential
+                // positions (image tokens advance like text), so there is no
+                // Qwen 3D M-RoPE cos/sin to produce here; the LLM engine applies
+                // RoPE from its own rope cache.
+            }
+            else
+            {
+                if (!mropeCosSinOut.has_value())
+                {
+                    LOG_ERROR("mropeCosSinOut is required when imageOnly=false.");
+                    return false;
+                }
+                generateMropeParams(batchedInputIds, spans, spansPerRequest, mropeCosSinOut.value().get(), stream);
+            }
         }
     }
     catch (std::exception const& e)
@@ -780,8 +837,8 @@ bool QwenViTRunner::preprocess(rt::LLMGenerationRequest const& request,
         {
             LOG_ERROR("Failed: %s", e.what());
         }
-        // Drain async H2D copies that may still read the request's image buffers, so the caller can
-        // safely release them after the failure -- including when the error propagates.
+        // Preprocessing reads the request's image buffers in place, so drain the stream before the
+        // caller may release them after the failure -- including when the error propagates.
         cudaStreamSynchronize(stream);
         if (actionable)
         {
@@ -795,6 +852,117 @@ bool QwenViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     for (auto const& s : spans)
     {
         mLastMediaTokenLengths.push_back(s.llm.numTokens);
+    }
+    return true;
+}
+
+void QwenViTRunner::initializeDataParallel()
+{
+    size_t const maxImages = static_cast<size_t>(mConfig.maxNumImages);
+    mVisionDpPlan.spans.reserve(maxImages);
+    mVisionDpPlan.spansPerRequest.reserve(1);
+    mVisionDpLocalSpans.reserve(maxImages);
+    mVisionDpLocalSpansPerRequest.reserve(1);
+    mLastSpans.reserve(maxImages);
+    mLastMediaTokenLengths.reserve(maxImages);
+    mMropeRopeDeltasPerBatch.reserve(static_cast<size_t>(mLLMMaxBatchSize));
+}
+
+VisionDpPlan const* QwenViTRunner::planDataParallel(rt::LLMGenerationRequest const& request)
+{
+    constexpr size_t kTpSize{2};
+    if (request.requests.size() != 1)
+    {
+        return nullptr;
+    }
+    auto const& images = request.requests.front().imageBuffers;
+    if (images.size() < kTpSize || images.size() > static_cast<size_t>(mConfig.maxNumImages)
+        || !std::all_of(
+            images.begin(), images.end(), [](auto const& image) { return image.frames == 1 && !image.isVideo; }))
+    {
+        return nullptr;
+    }
+
+    auto& plan = mVisionDpPlan;
+    plan.spans.clear();
+    plan.spansPerRequest.clear();
+    int64_t const totalSeqLength = imagePreprocessSpansOnly(request, plan.spans, plan.spansPerRequest);
+    if (totalSeqLength > mConfig.maxHW || plan.spans.size() != images.size())
+    {
+        return nullptr;
+    }
+
+    plan.splitIndex = 0;
+    int64_t bestMaxPatches = totalSeqLength;
+    size_t const maxImagesPerRank = static_cast<size_t>(mConfig.maxNumImages);
+    for (size_t split = 1; split < images.size(); ++split)
+    {
+        int64_t const rank0Patches = plan.spans[split].vit.patchStart;
+        int64_t const rank1Patches = totalSeqLength - rank0Patches;
+        if (std::min(rank0Patches, rank1Patches) < mConfig.minHW || split > maxImagesPerRank
+            || images.size() - split > maxImagesPerRank)
+        {
+            continue;
+        }
+        int64_t const maxPatches = std::max(rank0Patches, rank1Patches);
+        // Prefer the larger prefix on ties, assigning the extra equal-size image to rank 0.
+        if (maxPatches <= bestMaxPatches)
+        {
+            bestMaxPatches = maxPatches;
+            plan.splitIndex = split;
+        }
+    }
+    if (plan.splitIndex == 0)
+    {
+        return nullptr;
+    }
+    int64_t const rank0Patches = plan.spans[plan.splitIndex].vit.patchStart;
+    int64_t const rank1Patches = totalSeqLength - rank0Patches;
+    int64_t const mergeArea = mConfig.mergeSize * mConfig.mergeSize;
+    plan.tokenCounts = {rank0Patches / mergeArea, rank1Patches / mergeArea};
+    return &plan;
+}
+
+bool QwenViTRunner::preprocessDataParallel(rt::LLMGenerationRequest const& request, int32_t rank,
+    VisionDpPlan const& plan, std::vector<std::vector<int32_t>>& batchedInputIds, tokenizer::Tokenizer const* tokenizer,
+    rt::OptionalOutputTensor mropeCosSinOut, cudaStream_t stream)
+{
+    try
+    {
+        ELLM_CHECK(mropeCosSinOut.has_value(), "mropeCosSinOut is required for vision data parallelism.");
+        ELLM_CHECK(rank == 0 || rank == 1, "Vision data parallelism requires a valid TP2 rank.");
+
+        textPreprocess(request, batchedInputIds, plan.spans, plan.spansPerRequest, tokenizer);
+        generateMropeParams(batchedInputIds, plan.spans, plan.spansPerRequest, mropeCosSinOut.value().get(), stream);
+
+        size_t const begin = rank == 0 ? 0 : plan.splitIndex;
+        size_t const end = rank == 0 ? plan.splitIndex : request.requests.front().imageBuffers.size();
+        mVisionDpLocalSpans.clear();
+        mVisionDpLocalSpansPerRequest.clear();
+        imagePreprocess(
+            request, mVisionDpLocalSpans, mVisionDpLocalSpansPerRequest, stream, false, std::make_pair(begin, end));
+
+        mMultimodalMetrics.recordRun(
+            static_cast<int64_t>(plan.spans.size()), plan.tokenCounts[0] + plan.tokenCounts[1]);
+        mLastMediaTokenLengths.clear();
+        for (auto const& span : plan.spans)
+        {
+            mLastMediaTokenLengths.push_back(span.llm.numTokens);
+        }
+    }
+    catch (std::exception const& e)
+    {
+        bool const actionable = isCallerActionable(e);
+        if (!actionable)
+        {
+            LOG_ERROR("Vision data-parallel preprocessing failed: %s", e.what());
+        }
+        cudaStreamSynchronize(stream);
+        if (actionable)
+        {
+            throw;
+        }
+        return false;
     }
     return true;
 }
@@ -813,7 +981,7 @@ bool QwenViTRunner::preprocessSystemPrompt(std::string const& systemPrompt, toke
         return false;
     }
 
-    // systemPrompt is already formatted by tokenizer's applyChatTemplate
+    // systemPrompt is already formatted by the runtime-owned chat-template renderer.
     std::vector<int32_t> ids = tokenizer->encode(systemPrompt);
     if (ids.empty())
     {
@@ -851,23 +1019,22 @@ bool QwenViTRunner::infer(cudaStream_t stream) noexcept
 
         bool setEngineIOStatus{true};
         setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kVisualInput, mVitInput.getShape().getTRTDims());
+            &= mVisualContext->setInputShape(binding_names::kVisualInput, toTrtDims(mVitInput.getShape()));
         if (mHasRotaryPosEmb)
         {
             setEngineIOStatus
-                &= mVisualContext->setInputShape(binding_names::kRotaryPosEmb, mRotaryPosEmb.getShape().getTRTDims());
+                &= mVisualContext->setInputShape(binding_names::kRotaryPosEmb, toTrtDims(mRotaryPosEmb.getShape()));
         }
-        setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kCuSeqlens, mCuSeqlens.getShape().getTRTDims());
+        setEngineIOStatus &= mVisualContext->setInputShape(binding_names::kCuSeqlens, toTrtDims(mCuSeqlens.getShape()));
         if (mUseTrtNativeVitAttn)
         {
             setEngineIOStatus
-                &= mVisualContext->setInputShape(binding_names::kKvLengths, mKvLengths.getShape().getTRTDims());
+                &= mVisualContext->setInputShape(binding_names::kKvLengths, toTrtDims(mKvLengths.getShape()));
         }
         if (mHasMaxSeqLenCarrier)
         {
             setEngineIOStatus &= mVisualContext->setInputShape(
-                binding_names::kMaxSeqLenCarrier, mMaxSeqLenCarrier.getShape().getTRTDims());
+                binding_names::kMaxSeqLenCarrier, toTrtDims(mMaxSeqLenCarrier.getShape()));
         }
         // Model-specific ViT-input shapes (window vs fast-pos-emb); base adds none.
         setEngineIOStatus &= bindExtraInputShapes();
@@ -922,7 +1089,31 @@ bool QwenViTRunner::bindExtraInputShapes()
     return true;
 }
 
-rt::OptionalInputTensors QwenViTRunner::getDeepstackFeatures()
+int64_t QwenViTRunner::vitInputMergeSize() const
+{
+    return mConfig.mergeSize;
+}
+
+bool QwenViTRunner::vitPatchTemporalFirst() const
+{
+    return false;
+}
+
+bool QwenViTRunner::vitPatchChannelLast() const
+{
+    return false;
+}
+
+void QwenViTRunner::buildRotaryPosEmb(std::vector<VisionSpan> const& spans, cudaStream_t stream)
+{
+    for (auto const& s : spans)
+    {
+        kernel::initRotaryPosEmbQwenViT(mRotaryPosEmb, {s.vit.gridT, s.vit.gridH, s.vit.gridW}, mConfig.mergeSize,
+            s.vit.patchStart, 10000.0f, 1.0f, stream);
+    }
+}
+
+std::vector<std::reference_wrapper<rt::Tensor>> QwenViTRunner::getDeepstackFeatures()
 {
     return {};
 }

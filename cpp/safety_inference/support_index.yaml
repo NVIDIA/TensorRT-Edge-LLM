@@ -1,0 +1,309 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved. SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not
+# use this file except in compliance with the License. You may obtain a copy of
+# the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations under
+# the License.
+
+# Maps Safety capabilities to source areas, execution dependencies,
+# and minimum verification gates. Maintains an explicit whitelist of temporary
+# exceptions prior to formal Safety verification, including Standard
+# implementation reuse and QNX-safe-compatible dependencies without safety
+# certification.
+#
+# DO NOT add, rename, or change the meaning of fields without
+# explicit approval from a human maintainer.
+
+version: 0
+runtime_consumed: false
+
+capabilities:
+  - id: internvl3_1b_vlm_vanilla
+    scope_basis: InternVL3-1B VLM FP16 fixed-profile path
+    source_areas:
+      model_inference:
+        - cpp/safety_inference/runtime/model_inference/
+      trt_safety_execution:
+        - cpp/safety_inference/trt_runner/
+      error_handler:
+        - cpp/safety_inference/runtime/error_handler/
+      runtime_capabilities:
+        - cpp/safety_inference/tokenizer/
+        - cpp/safety_inference/image_preprocess/
+        - cpp/safety_inference/embedding/
+        - cpp/safety_inference/sampler/
+    selected_execution_dependencies:
+      - TensorRT::TensorRTSafe
+      - Safe CUDA runtime
+    minimum_gates:
+      - static_source_target_check
+      - artifact_boundary_audit
+      - fixed_profile_e2e
+      - runtime_contract_validation
+      - operational_api_injection
+      - host_heap_snapshot_where_available
+
+reused_standard_sources:
+  - 3rdParty/nlohmannJson/single_include/nlohmann/json.hpp
+  - 3rdParty/nlohmannJson/single_include/nlohmann/json_fwd.hpp
+
+boundary_gate:
+  version: 1
+  targets:
+    edgellmSafetyRuntime:
+      required: true
+      admitted_targets: [edgellmSafetyRuntime, NvInfer_edgellm_plugin_safe]
+      artifact_kind: static_archive
+    NvInfer_edgellm_plugin_safe:
+      required: true
+      admitted_targets: [NvInfer_edgellm_plugin_safe]
+      artifact_kind: shared_library
+    safetyPluginLinkCheck:
+      required: true
+      admitted_targets: [safetyPluginLinkCheck, edgellmSafetyRuntime, NvInfer_edgellm_plugin_safe]
+      artifact_kind: executable
+    llm_inference_safe:
+      required: false
+      admitted_targets: [llm_inference_safe, edgellmSafetyRuntime, NvInfer_edgellm_plugin_safe]
+      artifact_kind: executable
+  source_rules:
+    - {id: source-cub, pattern: 'cub/'}
+    - {id: source-curand, pattern: 'curand'}
+    - {id: source-nvrtc, pattern: 'nvrtc'}
+    - {id: source-standard-kernels, pattern: 'edgellmKernels'}
+    - {id: source-device-sync, pattern: 'cudaDeviceSynchronize'}
+    - {id: source-stream-sync, pattern: 'cudaStreamSynchronize'}
+    - {id: source-managed-memory, pattern: 'cudaMallocManaged'}
+    - {id: source-mutex, pattern: 'std::mutex', paths: [cpp/safety_inference/plugins, cpp/safety_inference/kernels]}
+    - {id: source-thread-local, pattern: 'thread_local', paths: [cpp/safety_inference/plugins, cpp/safety_inference/kernels]}
+  undefined_symbol_rules:
+    - id: symbol-unadmitted-cuda
+      targets: [NvInfer_edgellm_plugin_safe]
+      pattern: '^(?!(?:cudaFuncGetAttributes|cudaLaunchKernel|cuModuleLoadData|cuModuleGetFunction|cuFuncSetAttribute|cuModuleUnload|cuLaunchKernel|cudaGetDevice|cudaDeviceGetAttribute|cuTensorMapEncodeTiled|__cudaInitModule|__cudaRegisterFatBinary|__cudaRegisterFatBinaryEnd|__cudaRegisterFunction|__cudaUnregisterFatBinary|__cudaPopCallConfiguration)$)(?:cuda.*|cu[A-Z].*|__cuda.*)$'
+    - id: symbol-threading
+      targets: [NvInfer_edgellm_plugin_safe]
+      pattern: '^(?:__tls_get_addr|pthread_.*)$'
+  platforms:
+    x86:
+      admitted_link_patterns:
+        - {id: x86-link-safety-trt, pattern: '.*/libnvinfer_safe\.so(?:\.[0-9]+)*'}
+        - {id: x86-link-safety-plugin, pattern: '.*/libNvInfer_edgellm_plugin_safe\.so(?:\.[0-9]+)*'}
+        - {id: x86-link-cuda, pattern: '(?:.*/lib(?:cuda|cudart(?:_static)?|cudadevrt)\.(?:so|a)(?:\.[0-9]+)*|-l(?:cuda|cudart|cudadevrt))'}
+        - {id: x86-link-system, pattern: '(?:.*/lib(?:c|dl|gcc_s|m|pthread|rt|stdc\+\+)\.(?:so|a)(?:\.[0-9]+)*|-l(?:c|dl|m|pthread|rt|stdc\+\+)|-pthread)'}
+        - {id: x86-link-search, pattern: '-L.+'}
+        - {id: x86-link-no-undefined, pattern: '--no-undefined'}
+        - {id: x86-link-soname, pattern: '-(?:-)?soname=libNvInfer_edgellm_plugin_safe\.so(?:\.[0-9]+)*'}
+      admitted_dynamic_libraries:
+        - ld-linux-x86-64.so.2
+        - libc.so.6
+        - libcuda.so.1
+        - libcudart.so.13
+        - libgcc_s.so.1
+        - libm.so.6
+        - libnvinfer_safe.so.11
+        - libNvInfer_edgellm_plugin_safe.so.1
+        - libstdc++.so.6
+      forbidden_link_patterns:
+        - {id: x86-link-standard-trt, pattern: '(?:.*/lib(?:nvinfer|nvinfer_dispatch|nvonnxparser)\.so(?:\.[0-9]+)*|-l(?:nvinfer|nvinfer_dispatch|nvonnxparser))'}
+        - {id: x86-link-unsupported-cuda, pattern: '(?:.*/lib(?:curand|nvrtc)\.so(?:\.[0-9]+)*|-l(?:curand|nvrtc))'}
+        - {id: x86-link-standard-edgellm, pattern: '(?:.*/libedgellm(?!_plugin_safe)[^/]*\.so(?:\.[0-9]+)*|-ledgellm(?!_plugin_safe).*)'}
+    d7l:
+      admitted_link_patterns:
+        - {id: d7l-link-safety-trt, pattern: '.*/libnvinfer_safe\.so(?:\.[0-9]+)*'}
+        - {id: d7l-link-safety-plugin, pattern: '.*/libNvInfer_edgellm_plugin_safe\.so(?:\.[0-9]+)*'}
+        - {id: d7l-link-cuda, pattern: '(?:.*/lib(?:cuda|cudart(?:_static)?|cudadevrt)\.(?:so|a)(?:\.[0-9]+)*|-l(?:cuda|cudart|cudadevrt))'}
+        - {id: d7l-link-system, pattern: '(?:.*/lib(?:c|dl|gcc_s|m|pthread|rt|stdc\+\+)\.(?:so|a)(?:\.[0-9]+)*|-l(?:c|dl|m|pthread|rt|stdc\+\+)|-pthread)'}
+        - {id: d7l-link-search, pattern: '-L.+'}
+        - {id: d7l-link-no-undefined, pattern: '--no-undefined'}
+        - {id: d7l-link-unresolved-shared, pattern: '--unresolved-symbols=ignore-in-shared-libs'}
+        - {id: d7l-link-soname, pattern: '-(?:-)?soname=libNvInfer_edgellm_plugin_safe\.so(?:\.[0-9]+)*'}
+      admitted_dynamic_libraries:
+        - ld-linux-aarch64.so.1
+        - libc.so.6
+        - libcuda.so.1
+        - libcudart.so.13
+        - libgcc_s.so.1
+        - libm.so.6
+        - libnvinfer_safe.so.11
+        - libNvInfer_edgellm_plugin_safe.so.1
+        - libstdc++.so.6
+      forbidden_link_patterns:
+        - {id: d7l-link-standard-trt, pattern: '(?:.*/lib(?:nvinfer|nvinfer_dispatch|nvonnxparser)\.so(?:\.[0-9]+)*|-l(?:nvinfer|nvinfer_dispatch|nvonnxparser))'}
+        - {id: d7l-link-unsupported-cuda, pattern: '(?:.*/lib(?:curand|nvrtc)\.so(?:\.[0-9]+)*|-l(?:curand|nvrtc))'}
+        - {id: d7l-link-standard-edgellm, pattern: '(?:.*/libedgellm(?!_plugin_safe)[^/]*\.so(?:\.[0-9]+)*|-ledgellm(?!_plugin_safe).*)'}
+    d7qs:
+      admitted_link_patterns:
+        - {id: d7qs-link-safety-trt, pattern: '.*/libnvinfer_safe\.so(?:\.[0-9]+)*'}
+        - {id: d7qs-link-safety-plugin, pattern: '.*/libNvInfer_edgellm_plugin_safe\.so(?:\.[0-9]+)*'}
+        - {id: d7qs-link-cuda, pattern: '(?:.*/lib(?:cuda|cudart)(?:_static)?\.(?:so|a)(?:\.[0-9]+)*|-l(?:cuda|cudart))'}
+        - {id: d7qs-link-pdk, pattern: '(?:.*/lib(?:nvdvms_client|nvos_s3_safety|slog2)\.(?:so|a)(?:\.[0-9]+)*|-l(?:nvdvms_client|nvos_s3_safety|slog2))'}
+        - {id: d7qs-link-system, pattern: '(?:.*/lib(?:c|c\+\+|dl|gcc_s|m)\.(?:so|a)(?:\.[0-9]+)*|-l(?:c|c\+\+|dl|m))'}
+        - {id: d7qs-link-search, pattern: '-L.+'}
+        - {id: d7qs-link-no-undefined, pattern: '--no-undefined'}
+        - {id: d7qs-link-unresolved-shared, pattern: '--unresolved-symbols=ignore-in-shared-libs'}
+        - {id: d7qs-link-rpath-link, pattern: '-(?:-)?rpath-link=.+'}
+        - {id: d7qs-link-soname, pattern: '-(?:-)?soname=libNvInfer_edgellm_plugin_safe\.so(?:\.[0-9]+)*'}
+      admitted_dynamic_libraries:
+        - libc.so.6
+        - libc++.so.2
+        - libcuda.so.1
+        - libcudart.so.13.0
+        - libgcc_s.so.1
+        - libm.so.3
+        - libnvdvms_client.so
+        - libnvinfer_safe.so.11
+        - libNvInfer_edgellm_plugin_safe.so.1
+        - libnvos_s3_safety.so
+        - libslog2.so.1
+      forbidden_link_patterns:
+        - {id: d7qs-link-standard-trt, pattern: '(?:.*/lib(?:nvinfer|nvinfer_dispatch|nvonnxparser)\.so(?:\.[0-9]+)*|-l(?:nvinfer|nvinfer_dispatch|nvonnxparser))'}
+        - {id: d7qs-link-unsupported-cuda, pattern: '(?:.*/lib(?:curand|nvrtc)\.so(?:\.[0-9]+)*|-l(?:curand|nvrtc))'}
+        - {id: d7qs-link-standard-edgellm, pattern: '(?:.*/libedgellm(?!_plugin_safe)[^/]*\.so(?:\.[0-9]+)*|-ledgellm(?!_plugin_safe).*)'}
+
+execution_resource_layer:
+  sources:
+    - cpp/safety_inference/runtime/safetyRuntime.cpp
+    - cpp/safety_inference/trt_runner/trtSafetyGraphExecutor.cpp
+    - cpp/safety_inference/trt_runner/trtSafetyRunner.cpp
+    - cpp/safety_inference/trt_runner/safetyTensorView.cpp
+    - cpp/safety_inference/runtime/resources/trtResourceManager.cpp
+  public_contracts:
+    - cpp/safety_inference/runtime/safetyRuntime.h
+    - cpp/safety_inference/runtime/safetyGenerationTypes.h
+    - cpp/safety_inference/runtime/safetyStatus.h
+    - cpp/safety_inference/runtime/model_inference/modelInferenceTypes.h
+    - cpp/safety_inference/trt_runner/lmStageContext.h
+    - cpp/safety_inference/trt_runner/safetyTensorView.h
+    - cpp/safety_inference/trt_runner/trtSafetyGraphExecutor.h
+    - cpp/safety_inference/trt_runner/trtSafetyRunner.h
+    - cpp/safety_inference/runtime/resources/trtResourceManager.h
+  dependencies:
+    - TensorRT::TensorRTSafe
+    - NvInfer_edgellm_plugin_safe
+    - CUDA_runtime
+    - CUDA_driver
+    - CXX_runtime
+    - C_runtime
+    # Temporary allowance: QNX-safe-compatible, without Safety qualification.
+    # Customer/product integration may qualify or replace nlohmann/json.
+    - nlohmann_json_headers
+  tests:
+    host_contracts: tests/safety/runtime/
+    real_sdk_probe: tests/safety/safetyRunnerSmoke.cpp
+
+# Safety-owned source provenance and dependency inventory; not a runtime configuration.
+# The baseline records copy origin; generated artifact digests enforce the build inputs.
+copied_standard_sources:
+  baseline: ade55abc28de3c75ac3a96f4a1e4f8c7c8df3878
+  maintenance_owner: Safety_plugin_maintainers
+  entries:
+    - source: cpp/kernels/posEncoding/applyRopeWriteKV.cu
+      destination: cpp/safety_inference/kernels/safetyRopeKernel.cuh
+    - source: cpp/kernels/common/vectorizedTypes.cuh
+      destination: cpp/safety_inference/kernels/safetyRopeKernel.cuh
+    - source: kernelSrcs/fmha_v2_cutedsl/fmha.py
+      destination: cpp/safety_inference/kernels/fmha/safetyFmha.py
+      baseline: 52dfc7e00295d8c3d6875aa4acd1962c6003dbb7
+    - source: kernelSrcs/fmha_cutedsl_blackwell/fmha.py
+      baseline: 52dfc7e00295d8c3d6875aa4acd1962c6003dbb7
+      destination: cpp/safety_inference/kernels/fmha/safetyBlackwell.py
+      adaptations: [device_validity_guard, independent_query_and_kv_lengths, explicit_cache_strides]
+    - source: kernelSrcs/fmha_cutedsl_blackwell/fmha_helpers.py
+      baseline: 52dfc7e00295d8c3d6875aa4acd1962c6003dbb7
+      destination: cpp/safety_inference/kernels/fmha/safety_fmha_helpers.py
+    - source: cpp/kernels/contextAttentionKernels/cuteDslFMHAV2Runner.cpp
+      destination: cpp/safety_inference/kernels/fmha/safetyFmhaLaunch.h
+
+# Descriptive inventory, not executable admission or Safety certification.
+plugin_integration:
+  shared_sources:
+    plugin: cpp/safety_inference/plugins/safetyAttentionPlugin.cpp
+    contract: cpp/safety_inference/plugins/safetyAttentionContract.cpp
+    registry: cpp/safety_inference/plugins/safetyPluginRegistry.cpp
+    graph_initialization: cpp/safety_inference/trt_runner/safetyGraphInitialization.cpp
+    modules: cpp/safety_inference/kernels/safetyAttentionModules.cpp
+  plugins:
+    - name: AttentionPlugin
+      version: "1"
+      namespace: trt
+      engine_role: llm
+      kernels:
+        cpp/safety_inference/kernels/safetyAttentionKernels.cu:
+          - validateLlm
+          - copyPool
+          - initializeQueryPadding
+          - checkAttentionOutput
+        cpp/safety_inference/kernels/safetyRopeKernel.cuh:
+          - safetyApplyRopeFromPackedToSplit
+        cpp/safety_inference/kernels/fmha/safetyBlackwell.py:
+          - contiguousD64
+          - contiguousD128
+      profile_boundary:
+        precision: fp16
+        batch: 1
+        head_size: [64, 128]
+        max_query_heads: 64
+        max_query_tokens: 8192
+        max_cached_tokens: 8192
+        kv_layout: [batch, 2, kv_heads, capacity, head_size]
+    - name: ViTAttentionPlugin
+      version: "1"
+      namespace: trt_edgellm
+      engine_role: visual_encoder
+      kernels:
+        cpp/safety_inference/kernels/safetyAttentionKernels.cu:
+          - validateVisual
+          - checkAttentionOutput
+        cpp/safety_inference/kernels/fmha/safetyBlackwell.py:
+          - visualD64
+          - visualD128
+      profile_boundary:
+        precision: fp16
+        head_size: [64, 128]
+        max_heads: 64
+        max_total_tokens: 8192
+  dependency_boundary:
+    shared_target: NvInfer_edgellm_plugin_safe
+    common_runtime_dependencies: [TensorRT::TensorRTSafe, CUDA_runtime, CUDA_driver, CXX_runtime, C_runtime, math_runtime]
+    runtime_headers: [NvInferSafePlugin.h, NvInferSafeRuntime.h, NvInferSafeRecorder.h]
+    host_builder_capability: EDGELLM_SAFETY_PLUGIN_BUILDER
+    host_builder_headers: [NvInfer.h]
+    aot:
+      generator: cpp/safety_inference/kernels/fmha/generate.py
+      backends:
+        thor:
+          source: cpp/safety_inference/kernels/fmha/safetyBlackwell.py
+          launcher: cpp/safety_inference/kernels/fmha/safetyBlackwellLaunch.h
+          adaptation: Initialization_prepared_TMA_bindings_and_explicit_module_loading
+        sm80_ci:
+          source: cpp/safety_inference/kernels/fmha/safetyFmha.py
+      compiler_configuration: cpp/safety_inference/kernels/fmha/fmha_config.py
+      launcher: cpp/safety_inference/kernels/fmha/safetyFmhaLaunch.h
+      admission_gate: cmake/SafetyAttentionArtifacts.cmake
+      compiler: nvidia_cutlass_dsl_4.7.0_build_only
+      d7qs_assembler: matching_target_SDK_nvcc_build_only
+    forbidden: [CUB, cuRAND, NVRTC, Standard_TensorRT_runtime, edgellmKernels, edgellmCore, edgellmRuntime]
+    platforms:
+      d7l:
+        target: auto-thor
+        cuda_package: DRIVE_OS_D7L_CUDA
+      d7qs:
+        target: auto-thor
+        cuda_package: DRIVE_OS_QNX_Safe_CUDA
+        pdk_dependencies: [libslog2, libnvdvms_client, libnvos_s3_safety]
+        driver_transitive_boundary: matching_DRIVE_Safety_PDK_NvRm_and_NvSci_libraries
+      x86:
+        role: CI_only
+        execution_target: A30
+  verification:
+    focused_tests: tests/safety/CMakeLists.txt
+    runtime_error_handler_contracts: tests/safety/safetyErrorHandlerTests.cpp
+    focused_boundary_audit: scripts/safety_checker/check_safety_runtime_boundary.py

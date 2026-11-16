@@ -1,12 +1,12 @@
 # Quantization Package Design
 
-`tensorrt_edgellm.quantization` is a standalone checkpoint quantization package. It converts FP16 HuggingFace checkpoints into quantized HuggingFace-style checkpoints that the checkpoint exporter can export directly.
+`tensorrt_edgellm.quantization` is a standalone checkpoint quantization package. It converts FP16 HuggingFace checkpoints into quantized HuggingFace-style checkpoints that either frontend can consume.
 
 For command-line usage, see [Quantization](../../user_guide/features/quantization.md).
 
 ## Design Goals
 
-- Keep quantization separate from ONNX export.
+- Keep quantization separate from both frontends.
 - Preserve a HuggingFace-compatible checkpoint layout.
 - Store quantization metadata in checkpoint config files so `tensorrt_edgellm` can infer export behavior from the checkpoint.
 - Share the same output contract for locally quantized and downloaded pre-quantized checkpoints.
@@ -18,9 +18,9 @@ For command-line usage, see [Quantization](../../user_guide/features/quantizatio
 | `tensorrt_edgellm/scripts/quantize.py` | User-facing `llm` and `draft` commands |
 | `tensorrt_edgellm/quantization/quantize.py` | Model loading, ModelOpt configuration, calibration, and checkpoint writing |
 | `tensorrt_edgellm/quantization/quantization_configs.py` | Shared ModelOpt quantization configurations |
-| `tensorrt_edgellm/config.py` | Reads quantization metadata during ONNX export |
-| `tensorrt_edgellm/checkpoint/loader.py` | Loads and repacks quantized checkpoint tensors |
+| `tensorrt_edgellm/checkpoint/loader.py` | Loads quantized checkpoint tensors for consumers |
 | `tensorrt_edgellm/quantization/models/eagle3_draft.py` | Standalone Eagle3 draft calibration model |
+| `tensorrt_edgellm/quantization/models/eagle4_draft.py` | Standalone EAGLE-4 draft calibration model |
 | `tensorrt_edgellm/quantization/models/dflash_draft.py` | Standalone DFlash draft calibration model |
 
 ## Flow
@@ -29,11 +29,12 @@ For command-line usage, see [Quantization](../../user_guide/features/quantizatio
 FP16 checkpoint
   -> tensorrt_edgellm.quantization
   -> quantized safetensors + quantization metadata
-  -> tensorrt_edgellm
-  -> ONNX + runtime sidecars
+  -> ONNX export or checkpoint-direct engine build
 ```
 
-The quantization package stops after writing the checkpoint. ONNX export, TensorRT engine build, and runtime execution remain owned by `tensorrt_edgellm`, `llm_build`, and `llm_inference`.
+The quantization package stops after writing the checkpoint. The ONNX and
+checkpoint-direct frontends independently read its metadata; neither owns the
+quantization workflow.
 
 ## Artifact Contract
 
@@ -44,7 +45,7 @@ The output directory must contain:
 - One or more `.safetensors` checkpoint shards.
 - Tokenizer and processor files needed by the runtime.
 
-`tensorrt_edgellm` uses this metadata to select quantized linear layers, repack checkpoint tensors, and enable FP8 KV cache when the checkpoint marks KV cache quantization as `fp8`. No separate FP8 KV export flag is required in the `tensorrt_edgellm` path.
+Each frontend uses this metadata to select quantized layers and repack checkpoint tensors. FP8 KV cache is inferred from checkpoints that mark KV cache quantization as `fp8`.
 
 ## Supported Methods
 
@@ -74,5 +75,5 @@ full-FP32 accumulation path for accuracy.
 
 ## Limitations
 
-- Model-specific export workarounds that belong to ONNX export are intentionally not included.
+- Model-specific export and build workarounds are intentionally not included.
 - This package produces checkpoints only. It does not build ONNX or TensorRT engines.

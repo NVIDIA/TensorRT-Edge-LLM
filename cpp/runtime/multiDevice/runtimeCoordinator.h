@@ -18,15 +18,19 @@
 #pragma once
 
 #include "runtime/config/deploymentConfig.h"
+#include "runtime/config/deploymentOptions.h"
+#include "runtime/config/runtimeResources.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/modelArtifacts.h"
 #include "runtime/multiDevice/parallelConfig.h"
+#include "runtime/runtimeSession.h"
 #include "runtime/state/contextCache/contextCacheConfig.h"
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <cuda_runtime.h>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -38,6 +42,11 @@
 
 namespace trt_edgellm
 {
+namespace chat_template
+{
+class ChatTemplate;
+}
+
 namespace tokenizer
 {
 class Tokenizer;
@@ -46,9 +55,12 @@ class Tokenizer;
 namespace rt
 {
 
+class RuntimeSession;
+
 class CollectiveGroup;
 class MultiDevicePluginResources;
 class LLMRankRuntime;
+class PleIoBudget;
 struct VisualPrunerConfig;
 
 //! Owns local LLM rank workers and communication groups for a runtime coordinator.
@@ -57,19 +69,8 @@ class RuntimeCoordinator
 public:
     struct Config
     {
-        std::string engineDir;
-        std::string multimodalEngineDir;
-        std::unordered_map<std::string, std::string> loraWeightsMap;
-        ParallelConfig parallelConfig;
-        std::optional<SpecDecodeDraftingConfig> draftingConfig;
-        ContextCacheConfig contextCacheConfig;
-        std::string checkpointDir;
-        std::string draftCheckpointDir;
-        std::vector<int32_t> localRanks;
-        std::unordered_map<int32_t, int32_t> localRankDevices;
-        std::vector<cudaStream_t> localStreams;
-        bool ownsLocalStreams{true};
-        std::vector<ParallelBackendHandles> backendHandles;
+        DeploymentOptions deployment;
+        RuntimeResources resources;
         std::unique_ptr<ModelArtifacts> modelArtifacts;
     };
 
@@ -82,10 +83,20 @@ public:
     RuntimeCoordinator& operator=(RuntimeCoordinator&&) = delete;
 
     bool captureDecodingCUDAGraph(cudaStream_t stream = nullptr);
+    //! True when this coordinator can host a runtime session: inline single-rank execution only in
+    //! this release; a tensor-parallel deployment answers false.
+    bool supportsSteppedExecution() const noexcept;
+
+    //! Open the runtime session on the one rank this coordinator runs inline; see
+    //! LLMRankRuntime::openSession. A tensor-parallel deployment cannot host one yet
+    //! (supportsSteppedExecution() answers false) and this is a contract violation there.
+    std::unique_ptr<RuntimeSession> openSession(bool enableProfiling, cudaStream_t stream, SessionOptions options = {});
+
     bool dispatchRequest(LLMGenerationRequest const& request, bool enableProfiling,
         bool outputThinkerEmbeddings = false, cudaStream_t stream = nullptr);
-    bool genAndSaveSystemPromptKVCache(
-        std::string const& prompt, std::string const& loraWeightsName, cudaStream_t stream = nullptr);
+    //! Return the token count produced by the same preparation path used for inference.
+    //! Only text requests are supported.
+    std::vector<int32_t> countPromptTokens(LLMGenerationRequest const& request) const;
     void setVisualPrunerConfig(VisualPrunerConfig const& config);
 
     LLMGenerationResponse takeRankResponse(int32_t globalRank);
@@ -95,9 +106,19 @@ public:
 
     bool ownsGlobalRank(int32_t globalRank) const noexcept;
     bool localRanksSucceeded() const noexcept;
+    //! First failed rank or worker, without polling the GPU.
+    std::string unavailableReason() const;
+
+    //! @brief Ranks this plan spans. 1 for a single-device plan.
+    int32_t worldSize() const noexcept
+    {
+        return mWorldSize;
+    }
 
 private:
     using TokenBroadcastFn = std::function<bool(void* buffer, int32_t count, cudaStream_t stream)>;
+    using VisionGatherFn
+        = std::function<bool(void* buffer, int32_t rank0Count, int32_t rank1Count, cudaStream_t stream)>;
 
     struct RankPlan
     {
@@ -114,6 +135,7 @@ private:
         std::vector<int32_t> statuses;
         std::vector<std::string> errors;
         std::vector<cudaStream_t> requestStreams;
+
         bool enableProfiling{false};
         bool outputThinkerEmbeddings{false};
     };
@@ -123,6 +145,7 @@ private:
     void initializeCollectiveResources();
     void initializeRankStreams();
     void initializeTokenizer();
+    void initializeChatTemplate();
     void initializeRankRuntimes();
     void initializeRequestSynchronization();
     void registerCollectiveGroup(MultiDevicePluginResources const& resources);
@@ -137,6 +160,7 @@ private:
         LLMGenerationRequest const& request, bool enableProfiling, bool outputThinkerEmbeddings, cudaStream_t stream);
 
     std::unique_ptr<LLMRankRuntime> createRankRuntime(int32_t globalRank);
+    //! Apply the model chat contract and tokenize each request exactly once.
     LLMGenerationRequest prepareRequestState(LLMGenerationRequest const& request) const;
     void prepareRankRequests(LLMGenerationRequest const& request);
     CollectiveGroup const* collectiveGroup(ParallelType type) const noexcept;
@@ -158,8 +182,11 @@ private:
     bool mOwnsStreams{true};
     bool mInlineSingleRank{false};
     std::unique_ptr<tokenizer::Tokenizer> mTokenizer;
+    std::unique_ptr<chat_template::ChatTemplate> mChatTemplate;
+    std::shared_ptr<PleIoBudget> mPleIoBudget;
     std::vector<std::unique_ptr<LLMRankRuntime>> mRuntimes;
     std::vector<TokenBroadcastFn> mTokenSyncFns;
+    std::vector<VisionGatherFn> mVisionGatherFns;
 
     WorkerTask mWorkerTask;
     std::atomic<bool> mWorkersDone{false};

@@ -22,13 +22,18 @@
 #include <cerrno>
 #include <cstdarg>
 #include <cstring>
-#include <fcntl.h>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 namespace trt_edgellm
 {
 
@@ -56,12 +61,19 @@ MmapReader::~MmapReader() noexcept
 
 void MmapReader::release() noexcept
 {
+#if defined(_WIN32)
+    if (mData != nullptr)
+    {
+        UnmapViewOfFile(mData);
+    }
+#else
     if (mData != nullptr && mBytes > 0)
     {
         munmap(mData, mBytes);
-        mData = nullptr;
-        mBytes = 0;
     }
+#endif
+    mData = nullptr;
+    mBytes = 0;
 }
 
 bool MmapReader::loadFile(std::filesystem::path const& fp, Mode mode)
@@ -70,6 +82,43 @@ bool MmapReader::loadFile(std::filesystem::path const& fp, Mode mode)
     release();
 
     std::string const filePath = fp.string();
+#if defined(_WIN32)
+    HANDLE const file = CreateFileW(
+        fp.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        std::cerr << format::fmtstr("MmapReader: Cannot open file: %s", filePath.c_str()) << std::endl;
+        return false;
+    }
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0)
+    {
+        CloseHandle(file);
+        std::cerr << format::fmtstr("MmapReader: File %s is empty or unreadable.", filePath.c_str()) << std::endl;
+        return false;
+    }
+    mBytes = static_cast<size_t>(size.QuadPart);
+
+    DWORD const protection = mode == Mode::kCopyOnWrite ? PAGE_WRITECOPY : PAGE_READONLY;
+    HANDLE const mapping = CreateFileMappingW(file, nullptr, protection, 0, 0, nullptr);
+    if (mapping == nullptr)
+    {
+        CloseHandle(file);
+        mBytes = 0;
+        std::cerr << format::fmtstr("MmapReader: CreateFileMapping failed for file: %s", filePath.c_str()) << std::endl;
+        return false;
+    }
+    DWORD const access = mode == Mode::kCopyOnWrite ? FILE_MAP_COPY : FILE_MAP_READ;
+    mData = MapViewOfFile(mapping, access, 0, 0, 0);
+    CloseHandle(mapping);
+    CloseHandle(file);
+    if (mData == nullptr)
+    {
+        mBytes = 0;
+        std::cerr << format::fmtstr("MmapReader: MapViewOfFile failed for file: %s", filePath.c_str()) << std::endl;
+        return false;
+    }
+#else
     int fd = open(filePath.c_str(), O_RDONLY);
     if (fd < 0)
     {
@@ -107,6 +156,7 @@ bool MmapReader::loadFile(std::filesystem::path const& fp, Mode mode)
         return false;
     }
     close(fd);
+#endif
     return true;
 }
 

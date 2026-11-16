@@ -17,11 +17,17 @@
 
 #pragma once
 
+#include "dataType.h"
 #include "logger.h"
 #include "stringUtils.h"
 #include <NvInfer.h>
 #include <NvInferVersion.h>
+#include <cstdlib>
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -36,67 +42,101 @@
 namespace trt_edgellm
 {
 
+#if defined(_WIN32)
+inline constexpr char kDEFAULT_EDGELLM_PLUGIN_PATH[] = "NvInfer_edgellm_plugin.dll";
+
+//! @brief Open a dynamic library and return its native handle.
+inline void* openDynamicLibrary(char const* path) noexcept
+{
+    return static_cast<void*>(LoadLibraryA(path));
+}
+
+//! @brief Close a dynamic library handle.
+inline void closeDynamicLibrary(void* handle) noexcept
+{
+    FreeLibrary(static_cast<HMODULE>(handle));
+}
+
+//! @brief Log the platform error from a failed dynamic library load.
+inline void logDynamicLibraryOpenError(char const* path) noexcept
+{
+    LOG_ERROR("Cannot open plugin library %s (Windows error %lu)", path, static_cast<unsigned long>(GetLastError()));
+}
+
+//! @brief Resolve a symbol from a loaded dynamic library.
+inline void* getDynamicLibrarySymbol(void* handle, char const* name) noexcept
+{
+    return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), name));
+}
+
+//! @brief Resolve a symbol from the loaded TensorRT Edge-LLM plugin library.
+inline void* getLoadedEdgellmPluginSymbol(char const* name) noexcept
+{
+    HMODULE const module = GetModuleHandleA(kDEFAULT_EDGELLM_PLUGIN_PATH);
+    return module == nullptr ? nullptr : getDynamicLibrarySymbol(static_cast<void*>(module), name);
+}
+#else
+inline constexpr char kDEFAULT_EDGELLM_PLUGIN_PATH[] = "build/libNvInfer_edgellm_plugin.so";
+
+//! @brief Open a dynamic library and return its native handle.
+inline void* openDynamicLibrary(char const* path) noexcept
+{
+    // RTLD_GLOBAL exposes plugin registration entry points to runtime resource
+    // registration through dlsym(RTLD_DEFAULT, ...), avoiding build-time plugin
+    // linkage and duplicate CUDA device code. RTLD_NODELETE keeps TensorRT plugin
+    // code mapped through engine teardown.
+    return dlopen(path, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
+}
+
+//! @brief Close a dynamic library handle.
+inline void closeDynamicLibrary(void* handle) noexcept
+{
+    dlclose(handle);
+}
+
+//! @brief Log the platform error from a failed dynamic library load.
+inline void logDynamicLibraryOpenError(char const* path) noexcept
+{
+    LOG_ERROR("Cannot open plugin library %s: %s", path, dlerror());
+}
+
+//! @brief Resolve a symbol from a loaded dynamic library.
+inline void* getDynamicLibrarySymbol(void* handle, char const* name) noexcept
+{
+    return dlsym(handle, name);
+}
+
+//! @brief Resolve a symbol from the loaded TensorRT Edge-LLM plugin library.
+inline void* getLoadedEdgellmPluginSymbol(char const* name) noexcept
+{
+    return dlsym(RTLD_DEFAULT, name);
+}
+#endif
+
 /*!
- * @brief Custom deleter for dynamic library handles
- *
- * Handles proper cleanup of dynamically loaded libraries using dlclose.
+ * @brief Custom deleter for dynamic library handles.
  */
 struct DlDeleter
 {
-    //! @brief Delete operator for library handles
-    //! @param handle Library handle to close
+    //! @brief Delete operator for library handles.
     void operator()(void* handle) const noexcept
     {
         if (handle)
         {
-            dlclose(handle);
+            closeDynamicLibrary(handle);
         }
     }
 };
 
 /*!
- * @brief Load TensorRT Edge-LLM plugin library
+ * @brief Load TensorRT Edge-LLM plugin library.
  *
- * Loads the plugin library from the path specified by EDGELLM_PLUGIN_PATH
- * environment variable. If not set, defaults to build/libNvInfer_edgellm_plugin.so.
+ * Loads the plugin library from EDGELLM_PLUGIN_PATH when set. Otherwise, the
+ * library is resolved relative to the calling Edge-LLM binary or module.
  *
- * @return Unique pointer to library handle, or nullptr on failure
+ * @return Unique pointer to library handle, or nullptr on failure.
  */
-inline std::unique_ptr<void, DlDeleter> loadEdgellmPluginLib(void) noexcept
-{
-    char const* pluginPath = std::getenv("EDGELLM_PLUGIN_PATH");
-
-    if (pluginPath != nullptr)
-    {
-        LOG_INFO("EDGELLM_PLUGIN_PATH: %s", pluginPath);
-    }
-    else
-    {
-        LOG_INFO("EDGELLM_PLUGIN_PATH variable is not set. Default to build/libNvInfer_edgellm_plugin.so");
-        pluginPath = "build/libNvInfer_edgellm_plugin.so";
-    }
-
-    // RTLD_GLOBAL exposes plugin registration entry points to runtime resource
-    // registration through dlsym(RTLD_DEFAULT, ...), avoiding build-time plugin
-    // linkage and duplicate CUDA device code. RTLD_NODELETE keeps TensorRT plugin
-    // code mapped through engine teardown.
-    auto handle = std::unique_ptr<void, DlDeleter>(dlopen(pluginPath, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE));
-    if (!handle)
-    {
-        LOG_ERROR("Cannot open plugin library: %s", dlerror());
-        return std::unique_ptr<void, DlDeleter>(nullptr);
-    }
-
-    // Sync log level with the plugin (follows the TRT initLibNvInferPlugins pattern).
-    using InitPluginsFn = bool (*)(void*, char const*);
-    auto initPlugins = reinterpret_cast<InitPluginsFn>(dlsym(handle.get(), "initEdgellmPlugins"));
-    if (initPlugins)
-    {
-        initPlugins(static_cast<nvinfer1::ILogger*>(&gLogger), "");
-    }
-
-    return handle;
-}
+std::unique_ptr<void, DlDeleter> loadEdgellmPluginLib(void) noexcept;
 
 //! Capture a TensorRT CUDA graph from an execution context and stream.
 //! @return Pair of graph and graph exec on success, std::nullopt on failure
@@ -188,31 +228,6 @@ std::string printEngineInfo(nvinfer1::ICudaEngine const* engine, int32_t profile
 std::unique_ptr<nvinfer1::ICudaEngine> deserializeCudaEngineFromFile(
     nvinfer1::IRuntime& runtime, std::filesystem::path const& enginePath);
 
-//! Short, human-readable name for a TensorRT data type (e.g. "FLOAT16").
-//! Used in logs and error messages; not intended for serialization.
-constexpr char const* getDataTypeString(nvinfer1::DataType const dataType) noexcept
-{
-    switch (dataType)
-    {
-    case nvinfer1::DataType::kINT64: return "INT64";
-    case nvinfer1::DataType::kINT32: return "INT32";
-    case nvinfer1::DataType::kFLOAT: return "FLOAT32";
-    case nvinfer1::DataType::kHALF: return "FLOAT16";
-    case nvinfer1::DataType::kBF16: return "BFLOAT16";
-    case nvinfer1::DataType::kFP8: return "FLOAT8_E4M3";
-    case nvinfer1::DataType::kINT8: return "INT8";
-    case nvinfer1::DataType::kUINT8: return "UINT8";
-    case nvinfer1::DataType::kBOOL: return "BOOL";
-#if IS_TRT_RTX || NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 12)
-    case nvinfer1::DataType::kE8M0: return "FLOAT8_E8M0";
-#endif
-#if IS_TRT_RTX || NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 8)
-    case nvinfer1::DataType::kFP4: return "FLOAT4";
-#endif
-    case nvinfer1::DataType::kINT4: return "INT4";
-    }
-    return "UNKNOWN";
-}
 //! Whether the engine exposes an output binding with the given name.
 //! Use this instead of getTensorIOMode(name) when probing for an optional binding
 //! — getTensorIOMode logs a spurious TensorRT ERROR for unknown names.

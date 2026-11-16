@@ -64,11 +64,13 @@ struct ContextCacheMetrics
     ContextCachePoolMetrics draftKvPages;
     ContextCachePoolMetrics recurrentSnapshots;
     ContextCachePoolMetrics partialKvSnapshots;
+    ContextCachePoolMetrics swaKvPages;
     uint64_t evictedRecords{};
     uint64_t reclaimedBaseKvPages{};
     uint64_t reclaimedDraftKvPages{};
     uint64_t reclaimedRecurrentSnapshots{};
     uint64_t reclaimedPartialKvSnapshots{};
+    uint64_t reclaimedSwaKvPages{};
 };
 
 } // namespace rt

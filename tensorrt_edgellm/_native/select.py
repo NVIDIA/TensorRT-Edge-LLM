@@ -33,8 +33,8 @@ def load_manifest(path: Path) -> Dict[str, Any]:
     except FileNotFoundError as error:
         raise NativeManifestNotFoundError(
             f"This installation has no native payload manifest at {path}. "
-            "Install a released TensorRT Edge-LLM wheel for this architecture "
-            "and Python version.") from error
+            "Install a released TensorRT Edge-LLM wheel for this "
+            "architecture.") from error
     except (OSError, json.JSONDecodeError) as error:
         raise NativeManifestError(
             f"Cannot read native payload manifest {path}: {error}") from error
@@ -57,8 +57,7 @@ def _probe_matches(entry: Mapping[str, Any],
 
 
 def _matches(entry: Mapping[str, Any], detected: DetectedPlatform) -> bool:
-    return (entry["python_abi"] == detected.python_abi
-            and entry["cpu_arch"] == detected.cpu_arch
+    return (entry["cpu_arch"] == detected.cpu_arch
             and entry["cuda_runtime_soname"] == detected.cuda_runtime_soname
             and entry["tensorrt_runtime_soname"]
             == detected.tensorrt_runtime_soname
@@ -71,10 +70,9 @@ def _supported_rows(entries: Sequence[Mapping[str, Any]],
     relevant = [
         str(entry.get("variant_id", "<unnamed>")) for entry in entries
         if entry.get("cpu_arch") == detected.cpu_arch
-        and entry.get("python_abi") == detected.python_abi
     ]
     return ", ".join(
-        sorted(relevant)) if relevant else "none for this architecture/ABI"
+        sorted(relevant)) if relevant else "none for this architecture"
 
 
 def select_variant(detected: DetectedPlatform,

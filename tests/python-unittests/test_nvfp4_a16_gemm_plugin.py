@@ -146,9 +146,10 @@ def _plugin_fields(case: GemmCase):
     ]
 
 
-def _io_specs(case: GemmCase):
+def _io_specs(case: GemmCase, rank: int = 3):
     return [
-        ("activation", trt.float16, (-1, -1, case.gemm_k)),
+        ("activation", trt.float16, (-1, case.gemm_k) if rank == 2 else
+         (-1, -1, case.gemm_k)),
         ("qweights", trt.int8, (1, case.gemm_k // 16, 8 * case.gemm_n)),
         ("block_scales", trt.int8, (1, case.gemm_k // 16, case.gemm_n)),
         ("global_scale", trt.float16, (1, )),
@@ -159,16 +160,19 @@ def _profiles(case: GemmCase, input_specs):
     profiles = {}
     for name, _, shape in input_specs:
         if name == "activation":
-            profiles[name] = ((1, 1, case.gemm_k), (1, 1, case.gemm_k),
-                              (1, case.profile_max, case.gemm_k))
+            profiles[name] = (((1, case.gemm_k), (1, case.gemm_k),
+                               (case.profile_max,
+                                case.gemm_k)) if len(shape) == 2 else
+                              ((1, 1, case.gemm_k), (1, 1, case.gemm_k),
+                               (1, case.profile_max, case.gemm_k)))
         else:
             profiles[name] = (shape, shape, shape)
     return profiles
 
 
-def _build_runner(case: GemmCase) -> PluginRunner:
+def _build_runner(case: GemmCase, rank: int = 3) -> PluginRunner:
     runner = PluginRunner()
-    input_specs = _io_specs(case)
+    input_specs = _io_specs(case, rank)
     runner.build(input_specs=input_specs,
                  output_names=["output"],
                  plugin_name=_PLUGIN_NAME,
@@ -192,7 +196,7 @@ def _round_trip_engine(runner: PluginRunner) -> None:
     runner._nvfp4_test_runtime = runtime
 
 
-def _execute_case(case: GemmCase) -> None:
+def _execute_case(case: GemmCase, rank: int = 3) -> None:
     generator = torch.Generator().manual_seed(4711 + case.gemm_n + case.gemm_k)
     global_scale = 2.0**-3
     (qweights, block_scales, global_scale_t, codes,
@@ -200,7 +204,7 @@ def _execute_case(case: GemmCase) -> None:
                                           global_scale, generator)
     dense_w = _dequantize_original(codes, scales, global_scale).to("cuda")
 
-    runner = _build_runner(case)
+    runner = _build_runner(case, rank)
     _round_trip_engine(runner)
     static_inputs = {
         "qweights": qweights.to("cuda").contiguous(),
@@ -211,16 +215,17 @@ def _execute_case(case: GemmCase) -> None:
     row_counts = [
         m for m in (1, 33, case.profile_max) if m <= case.profile_max
     ]
-    for num_rows in sorted(set(row_counts)):
+    for num_rows in [*sorted(set(row_counts)), 1]:
+        leading_shape = (num_rows, ) if rank == 2 else (1, num_rows)
         hidden = (torch.randn(
-            (1, num_rows, case.gemm_k),
+            (*leading_shape, case.gemm_k),
             generator=generator,
             dtype=torch.float32) * 0.25).to(torch.float16).to("cuda")
         # Plugin computes out[m, n] = sum_k act[m, k] * W_dequant[n, k].
         expected = hidden.reshape(num_rows, case.gemm_k).to(
             torch.float32) @ dense_w.t()
-        expected = expected.reshape(1, num_rows, case.gemm_n)
-        actual = torch.empty((1, num_rows, case.gemm_n),
+        expected = expected.reshape(*leading_shape, case.gemm_n)
+        actual = torch.empty((*leading_shape, case.gemm_n),
                              dtype=torch.float16,
                              device="cuda")
         tensors = {"activation": hidden, "output": actual, **static_inputs}
@@ -235,15 +240,17 @@ def _execute_case(case: GemmCase) -> None:
                      cos_threshold=0.99)
 
 
+@pytest.mark.parametrize("rank", [2, 3])
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c.name)
-def test_dense_nvfp4_a16_gemm_decode_and_prefill(case):
-    _execute_case(case)
+def test_dense_nvfp4_a16_gemm_decode_and_prefill(case, rank):
+    _execute_case(case, rank)
 
 
-def test_dense_nvfp4_a16_gemm_auto_max_m():
+@pytest.mark.parametrize("rank", [2, 3])
+def test_dense_nvfp4_a16_gemm_auto_max_m(rank):
     # max_m == 0 asks the plugin to size its workspace from the optimization
     # profile instead of an explicit token cap.
-    _execute_case(GemmCase(name="auto", gemm_n=256, gemm_k=256, max_m=0))
+    _execute_case(GemmCase(name="auto", gemm_n=256, gemm_k=256, max_m=0), rank)
 
 
 @pytest.mark.parametrize(

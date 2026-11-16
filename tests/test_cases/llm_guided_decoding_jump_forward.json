@@ -1,0 +1,139 @@
+{
+    "batch_size": 1,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 1,
+    "max_generate_length": 256,
+    "requests": [
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Give me a person record with a name and an age."
+                }
+            ],
+            "guided_decoding": {
+                "json_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string"
+                        },
+                        "age": {
+                            "type": "integer"
+                        }
+                    },
+                    "required": [
+                        "name",
+                        "age"
+                    ]
+                },
+                "jump_forward": true
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Describe a cat as a small JSON object with a name and an age."
+                }
+            ],
+            "guided_decoding": {
+                "json_object": true,
+                "jump_forward": true
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Reply with only a support email address."
+                }
+            ],
+            "guided_decoding": {
+                "regex": "[a-z]{1,16}@[a-z]{1,16}\\.(com|org)",
+                "jump_forward": true
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Answer with a or b."
+                }
+            ],
+            "guided_decoding": {
+                "ebnf": "root ::= \"a\" | \"b\"",
+                "jump_forward": true
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Call the weather tool for Paris."
+                }
+            ],
+            "guided_decoding": {
+                "structural_tag": {
+                    "type": "structural_tag",
+                    "format": {
+                        "type": "triggered_tags",
+                        "triggers": [
+                            "<function="
+                        ],
+                        "tags": [
+                            {
+                                "begin": "<function=get_weather>",
+                                "content": {
+                                    "type": "json_schema",
+                                    "json_schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "city": {
+                                                "type": "string"
+                                            }
+                                        },
+                                        "required": [
+                                            "city"
+                                        ]
+                                    }
+                                },
+                                "end": "</function>"
+                            }
+                        ]
+                    }
+                },
+                "jump_forward": true
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Is the sky blue? Answer with yes, no, or maybe."
+                }
+            ],
+            "guided_decoding": {
+                "choice": [
+                    "yes",
+                    "no",
+                    "maybe"
+                ],
+                "jump_forward": true
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Extract the flight request below as a JSON object with the keys intent (book_flight, cancel_flight or check_status), origin (IATA airport code), destination (IATA airport code), date (YYYY-MM-DD) and passengers (1-9). Reply with the JSON only.\n\nI want to book a flight from San Francisco to New York JFK on 2026-11-03 for 2 passengers."
+                }
+            ],
+            "guided_decoding": {
+                "regex": "\\{\"intent\": \"(book_flight|cancel_flight|check_status)\", \"origin\": \"[A-Z]{3}\", \"destination\": \"[A-Z]{3}\", \"date\": \"\\d{4}-\\d{2}-\\d{2}\", \"passengers\": [1-9]\\}",
+                "jump_forward": true
+            }
+        }
+    ]
+}

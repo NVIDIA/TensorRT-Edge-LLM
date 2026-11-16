@@ -22,9 +22,10 @@
 #include "common/pagedKvTypes.h"
 #include "kernels/kvCacheUtilKernels/kvCacheUtilsKernels.h"
 #include "kernels/speculative/batchEvictKernels.h"
-#include <unordered_map>
+#include "kernels/speculative/mtpStateScatterKernels.h"
 
-using namespace nvinfer1;
+#include <exception>
+#include <unordered_map>
 
 namespace trt_edgellm
 {
@@ -76,6 +77,59 @@ HybridCacheManager::HybridCacheManager(Config const& config, cudaStream_t stream
     CUDA_CHECK(
         cudaMemsetAsync(mDeviceKVCacheLengths.rawPointer(), 0, mDeviceKVCacheLengths.getMemoryCapacity(), stream));
 
+    // Allocate any auxiliary conv states (zero-initialised), one per configured entry.
+    mAuxConvStates.reserve(mConfig.auxConvStateConfigs.size());
+    for (size_t i = 0; i < mConfig.auxConvStateConfigs.size(); ++i)
+    {
+        auto const& stateConfig = mConfig.auxConvStateConfigs[i];
+        check::check(stateConfig.absLayerIdx >= 0 && stateConfig.absLayerIdx < totalLayers,
+            "HybridCacheManager: auxiliary conv state names layer " + std::to_string(stateConfig.absLayerIdx)
+                + ", which is outside a " + std::to_string(totalLayers) + "-layer stack.");
+        check::check(stateConfig.stateIdx > 0,
+            "HybridCacheManager: auxiliary conv state index must be above 0, which "
+            "belongs to the layer's own mixer.");
+        check::check(stateConfig.convDim > 0 && stateConfig.convWidth > 0,
+            "HybridCacheManager: auxiliary conv state must have positive dimensions.");
+        mAuxConvStates.emplace_back(Coords{mConfig.maxBatchSize, stateConfig.convDim, stateConfig.convWidth},
+            DeviceType::kGPU, stateConfig.dataType, "HybridCacheManager::mAuxConvStates" + std::to_string(i));
+        CUDA_CHECK(
+            cudaMemsetAsync(mAuxConvStates.back().rawPointer(), 0, mAuxConvStates.back().getMemoryCapacity(), stream));
+    }
+
+    // One snapshot per verified token, committed after acceptance like the GDN conv state; the two
+    // share the switch that turns them on.
+    // TODO: the registry declares these bindings from the spec mode alone, so a GDN-free n-gram base
+    // would allocate nothing here and fail at the first verify; move both under one commit policy.
+    int32_t const intermediateSeqLen = mConfig.mambaConfig.maxIntermediateSeqLen;
+    if (!mAuxConvStates.empty() && intermediateSeqLen > 0)
+    {
+        std::vector<kernel::MtpLayerInfo> auxInfos(mAuxConvStates.size());
+        for (size_t i = 0; i < mConfig.auxConvStateConfigs.size(); ++i)
+        {
+            auto const& stateConfig = mConfig.auxConvStateConfigs[i];
+            check::check(stateConfig.dataType == DataType::kHALF,
+                "HybridCacheManager: the auxiliary conv state scatter supports FP16 states only.");
+            check::check(stateConfig.convDim == mConfig.auxConvStateConfigs[0].convDim
+                    && stateConfig.convWidth == mConfig.auxConvStateConfigs[0].convWidth,
+                "HybridCacheManager: auxiliary conv states must share one geometry to be scattered together.");
+            mIntermediateAuxConvStates.emplace_back(
+                Coords{mConfig.maxBatchSize, intermediateSeqLen, stateConfig.convDim, stateConfig.convWidth},
+                DeviceType::kGPU, stateConfig.dataType,
+                "HybridCacheManager::mIntermediateAuxConvStates" + std::to_string(i));
+            CUDA_CHECK(cudaMemsetAsync(mIntermediateAuxConvStates.back().rawPointer(), 0,
+                mIntermediateAuxConvStates.back().getMemoryCapacity(), stream));
+            auxInfos[i]
+                = {nullptr, nullptr, mAuxConvStates[i].rawPointer(), mIntermediateAuxConvStates.back().rawPointer()};
+        }
+        size_t const infoBytes = auxInfos.size() * sizeof(kernel::MtpLayerInfo);
+        mDeviceAuxMtpLayerInfos = rt::Tensor({static_cast<int64_t>(infoBytes)}, DeviceType::kGPU, DataType::kINT8,
+            "HybridCacheManager::auxMtpLayerInfos");
+        CUDA_CHECK(cudaMemcpyAsync(
+            mDeviceAuxMtpLayerInfos.rawPointer(), auxInfos.data(), infoBytes, cudaMemcpyHostToDevice, stream));
+        // Sync before auxInfos goes out of scope.
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+
     // Pre-build per-headDim groups for batched kernel launches.
     if (mKVCache.numLayers() > 0)
     {
@@ -84,6 +138,11 @@ HybridCacheManager::HybridCacheManager(Config const& config, cudaStream_t stream
         for (int32_t i = 0; i < mKVCache.numLayers(); ++i)
         {
             auto const& lc = mKVCache.getLayerConfig(i);
+            if (mKVCache.hasReducedKVCache()
+                && isReducedKvCacheCapacity(lc.kvCacheCapacity, mConfig.kvConfig.maxSequenceLength))
+            {
+                continue;
+            }
             auto it = headDimToGroupIdx.find(lc.headDim);
             if (it == headDimToGroupIdx.end())
             {
@@ -98,11 +157,11 @@ HybridCacheManager::HybridCacheManager(Config const& config, cudaStream_t stream
             group.maxKVHeads = std::max(group.maxKVHeads, lc.numKVHeads);
             group.numLayers++;
 
-            // The active-slot K/V views use capPadded tokens per row.
+            // Dense batched-copy operations only include full-capacity layers.
             kernel::KVLayerInfo info{};
             info.data = mKVCache.kPoolPtr(i);
             info.numKVHeads = lc.numKVHeads;
-            info.maxSeqLen = mKVCache.maxCapPadded();
+            info.maxSeqLen = mKVCache.maxCapPadded(i);
             group.hostInfos.push_back(info);
         }
 
@@ -138,6 +197,9 @@ HybridCacheManager::HybridCacheManager(HybridCacheManager&& other) noexcept
     mActiveBatchSize = other.mActiveBatchSize;
     mKVCacheAllEmpty = other.mKVCacheAllEmpty;
     mHeadDimGroups = std::move(other.mHeadDimGroups);
+    mAuxConvStates = std::move(other.mAuxConvStates);
+    mIntermediateAuxConvStates = std::move(other.mIntermediateAuxConvStates);
+    mDeviceAuxMtpLayerInfos = std::move(other.mDeviceAuxMtpLayerInfos);
 
     other.mConfig = Config{};
     other.mActiveBatchSize = 0;
@@ -157,6 +219,9 @@ HybridCacheManager& HybridCacheManager::operator=(HybridCacheManager&& other) no
         mActiveBatchSize = other.mActiveBatchSize;
         mKVCacheAllEmpty = other.mKVCacheAllEmpty;
         mHeadDimGroups = std::move(other.mHeadDimGroups);
+        mAuxConvStates = std::move(other.mAuxConvStates);
+        mIntermediateAuxConvStates = std::move(other.mIntermediateAuxConvStates);
+        mDeviceAuxMtpLayerInfos = std::move(other.mDeviceAuxMtpLayerInfos);
 
         other.mConfig = Config{};
         other.mActiveBatchSize = 0;
@@ -206,6 +271,15 @@ std::pair<rt::Tensor, rt::Tensor> HybridCacheManager::getSeparateKVCache(int32_t
     return mKVCache.getSeparateKVCache(localIdx);
 }
 
+KVLayerStorageMetadata HybridCacheManager::getKVLayerStorageMetadata(int32_t absLayerIdx) const
+{
+    check::check(absLayerIdx >= 0 && absLayerIdx < static_cast<int32_t>(mAbsToKVIndex.size()),
+        "getKVLayerStorageMetadata: absolute layer index is out of range.");
+    int32_t const localIdx = mAbsToKVIndex[absLayerIdx];
+    check::check(localIdx >= 0, "getKVLayerStorageMetadata: layer is not an attention layer.");
+    return mKVCache.getLayerStorageMetadata(localIdx);
+}
+
 rt::Tensor& HybridCacheManager::getRecurrentState(int32_t absLayerIdx)
 {
     check::check(absLayerIdx >= 0 && absLayerIdx < static_cast<int32_t>(mAbsToMambaIndex.size()),
@@ -215,8 +289,158 @@ rt::Tensor& HybridCacheManager::getRecurrentState(int32_t absLayerIdx)
     return mMambaCache.getRecurrentState(localIdx);
 }
 
-rt::Tensor& HybridCacheManager::getConvState(int32_t absLayerIdx)
+HybridCacheManager::Config const& HybridCacheManager::getConfig() const noexcept
 {
+    return mConfig;
+}
+
+int32_t HybridCacheManager::numAuxConvStates() const noexcept
+{
+    return static_cast<int32_t>(mAuxConvStates.size());
+}
+
+HybridCacheManager::AuxConvStateConfig const& HybridCacheManager::auxConvStateConfig(int32_t auxIdx) const
+{
+    check::check(auxIdx >= 0 && auxIdx < numAuxConvStates(),
+        "auxConvStateConfig: index " + std::to_string(auxIdx) + " out of range.");
+    return mConfig.auxConvStateConfigs[static_cast<size_t>(auxIdx)];
+}
+
+rt::Tensor& HybridCacheManager::getAuxConvState(int32_t auxIdx)
+{
+    check::check(auxIdx >= 0 && auxIdx < numAuxConvStates(),
+        "getAuxConvState: index " + std::to_string(auxIdx) + " out of range.");
+    return mAuxConvStates[static_cast<size_t>(auxIdx)];
+}
+
+bool HybridCacheManager::hasIntermediateAuxConvStates() const noexcept
+{
+    return !mIntermediateAuxConvStates.empty();
+}
+
+rt::Tensor& HybridCacheManager::getIntermediateAuxConvState(int32_t auxIdx)
+{
+    check::check(auxIdx >= 0 && auxIdx < static_cast<int32_t>(mIntermediateAuxConvStates.size()),
+        "getIntermediateAuxConvState: index " + std::to_string(auxIdx) + " out of range.");
+    return mIntermediateAuxConvStates[static_cast<size_t>(auxIdx)];
+}
+
+void HybridCacheManager::reshapeIntermediateAuxConvStates(int32_t activeBatchSize, int32_t seqLen)
+{
+    for (size_t i = 0; i < mIntermediateAuxConvStates.size(); ++i)
+    {
+        auto const& stateConfig = mConfig.auxConvStateConfigs[i];
+        check::check(mIntermediateAuxConvStates[i].reshape(
+                         {activeBatchSize, seqLen, stateConfig.convDim, stateConfig.convWidth}),
+            "Intermediate auxiliary conv state reshape failed");
+    }
+}
+
+void HybridCacheManager::scatterAcceptedAuxConvStates(rt::Tensor const& acceptLengths, rt::Tensor const& stateIndices,
+    cudaStream_t stream, rt::Tensor const* acceptedStateNodeIds)
+{
+    if (mIntermediateAuxConvStates.empty())
+    {
+        return;
+    }
+    auto const& stateConfig = mConfig.auxConvStateConfigs[0];
+    int32_t const activeBatchSize = static_cast<int32_t>(acceptLengths.getShape()[0]);
+    check::check(stateIndices.getDeviceType() == DeviceType::kGPU && stateIndices.getDataType() == DataType::kINT32
+            && stateIndices.getShape().getNumDims() == 1 && stateIndices.getShape()[0] == activeBatchSize,
+        "stateIndices must be a GPU INT32 tensor with shape [activeBatchSize].");
+    auto const* layerInfos = static_cast<kernel::MtpLayerInfo const*>(mDeviceAuxMtpLayerInfos.rawPointer());
+    int32_t const numLayers = static_cast<int32_t>(mIntermediateAuxConvStates.size());
+    int32_t const verifySize = static_cast<int32_t>(mIntermediateAuxConvStates[0].getShape()[1]);
+    int32_t const stateElements = stateConfig.convDim * stateConfig.convWidth;
+    if (acceptedStateNodeIds == nullptr)
+    {
+        kernel::mtpScatterConvStates(layerInfos, numLayers, activeBatchSize, mConfig.maxBatchSize, verifySize,
+            stateElements, acceptLengths.dataPointer<int32_t>(), stateIndices.dataPointer<int32_t>(), stream);
+        return;
+    }
+    auto const idsShape = acceptedStateNodeIds->getShape();
+    check::check(acceptedStateNodeIds->getDeviceType() == DeviceType::kGPU
+            && acceptedStateNodeIds->getDataType() == DataType::kINT32 && idsShape.getNumDims() == 2
+            && idsShape[0] == activeBatchSize,
+        "acceptedStateNodeIds must be a GPU INT32 tensor with shape [activeBatchSize, maxAcceptLen].");
+    kernel::mtpScatterAcceptedTreeConvStates(layerInfos, numLayers, activeBatchSize, mConfig.maxBatchSize, verifySize,
+        stateElements, acceptedStateNodeIds->dataPointer<int32_t>(), static_cast<int32_t>(idsShape[1]),
+        acceptLengths.dataPointer<int32_t>(), stateIndices.dataPointer<int32_t>(), stream);
+}
+
+size_t HybridCacheManager::auxConvStateBytesPerSlot(int32_t auxIdx) const
+{
+    auto const& stateConfig = mConfig.auxConvStateConfigs[static_cast<size_t>(auxIdx)];
+    return static_cast<size_t>(stateConfig.convDim) * stateConfig.convWidth
+        * rt::utils::getTypeSize(stateConfig.dataType);
+}
+
+std::vector<rt::Tensor> HybridCacheManager::captureAuxConvStates(int32_t slot, cudaStream_t stream)
+{
+    std::vector<rt::Tensor> result;
+    result.reserve(mAuxConvStates.size());
+    for (int32_t auxIdx = 0; auxIdx < numAuxConvStates(); ++auxIdx)
+    {
+        auto const& stateConfig = mConfig.auxConvStateConfigs[static_cast<size_t>(auxIdx)];
+        size_t const bytes = auxConvStateBytesPerSlot(auxIdx);
+        rt::Tensor saved({1, stateConfig.convDim, stateConfig.convWidth}, DeviceType::kGPU, stateConfig.dataType,
+            "HybridCacheManager::capturedAuxConvState_" + std::to_string(auxIdx));
+        CUDA_CHECK(cudaMemcpyAsync(saved.rawPointer(),
+            static_cast<char const*>(mAuxConvStates[static_cast<size_t>(auxIdx)].rawPointer())
+                + static_cast<size_t>(slot) * bytes,
+            bytes, cudaMemcpyDeviceToDevice, stream));
+        result.push_back(std::move(saved));
+    }
+    return result;
+}
+
+void HybridCacheManager::restoreAuxConvStates(std::vector<rt::Tensor> const& saved, int32_t slot, cudaStream_t stream)
+{
+    for (int32_t auxIdx = 0; auxIdx < numAuxConvStates(); ++auxIdx)
+    {
+        size_t const bytes = auxConvStateBytesPerSlot(auxIdx);
+        auto* destination = static_cast<char*>(mAuxConvStates[static_cast<size_t>(auxIdx)].rawPointer())
+            + static_cast<size_t>(slot) * bytes;
+        if (static_cast<size_t>(auxIdx) < saved.size())
+        {
+            CUDA_CHECK(cudaMemcpyAsync(
+                destination, saved[static_cast<size_t>(auxIdx)].rawPointer(), bytes, cudaMemcpyDeviceToDevice, stream));
+        }
+        else
+        {
+            CUDA_CHECK(cudaMemsetAsync(destination, 0, bytes, stream));
+        }
+    }
+}
+
+void HybridCacheManager::clearAuxConvStates(int32_t slot, cudaStream_t stream)
+{
+    for (int32_t auxIdx = 0; auxIdx < numAuxConvStates(); ++auxIdx)
+    {
+        size_t const bytes = auxConvStateBytesPerSlot(auxIdx);
+        CUDA_CHECK(cudaMemsetAsync(static_cast<char*>(mAuxConvStates[static_cast<size_t>(auxIdx)].rawPointer())
+                + static_cast<size_t>(slot) * bytes,
+            0, bytes, stream));
+    }
+}
+
+rt::Tensor& HybridCacheManager::getConvState(int32_t absLayerIdx, int32_t stateIdx)
+{
+    if (stateIdx != 0)
+    {
+        for (int32_t auxIdx = 0; auxIdx < numAuxConvStates(); ++auxIdx)
+        {
+            auto const& stateConfig = mConfig.auxConvStateConfigs[static_cast<size_t>(auxIdx)];
+            if (stateConfig.absLayerIdx == absLayerIdx && stateConfig.stateIdx == stateIdx)
+            {
+                return mAuxConvStates[static_cast<size_t>(auxIdx)];
+            }
+        }
+        check::check(false,
+            "getConvState: layer " + std::to_string(absLayerIdx) + " has no conv state at index "
+                + std::to_string(stateIdx) + ".");
+    }
+
     check::check(absLayerIdx >= 0 && absLayerIdx < static_cast<int32_t>(mAbsToMambaIndex.size()),
         "getConvState: absLayerIdx " + std::to_string(absLayerIdx) + " out of range.");
     int32_t const localIdx = mAbsToMambaIndex[absLayerIdx];
@@ -337,6 +561,61 @@ void HybridCacheManager::setActiveBatchSize(int32_t newActiveBatchSize)
     check::check(mDeviceKVCacheLengths.reshape({mActiveBatchSize}), "Tensor reshape failed");
 }
 
+void HybridCacheManager::appendSequence(int32_t committedLength, cudaStream_t stream)
+{
+    check::check(committedLength >= 0, "Appended sequence KV length must not be negative.");
+    check::check(mActiveBatchSize < mConfig.maxBatchSize, "Cannot append a sequence to a full batch.");
+    // The row is written before the batch grows to include it: a device enqueue that fails leaves
+    // the manager exactly as it was, so the caller can give the reservation back.
+    int32_t const row = mActiveBatchSize;
+    rt::Tensor rowView(
+        mDeviceKVCacheLengths.dataPointer<int32_t>() + row, {1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    CUDA_CHECK(cudaMemsetAsync(rowView.rawPointer(), 0, sizeof(int32_t), stream));
+    if (committedLength > 0)
+    {
+        kernel::incrementLengthTensor(rowView, committedLength, stream);
+    }
+    mActiveBatchSize += 1;
+    check::check(mDeviceKVCacheLengths.reshape({mActiveBatchSize}), "Tensor reshape failed");
+    if (committedLength > 0)
+    {
+        mKVCacheAllEmpty = false;
+    }
+}
+
+void HybridCacheManager::restoreActiveBatchSize(int32_t activeBatchSize) noexcept
+{
+    mActiveBatchSize = activeBatchSize;
+    bool const reshaped = mDeviceKVCacheLengths.reshape({activeBatchSize});
+    if (!reshaped)
+    {
+        std::terminate();
+    }
+}
+
+void HybridCacheManager::swapExecutionRows(int32_t rowA, int32_t rowB, cudaStream_t stream)
+{
+    check::check(rowA >= 0 && rowA < mActiveBatchSize && rowB >= 0 && rowB < mActiveBatchSize,
+        "Swapped KV-length rows are outside the active batch.");
+    kernel::swapLengthTensorEntries(mDeviceKVCacheLengths, rowA, rowB, stream);
+}
+
+void HybridCacheManager::materializeExecutionLengths(rt::Tensor const& executionLengths, cudaStream_t stream)
+{
+    check::check(executionLengths.getDeviceType() == DeviceType::kGPU, "Execution lengths tensor shall reside on GPU.");
+    check::check(
+        executionLengths.getDataType() == DataType::kINT32, "Execution lengths tensor shall have data type int32_t.");
+    check::check(executionLengths.getShape().getNumDims() == 1, "Execution lengths tensor shall be one-dimensional.");
+    int32_t const batchSize = static_cast<int32_t>(executionLengths.getShape()[0]);
+    check::check(batchSize > 0 && batchSize <= mConfig.maxBatchSize,
+        "Execution lengths batch size must be in range [1, maxBatchSize].");
+
+    mActiveBatchSize = batchSize;
+    check::check(mDeviceKVCacheLengths.reshape({batchSize}), "Tensor reshape failed");
+    CUDA_CHECK(cudaMemcpyAsync(mDeviceKVCacheLengths.rawPointer(), executionLengths.rawPointer(),
+        static_cast<size_t>(batchSize) * sizeof(int32_t), cudaMemcpyDeviceToDevice, stream));
+}
+
 bool HybridCacheManager::getKVCacheAllEmpty() const noexcept
 {
     return mKVCacheAllEmpty;
@@ -346,50 +625,21 @@ bool HybridCacheManager::getKVCacheAllEmpty() const noexcept
 // Compaction
 // ------------------------------------------------------------------
 
-void HybridCacheManager::compactBatch(
+void HybridCacheManager::compactKVCacheLengths(
     rt::Tensor const& batchMapping, int32_t oldBatch, int32_t newBatch, cudaStream_t stream)
 {
-    // Active-slot K/V views have [maxBatch, capPadded, H, D] shape. Compaction moves only each
-    // survivor's live prefix while the identity page table retains row == slot.
-    for (auto const& group : mHeadDimGroups)
-    {
-        auto const* layerInfos = static_cast<kernel::KVLayerInfo const*>(group.deviceLayerInfos.rawPointer());
-        kernel::compactKVCacheBatched(layerInfos, batchMapping, mDeviceKVCacheLengths, group.numLayers, group.headDim,
-            mKVCache.numPages(), mConfig.kvConfig.kvCacheType, oldBatch, newBatch, stream);
-    }
-
-    compactBatchSlotState(batchMapping, oldBatch, newBatch, stream);
+    check::check(mActiveBatchSize == oldBatch, "KV length compaction old batch does not match the active batch size");
+    check::check(mDeviceKVCacheLengths.reshape({oldBatch}), "Tensor reshape failed");
+    kernel::compactTensorBatch(mDeviceKVCacheLengths, batchMapping, mDeviceKVCacheLengths, oldBatch, newBatch, stream);
+    check::check(mDeviceKVCacheLengths.reshape({newBatch}), "Tensor reshape failed");
+    mActiveBatchSize = newBatch;
 }
 
-void HybridCacheManager::compactBatchSlotState(
-    rt::Tensor const& batchMapping, int32_t oldBatch, int32_t newBatch, cudaStream_t stream)
+void HybridCacheManager::clearResidentSlot(int32_t slot, cudaStream_t stream)
 {
-
-    // Compact the shared KV cache lengths tensor separately after all layers are done.
-    kernel::compactTensorBatch(mDeviceKVCacheLengths, batchMapping, mDeviceKVCacheLengths, oldBatch, newBatch, stream);
-
-    // Compact Mamba recurrent and conv states.
-    // compactTensorBatch asserts shape[0] == oldBatch, but Mamba tensors are allocated with
-    // shape[0] == maxBatchSize. Reshape to [oldBatch, ...] before compaction and [newBatch, ...] after.
-    auto const& mambaConfig = mMambaCache.getConfig();
-    for (int32_t i = 0; i < mMambaCache.numLayers(); ++i)
-    {
-        rt::Tensor& recState = mMambaCache.getRecurrentState(i);
-        check::check(recState.reshape({oldBatch, mambaConfig.recurrentStateNumHeads, mambaConfig.recurrentStateHeadDim,
-                         mambaConfig.recurrentStateSize}),
-            "Tensor reshape failed");
-        kernel::compactTensorBatch(recState, batchMapping, recState, oldBatch, newBatch, stream);
-        check::check(recState.reshape({mambaConfig.maxBatchSize, mambaConfig.recurrentStateNumHeads,
-                         mambaConfig.recurrentStateHeadDim, mambaConfig.recurrentStateSize}),
-            "Tensor reshape failed");
-
-        rt::Tensor& convState = mMambaCache.getConvState(i);
-        check::check(
-            convState.reshape({oldBatch, mambaConfig.convDim, mambaConfig.convKernel}), "Tensor reshape failed");
-        kernel::compactTensorBatch(convState, batchMapping, convState, oldBatch, newBatch, stream);
-        check::check(convState.reshape({mambaConfig.maxBatchSize, mambaConfig.convDim, mambaConfig.convKernel}),
-            "Tensor reshape failed");
-    }
+    check::check(slot >= 0 && slot < mConfig.maxBatchSize, "Resident cache slot is out of range.");
+    mMambaCache.clearSlot(slot, stream);
+    clearAuxConvStates(slot, stream);
 }
 
 // ------------------------------------------------------------------
@@ -399,9 +649,11 @@ void HybridCacheManager::compactBatchSlotState(
 std::vector<rt::Tensor> HybridCacheManager::captureKVCache(
     int32_t batchIdx, int32_t sequenceLength, cudaStream_t stream)
 {
+    check::check(
+        !mKVCache.hasReducedKVCache(), "HybridCacheManager::captureKVCache does not support sparse SWA page mappings.");
     // The batched save/restore kernels only instantiate the `half` template today — match main's
     // contract of throwing loudly on unsupported dtypes instead of silently corrupting.
-    check::check(mConfig.kvConfig.kvCacheType == nvinfer1::DataType::kHALF,
+    check::check(mConfig.kvConfig.kvCacheType == trt_edgellm::DataType::kHALF,
         "HybridCacheManager::captureKVCache currently only supports kHALF KV cache; "
         "FP8 system-prompt cache is not implemented.");
 
@@ -450,8 +702,10 @@ std::vector<rt::Tensor> HybridCacheManager::captureKVCache(
 
 void HybridCacheManager::restoreKVCache(std::vector<rt::Tensor> const& saved, int32_t batchIdx, cudaStream_t stream)
 {
+    check::check(
+        !mKVCache.hasReducedKVCache(), "HybridCacheManager::restoreKVCache does not support sparse SWA page mappings.");
     // See captureKVCache for the dtype contract.
-    check::check(mConfig.kvConfig.kvCacheType == nvinfer1::DataType::kHALF,
+    check::check(mConfig.kvConfig.kvCacheType == trt_edgellm::DataType::kHALF,
         "HybridCacheManager::restoreKVCache currently only supports kHALF KV cache; "
         "FP8 system-prompt cache is not implemented.");
 

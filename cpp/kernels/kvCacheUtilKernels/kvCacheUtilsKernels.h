@@ -47,6 +47,14 @@ void incrementLengthTensor(rt::Tensor& lengthTensor, int32_t increment, cudaStre
 //! \throws std::runtime_error if tensor has wrong location, shape or data type
 void incrementLengthTensor(rt::Tensor& lengthTensor, rt::Tensor const& newIncrementTensor, cudaStream_t stream);
 
+//! \brief Exchange two entries of a length tensor on the device, in stream order.
+//!
+//! \param[in,out] lengthTensor INT32 GPU tensor whose entries are exchanged
+//! \param[in] entryA, entryB Entries to exchange; equal entries are a no-op
+//! \param[in] stream The CUDA stream to be used
+//! \throws std::runtime_error if the tensor has the wrong location or data type, or an entry is out of range
+void swapLengthTensorEntries(rt::Tensor& lengthTensor, int32_t entryA, int32_t entryB, cudaStream_t stream);
+
 /// @brief Batched save: copy multiple layers' KV cache into per-layer tensors in a single launch.
 /// All layers must share the same headDim. srcLayerInfos[i].data points to the canonical
 /// [2, numPages, kTOKENS_PER_PAGE, numKVHeads_i, headDim] page pool; active-slot rows have
@@ -122,6 +130,12 @@ void gatherPagedKVToSplit(void const* pool, void* kDst, void* vDst, int32_t cons
 void gatherPagedKVToHeadMajor(void const* pool, void* kDst, void* vDst, int32_t const* pageTable,
     int32_t const* kvSeqLens, int32_t maxPagesPerSeq, int32_t batchSize, int32_t seqLen, int32_t numKVHeads,
     int32_t headDim, size_t elemSize, cudaStream_t stream);
+
+//! Merge all-gathered FP16 TP shards from [rank, K/V, B, liveS, Hlocal, D] into
+//! full-head [B, Hglobal, capacityS, D] tensors, zero-filling the unused tail.
+void mergeGatheredSplitKVToHeadMajor(void const* gathered, void* kDst, void* vDst, int32_t tensorParallelSize,
+    int32_t batchSize, int32_t gatheredSeqLen, int32_t dstSeqLen, int32_t localKVHeads, int32_t headDim,
+    cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

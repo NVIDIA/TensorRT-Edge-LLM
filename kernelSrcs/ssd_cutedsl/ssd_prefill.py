@@ -66,12 +66,10 @@ import cupy as cp
 import cutlass
 import cutlass.cute as cute
 import numpy as np
+from cutedsl_utils import aot_placeholders
 from cutlass.cute.nvgpu import cpasync
 from cutlass.cute.runtime import from_dlpack
 from cutlass.cute.typing import Int32
-
-cp.cuda.Device(0).use()
-_ = cp.zeros(1)
 
 # ============================================================================
 # Tile sizes — chosen from Triton autotune configs
@@ -763,6 +761,8 @@ def chunk_scan_kernel(
                 val = val * z_val * sig_z
             # Store to global
             output[b, cutlass.Int32(c) * CHUNK_SIZE + gm, h, gn] = cutlass.Float16(val)
+        elif gn < DIM and cutlass.Int32(c) * CHUNK_SIZE + gm < output.shape[1]:
+            output[b, cutlass.Int32(c) * CHUNK_SIZE + gm, h, gn] = cutlass.Float16(0.0)
 
 
 @cute.jit
@@ -828,6 +828,7 @@ def _ssd_reference(x, dt, A, B, C, D, dt_bias, state, dt_softplus=True):
 # Pipeline
 # ============================================================================
 def run_pipeline(n, nheads, dim, dstate, ngroups, seq_len, warmup=3, iterations=10):
+    cp.cuda.Device(0).use()
     nchunks = (seq_len + CHUNK_SIZE - 1) // CHUNK_SIZE
     nheads_ngroups_ratio = nheads // ngroups
     flat_dim = dim * dstate
@@ -1086,37 +1087,47 @@ AOT_SEQLEN = 128
 
 
 def _make_aot_placeholders(n, nheads, dim, dstate, ngroups, seq_len):
-    """Create CuPy placeholder tensors matching the pipeline's intermediate shapes."""
+    """Create storage-free descriptors matching the pipeline's intermediate shapes."""
     nchunks = (seq_len + CHUNK_SIZE - 1) // CHUNK_SIZE
-    flat_dim = dim * dstate
-    f16 = cp.float16
-    f32 = cp.float32
+
+    def make_nd(dtype, shape, *, layout_dynamic=True, assumed_align=16):
+        tensor = aot_placeholders.make_compact_tensor(dtype, shape, assumed_align=assumed_align)
+        ndim = len(shape)
+        if layout_dynamic:
+            tensor = tensor.mark_layout_dynamic(leading_dim=ndim - 1)
+        stride_order = tuple(range(ndim))
+        for mode in range(ndim - 1):
+            tensor = tensor.mark_compact_shape_dynamic(mode=mode, stride_order=stride_order)
+        return tensor
+
+    def make_1d(dtype, shape):
+        tensor = aot_placeholders.make_compact_tensor(dtype, shape, assumed_align=16)
+        return (tensor.mark_layout_dynamic(leading_dim=0)
+                .mark_compact_shape_dynamic(mode=0, stride_order=(0,)))
+
     return {
-        "x":       cp.zeros((n, seq_len, nheads, dim), dtype=f16),
-        "dt_in":   cp.zeros((n, seq_len, nheads), dtype=f16),
-        "A":       cp.zeros((nheads,), dtype=f32),
-        "dt_bias": cp.zeros((nheads,), dtype=f16),  # plugin contract: fp16
-        "B":       cp.zeros((n, seq_len, ngroups, dstate), dtype=f16),
-        "C":       cp.zeros((n, seq_len, ngroups, dstate), dtype=f16),
-        "D":       cp.zeros((nheads,), dtype=f16),  # plugin contract: fp16
-        "z":       cp.zeros((n, seq_len, nheads, dim), dtype=f16),
-        "output":  cp.zeros((n, seq_len, nheads, dim), dtype=f16),
-        # Intermediates
-        "dA_cumsum":   cp.zeros((n, nheads, nchunks, CHUNK_SIZE), dtype=f32),
-        "dt_proc":     cp.zeros((n, nheads, nchunks, CHUNK_SIZE), dtype=f32),
-        "states":      cp.zeros((n, nchunks, nheads, dim, dstate), dtype=f32),
-        "sts_flat":    cp.zeros((n, nchunks, nheads, flat_dim), dtype=f32),
-        "prev_flat":   cp.zeros((n, nchunks, nheads, flat_dim), dtype=f32),
-        "final_flat":  cp.zeros((n, nheads, flat_dim), dtype=f32),
-        "dA_chunk":    cp.zeros((n, nheads, nchunks), dtype=f32),
-        "CB":          cp.zeros((n, nchunks, ngroups, CHUNK_SIZE, CHUNK_SIZE), dtype=f32),
-        "prev_states": cp.zeros((n, nchunks, nheads, dim, dstate), dtype=f32),
-        "state":       cp.zeros((n, nheads, dim, dstate), dtype=f16),  # plugin contract: fp16
+        "x": make_nd(cutlass.Float16, (n, seq_len, nheads, dim)),
+        "dt_in": make_nd(cutlass.Float16, (n, seq_len, nheads)),
+        "A": make_1d(cutlass.Float32, (nheads,)),
+        "dt_bias": make_1d(cutlass.Float16, (nheads,)),
+        "B": make_nd(cutlass.Float16, (n, seq_len, ngroups, dstate), layout_dynamic=False,
+                     assumed_align=32),
+        "C": make_nd(cutlass.Float16, (n, seq_len, ngroups, dstate), layout_dynamic=False,
+                     assumed_align=32),
+        "D": make_1d(cutlass.Float16, (nheads,)),
+        "z": make_nd(cutlass.Float16, (n, seq_len, nheads, dim)),
+        "output": make_nd(cutlass.Float16, (n, seq_len, nheads, dim)),
+        "dA_cumsum": make_nd(cutlass.Float32, (n, nheads, nchunks, CHUNK_SIZE)),
+        "dt_proc": make_nd(cutlass.Float32, (n, nheads, nchunks, CHUNK_SIZE)),
+        "states": make_nd(cutlass.Float32, (n, nchunks, nheads, dim, dstate)),
+        "CB": make_nd(cutlass.Float32, (n, nchunks, ngroups, CHUNK_SIZE, CHUNK_SIZE)),
+        "prev_states": make_nd(cutlass.Float32, (n, nchunks, nheads, dim, dstate)),
+        "state": make_nd(cutlass.Float16, (n, nheads, dim, dstate)),
         # Initial SSM state input -- runner aliases this to the same buffer as `state`
         # (which is staged with the input state via cudaMemcpyAsync in the plugin).
-        "init_states": cp.zeros((n, nheads, dim, dstate), dtype=f16),
+        "init_states": make_nd(cutlass.Float16, (n, nheads, dim, dstate)),
         # Varlen metadata (always present, uniform when no varlen)
-        "context_lengths": cp.full((n,), seq_len, dtype=cp.int32),
+        "context_lengths": make_1d(cutlass.Int32, (n,)),
     }
 
 
@@ -1130,10 +1141,10 @@ def export_ssd_chunk_scan(n, nheads, dim, dstate, ngroups, seq_len,
     nchunks = (seq_len + CHUNK_SIZE - 1) // CHUNK_SIZE
     nheads_ngroups_ratio = nheads // ngroups
 
-    stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    stream = aot_placeholders.make_stream()
     ph = _make_aot_placeholders(n, nheads, dim, dstate, ngroups, seq_len)
-    compile_opts = ("--gpu-arch " + gpu_arch) if gpu_arch else None
-    co = dict(options=compile_opts) if compile_opts else {}
+    compile_opts = aot_placeholders.compile_options(
+        f"--gpu-arch={gpu_arch}" if gpu_arch else "")
 
     import os
     os.makedirs(output_dir, exist_ok=True)
@@ -1145,22 +1156,22 @@ def export_ssd_chunk_scan(n, nheads, dim, dstate, ngroups, seq_len,
     compiled = cute.compile(
         combined_fn,
         # Primary inputs
-        wrap_nd(ph["x"]), wrap_nd(ph["dt_in"]), wrap_1d(ph["A"]),
-        wrap_nd_cpasync(ph["B"]), wrap_nd_cpasync(ph["C"]), wrap_1d(ph["D"]),
-        wrap_1d(ph["dt_bias"]), wrap_nd(ph["z"]),
-        wrap_nd(ph["output"]), wrap_nd(ph["state"]),
+        ph["x"], ph["dt_in"], ph["A"],
+        ph["B"], ph["C"], ph["D"],
+        ph["dt_bias"], ph["z"],
+        ph["output"], ph["state"],
         # Initial state input (aliased by runner to the state buffer for has_init_states)
-        wrap_nd(ph["init_states"]),
+        ph["init_states"],
         # Intermediate buffers
-        wrap_nd(ph["dA_cumsum"]), wrap_nd(ph["dt_proc"]),
-        wrap_nd(ph["states"]), wrap_nd(ph["prev_states"]), wrap_nd(ph["CB"]),
+        ph["dA_cumsum"], ph["dt_proc"],
+        ph["states"], ph["prev_states"], ph["CB"],
         # Varlen metadata (per-batch effective seq_len)
-        wrap_1d(ph["context_lengths"]),
+        ph["context_lengths"],
         # Scalars (seq_len removed from kernel signature; baked into context_lengths)
         nchunks, n, nheads, nheads_ngroups_ratio, ngroups,
         # Constexpr
         dt_softplus=True, has_D=True, has_z=False,
-        stream=stream, **co,
+        stream=stream, options=compile_opts,
     )
 
     compiled.export_to_c(

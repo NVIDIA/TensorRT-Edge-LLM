@@ -12,87 +12,48 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Few-layer numeric validation smoke test.
-
-Early-fail smoke: runs the first N decoder layers of a checkpoint through both
-a PyTorch golden and the EdgeLLM engine, comparing per-round logits + KV /
-recurrent / conv state (see ``scripts/few-layer-validation.sh``). The script's
-exit code is the PASS/FAIL gate; this test is a thin wrapper that resolves the
-checkpoint, points the script at the CI build, and runs it.
-
-Host (server) only: the golden runs PyTorch + transformers locally, so the test
-skips under remote (edge-device) execution. The parametrization is driven by the
-``test_param`` ids listed in ``tests/test_lists/*.yml`` (one per model)."""
+"""Run model-owned few-layer PyTorch-to-engine parity cases."""
 
 import logging
 import os
 import sys
-from typing import Optional
 
 import pytest
 from conftest import EnvironmentConfig
 from pytest_helpers import run_command, timer_context
 
-from .config import _HF_CHECKPOINT_FILES, _find_directory
+from .config import TaskType, TestConfig, infer_checkpoint_export_model_type
 from .utils.device import DeviceConfig
 
-# test_param id -> validation spec.
-#   dir_name      : checkpoint dir/relpath, searched recursively under the model
-#                   roots (llm_models_dir, then edgellm_data_dir).
-#   num_layers    : leading decoder layers to validate.
-#   cos_threshold : min per-tensor cosine (measured over the first N layers):
-#                   FP16 / GDN-hybrid ~0.9999; NVFP4 is lower (~0.974 worst) because
-#                   its Mamba recurrent state has a large dynamic range, so quant
-#                   noise shows up strongly per-tensor even when logits stay ~0.98.
-#   needs_cutedsl : True for hybrid (Gated DeltaNet / Mamba) models and NVFP4, whose
-#                   kernels only build on Blackwell (SM100+).
-_FEW_LAYER_MODELS = {
-    "Qwen3-0.6B": {
-        "dir_name": "Qwen3/Qwen3-0.6B",
-        "num_layers": 4,
-        "cos_threshold": 0.99,
-        "needs_cutedsl": False,
-    },
-    "NVIDIA-Nemotron-3-Nano-4B-NVFP4": {
-        # ModelOpt export keys the body under ``backbone.``; the golden realigns
-        # it to the native ``model.`` prefix (see _load_quantized_state).
-        "dir_name": "NVIDIA-Nemotron-3-Nano-4B-NVFP4",
-        "num_layers": 4,
-        "cos_threshold": 0.96,
-        "needs_cutedsl": True,
-    },
-    # GDN hybrid. Not wired into the b100 CI list: its GatedDeltaNet engine
-    # needs CuTe DSL kernels that the CI build does not enable
-    # (CUTE_DSL_GDN_ENABLED), so engine build fails there. Kept here so it can
-    # be run manually on a GDN-enabled build (validated at cos 0.99998).
-    "Qwen3.5-0.8B": {
-        "dir_name": "Qwen3.5-0.8B",
-        "num_layers": 4,
-        "cos_threshold": 0.99,
-        "needs_cutedsl": True,
-    },
-}
+
+def _version_tuple(version: str) -> tuple:
+    """"10.16.0.72" -> (10, 16, 0, 72); stops at the first non-numeric token."""
+    parts = []
+    for token in version.split("."):
+        digits = "".join(ch for ch in token if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
 
 
-def _resolve_model_dir(env_config: EnvironmentConfig,
-                       dir_name: str) -> Optional[str]:
-    """Locate a checkpoint dir under the known model roots (recursive search)."""
-    for root in (env_config.llm_models_dir, env_config.edgellm_data_dir):
-        found = _find_directory(root,
-                                dir_name,
-                                require_files=_HF_CHECKPOINT_FILES)
-        if found:
-            return found
-    return None
+def _draft_checkpoint(config: TestConfig) -> tuple[str, str]:
+    """Return the few-layer driver flag and directory for a spec-decode draft."""
+    if config.is_dflash:
+        return "--dflash-draft-dir", config.get_dflash_draft_model_dir()
+    # is_eagle also covers MTP, whose draft ships inside the base checkpoint.
+    if config.is_eagle and not config.is_mtp:
+        return "--eagle3-draft-dir", config.get_eagle_draft_checkpoint_dir()
+    return "", ""
 
 
-def test_few_layer_validation(test_param: str, env_config: EnvironmentConfig,
-                              remote_config, test_logger: logging.Logger):
+def test_few_layer_validation(request, test_param: str,
+                              env_config: EnvironmentConfig, remote_config,
+                              test_logger: logging.Logger):
     """Functional few-layer golden-vs-engine numeric smoke."""
-    spec = _FEW_LAYER_MODELS.get(test_param)
-    if spec is None:
-        pytest.fail(f"unknown few-layer model id '{test_param}'; "
-                    f"known ids: {sorted(_FEW_LAYER_MODELS)}")
+    spec = getattr(test_param, "inference", None)
+    if not spec or spec.get("scenario") != "few_layer":
+        pytest.fail("few-layer validation requires a model-owned YAML case")
 
     # Host (server) only: the golden runs PyTorch + transformers locally, which
     # the edge boards (remote execution) do not have.
@@ -100,22 +61,42 @@ def test_few_layer_validation(test_param: str, env_config: EnvironmentConfig,
         pytest.skip("few-layer validation runs on the host (server) only; "
                     "the PyTorch golden needs torch + transformers")
 
-    # Hybrid (Gated DeltaNet / Mamba) and NVFP4 models need the CuTe DSL kernels,
-    # which only build on Blackwell (SM100+; verified on SM100 / B-series). Skip on
-    # older architectures rather than fail so the same list stays reusable there.
-    if spec["needs_cutedsl"]:
-        device_config = DeviceConfig.auto_detect(remote_config, test_logger)
-        cc = device_config.compute_capability
-        if cc is None or cc < 100:
-            pytest.skip(
-                f"{test_param} needs CuTe DSL (Blackwell SM100+); this "
-                f"runner is compute capability {cc}")
+    # These cases require target-specific CuTe DSL kernels and/or precision.
+    device_config = DeviceConfig.auto_detect(remote_config, test_logger)
+    cc = device_config.compute_capability
+    if cc is None:
+        pytest.fail(f"cannot determine target SM for {test_param}")
+    minimum_cc = spec.get("minimum_compute_capability", 0)
+    if cc < minimum_cc:
+        pytest.skip(f"{test_param} requires SM{minimum_cc}+; this runner is "
+                    f"compute capability {cc}")
 
-    model_dir = _resolve_model_dir(env_config, spec["dir_name"])
-    if model_dir is None:
-        pytest.skip(f"checkpoint '{spec['dir_name']}' not found under "
-                    f"{env_config.llm_models_dir} / "
-                    f"{env_config.edgellm_data_dir}")
+    # Some arms need a newer TensorRT than the runner's (the TRT-native MoE arm
+    # needs the TRT_MoE importer, TensorRT >= 11.3). CI selects the runtime
+    # through TRT_VERSION (see TestConfig.check_trt_native_attn); fall back to
+    # the installed wheel when the variable is absent.
+    minimum_trt = spec.get("minimum_trt_version")
+    if minimum_trt:
+        trt_ver = os.environ.get("TRT_VERSION", "")
+        if not trt_ver:
+            try:
+                import tensorrt
+                trt_ver = tensorrt.__version__
+            except ImportError:
+                trt_ver = ""
+        if _version_tuple(trt_ver) < _version_tuple(minimum_trt):
+            pytest.skip(f"{test_param} requires TensorRT >= {minimum_trt}; "
+                        f"this runner has TRT_VERSION={trt_ver!r}")
+
+    model_type = infer_checkpoint_export_model_type(test_param)
+    config = TestConfig.from_param_string(test_param,
+                                          model_type,
+                                          TaskType.CHECKPOINT_BUILD,
+                                          env_config,
+                                          validate_environment=False)
+    model_dir = config.get_torch_model_dir()
+    if not os.path.isdir(model_dir):
+        pytest.skip(f"checkpoint not found: {model_dir}")
 
     # build_dir may be relative ("build"); the script needs an absolute path
     # since it resolves binaries against it independent of its own CWD.
@@ -138,14 +119,42 @@ def test_few_layer_validation(test_param: str, env_config: EnvironmentConfig,
         "--python",
         sys.executable,
         "--cos",
-        str(spec["cos_threshold"]),
+        str(spec["cosine_threshold"]),
+        "--target-sm",
+        str(cc),
+        "--input-file",
+        config.get_test_case_file(),
     ]
+    # --input-file is resolved against the repo, which is where the script runs from.
+    for arg in spec.get("arguments", []):
+        cmd.append(
+            os.path.join(env_config.llm_sdk_dir, arg) if arg.
+            startswith("tests/test_cases/") else arg)
+
+    # A DFlash / EAGLE3 draft is a second checkpoint, untruncated: only the base
+    # is cut to --num-layers. Taking it from the case's draft_id_or_dir keeps it
+    # on the checkpoint resolver, rather than hard-coding a path into arguments.
+    draft_flag, draft_dir = _draft_checkpoint(config)
+    if draft_flag:
+        if not os.path.isdir(draft_dir):
+            pytest.skip(f"draft checkpoint not found: {draft_dir}")
+        cmd += [draft_flag, draft_dir]
 
     with timer_context(f"few-layer-validation [{test_param}]", test_logger):
         result = run_command(cmd=cmd,
                              remote_config=remote_config,
-                             timeout=1200,
+                             timeout=spec.get("timeout_seconds", 1200),
                              logger=test_logger)
+
+    # A passing job otherwise records no number anywhere: the per-test log is not
+    # archived, and pytest's fd capture swallows the driver's stdout on success.
+    # Thresholds here are supposed to be measured rather than tuned, which needs
+    # samples, so put the verdict somewhere a later run can still read it.
+    verdict = next((line for line in reversed(result["output"].splitlines())
+                    if line.lstrip().startswith("[compare] ")), "")
+    reporter = request.config.pluginmanager.getplugin("terminalreporter")
+    if verdict and reporter is not None:
+        reporter.write_line(f"[few-layer] {test_param} {verdict.strip()}")
 
     if not result["success"]:
         pytest.fail(f"few-layer validation FAILED for {test_param} "

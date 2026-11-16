@@ -31,8 +31,8 @@ namespace rt
 namespace
 {
 
-constexpr std::array<ResourceType, 4> kRESOURCE_TYPES{ResourceType::kBaseKvPage, ResourceType::kDraftKvPage,
-    ResourceType::kRecurrentSnapshot, ResourceType::kPartialKvSnapshot};
+constexpr std::array<ResourceType, 5> kRESOURCE_TYPES{ResourceType::kBaseKvPage, ResourceType::kDraftKvPage,
+    ResourceType::kRecurrentSnapshot, ResourceType::kPartialKvSnapshot, ResourceType::kSwaKvPage};
 
 size_t poolIndex(ResourceType type) noexcept
 {

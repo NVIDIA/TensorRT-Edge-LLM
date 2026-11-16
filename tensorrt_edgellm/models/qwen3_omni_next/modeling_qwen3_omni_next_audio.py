@@ -103,17 +103,27 @@ class Qwen3OmniNextAudioEncoder(QwenAudioEncoder):
                                                       device=device)
         dynamo_inputs["padded_mask_after_cnn_indices"] = torch.zeros(
             num_attention_elems, 2, dtype=torch.int64, device=device)
-        dynamo_inputs["attention_mask"] = torch.zeros(num_attention_elems,
-                                                      num_attention_elems,
-                                                      dtype=torch.float16,
-                                                      device=device)
+        if "attention_mask" in dynamo_inputs:
+            dynamo_inputs["attention_mask"] = torch.zeros(num_attention_elems,
+                                                          num_attention_elems,
+                                                          dtype=torch.float16,
+                                                          device=device)
+        if "cu_seqlens" in dynamo_inputs:
+            dynamo_inputs["cu_seqlens"] = torch.tensor(
+                [0, t_out, 2 * t_out, num_attention_elems],
+                dtype=torch.int32,
+                device=device)
+            dynamo_inputs["max_seqlen_carrier"] = torch.zeros(
+                t_out, dtype=torch.int32, device=device)
         return dynamo_inputs, onnx_input_names, output_names, dynamic_shapes
 
     def forward(
         self,
         padded_feature: torch.Tensor,
         padded_mask_after_cnn_indices: torch.Tensor,
-        attention_mask: torch.Tensor,
+        attention_mask: "torch.Tensor | None" = None,
+        cu_seqlens: "torch.Tensor | None" = None,
+        max_seqlen_carrier: "torch.Tensor | None" = None,
     ) -> torch.Tensor:
         x = padded_feature.unsqueeze(1)  # [C, 1, mel, t]
         x = F.gelu(self.conv2d1(x))
@@ -132,7 +142,10 @@ class Qwen3OmniNextAudioEncoder(QwenAudioEncoder):
                           padded_mask_after_cnn_indices[:, 1]]
 
         for layer in self.layers:
-            hidden_states = layer(hidden_states, attention_mask)
+            hidden_states = layer(hidden_states,
+                                  attention_mask,
+                                  cu_seqlens,
+                                  max_seqlen_carrier=max_seqlen_carrier)
 
         hidden_states = self.ln_post(hidden_states)
         hidden_states = self.proj1(hidden_states)

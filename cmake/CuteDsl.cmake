@@ -26,12 +26,15 @@
 #   python kernelSrcs/build_cutedsl.py --gpu_arch <sm_NN>
 #
 # ENABLE_CUTE_DSL cache variable controls which kernel groups are linked:
-#   OFF      — disable entirely
+#   OFF      — QNX or Safety build without CuTe DSL
 #   ALL      — enable all groups found in metadata.json
 #   fmha     — enable the FP16 Context/ViT FMHA baseline, plus the optimized
-#              Blackwell overlay when the artifact has it (default)
+#              Blackwell overlay when the artifact has it
 #   gdn      — enable only the GDN group
 #   f16_moe  — enable the target-specific homogeneous-FP16 MoE group
+#   lora     — enable the Blackwell FP16 grouped LoRA projection group
+#   layernorm — enable the homogeneous FP16/BF16 LayerNorm group
+#   causal_conv1d — enable the packed variable-length causal Conv1D group
 #   fmha;gdn — semicolon-separated list of groups (CMake list syntax)
 #
 # Usage:
@@ -47,19 +50,26 @@
 #                            optimized Blackwell FMHA variants
 #   CUTE_DSL_GDN_ENABLED   — set when the gdn group is active
 #   CUTE_DSL_F16_MOE_ENABLED — set when the f16_moe group is active
+#   CUTE_DSL_LORA_ENABLED — set when the lora group is active
 #   CUTE_DSL_SSD_ENABLED   — set when the ssd group is active
+#   CUTE_DSL_LAYERNORM_ENABLED — set when the layernorm group is active
+#   CUTE_DSL_CAUSAL_CONV1D_ENABLED — set when the causal_conv1d group is active
 #   CUTE_DSL_RMSNORM_ENABLED — set when the rmsnorm group is active
+#   CUTE_DSL_VIDEO_SPARSE_ATTENTION_ENABLED — set for dynamic-sequence Blackwell
+#                                              video sparse attention
 #   CUTE_DSL_NVFP4_A16_BLACKWELL_GEMM_ENABLED — set when the SM110 dense W4A16
 #                                                GEMM group is active
+#   CUTE_DSL_NVFP4_A16_BLACKWELL_MOE_ENABLED — set when the SM110 grouped W4A16
+#                                               MoE GEMM group is active
 #   CUTE_DSL_GEMM_ENABLED  — set when any gemm variant is active
 # ---------------------------------------------------------------------------
 # cmake-format: on
 
 set(ENABLE_CUTE_DSL
-    "fmha"
+    "ALL"
     CACHE
       STRING
-      "CuTe DSL kernels: OFF, ALL, or semicolon-separated group list (fmha;gdn;rmsnorm)"
+      "CuTe DSL kernels: OFF, ALL, or semicolon-separated group list (fmha;gdn;layernorm;rmsnorm;causal_conv1d;video_sparse_attention)"
 )
 
 set(CUTE_DSL_ARTIFACT_TAG
@@ -105,6 +115,19 @@ function(_cute_dsl_normalize_artifact_tag OUT_VAR INPUT_TAG)
       PARENT_SCOPE)
 endfunction()
 
+function(_cute_dsl_artifact_root OUT_VAR ARCH)
+  # COFF and ELF artifacts with the same architecture/tag are incompatible. Keep
+  # them separate so Windows and Linux builds can share one checkout.
+  if(WIN32)
+    set(_root "${CMAKE_SOURCE_DIR}/cpp/kernels/cuteDSLArtifact/windows/${ARCH}")
+  else()
+    set(_root "${CMAKE_SOURCE_DIR}/cpp/kernels/cuteDSLArtifact/${ARCH}")
+  endif()
+  set(${OUT_VAR}
+      "${_root}"
+      PARENT_SCOPE)
+endfunction()
+
 function(_cute_dsl_infer_artifact_tag OUT_VAR ARCH)
   _cute_dsl_normalize_artifact_tag(_explicit_tag "${CUTE_DSL_ARTIFACT_TAG}")
   if(NOT _explicit_tag STREQUAL "")
@@ -122,12 +145,20 @@ function(_cute_dsl_infer_artifact_tag OUT_VAR ARCH)
     string(REPLACE "-" "_" _embedded_target "${_embedded_target}")
     if(_embedded_target STREQUAL "gb10")
       set(_default_tag "sm_121")
+    elseif(_embedded_target STREQUAL "gb300")
+      set(_default_tag "sm_103")
+    elseif(_embedded_target STREQUAL "gb200")
+      set(_default_tag "sm_100")
     elseif(_embedded_target STREQUAL "auto_thor" AND CUDA_CTK_VERSION
                                                      VERSION_LESS 13.0)
       set(_default_tag "sm_101")
     elseif(_embedded_target STREQUAL "auto_thor" OR _embedded_target STREQUAL
                                                     "jetson_thor")
       set(_default_tag "sm_110")
+    elseif(_embedded_target STREQUAL "igx_thor")
+      # IGX Thor can expose its SM110 iGPU and an SM120 dGPU to one installed
+      # runtime, so its artifact carries kernels for both architectures.
+      set(_default_tag "sm_110_sm_120")
     elseif(_embedded_target STREQUAL "jetson_orin")
       set(_default_tag "sm_87")
     endif()
@@ -140,7 +171,25 @@ function(_cute_dsl_infer_artifact_tag OUT_VAR ARCH)
     return()
   endif()
 
-  set(_artifact_root "${CMAKE_SOURCE_DIR}/cpp/kernels/cuteDSLArtifact/${ARCH}")
+  if(CMAKE_CUDA_ARCHITECTURES)
+    set(_detected_tags)
+    foreach(_cuda_arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
+      string(REGEX REPLACE "[^0-9].*$" "" _cuda_arch "${_cuda_arch}")
+      if(_cuda_arch MATCHES "^[0-9]+$")
+        list(APPEND _detected_tags "sm_${_cuda_arch}")
+      endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _detected_tags)
+    if(_detected_tags)
+      list(JOIN _detected_tags "_" _default_tag)
+      set(${OUT_VAR}
+          "${_default_tag}"
+          PARENT_SCOPE)
+      return()
+    endif()
+  endif()
+
+  _cute_dsl_artifact_root(_artifact_root "${ARCH}")
   set(_candidate_tags)
   if(EXISTS "${_artifact_root}")
     file(
@@ -216,7 +265,7 @@ function(cute_dsl_setup)
 
   # Tagged artifact directory (preferred) with compatibility fallback to the
   # previous flat layout at cuteDSLArtifact/<arch>/.
-  set(_artifact_root "${CMAKE_SOURCE_DIR}/cpp/kernels/cuteDSLArtifact/${_arch}")
+  _cute_dsl_artifact_root(_artifact_root "${_arch}")
   set(_artifact_dir "${_artifact_root}")
   if(NOT _artifact_tag STREQUAL "")
     set(_tagged_artifact_dir "${_artifact_root}/${_artifact_tag}")
@@ -233,21 +282,19 @@ function(cute_dsl_setup)
     endif()
   endif()
 
-  if(_artifact_tag STREQUAL ""
-     AND "${_arch}" STREQUAL "aarch64"
-     AND DEFINED EMBEDDED_TARGET
-     AND EMBEDDED_TARGET STREQUAL "thor-all")
-    message(
-      FATAL_ERROR
-        "CuTe DSL artifact selection is ambiguous for EMBEDDED_TARGET=thor-all.\n"
-        "Set -DCUTE_DSL_ARTIFACT_TAG=sm_110 or -DCUTE_DSL_ARTIFACT_TAG=sm_121 explicitly."
-    )
+  if(WIN32)
+    set(_static_lib "${_artifact_dir}/cutedsl_${_arch}.lib")
+  else()
+    set(_static_lib "${_artifact_dir}/libcutedsl_${_arch}.a")
   endif()
-
-  set(_static_lib "${_artifact_dir}/libcutedsl_${_arch}.a")
   set(_inc_dir "${_artifact_dir}/include")
   set(_metadata "${_artifact_dir}/metadata.json")
   set(_prebuilt_dir "${CMAKE_SOURCE_DIR}/kernelSrcs/cuteDSLPrebuilt")
+  if(WIN32)
+    set(_prebuilt_platform "windows_")
+  else()
+    set(_prebuilt_platform "")
+  endif()
   string(REGEX MATCH "^[0-9]+" _cute_dsl_cuda_major "${CUDA_CTK_VERSION}")
 
   # Auto-extract a CUDA-major-matched prebuilt tarball if artifacts are not
@@ -255,7 +302,7 @@ function(cute_dsl_setup)
   # cutedsl_{arch}_{artifact_tag}_cuda{MAJOR}.tar.gz
   if(NOT EXISTS "${_metadata}" AND NOT _artifact_tag STREQUAL "")
     set(_tarball
-        "${_prebuilt_dir}/cutedsl_${_arch}_${_artifact_tag}_cuda${_cute_dsl_cuda_major}.tar.gz"
+        "${_prebuilt_dir}/cutedsl_${_prebuilt_platform}${_arch}_${_artifact_tag}_cuda${_cute_dsl_cuda_major}.tar.gz"
     )
     if(EXISTS "${_tarball}")
       message(STATUS "CuTe DSL: extracting prebuilt from ${_tarball}")
@@ -277,18 +324,30 @@ function(cute_dsl_setup)
 
   # Validate artifacts exist.
   if(NOT EXISTS "${_static_lib}")
+    string(REPLACE "_sm_" ",sm_" _artifact_gpu_arch_arg "${_artifact_tag}")
     message(
       FATAL_ERROR
         "Prebuilt CuTe DSL library not found:\n"
         "  ${_static_lib}\n"
         "Expected prebuilt tarball:\n"
-        "  ${_prebuilt_dir}/cutedsl_${_arch}_${_artifact_tag}_cuda${_cute_dsl_cuda_major}.tar.gz\n"
-        "Generate it with:\n"
-        "  python kernelSrcs/build_cutedsl.py --gpu_arch ${_artifact_tag} --arch ${_arch}\n"
+        "  ${_prebuilt_dir}/cutedsl_${_prebuilt_platform}${_arch}_${_artifact_tag}_cuda${_cute_dsl_cuda_major}.tar.gz\n"
+        "Provide the matching tarball above, or generate every kernel with:\n"
+        "  python kernelSrcs/build_cutedsl.py --kernels ALL --gpu_arch ${_artifact_gpu_arch_arg} --arch ${_arch}\n"
         "Artifacts are generated locally under:\n"
         "  cpp/kernels/cuteDSLArtifact/<arch>/<artifact_tag>/")
   endif()
   set_property(GLOBAL PROPERTY EDGELLM_CUTE_DSL_STATIC_LIBRARY "${_static_lib}")
+  if(NOT TARGET edgellmCuteDsl)
+    add_library(edgellmCuteDsl INTERFACE)
+    set_target_properties(edgellmCuteDsl PROPERTIES EXPORT_NAME CuTeDSL)
+    get_filename_component(_static_lib_name "${_static_lib}" NAME)
+    target_link_libraries(
+      edgellmCuteDsl
+      INTERFACE
+        "$<BUILD_INTERFACE:${_static_lib}>"
+        "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/tensorrt_edgellm/${_static_lib_name}>"
+    )
+  endif()
 
   if(NOT EXISTS "${_metadata}")
     message(FATAL_ERROR "metadata.json not found in ${_artifact_dir}/\n"
@@ -321,6 +380,20 @@ function(cute_dsl_setup)
         "CuTe DSL artifact tag mismatch: selected '${_artifact_tag}' but "
         "metadata.json in ${_artifact_dir} reports gpu_arch='${_meta_gpu_arch}'."
     )
+  endif()
+
+  set(_meta_gpu_archs)
+  string(JSON _n_meta_gpu_archs ERROR_VARIABLE _meta_gpu_archs_err
+         LENGTH "${_meta_json}" "gpu_archs")
+  if(NOT _meta_gpu_archs_err AND _n_meta_gpu_archs GREATER 0)
+    math(EXPR _last_meta_gpu_arch_idx "${_n_meta_gpu_archs} - 1")
+    foreach(_meta_gpu_arch_idx RANGE ${_last_meta_gpu_arch_idx})
+      string(JSON _one_meta_gpu_arch GET "${_meta_json}" "gpu_archs"
+             ${_meta_gpu_arch_idx})
+      list(APPEND _meta_gpu_archs "${_one_meta_gpu_arch}")
+    endforeach()
+  elseif(NOT _meta_gpu_arch_err)
+    list(APPEND _meta_gpu_archs "${_meta_gpu_arch}")
   endif()
   string(JSON _n_groups LENGTH "${_meta_json}" "groups")
 
@@ -383,6 +456,12 @@ function(cute_dsl_setup)
         "Use -DENABLE_CUTE_DSL=OFF or set -DCUDA_CTK_VERSION to a supported toolkit."
     )
   endif()
+  if(MSVC AND _cute_dsl_cuda_ver VERSION_LESS 12.8)
+    message(
+      FATAL_ERROR
+        "Windows CuTe DSL artifacts require CUDA Toolkit 12.8 or newer (detected ${_cute_dsl_cuda_ver})."
+    )
+  endif()
 
   # Shim: cudaLibrary* → cu* when libcudart omits exports (e.g. some 12.0–12.6
   # embedded). From CUDA 12.8 onward, cuda_runtime_api.h declares these APIs
@@ -395,8 +474,9 @@ function(cute_dsl_setup)
       "${CMAKE_SOURCE_DIR}/cpp/kernels/gdnKernels/cutedsl_cuda_runtime_library_shim.c"
   )
   if(NOT TARGET trt_edgellm_cutedsl_cudart_shim)
-    if(_cute_dsl_cuda_ver VERSION_LESS 12.0 OR _cute_dsl_cuda_ver
-                                               VERSION_GREATER_EQUAL 12.8)
+    if(MSVC
+       OR _cute_dsl_cuda_ver VERSION_LESS 12.0
+       OR _cute_dsl_cuda_ver VERSION_GREATER_EQUAL 12.8)
       add_library(trt_edgellm_cutedsl_cudart_shim INTERFACE)
     else()
       if(NOT EXISTS "${_cutedsl_cudart_shim_src}")
@@ -442,10 +522,18 @@ function(cute_dsl_setup)
     endforeach()
   endif()
 
-  # The FP16 MoE and RMSNorm runners link one exact-SM artifact. Parse the
-  # artifact SM for their compile-time guards.
-  if("f16_moe" IN_LIST _active_groups OR "rmsnorm" IN_LIST _active_groups)
-    if(NOT _meta_gpu_arch_err AND _meta_gpu_arch MATCHES "^sm_([0-9]+)$")
+  # The MoE, LayerNorm, and RMSNorm runners need the artifact SM metadata for
+  # their availability guards. A combined artifact dispatches among all listed
+  # SMs.
+  if("f16_moe" IN_LIST _active_groups
+     OR "w2a16_moe" IN_LIST _active_groups
+     OR "lora" IN_LIST _active_groups
+     OR "layernorm" IN_LIST _active_groups
+     OR "rmsnorm" IN_LIST _active_groups)
+    list(LENGTH _meta_gpu_archs _meta_gpu_arch_count)
+    if(_meta_gpu_arch_count GREATER 1)
+      set(_cute_dsl_multi_arch TRUE)
+    elseif(NOT _meta_gpu_arch_err AND _meta_gpu_arch MATCHES "^sm_([0-9]+)$")
       set(_meta_sm "${CMAKE_MATCH_1}")
     else()
       message(
@@ -469,9 +557,10 @@ function(cute_dsl_setup)
     endforeach()
   endforeach()
 
-  # The optimized Blackwell FMHA kernels are generated for SM100, SM101 and
-  # SM110 only.
-  if(NOT _meta_gpu_arch_err AND _meta_gpu_arch MATCHES "^sm_(100|101|110)$")
+  # The optimized Blackwell FMHA overlay is identified by its variants so a
+  # combined artifact can carry it alongside the portable FMHA-v2 family.
+  list(FIND _variants "fmha_d64" _fmha_blackwell_idx)
+  if(NOT ${_fmha_blackwell_idx} EQUAL -1 AND "fmha" IN_LIST _active_groups)
     foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
       target_compile_definitions(${_tgt}
                                  PRIVATE "CUTE_DSL_FMHA_BLACKWELL_ENABLED")
@@ -507,6 +596,21 @@ function(cute_dsl_setup)
     )
   endif()
 
+  set(_ssd_sm12x_found TRUE)
+  foreach(_ssd_sm12x_dim 64 80 128)
+    foreach(_ssd_sm12x_state 64 128)
+      if(NOT "ssd_prefill_sm12x_d${_ssd_sm12x_dim}_n${_ssd_sm12x_state}"
+         IN_LIST _variants)
+        set(_ssd_sm12x_found FALSE)
+      endif()
+    endforeach()
+  endforeach()
+  if(_ssd_sm12x_found AND "ssd" IN_LIST _active_groups)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      target_compile_definitions(${_tgt} PRIVATE "CUTE_DSL_SSD_SM12X_ENABLED")
+    endforeach()
+  endif()
+
   # The Blackwell SSD runner references the full variant set under one define.
   # Keep the path disabled when an older or incomplete artifact pack is used.
   set(_ssd_bw_found TRUE)
@@ -535,21 +639,142 @@ function(cute_dsl_setup)
     )
   endif()
 
-  # Per-family definitions for the FP16 MoE grouped-GEMM modules. Each
-  # target-specific artifact pack contains exactly one of these variants.
-  if("f16_moe" IN_LIST _active_groups)
-    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
-      target_compile_definitions(
-        ${_tgt} PRIVATE "CUTE_DSL_F16_MOE_ARTIFACT_SM=${_meta_sm}")
+  if("w2a16_moe" IN_LIST _active_groups)
+    set(_w2a16_sms)
+    set(_w2a16_thor FALSE)
+    set(_w2a16_fused FALSE)
+    foreach(_gpu_arch IN LISTS _meta_gpu_archs)
+      if(_gpu_arch MATCHES "^sm_(101|110)$")
+        list(APPEND _w2a16_sms "${CMAKE_MATCH_1}")
+        set(_w2a16_thor TRUE)
+      elseif(_gpu_arch MATCHES "^sm_(120|121)$")
+        list(APPEND _w2a16_sms "${CMAKE_MATCH_1}")
+        set(_w2a16_fused TRUE)
+      endif()
     endforeach()
-  endif()
-  if("rmsnorm" IN_LIST _active_groups)
+    if(NOT _w2a16_sms)
+      message(
+        FATAL_ERROR
+          "W2A16 MoE requires at least one supported target SM (101, 110, 120 or 121) in the artifact."
+      )
+    endif()
+    # A combined Thor + SM120/SM121 artifact carries both the UMMA and the fused
+    # AOT variants; the runner picks one from the device SM at run time. CXX
+    # only, because nvcc would split the comma-separated value.
+    list(JOIN _w2a16_sms "$<COMMA>" _w2a16_sm_list)
     foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
       target_compile_definitions(
-        ${_tgt} PRIVATE "CUTE_DSL_RMSNORM_ARTIFACT_SM=${_meta_sm}")
+        ${_tgt}
+        PRIVATE
+          "$<$<COMPILE_LANGUAGE:CXX>:CUTE_DSL_W2A16_MOE_ARTIFACT_SMS=${_w2a16_sm_list}>"
+      )
+      if(_w2a16_thor)
+        target_compile_definitions(${_tgt}
+                                   PRIVATE "CUTE_DSL_W2A16_MOE_THOR_ENABLED")
+      endif()
+      if(_w2a16_fused)
+        target_compile_definitions(${_tgt}
+                                   PRIVATE "CUTE_DSL_W2A16_MOE_FUSED_ENABLED")
+      endif()
     endforeach()
   endif()
 
+  # The compact-execution predicates of gated_delta_net and causal_conv1d accept
+  # an SM only when the artifact carries its kernels (cuteDslArtifactCarriesSm):
+  # the group macros alone do not say which SMs an artifact was built for. CXX
+  # only, because nvcc would split the comma-separated value.
+  if("gdn" IN_LIST _active_groups OR "causal_conv1d" IN_LIST _active_groups)
+    set(_artifact_sms)
+    foreach(_artifact_gpu_arch ${_meta_gpu_archs})
+      if(_artifact_gpu_arch MATCHES "^sm_([0-9]+)$")
+        list(APPEND _artifact_sms "${CMAKE_MATCH_1}")
+      endif()
+    endforeach()
+    if(_artifact_sms)
+      list(JOIN _artifact_sms "$<COMMA>" _artifact_sm_list)
+      foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+        target_compile_definitions(
+          ${_tgt}
+          PRIVATE
+            "$<$<COMPILE_LANGUAGE:CXX>:CUTE_DSL_ARTIFACT_SMS=${_artifact_sm_list}>"
+        )
+      endforeach()
+    endif()
+  endif()
+
+  if("video_sparse_attention" IN_LIST _active_groups)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      foreach(_video_gpu_arch ${_meta_gpu_archs})
+        if(NOT _video_gpu_arch MATCHES "^sm_([0-9]+)$")
+          message(
+            FATAL_ERROR
+              "Invalid video sparse-attention SM '${_video_gpu_arch}' in ${_metadata}."
+          )
+        endif()
+        target_compile_definitions(
+          ${_tgt}
+          PRIVATE
+            "CUTE_DSL_VIDEO_SPARSE_ATTENTION_ARTIFACT_SM_${CMAKE_MATCH_1}=1")
+      endforeach()
+    endforeach()
+  endif()
+
+  foreach(_group f16_moe rmsnorm layernorm)
+    if(NOT "${_group}" IN_LIST _active_groups)
+      continue()
+    endif()
+    string(TOUPPER "${_group}" _group_upper)
+    set(_artifact_sms)
+    foreach(_gpu_arch IN LISTS _meta_gpu_archs)
+      if(NOT _gpu_arch MATCHES "^sm_([0-9]+)$")
+        message(
+          FATAL_ERROR "Invalid ${_group} SM '${_gpu_arch}' in ${_metadata}.")
+      endif()
+      list(APPEND _artifact_sms "${CMAKE_MATCH_1}")
+    endforeach()
+    if(_cute_dsl_multi_arch)
+      if(_group STREQUAL "f16_moe")
+        list(FILTER _artifact_sms INCLUDE REGEX
+             "^(80|86|87|89|100|101|103|110|120|121)$")
+      else()
+        list(FILTER _artifact_sms INCLUDE REGEX
+             "^(80|86|87|90|100|101|103|110|120|121)$")
+      endif()
+    endif()
+    list(JOIN _artifact_sms "$<COMMA>" _artifact_sm_list)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      # nvcc splits comma-separated definitions; only the C++ runners use this
+      # list.
+      target_compile_definitions(
+        ${_tgt}
+        PRIVATE
+          "$<$<COMPILE_LANGUAGE:CXX>:CUTE_DSL_${_group_upper}_ARTIFACT_SMS=${_artifact_sm_list}>"
+      )
+      if(_cute_dsl_multi_arch)
+        target_compile_definitions(
+          ${_tgt} PRIVATE "CUTE_DSL_${_group_upper}_MULTI_ARCH_ENABLED")
+        foreach(_gpu_arch IN LISTS _meta_gpu_archs)
+          string(REGEX REPLACE "^sm_" "" _sm "${_gpu_arch}")
+          target_compile_definitions(
+            ${_tgt} PRIVATE "CUTE_DSL_${_group_upper}_ARTIFACT_SM_${_sm}=1")
+        endforeach()
+      else()
+        target_compile_definitions(
+          ${_tgt} PRIVATE "CUTE_DSL_${_group_upper}_ARTIFACT_SM=${_meta_sm}")
+      endif()
+    endforeach()
+  endforeach()
+  if("lora" IN_LIST _active_groups)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      if(_cute_dsl_multi_arch)
+        target_compile_definitions(${_tgt}
+                                   PRIVATE "CUTE_DSL_LORA_MULTI_ARCH_ENABLED")
+      else()
+        target_compile_definitions(
+          ${_tgt} PRIVATE "CUTE_DSL_LORA_ARTIFACT_SM=${_meta_sm}")
+      endif()
+    endforeach()
+  endif()
   list(FIND _variants "f16_moe_ampere_grouped_fp16" _f16_moe_ampere_idx)
   if(NOT ${_f16_moe_ampere_idx} EQUAL -1)
     foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
@@ -584,6 +809,23 @@ function(cute_dsl_setup)
     message(
       STATUS
         "CuTe DSL: f16_moe Blackwell GeForce grouped GEMM found — CUTE_DSL_F16_MOE_BLACKWELL_GEFORCE_ENABLED set"
+    )
+  endif()
+
+  list(FIND _variants "lora_blackwell_grouped_fp16" _lora_blackwell_idx)
+  list(FIND _variants "lora_blackwell_grouped_fp16_fused" _lora_fused_idx)
+  list(FIND _variants "lora_blackwell_metadata" _lora_metadata_idx)
+  if(NOT ${_lora_blackwell_idx} EQUAL -1
+     AND NOT ${_lora_fused_idx} EQUAL -1
+     AND NOT ${_lora_metadata_idx} EQUAL -1
+     AND "lora" IN_LIST _active_groups)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      target_compile_definitions(${_tgt}
+                                 PRIVATE "CUTE_DSL_LORA_BLACKWELL_ENABLED")
+    endforeach()
+    message(
+      STATUS
+        "CuTe DSL: LoRA Blackwell grouped GEMM found — CUTE_DSL_LORA_BLACKWELL_ENABLED set"
     )
   endif()
 
@@ -713,6 +955,20 @@ function(cute_dsl_setup)
 
   list(FIND _variants "gemm_blackwell_fp16" _gemm_blackwell_idx)
   if(NOT ${_gemm_blackwell_idx} EQUAL -1)
+    foreach(
+      _dual_gemm_variant IN
+      ITEMS dual_gemm_blackwell_decode_fp16 dual_gemm_blackwell_prefill_fp16
+            dual_gemm_blackwell_large_fp16)
+      list(FIND _variants "${_dual_gemm_variant}" _dual_gemm_idx)
+      if(${_dual_gemm_idx} EQUAL -1)
+        message(
+          FATAL_ERROR
+            "CuTe DSL Blackwell GEMM artifact in ${_artifact_dir} is missing "
+            "required variant '${_dual_gemm_variant}'. Regenerate this target's "
+            "artifact using kernelSrcs/build_cutedsl.py --kernels gemm from the "
+            "current source revision.")
+      endif()
+    endforeach()
     foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
       target_compile_definitions(${_tgt}
                                  PRIVATE "CUTE_DSL_GEMM_BLACKWELL_ENABLED")
@@ -885,6 +1141,32 @@ function(cute_dsl_setup)
   # NVFP4 GEMM variants. The umbrella CUTE_DSL_GEMM_NVFP4_ENABLED comes from the
   # active gemm_nvfp4 group; these per-variant defines let callers compile only
   # the AOT entry points present in the selected artifact.
+  list(FIND _variants "dual_gemm_blackwell_nvfp4_fp16" _dual_gemm_nvfp4_idx)
+  list(FIND _variants "dual_gemm_blackwell_nvfp4_output"
+       _dual_gemm_nvfp4_output_idx)
+  list(FIND _variants "dual_gemm_blackwell_nvfp4_output_mix_ab"
+       _dual_gemm_nvfp4_mix_ab_idx)
+  list(FIND _variants "dual_gemm_blackwell_nvfp4_output_mix_b"
+       _dual_gemm_nvfp4_mix_b_idx)
+  if(NOT ${_dual_gemm_nvfp4_idx} EQUAL -1 OR NOT ${_dual_gemm_nvfp4_output_idx}
+                                             EQUAL -1)
+    if(${_dual_gemm_nvfp4_idx} EQUAL -1
+       OR ${_dual_gemm_nvfp4_output_idx} EQUAL -1
+       OR ${_dual_gemm_nvfp4_mix_ab_idx} EQUAL -1
+       OR ${_dual_gemm_nvfp4_mix_b_idx} EQUAL -1)
+      message(
+        FATAL_ERROR
+          "CuTe DSL NVFP4 dual GEMM artifact in ${_artifact_dir} requires FP16 and all three "
+          "NVFP4 output tactic variants. Regenerate this target's artifact "
+          "using kernelSrcs/build_cutedsl.py --kernels gemm_nvfp4 from the "
+          "current source revision.")
+    endif()
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      target_compile_definitions(${_tgt}
+                                 PRIVATE "CUTE_DSL_DUAL_GEMM_NVFP4_ENABLED")
+    endforeach()
+  endif()
+
   list(FIND _variants "gemm_blackwell_nvfp4_fp16_tn64"
        _gemm_bw_nvfp4_fp16_tn64_idx)
   if(NOT ${_gemm_bw_nvfp4_fp16_tn64_idx} EQUAL -1)
@@ -1041,6 +1323,127 @@ function(cute_dsl_setup)
     endforeach()
   endif()
 
+  # The SM110 grouped W4A16 MoE runner links the fixed FP16 FC1/FC2 variant set;
+  # a partially regenerated artifact must fail at configure time.
+  if("nvfp4_a16_blackwell_moe" IN_LIST _active_groups)
+    set(_nvfp4_a16_moe_tiles 8 16 32 64 128)
+    set(_nvfp4_a16_moe_found_variants)
+    set(_nvfp4_a16_moe_missing_variants)
+    foreach(_nvfp4_a16_moe_fusion fc1_relu2 fc2_scatter)
+      foreach(_nvfp4_a16_moe_tile ${_nvfp4_a16_moe_tiles})
+        set(_nvfp4_a16_moe_variant
+            "nvfp4_a16_blackwell_moe_${_nvfp4_a16_moe_fusion}_fp16_tm128_tn${_nvfp4_a16_moe_tile}_tk64"
+        )
+        list(FIND _variants "${_nvfp4_a16_moe_variant}" _nvfp4_a16_moe_idx)
+        if(NOT ${_nvfp4_a16_moe_idx} EQUAL -1)
+          list(APPEND _nvfp4_a16_moe_found_variants "${_nvfp4_a16_moe_variant}")
+        else()
+          list(APPEND _nvfp4_a16_moe_missing_variants
+               "${_nvfp4_a16_moe_variant}")
+        endif()
+      endforeach()
+    endforeach()
+    list(LENGTH _nvfp4_a16_moe_missing_variants _nvfp4_a16_moe_missing_count)
+    if(NOT _nvfp4_a16_moe_missing_count EQUAL 0)
+      message(
+        FATAL_ERROR
+          "CuTe DSL: incomplete SM110 grouped W4A16 MoE artifact set in ${_metadata}.\n"
+          "Found: ${_nvfp4_a16_moe_found_variants}\n"
+          "Missing: ${_nvfp4_a16_moe_missing_variants}\n"
+          "Regenerate the nvfp4_a16_blackwell_moe group with both fusions and all token tiles."
+      )
+    endif()
+  endif()
+
+  # SM120/121 warp-level NVFP4 GEMM variants.
+  list(FIND _variants "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64"
+       _gemm_bw_geforce_nvfp4_fp16_tm64_tn64_idx)
+  if(NOT ${_gemm_bw_geforce_nvfp4_fp16_tm64_tn64_idx} EQUAL -1)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      target_compile_definitions(
+        ${_tgt}
+        PRIVATE "CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_ENABLED")
+    endforeach()
+    message(
+      STATUS "CuTe DSL: gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64 enabled")
+  endif()
+
+  list(FIND _variants "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128"
+       _gemm_bw_geforce_nvfp4_fp16_tm64_tn128_idx)
+  if(NOT ${_gemm_bw_geforce_nvfp4_fp16_tm64_tn128_idx} EQUAL -1)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      target_compile_definitions(
+        ${_tgt}
+        PRIVATE "CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_ENABLED")
+    endforeach()
+    message(
+      STATUS "CuTe DSL: gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128 enabled")
+  endif()
+
+  list(FIND _variants "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256"
+       _gemm_bw_geforce_nvfp4_fp16_tm64_tn128_tk256_idx)
+  if(NOT ${_gemm_bw_geforce_nvfp4_fp16_tm64_tn128_tk256_idx} EQUAL -1)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      target_compile_definitions(
+        ${_tgt}
+        PRIVATE
+          "CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_ENABLED")
+    endforeach()
+    message(
+      STATUS
+        "CuTe DSL: gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256 enabled")
+  endif()
+
+  list(FIND _variants "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1"
+       _gemm_bw_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1_idx)
+  if(NOT ${_gemm_bw_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1_idx} EQUAL -1)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      target_compile_definitions(
+        ${_tgt}
+        PRIVATE
+          "CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN64_RAW_SFA_M1_ENABLED"
+      )
+    endforeach()
+    message(
+      STATUS
+        "CuTe DSL: gemm_blackwell_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1 enabled"
+    )
+  endif()
+
+  list(FIND _variants "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1"
+       _gemm_bw_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1_idx)
+  if(NOT ${_gemm_bw_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1_idx} EQUAL -1)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      target_compile_definitions(
+        ${_tgt}
+        PRIVATE
+          "CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_RAW_SFA_M1_ENABLED"
+      )
+    endforeach()
+    message(
+      STATUS
+        "CuTe DSL: gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1 enabled"
+    )
+  endif()
+
+  list(FIND _variants
+       "gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1"
+       _gemm_bw_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1_idx)
+  if(NOT ${_gemm_bw_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1_idx} EQUAL
+     -1)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      target_compile_definitions(
+        ${_tgt}
+        PRIVATE
+          "CUTE_DSL_GEMM_BLACKWELL_GEFORCE_NVFP4_FP16_TM64_TN128_TK256_RAW_SFA_M1_ENABLED"
+      )
+    endforeach()
+    message(
+      STATUS
+        "CuTe DSL: gemm_blackwell_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1 enabled"
+    )
+  endif()
+
   # Umbrella CUTE_DSL_GEMM_ENABLED — set if ANY gemm variant was found. Source
   # files guard the entire GEMM path with this define.
   set(_any_gemm FALSE)
@@ -1066,6 +1469,12 @@ function(cute_dsl_setup)
     _gemm_bw_nvfp4_ws_fp16_tn256_idx
     _gemm_bw_nvfp4_ws_fp8_tn64_idx
     _gemm_bw_nvfp4_ws_fp8_tn128_idx
+    _gemm_bw_geforce_nvfp4_fp16_tm64_tn64_idx
+    _gemm_bw_geforce_nvfp4_fp16_tm64_tn128_idx
+    _gemm_bw_geforce_nvfp4_fp16_tm64_tn128_tk256_idx
+    _gemm_bw_geforce_nvfp4_fp16_tm64_tn64_raw_sfa_m1_idx
+    _gemm_bw_geforce_nvfp4_fp16_tm64_tn128_raw_sfa_m1_idx
+    _gemm_bw_geforce_nvfp4_fp16_tm64_tn128_tk256_raw_sfa_m1_idx
     _gemm_bw_geforce_idx
     _gemm_bw_geforce_small_idx
     _gemm_bw_geforce_bias_silu_idx
@@ -1086,12 +1495,37 @@ function(cute_dsl_setup)
   # For STATIC libraries, use PUBLIC so executables that link edgellmCore /
   # edgellmKernels also inherit the CuTe DSL archive. Otherwise unresolved AOT
   # wrapper symbols only show up at the final executable link step.
-  set(_link_libs "${_static_lib}")
+  set(_link_libs)
+  string(
+    JSON
+    _dispatch_source_name
+    ERROR_VARIABLE
+    _dispatch_source_err
+    GET
+    "${_meta_json}"
+    "dispatch_source")
+  if(NOT _dispatch_source_err AND NOT _dispatch_source_name STREQUAL "")
+    set(_dispatch_source "${_artifact_dir}/${_dispatch_source_name}")
+    if(NOT EXISTS "${_dispatch_source}")
+      message(
+        FATAL_ERROR "CuTe DSL dispatch source not found: ${_dispatch_source}")
+    endif()
+    if(NOT TARGET trt_edgellm_cutedsl_dispatch)
+      add_library(trt_edgellm_cutedsl_dispatch STATIC "${_dispatch_source}")
+      set_target_properties(trt_edgellm_cutedsl_dispatch
+                            PROPERTIES POSITION_INDEPENDENT_CODE ON)
+      target_include_directories(trt_edgellm_cutedsl_dispatch
+                                 PRIVATE ${CUDA_INCLUDE_DIR})
+    endif()
+    list(APPEND _link_libs trt_edgellm_cutedsl_dispatch)
+  endif()
+  list(APPEND _link_libs edgellmCuteDsl)
   # The libcudart shim only exists for CUDA 12.0–12.6; outside that range the
   # target is an empty INTERFACE library.
   set(_cudart_shim_lib)
-  if(_cute_dsl_cuda_ver VERSION_GREATER_EQUAL 12.0 AND _cute_dsl_cuda_ver
-                                                       VERSION_LESS 12.8)
+  if(NOT MSVC
+     AND _cute_dsl_cuda_ver VERSION_GREATER_EQUAL 12.0
+     AND _cute_dsl_cuda_ver VERSION_LESS 12.8)
     set(_cudart_shim_lib trt_edgellm_cutedsl_cudart_shim)
   endif()
   foreach(_tgt ${ARG_LINK_TARGETS})
@@ -1111,8 +1545,9 @@ function(cute_dsl_setup)
     # CUDA 12.0–12.6: wrap _cudaLaunchKernelEx (cudaKernel_t → CUfunction, e.g.
     # JetPack 6). cudaLaunchKernelEx is 11.8+, so there is nothing to wrap at
     # 11.4.
-    if(_cute_dsl_cuda_ver VERSION_GREATER_EQUAL 12.0 AND _cute_dsl_cuda_ver
-                                                         VERSION_LESS 12.8)
+    if(NOT MSVC
+       AND _cute_dsl_cuda_ver VERSION_GREATER_EQUAL 12.0
+       AND _cute_dsl_cuda_ver VERSION_LESS 12.8)
       target_link_options(${_tgt} PRIVATE "-Wl,--wrap=_cudaLaunchKernelEx")
     endif()
   endforeach()

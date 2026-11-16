@@ -19,6 +19,7 @@
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
 #include "common/mmapReader.h"
+#include "common/trtInterop.h"
 #include "profiling/metrics.h"
 #include "profiling/timer.h"
 #include <algorithm>
@@ -35,15 +36,17 @@ namespace trt_edgellm
 namespace rt
 {
 
-Gemma4UnifiedAudioRunner::Gemma4UnifiedAudioRunner(std::string const& engineDir, cudaStream_t stream)
+Gemma4UnifiedAudioRunner::Gemma4UnifiedAudioRunner(
+    std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
     : MultimodalRunner()
 {
-    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
     std::string const enginePath = engineDir + "/audio_encoder.engine";
     auto mmapReader = std::make_unique<file_io::MmapReader>(enginePath);
     mAudioEngine = std::unique_ptr<nvinfer1::ICudaEngine>(
         mRuntime->deserializeCudaEngine(mmapReader->getData(), mmapReader->getSize()));
     ELLM_CHECK(mAudioEngine != nullptr, "Failed to deserialize Gemma4 Unified audio engine");
+    prepareEngineWeights(engineDir, checkpointDir, stream, *mAudioEngine);
     mAudioContext = std::unique_ptr<nvinfer1::IExecutionContext>(
         mAudioEngine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
     ELLM_CHECK(mAudioContext != nullptr, "Failed to create Gemma4 Unified audio execution context");
@@ -105,8 +108,8 @@ bool Gemma4UnifiedAudioRunner::validateAndFillConfig(std::string const& engineDi
         LOG_ERROR("Gemma4 Unified audio engine is missing input_features or last_hidden_state");
         return false;
     }
-    if (mAudioEngine->getTensorDataType(binding_names::kAudioInputFeatures) != nvinfer1::DataType::kHALF
-        || mAudioEngine->getTensorDataType(binding_names::kAudioOutput) != nvinfer1::DataType::kHALF)
+    if (fromTrt(mAudioEngine->getTensorDataType(binding_names::kAudioInputFeatures)) != trt_edgellm::DataType::kHALF
+        || fromTrt(mAudioEngine->getTensorDataType(binding_names::kAudioOutput)) != trt_edgellm::DataType::kHALF)
     {
         LOG_ERROR("Gemma4 Unified audio engine requires FP16 input and output");
         return false;
@@ -172,11 +175,11 @@ bool Gemma4UnifiedAudioRunner::validateAndFillConfig(std::string const& engineDi
 bool Gemma4UnifiedAudioRunner::allocateBuffer([[maybe_unused]] cudaStream_t stream)
 {
     mInputFeatures = rt::Tensor({1, mConfig.maxFrames, mConfig.samplesPerFrame}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Gemma4UnifiedAudioRunner::mInputFeatures");
+        trt_edgellm::DataType::kHALF, "Gemma4UnifiedAudioRunner::mInputFeatures");
     mInputFeaturesHost = rt::Tensor({1, mConfig.maxFrames, mConfig.samplesPerFrame}, rt::DeviceType::kCPU,
-        nvinfer1::DataType::kHALF, "Gemma4UnifiedAudioRunner::mInputFeaturesHost");
+        trt_edgellm::DataType::kHALF, "Gemma4UnifiedAudioRunner::mInputFeaturesHost");
     mOutputEmbedding = rt::Tensor({mConfig.maxFrames, mConfig.outputHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Gemma4UnifiedAudioRunner::mOutputEmbedding");
+        trt_edgellm::DataType::kHALF, "Gemma4UnifiedAudioRunner::mOutputEmbedding");
     bool status = true;
     status &= mAudioContext->setTensorAddress(binding_names::kAudioInputFeatures, mInputFeatures.rawPointer());
     status &= mAudioContext->setTensorAddress(binding_names::kAudioOutput, mOutputEmbedding.rawPointer());
@@ -198,7 +201,7 @@ void Gemma4UnifiedAudioRunner::frameAudioTokenLengthsOnly(rt::LLMGenerationReque
         for (auto const& audio : req.audioBuffers)
         {
             ELLM_CHECK(audio.pcm != nullptr, "Gemma4 Unified AudioData.pcm is null");
-            int64_t const sampleCount = static_cast<int64_t>(audio.pcm->samples.size());
+            int64_t const sampleCount = audio.pcm->numSamples();
             int64_t const frameCount = (sampleCount + mConfig.samplesPerFrame - 1) / mConfig.samplesPerFrame;
             totalFrames += frameCount;
             audioTokenLengths.push_back(frameCount);
@@ -224,8 +227,10 @@ void Gemma4UnifiedAudioRunner::frameAudio(rt::LLMGenerationRequest const& reques
             ELLM_CHECK(audio.pcm != nullptr, "Gemma4 Unified AudioData.pcm is null");
             ELLM_CHECK(audio.pcm->sampleRate == mConfig.sampleRate && audio.pcm->numChannels == 1,
                 "Gemma4 Unified audio requires mono 16-kHz PCM");
-            ELLM_CHECK(!audio.pcm->samples.empty(), "Gemma4 Unified audio clip is empty");
-            int64_t const sampleCount = static_cast<int64_t>(audio.pcm->samples.size());
+            ELLM_CHECK(audio.pcm->numSamples() > 0, "Gemma4 Unified audio clip is empty");
+            int64_t const sampleCount = audio.pcm->numSamples();
+            rt::Tensor const& clipTensor = *audio.pcm->samples;
+            float const* const clipSamples = clipTensor.dataPointer<float>();
             int64_t const frameCount = (sampleCount + mConfig.samplesPerFrame - 1) / mConfig.samplesPerFrame;
             ELLM_CHECK(totalFrames + frameCount <= mConfig.maxFrames,
                 "Gemma4 Unified audio request exceeds engine profile maximum");
@@ -235,7 +240,7 @@ void Gemma4UnifiedAudioRunner::frameAudio(rt::LLMGenerationRequest const& reques
             std::fill(framedPcm + frameStart, framedPcm + frameStart + framedSampleCount, __float2half(0.0F));
             for (int64_t i = 0; i < sampleCount; ++i)
             {
-                framedPcm[frameStart + i] = __float2half(audio.pcm->samples[static_cast<size_t>(i)]);
+                framedPcm[frameStart + i] = __float2half(clipSamples[i]);
             }
             totalFrames += frameCount;
             audioTokenLengths.push_back(frameCount);
@@ -353,7 +358,7 @@ bool Gemma4UnifiedAudioRunner::preprocess(rt::LLMGenerationRequest const& reques
 bool Gemma4UnifiedAudioRunner::infer(cudaStream_t stream) noexcept
 {
     TIME_STAGE(metrics::StageNames::kAUDIO_ENCODER, stream);
-    if (!mAudioContext->setInputShape(binding_names::kAudioInputFeatures, mInputFeatures.getShape().getTRTDims()))
+    if (!mAudioContext->setInputShape(binding_names::kAudioInputFeatures, toTrtDims(mInputFeatures.getShape())))
     {
         LOG_ERROR("Failed to set Gemma4 Unified audio input shape");
         return false;

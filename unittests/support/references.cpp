@@ -58,9 +58,13 @@ template std::vector<__nv_fp8_e4m3> sliceKVWindow(std::vector<__nv_fp8_e4m3> con
 template <typename T>
 std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> const& k, std::vector<T> const& v,
     int32_t const qlen, int32_t kvlen, int32_t numQHeads, int32_t numKVHeads, int32_t headSize, float attentionScale,
-    std::optional<std::vector<int32_t>> const& treeAttnMask, float const kScaleQuantOrig, float const vScaleQuantOrig)
+    std::optional<std::vector<int32_t>> const& treeAttnMask, float const kScaleQuantOrig, float const vScaleQuantOrig,
+    int32_t slidingWindowSize, bool contiguousQuerySwa, std::optional<std::vector<float>> const& attentionSinks)
 {
     assert(qlen <= kvlen);
+    assert(numKVHeads > 0 && numQHeads % numKVHeads == 0);
+    assert(!treeAttnMask.has_value() || treeAttnMask->size() >= static_cast<size_t>(qlen) * static_cast<size_t>(qlen));
+    assert(!attentionSinks.has_value() || attentionSinks->size() >= static_cast<size_t>(numQHeads));
     int32_t const numQheadPerKV = numQHeads / numKVHeads;
     auto qoIndexer = [numQHeads, headSize](int32_t tokenIdx, int32_t qHeadIdx, int32_t valIdx) {
         // Q and Out Tensor has layout of [QToken, Qhead, featureVal]
@@ -76,11 +80,26 @@ std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> 
     {
         for (int32_t qHeadIdx = 0; qHeadIdx < numQHeads; ++qHeadIdx)
         {
-            std::vector<float> attnScores(kvlen, 0.0F);
-            float maxVal = -std::numeric_limits<half>::infinity();
+            float const negativeInfinity = -std::numeric_limits<float>::infinity();
+            std::vector<float> attnScores(kvlen, negativeInfinity);
+            float maxVal = negativeInfinity;
             int32_t kvHeadIdx = qHeadIdx / numQheadPerKV;
+            int32_t const kvStartIdxForQ = kvlen - qlen;
+            int32_t const windowStart = contiguousQuerySwa && slidingWindowSize > 0
+                ? std::max(0, kvStartIdxForQ + tokenIdx + 1 - slidingWindowSize)
+                : 0;
             for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
             {
+                bool const maskedByWindow = kvIdx < windowStart;
+                bool const isQueryToken = kvIdx >= kvStartIdxForQ;
+                bool const maskedByTree = isQueryToken && treeAttnMask.has_value()
+                    && (*treeAttnMask)[tokenIdx * qlen + kvIdx - kvStartIdxForQ] == 0;
+                if (maskedByWindow || maskedByTree)
+                {
+                    continue;
+                }
+
+                float score = 0.0F;
                 for (int32_t valIdx = 0; valIdx < headSize; ++valIdx)
                 {
                     float qVal = __half2float(q[qoIndexer(tokenIdx, qHeadIdx, valIdx)]);
@@ -96,43 +115,49 @@ std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> 
                     {
                         kvVal = __half2float(k[kvIndexer(kvIdx, kvHeadIdx, valIdx)]); // half -> FP32
                     }
-                    attnScores[kvIdx] += qVal * kvVal * attentionScale;
+                    score += qVal * kvVal * attentionScale;
                 }
 
-                maxVal = std::max(maxVal, attnScores[kvIdx]);
+                attnScores[kvIdx] = score;
+                maxVal = std::max(maxVal, score);
             }
-            // Apply Mask for casual and tree mask
-            if (qlen > 1 && treeAttnMask.has_value())
+
+            if (attentionSinks.has_value())
             {
-                int32_t const kvStartIdxForQ = kvlen - qlen;
-                auto const treeMasks = treeAttnMask.value();
-                for (int32_t maskQIdx = 0; maskQIdx < qlen; ++maskQIdx)
+                maxVal = std::max(maxVal, (*attentionSinks)[qHeadIdx]);
+            }
+            if (maxVal == negativeInfinity)
+            {
+                continue;
+            }
+
+            float sumExp = attentionSinks.has_value() ? std::exp((*attentionSinks)[qHeadIdx] - maxVal) : 0.0F;
+            for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
+            {
+                if (attnScores[kvIdx] != negativeInfinity)
                 {
-                    int32_t const mask = treeMasks[tokenIdx * qlen + maskQIdx];
-                    if (mask == 0)
-                    {
-                        // Set to -1e5 to make softmax result close to 0
-                        attnScores[kvStartIdxForQ + maskQIdx] = -5e5;
-                    }
+                    attnScores[kvIdx] = std::exp(attnScores[kvIdx] - maxVal);
+                    sumExp += attnScores[kvIdx];
                 }
             }
-            // Compute softmax using attnScores - maxVal
-            float sumExp = 0.0F;
             for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
             {
-                attnScores[kvIdx] = std::exp(attnScores[kvIdx] - maxVal);
-                sumExp += attnScores[kvIdx];
-            }
-            for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
-            {
-                attnScores[kvIdx] /= sumExp;
+                if (attnScores[kvIdx] != negativeInfinity)
+                {
+                    attnScores[kvIdx] /= sumExp;
+                }
             }
 
-            // Compute BMM2 Attn_score @ V
-            for (int32_t valIdx = 0; valIdx < headSize; ++valIdx)
+            // kvIdx is the outer loop so K/V rows are read contiguously; each output element accumulates over kvIdx in
+            // increasing order.
+            std::vector<float> outVals(headSize, 0.0F);
+            for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
             {
-                float outVal = 0.0F;
-                for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
+                if (attnScores[kvIdx] == negativeInfinity)
+                {
+                    continue;
+                }
+                for (int32_t valIdx = 0; valIdx < headSize; ++valIdx)
                 {
                     float vVal;
 #if SUPPORTS_FP8
@@ -147,9 +172,12 @@ std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> 
                     {
                         vVal = __half2float(v[kvIndexer(kvIdx, kvHeadIdx, valIdx)]); // half -> FP32
                     }
-                    outVal += attnScores[kvIdx] * vVal;
+                    outVals[valIdx] += attnScores[kvIdx] * vVal;
                 }
-                result[qoIndexer(tokenIdx, qHeadIdx, valIdx)] = __float2half(outVal);
+            }
+            for (int32_t valIdx = 0; valIdx < headSize; ++valIdx)
+            {
+                result[qoIndexer(tokenIdx, qHeadIdx, valIdx)] = __float2half(outVals[valIdx]);
             }
         }
     }
@@ -161,13 +189,15 @@ std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> 
 template std::vector<half> casualAttentionRef<half>(std::vector<half> const& q, std::vector<half> const& k,
     std::vector<half> const& v, int32_t const qlen, int32_t kvlen, int32_t numQHeads, int32_t numKVHeads,
     int32_t headSize, float attentionScale, std::optional<std::vector<int32_t>> const& treeAttnMask,
-    float const kScaleQuantOrig, float const vScaleQuantOrig);
+    float const kScaleQuantOrig, float const vScaleQuantOrig, int32_t slidingWindowSize, bool contiguousQuerySwa,
+    std::optional<std::vector<float>> const& attentionSinks);
 
 #if SUPPORTS_FP8
 template std::vector<half> casualAttentionRef<__nv_fp8_e4m3>(std::vector<half> const& q,
     std::vector<__nv_fp8_e4m3> const& k, std::vector<__nv_fp8_e4m3> const& v, int32_t const qlen, int32_t kvlen,
     int32_t numQHeads, int32_t numKVHeads, int32_t headSize, float attentionScale,
-    std::optional<std::vector<int32_t>> const& treeAttnMask, float const kScaleQuantOrig, float const vScaleQuantOrig);
+    std::optional<std::vector<int32_t>> const& treeAttnMask, float const kScaleQuantOrig, float const vScaleQuantOrig,
+    int32_t slidingWindowSize, bool contiguousQuerySwa, std::optional<std::vector<float>> const& attentionSinks);
 #endif
 
 std::vector<half> ropeRef(std::vector<half> const& input, int32_t const numHeads, int32_t const headSize,
@@ -691,7 +721,7 @@ void assembleDraftTreeDescReference(std::vector<int8_t> const& draftTreeMask,
     }
 }
 
-void prepareEagleDraftProposalMiscInputReference(std::vector<int32_t> const& draftTreeLength,
+void prepareSpecDraftProposalMiscInputReference(std::vector<int32_t> const& draftTreeLength,
     std::vector<int32_t> const& sequenceStartIndex, std::vector<int32_t>& sequenceContextLengths,
     std::vector<int64_t>& selectTokenIndices, int32_t selectTokenLength, int32_t paddedDraftTreeSize)
 {
@@ -709,7 +739,7 @@ void prepareEagleDraftProposalMiscInputReference(std::vector<int32_t> const& dra
     }
 }
 
-void prepareEaglePrefillInputReference(
+void prepareSpecPrefillInputReference(
     std::vector<int32_t>& sequenceContextLengths, std::vector<int64_t>& selectTokenIndices, int32_t sequenceLength)
 {
     size_t const batchSize = sequenceContextLengths.size();
@@ -807,11 +837,13 @@ int32_t computeTokenDepthRef(int32_t tokenIdx, std::vector<int8_t> const& attent
 
 EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<int32_t> const& tokenIds,
     std::vector<int8_t> const& attentionMask, int32_t batchSize, int32_t numTokens, int32_t vocabSize, int32_t maxDepth,
-    std::vector<int32_t> const& vocabMappingTable)
+    std::vector<int32_t> const& vocabMappingTable, std::vector<int8_t> const& forcedFlags,
+    std::vector<int32_t> const& validCounts)
 {
     EagleAcceptResult result;
     result.acceptedTokenIds.resize(batchSize * maxDepth, -1);
     result.acceptedLogitsIndices.resize(batchSize * maxDepth, -1);
+    result.acceptedForced.resize(batchSize * maxDepth, 0);
     result.acceptLengths.resize(batchSize, 0);
 
     int32_t maxAcceptLength = 0;
@@ -839,12 +871,13 @@ EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<i
         int32_t currentDepth = 0;
         int32_t currentTokenIdx = 0;                    // Start with token[0], use logits[0] to predict next
         int32_t expectedNextDepth = tokenDepths[0] + 1; // Next depth should be current token's depth + 1
+        int32_t const valid = validCounts.empty() ? numTokens : std::min(numTokens, validCounts[b]);
 
         // Start with accept length 0, will be set to at least 1 in the loop
         result.acceptLengths[b] = 0;
 
         // Process tokens - always accept at least one
-        for (int32_t step = 0; step < maxDepth && currentTokenIdx < numTokens; ++step)
+        for (int32_t step = 0; step < maxDepth && currentTokenIdx < valid; ++step)
         {
             // Step 1: Find top-1 token from logits[b][currentTokenIdx]
             int32_t const logitsOffset = b * numTokens * vocabSize + currentTokenIdx * vocabSize;
@@ -868,30 +901,43 @@ EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<i
                 selectedTokenId = vocabMappingTable[selectedTokenId];
             }
 
-            // Step 2: Always accept the selected token
-            result.acceptedTokenIds[b * maxDepth + currentDepth] = selectedTokenId;
-            result.acceptedLogitsIndices[b * maxDepth + currentDepth] = currentTokenIdx;
-            result.acceptLengths[b] = currentDepth + 1;
-            currentDepth++;
-
-            // Step 3: Check if the selected token exists in the tree to continue
+            // Step 2: Find the next node: the first forced child, else the first child carrying the selected token
             int32_t nextTokenIdx = -1;
+            int32_t forcedTokenIdx = -1;
 
-            for (int32_t checkIdx = 1; checkIdx < numTokens; ++checkIdx)
+            for (int32_t checkIdx = 1; checkIdx < valid; ++checkIdx)
             {
-                if (tokenIds[batchTokenOffset + checkIdx] == selectedTokenId
+                bool const forced = !forcedFlags.empty() && forcedFlags[batchTokenOffset + checkIdx] != 0;
+                if ((tokenIds[batchTokenOffset + checkIdx] == selectedTokenId || forced)
                     && tokenDepths[checkIdx] == expectedNextDepth)
                 {
                     // Check attention mask: does checkIdx attend to currentTokenIdx?
                     int32_t maskOffset = batchMaskOffset + checkIdx * numTokens + currentTokenIdx;
                     if (attentionMask[maskOffset] == 1)
                     {
-                        // Found a valid next token in tree
-                        nextTokenIdx = checkIdx;
-                        break; // Take the first match
+                        if (nextTokenIdx == -1)
+                        {
+                            nextTokenIdx = checkIdx;
+                        }
+                        if (forced && forcedTokenIdx == -1)
+                        {
+                            forcedTokenIdx = checkIdx;
+                        }
                     }
                 }
             }
+            if (forcedTokenIdx != -1)
+            {
+                nextTokenIdx = forcedTokenIdx;
+                selectedTokenId = tokenIds[batchTokenOffset + forcedTokenIdx];
+            }
+
+            // Step 3: Always accept the selected token; the logits index is the node that produced it
+            result.acceptedTokenIds[b * maxDepth + currentDepth] = selectedTokenId;
+            result.acceptedLogitsIndices[b * maxDepth + currentDepth] = currentTokenIdx;
+            result.acceptedForced[b * maxDepth + currentDepth] = forcedTokenIdx != -1 ? 1 : 0;
+            result.acceptLengths[b] = currentDepth + 1;
+            currentDepth++;
 
             // Step 4: Update for next iteration
             if (nextTokenIdx != -1)
@@ -938,6 +984,7 @@ EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<i
     // Reshape the result vectors to [batchSize, maxAcceptLength]
     std::vector<int32_t> reshapedTokenIds(batchSize * maxAcceptLength, -1);
     std::vector<int32_t> reshapedLogitsIndices(batchSize * maxAcceptLength, -1);
+    std::vector<int8_t> reshapedForced(batchSize * maxAcceptLength, 0);
 
     for (int32_t b = 0; b < batchSize; ++b)
     {
@@ -945,18 +992,21 @@ EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<i
         {
             reshapedTokenIds[b * maxAcceptLength + i] = result.acceptedTokenIds[b * maxDepth + i];
             reshapedLogitsIndices[b * maxAcceptLength + i] = result.acceptedLogitsIndices[b * maxDepth + i];
+            reshapedForced[b * maxAcceptLength + i] = result.acceptedForced[b * maxDepth + i];
         }
     }
 
     result.acceptedTokenIds = std::move(reshapedTokenIds);
     result.acceptedLogitsIndices = std::move(reshapedLogitsIndices);
+    result.acceptedForced = std::move(reshapedForced);
 
     return result;
 }
 
 void transposeToPatchQwenReference(std::vector<half> const& originalImage, std::vector<half>& patch,
     int32_t const inputOffset, int32_t const T, int32_t const height, int32_t const width, int32_t const channels,
-    int32_t const temporalPatchSize, int32_t const patchSize, int32_t const mergeSize)
+    int32_t const temporalPatchSize, int32_t const patchSize, int32_t const mergeSize, bool const temporalFirst,
+    bool const channelLast)
 {
     assert(originalImage.size() == static_cast<size_t>(T) * height * width * channels);
     assert(patch.size() == originalImage.size());
@@ -996,8 +1046,12 @@ void transposeToPatchQwenReference(std::vector<half> const& originalImage, std::
                                         int32_t dstHW = gt * gridH * gridW * mergeSize * mergeSize
                                             + gh * gridW * mergeSize * mergeSize + gw * mergeSize * mergeSize
                                             + mergeH * mergeSize + mergeW;
-                                        int32_t dstDim = c * temporalPatchSize * patchSize * patchSize
-                                            + t * patchSize * patchSize + patchH * patchSize + patchW;
+                                        int32_t const dstDim = channelLast
+                                            ? ((patchH * patchSize + patchW) * channels + c) * temporalPatchSize + t
+                                            : (temporalFirst ? t * channels * patchSize * patchSize
+                                                          + c * patchSize * patchSize + patchH * patchSize + patchW
+                                                             : c * temporalPatchSize * patchSize * patchSize
+                                                          + t * patchSize * patchSize + patchH * patchSize + patchW);
                                         patch[dstHW * channels * temporalPatchSize * patchSize * patchSize + dstDim]
                                             = value;
                                     }
@@ -1388,8 +1442,9 @@ void referenceMoeTopK(std::vector<float> const& softmaxOutput, std::vector<float
         }
 
         // Partial sort to get top-k
-        std::partial_sort(pairs.begin(), pairs.begin() + topk, pairs.end(),
-            [](auto const& a, auto const& b) { return a.first > b.first; });
+        std::partial_sort(pairs.begin(), pairs.begin() + topk, pairs.end(), [](auto const& a, auto const& b) {
+            return a.first > b.first || (a.first == b.first && a.second < b.second);
+        });
 
         // Extract top-k
         float sum = 0.0f;

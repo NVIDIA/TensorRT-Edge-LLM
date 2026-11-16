@@ -18,6 +18,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <cuda_fp16.h>
 
 namespace trt_edgellm
 {
@@ -30,6 +32,28 @@ constexpr size_t kSpeculativeWorkspaceAlignment{256U};
 inline size_t alignSpeculativeWorkspaceSize(size_t size)
 {
     return (size + kSpeculativeWorkspaceAlignment - 1U) & ~(kSpeculativeWorkspaceAlignment - 1U);
+}
+
+//! Keep a uniform inside [0, 1) so an inverse-CDF walk can never step past the last bucket.
+__device__ __forceinline__ float clampUniform(float uniform)
+{
+    return fminf(fmaxf(uniform, 0.0F), 0.99999994F);
+}
+
+//! Strict candidate order of the speculative top-K lists: score descending, then token ascending.
+__device__ __forceinline__ bool isBetterCandidate(float lhsScore, int32_t lhsToken, float rhsScore, int32_t rhsToken)
+{
+    return lhsScore > rhsScore || (lhsScore == rhsScore && lhsToken < rhsToken);
+}
+
+__device__ __forceinline__ float toFloat(float value)
+{
+    return value;
+}
+
+__device__ __forceinline__ float toFloat(__half value)
+{
+    return __half2float(value);
 }
 
 } // namespace kernel

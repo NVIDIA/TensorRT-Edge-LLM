@@ -25,7 +25,7 @@ namespace trt_edgellm
 
 //! \cond INTERNAL
 //! Thread-local profiling control flag accessors (defined in timer.cpp)
-//! When false, no profiling data (metrics or timing) will be recorded
+//! Controls aggregate counters and GPU stage timing; per-request collection is opt-in.
 bool getProfilingEnabled() noexcept;
 void setProfilingEnabled(bool enabled) noexcept;
 //! \endcond
@@ -42,10 +42,10 @@ namespace StageNames
 {
 inline std::string const kLLM_PREFILL = "llm_prefill";                     //!< LLM prefill stage
 inline std::string const kLLM_GENERATION = "llm_generation";               //!< LLM generation stage
-inline std::string const kLLM_LAYER = "llm_layer";                         //!< LLM layer profiling
 inline std::string const kMULTIMODAL_PROCESSING = "multimodal_processing"; //!< Multimodal processing stage (legacy)
 inline std::string const kAUDIO_ENCODER = "audio_encoder";                 //!< Audio encoder stage
 inline std::string const kVISION_ENCODER = "vision_encoder";               //!< Vision encoder stage
+inline std::string const kVISION_GATHER = "vision_gather"; //!< Visual embedding and deepstack shard communication
 inline std::string const kSPEC_DECODE_DRAFT_PREFILL = "spec_decode_draft_prefill"; //!< Speculative decode draft prefill
 inline std::string const kSPEC_DECODE_DRAFT_PROPOSAL
     = "spec_decode_draft_proposal"; //!< Speculative decode draft proposal
@@ -68,6 +68,19 @@ inline std::string const kCODEPREDICTOR_GENERATION
 inline std::string const kTALKER_PREFILL = "talker_prefill";     //!< Talker prefill stage (single-shot)
 inline std::string const kACTION_INFERENCE = "action_inference"; //!< Action head trajectory sampling stage
 } // namespace StageNames
+
+//! Cumulative metrics for one sequence, using the runtime's existing token counts.
+struct LLMRequestMetrics
+{
+    int32_t processedPromptTokens{-1}; //!< Executed prompt tokens, excluding cached prefixes; -1 if unavailable.
+    int32_t generatedTokens{0};        //!< All output tokens, including any sampled during prefill.
+    int32_t decodedTokens{0};          //!< Output tokens sampled after prefill.
+    double promptSeconds{0.0};         //!< Wall time through prefill and first-token sampling.
+    double generationSeconds{0.0};     //!< Wall time from prefill completion through the last generated token.
+    //! When the first prefill began, in nanoseconds since the steady clock's epoch; -1 if unavailable. On Linux the
+    //! steady clock is CLOCK_MONOTONIC, which Python's time.monotonic_ns() reads too.
+    int64_t prefillStartNs{-1};
+};
 
 /*!
  * @brief Base class for performance metrics
@@ -185,11 +198,18 @@ class SpecDecodeGenerationMetrics : public BaseMetrics
 public:
     int64_t totalIterations{0};      //!< Total number of speculative decoding iterations
     int64_t totalGeneratedTokens{0}; //!< Total number of generated tokens
+    //! Draft tokens accepted by verification (bonus token excluded)
+    int64_t totalAcceptedDraftTokens{0};
+    //! Draft tokens proposed for verification (bonus token excluded)
+    int64_t totalProposedDraftTokens{0};
 
     //! @brief Record a speculative decoding generation run
     //! @param iterations Number of iterations
     //! @param generatedTokens Number of generated tokens
-    void recordRun(int64_t iterations, int64_t generatedTokens) noexcept
+    //! @param acceptedDraftTokens Draft tokens accepted by verification
+    //! @param proposedDraftTokens Draft tokens proposed for verification
+    void recordRun(int64_t iterations, int64_t generatedTokens, int64_t acceptedDraftTokens = 0,
+        int64_t proposedDraftTokens = 0) noexcept
     {
         if (!getProfilingEnabled())
         {
@@ -198,6 +218,8 @@ public:
         totalRuns++;
         totalIterations += iterations;
         totalGeneratedTokens += generatedTokens;
+        totalAcceptedDraftTokens += acceptedDraftTokens;
+        totalProposedDraftTokens += proposedDraftTokens;
     }
 };
 

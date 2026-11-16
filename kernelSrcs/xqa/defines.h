@@ -144,6 +144,14 @@ static_assert(SPEC_DEC, "SPEC_Q_SEQ_LEN should only be used when SPEC_DEC is ena
 #define SLIDING_WINDOW 0
 #endif
 
+#ifndef CONTIGUOUS_QUERY_SWA
+#define CONTIGUOUS_QUERY_SWA 0
+#endif
+
+#if CONTIGUOUS_QUERY_SWA && (!SPEC_DEC || !SLIDING_WINDOW)
+#error "CONTIGUOUS_QUERY_SWA requires SPEC_DEC and SLIDING_WINDOW."
+#endif
+
 // 0 - no PDL
 // 1 - naive PDL
 // 2 - aggressive PDL (implemented only in mha_sm90.cu for now)

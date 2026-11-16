@@ -18,7 +18,6 @@ from __future__ import annotations
 import ctypes
 import functools
 import importlib.util
-import os
 from typing import Union, Tuple
 
 import cutlass
@@ -92,17 +91,6 @@ def get_num_sm(device: int | str | None = None) -> int:
     cp, device_id = _ensure_cuda_context(device)
     props = cp.cuda.runtime.getDeviceProperties(device_id)
     return props["multiProcessorCount"]
-
-
-def cute_compile_options(default: str = "--opt-level 2") -> str:
-    options = default
-    gpu_arch = os.environ.get("EDGE_LLM_CUTE_DSL_GPU_ARCH")
-    ptxas_options = os.environ.get("EDGE_LLM_CUTE_DSL_PTXAS_OPTIONS")
-    if gpu_arch:
-        options += f" --gpu-arch={gpu_arch}"
-    if ptxas_options:
-        options += f" --ptxas-options='{ptxas_options}'"
-    return options
 
 
 # Cache for HardwareInfo - it's expensive to create on every call

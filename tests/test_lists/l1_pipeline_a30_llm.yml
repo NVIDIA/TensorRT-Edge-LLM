@@ -19,6 +19,10 @@ tests:
   - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_e2e_bench[Qwen3-8B-int4_awq-mxsl4096-mxbs8-mxil4096-mtbench-bs1]
   - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_e2e_bench[Qwen3-8B-int4_awq-mxsl4096-mxbs8-mxil4096-mtbench-bs8]
 
+  # HY-MT1.5-7B - fp16 (HunYuan V1 dense: post-RoPE QK-norm + DynamicNTKAlpha RoPE)
+  - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_engine_build[HY-MT1.5-7B-fp16-mxsl4096-mxbs8-mxil4096]
+  - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_e2e_bench[HY-MT1.5-7B-fp16-mxsl4096-mxbs8-mxil4096-mtbench-bs1]
+
   # Qwen2.5-7B-Instruct - fp16
   - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_engine_build[Qwen2.5-7B-Instruct-fp16-mxsl4096-mxbs8-mxil4096]
   - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_e2e_bench[Qwen2.5-7B-Instruct-fp16-mxsl4096-mxbs8-mxil4096-mmlu_5-bs8]

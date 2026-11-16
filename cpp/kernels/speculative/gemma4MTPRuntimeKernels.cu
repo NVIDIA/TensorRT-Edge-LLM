@@ -29,8 +29,8 @@ namespace
 {
 
 __global__ void buildVerifyTokensKernel(int32_t const* __restrict__ seedTokenIds,
-    int32_t const* __restrict__ draftTokenIds, int32_t* __restrict__ verifyTokenIds, int32_t draftingStep,
-    int32_t verifySize, int32_t totalElements)
+    int32_t const* __restrict__ draftTokenIds, int32_t* __restrict__ verifyTokenIds, int32_t draftSteps,
+    int32_t verifyTokenCount, int32_t totalElements)
 {
     int32_t const idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalElements)
@@ -38,15 +38,15 @@ __global__ void buildVerifyTokensKernel(int32_t const* __restrict__ seedTokenIds
         return;
     }
 
-    int32_t const batchIdx = idx / verifySize;
-    int32_t const posIdx = idx % verifySize;
+    int32_t const batchIdx = idx / verifyTokenCount;
+    int32_t const posIdx = idx % verifyTokenCount;
     if (posIdx == 0)
     {
-        verifyTokenIds[batchIdx * verifySize] = seedTokenIds[batchIdx];
+        verifyTokenIds[batchIdx * verifyTokenCount] = seedTokenIds[batchIdx];
     }
     else
     {
-        verifyTokenIds[batchIdx * verifySize + posIdx] = draftTokenIds[batchIdx * draftingStep + posIdx - 1];
+        verifyTokenIds[batchIdx * verifyTokenCount + posIdx] = draftTokenIds[batchIdx * draftSteps + posIdx - 1];
     }
 }
 
@@ -68,7 +68,7 @@ __global__ void gatherSeedHiddenKernel(uint8_t const* __restrict__ sourceHiddenS
 }
 
 __global__ void storeDraftTokenKernel(int32_t const* __restrict__ selectedTokenIds, int32_t* __restrict__ draftTokenIds,
-    int32_t draftingStep, int32_t step, int32_t batchSize)
+    int32_t draftSteps, int32_t step, int32_t batchSize)
 {
     int32_t const batchIdx = blockIdx.x * blockDim.x + threadIdx.x;
     if (batchIdx >= batchSize)
@@ -76,25 +76,25 @@ __global__ void storeDraftTokenKernel(int32_t const* __restrict__ selectedTokenI
         return;
     }
 
-    draftTokenIds[batchIdx * draftingStep + step] = selectedTokenIds[batchIdx];
+    draftTokenIds[batchIdx * draftSteps + step] = selectedTokenIds[batchIdx];
 }
 
 } // namespace
 
 void launchGemma4MTPBuildVerifyTokens(int32_t const* seedTokenIds, int32_t const* draftTokenIds,
-    int32_t* verifyTokenIds, int32_t batchSize, int32_t draftingStep, cudaStream_t stream)
+    int32_t* verifyTokenIds, int32_t batchSize, int32_t draftSteps, cudaStream_t stream)
 {
-    if (batchSize == 0 || draftingStep < 0)
+    if (batchSize == 0 || draftSteps < 0)
     {
         return;
     }
 
-    int32_t const verifySize = draftingStep + 1;
-    int32_t const totalElements = batchSize * verifySize;
+    int32_t const verifyTokenCount = draftSteps + 1;
+    int32_t const totalElements = batchSize * verifyTokenCount;
     constexpr int32_t kThreads = 256;
     int32_t const blocks = (totalElements + kThreads - 1) / kThreads;
     buildVerifyTokensKernel<<<blocks, kThreads, 0, stream>>>(
-        seedTokenIds, draftTokenIds, verifyTokenIds, draftingStep, verifySize, totalElements);
+        seedTokenIds, draftTokenIds, verifyTokenIds, draftSteps, verifyTokenCount, totalElements);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -120,18 +120,18 @@ void launchGemma4MTPGatherSeedHidden(void const* sourceHiddenStates, void* seedH
 }
 
 void launchGemma4MTPStoreDraftToken(int32_t const* selectedTokenIds, int32_t* draftTokenIds, int32_t batchSize,
-    int32_t draftingStep, int32_t step, cudaStream_t stream)
+    int32_t draftSteps, int32_t step, cudaStream_t stream)
 {
     if (batchSize == 0)
     {
         return;
     }
 
-    check::check(step >= 0 && step < draftingStep, "Gemma4 MTP draft-token store step is out of range.");
+    check::check(step >= 0 && step < draftSteps, "Gemma4 MTP draft-token store step is out of range.");
     constexpr int32_t kThreads = 256;
     int32_t const blocks = (batchSize + kThreads - 1) / kThreads;
     storeDraftTokenKernel<<<blocks, kThreads, 0, stream>>>(
-        selectedTokenIds, draftTokenIds, draftingStep, step, batchSize);
+        selectedTokenIds, draftTokenIds, draftSteps, step, batchSize);
     CUDA_CHECK(cudaGetLastError());
 }
 

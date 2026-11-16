@@ -57,20 +57,28 @@ model.norm.weight
 lm_head.weight
 """
 
-import itertools
 import logging
 from typing import List, Tuple
 
 import torch
 import torch.nn as nn
 
-from ...config import QUANT_FP16, QUANT_NVFP4, QUANT_NVFP4_A16, ModelConfig
-from ..default.modeling_default import (MLP, Attention, OnnxSpec, RMSNorm,
-                                        _make_flat_wrapper)
+from ...config import (QUANT_FP16, QUANT_INT4_AWQ_MODELOPT, QUANT_INT4_GPTQ,
+                       QUANT_NVFP4, QUANT_NVFP4_A16, ModelConfig,
+                       module_quant_group_size, module_quant_type)
+from ..default.modeling_default import (MLP, Attention, CausalLM, OnnxSpec,
+                                        RMSNorm,
+                                        _concat_hidden_in_provider_order)
 from ..linear import FP16Linear, make_linear
-from ..ops import (KV_PAGE_SIZE, fp16_moe_plugin, int4_moe_plugin,
-                   nvfp4_a16_moe_plugin, nvfp4_moe_plugin,
-                   nvfp4_moe_plugin_geforce, use_geforce_nvfp4_moe)
+from ..ops import (TRT_DATATYPE_FP4, TRT_DATATYPE_FP8,
+                   TRT_MOE_QUANT_DYNAMIC_DBLQ, TRT_MOE_QUANT_STATIC,
+                   fp8_dequantize, fp8_quantize, fp16_moe_plugin,
+                   int4_moe_plugin, is_trt_native_moe_enabled,
+                   is_trt_native_moe_w4a4_enabled, nvfp4_a16_moe_plugin,
+                   nvfp4_act_qdq_moe, nvfp4_dequantize_moe,
+                   nvfp4_dequantize_moe_with_global_scale, nvfp4_moe_plugin,
+                   nvfp4_moe_plugin_geforce, trt_moe_fp16, trt_moe_w4a4,
+                   trt_moe_w4a8, use_geforce_nvfp4_moe)
 
 logger = logging.getLogger(__name__)
 
@@ -91,11 +99,6 @@ _NVFP4_MOE_N_GROUP_FLAT = 1
 _NVFP4_MOE_TOPK_GROUP_FLAT = 1
 
 # ONNX export dummy-input dims.
-_BATCH_SIZE = 1
-_SEQ_LEN = 1
-_PAST_LEN = 1
-_MAX_POS = 4096
-
 __all__ = [
     "Qwen3MoERouter",
     "Qwen3MoEExperts",
@@ -168,16 +171,25 @@ class Qwen3MoEExperts(nn.Module):
     remapping in the checkpoint loader, not here.
     """
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, module_name: str) -> None:
         super().__init__()
         hidden = config.hidden_size
         inter = config.moe_intermediate_size
         experts = []
         for _ in range(config.num_experts):
             expert = nn.Module()
-            expert.gate_proj = make_linear(config, hidden, inter)
-            expert.up_proj = make_linear(config, hidden, inter)
-            expert.down_proj = make_linear(config, inter, hidden)
+            expert.gate_proj = make_linear(config,
+                                           hidden,
+                                           inter,
+                                           module_name=module_name)
+            expert.up_proj = make_linear(config,
+                                         hidden,
+                                         inter,
+                                         module_name=module_name)
+            expert.down_proj = make_linear(config,
+                                           inter,
+                                           hidden,
+                                           module_name=module_name)
             experts.append(expert)
         self._experts = nn.ModuleList(experts)
 
@@ -191,9 +203,35 @@ class Qwen3MoEExperts(nn.Module):
         return iter(self._experts)
 
 
+def _stack_nvfp4_moe_input_scales(
+        experts: Qwen3MoEExperts) -> "tuple[torch.Tensor, torch.Tensor]":
+    """Collect the calibrated FC1 and FC2 activation scales."""
+    fc1_scales = []
+    fc2_scales = []
+    for expert_idx, expert in enumerate(experts):
+        gate_scale = expert.gate_proj.input_scale.detach().float().reshape(-1)
+        up_scale = expert.up_proj.input_scale.detach().float().reshape(-1)
+        down_scale = expert.down_proj.input_scale.detach().float().reshape(-1)
+        if any(scale.numel() != 1
+               for scale in (gate_scale, up_scale, down_scale)):
+            raise ValueError("Nvfp4MoePlugin requires scalar input scales; "
+                             f"expert {expert_idx} has non-scalar values")
+        if not torch.equal(gate_scale, up_scale):
+            raise ValueError("Nvfp4MoePlugin requires matching gate/up input "
+                             f"scales for expert {expert_idx}")
+        fc1_scales.append(gate_scale[0])
+        fc2_scales.append(down_scale[0])
+    return torch.stack(fc1_scales), torch.stack(fc2_scales)
+
+
 # ---------------------------------------------------------------------------
 # Sparse MoE block
 # ---------------------------------------------------------------------------
+
+# TRT-native MoE: MoEActType {kNONE=0, kSILU=1} (NvInfer.h); quantization_mode
+# 0 = unquantized. Only kSILU (gated SwiGLU) is expressible today.
+_TRT_MOE_ACT_SILU = 1
+_TRT_MOE_QUANT_NONE = 0
 
 
 class Qwen3SparseMoeBlock(nn.Module):
@@ -216,15 +254,52 @@ class Qwen3SparseMoeBlock(nn.Module):
 
     def __init__(self, config: ModelConfig, module_prefix: str = "") -> None:
         super().__init__()
+        experts_module_name = (f"{module_prefix}.experts"
+                               if module_prefix else "experts")
+        expert_quant_type = module_quant_type(experts_module_name, config)
+        supported_quant_types = (
+            QUANT_FP16,
+            QUANT_INT4_AWQ_MODELOPT,
+            QUANT_INT4_GPTQ,
+            QUANT_NVFP4,
+            QUANT_NVFP4_A16,
+        )
+        if expert_quant_type not in supported_quant_types:
+            raise ValueError(
+                "Qwen3 MoE has no W8A16 or FP8 expert implementation; "
+                "supported expert execution is FP16, INT4 W4A16, NVFP4 "
+                "W4A4, or NVFP4 W4A16")
         self.num_experts = config.num_experts
         self.top_k = config.num_experts_per_tok
         self.moe_intermediate_size = config.moe_intermediate_size
         self.hidden_size = config.hidden_size
-        self.group_size = config.quant.group_size
         self.zero_point_offset = config.quant.gptq_zero_point_offset
-        self._use_nvfp4_moe = config.quant.quant_type == QUANT_NVFP4
-        self._use_nvfp4_a16_moe = config.quant.quant_type == QUANT_NVFP4_A16
-        self._use_fp16_moe = config.quant.quant_type == QUANT_FP16
+        self.group_size = module_quant_group_size(experts_module_name, config)
+        self._use_nvfp4_moe = expert_quant_type == QUANT_NVFP4
+        self._use_nvfp4_a16_moe = expert_quant_type == QUANT_NVFP4_A16
+        self._use_fp16_moe = expert_quant_type == QUANT_FP16
+        # --trt-native-moe: experts through TRT_MoE instead of a plugin. FP16
+        # experts take the FP16 form, NVFP4 experts the W4A8 form (or W4A4,
+        # quantization_mode 2, with --trt-native-moe-w4a4); INT4 and
+        # NVFP4-A16 experts have no TRT_MoE form and are rejected.
+        self._use_native_moe = is_trt_native_moe_enabled()
+        self._use_native_moe_w4a4 = is_trt_native_moe_w4a4_enabled()
+        if self._use_native_moe_w4a4 and not self._use_nvfp4_moe:
+            raise ValueError(
+                "--trt-native-moe-w4a4 requested but the experts are "
+                f"{expert_quant_type!r}; the W4A4 TRT_MoE form needs ModelOpt "
+                "NVFP4 experts with quantized activations (FP16 experts have "
+                "only the unquantized form, and --no-quantize-activations "
+                "turns NVFP4 into NVFP4-A16, which has no TRT_MoE form). Drop "
+                "--trt-native-moe-w4a4 to export the W4A8 form, or keep the "
+                "activations quantized.")
+        if self._use_native_moe and not (self._use_fp16_moe
+                                         or self._use_nvfp4_moe):
+            raise ValueError(
+                "--trt-native-moe requested but the experts are "
+                f"{expert_quant_type!r}; only FP16 and NVFP4 experts have a "
+                "TRT_MoE form (INT4 and NVFP4-A16 experts do not). Drop the "
+                "flag to export the plugin path.")
         # All paths compute the same SwiGLU expert FFN; the integer is just
         # each plugin's own enum for it. Int4MoePlugin names the elementwise
         # activation ("SiLU"=0), Nvfp4MoePlugin/Fp16MoePlugin/Nvfp4A16MoePlugin
@@ -241,7 +316,7 @@ class Qwen3SparseMoeBlock(nn.Module):
         self.io_dtype = _NVFP4_MOE_IO_DTYPE_FP16
         self.max_routed_rows = _NVFP4_MOE_MAX_ROUTED_ROWS_AUTO
         self.gate = Qwen3MoERouter(config)
-        self.experts = Qwen3MoEExperts(config)
+        self.experts = Qwen3MoEExperts(config, experts_module_name)
         if self._use_nvfp4_a16_moe:
             # Routed experts are stacked into Nvfp4A16MoePlugin; keep the
             # dense Marlin repack from consuming their raw buffers.
@@ -292,6 +367,9 @@ class Qwen3SparseMoeBlock(nn.Module):
         regular GPTQ repacking.  After extraction, per-expert ``qweight``
         buffers are set to ``None`` so ``_repack_gptq_weights`` skips them.
         """
+        if self._use_native_moe:
+            self._prepare_native_moe_weights()
+            return
         if self._use_fp16_moe:
             self._prepare_fp16_moe_weights()
             return
@@ -374,10 +452,306 @@ class Qwen3SparseMoeBlock(nn.Module):
         # the (now-consumed) per-expert qweight buffers.
         self.experts = nn.ModuleList()
 
+    def _prepare_native_moe_weights(self) -> None:
+        """Stack the experts into TRT-native ``TRT_MoE`` buffers.
+
+        FP16/BF16 experts: the HF weights transposed (NvInfer.h
+        ``IMoELayer::setGatedWeights``): ``fc_gate``/``fc_up`` are
+        ``[E, H, I]``, ``fc_down`` is ``[E, I, H]``. The plugin's
+        ``_prepare_fp16_moe_weights`` cannot be reused: that layout fuses
+        gate+up into one FC1, is N-major, interleaves up/gate in 64-row groups
+        and pads I to 128.
+
+        NVFP4 experts (W4A8): the checkpoint's FP4 codes are re-stacked as
+        stored. The plugin repack keeps the FP4 bytes and E4M3 block scales
+        verbatim too and applies ``weight_scale_2`` as a per-expert fp32
+        alpha; ``TRT_MoE`` has no alpha and ``TRT_BlockDequantize`` takes only
+        an fp16 scale for FP4 weights, so here the E4M3 per-16 block scale is
+        decoded and folded with ``weight_scale_2`` into one fp16 scale (see
+        :func:`~tensorrt_edgellm.models.ops.nvfp4_dequantize_moe`).
+        Activations: the plugin quantizes them to NVFP4 per token in the
+        kernel (W4A4); this arm uses static per-tensor FP8 Q/DQ (W4A8) from
+        ModelOpt's calibrated ``<proj>.input_scale = amax / (6 * 448)`` (FP8
+        E4M3 wants ``amax / 448``, hence the ``* 6``). The FC1 input is shared
+        by all experts, so the LARGEST calibrated scale is used (a smaller one
+        would saturate the experts with a larger amax); FC2 keeps a per-expert
+        scale.
+
+        NVFP4 experts with ``--trt-native-moe-w4a4`` (W4A4, ``TRT_MoE``
+        quantization_mode 2): the FP4 codes are re-stacked the same way but
+        the scales stay separate, the checkpoint's E4M3 block scales verbatim
+        (an fp8 buffer) plus ``weight_scale_2`` as a per-expert fp16 global
+        (see :meth:`_prepare_native_moe_w4a4_weights`). Activations are
+        quantized dynamically to NVFP4 (blocks of 16, FP8 block scales) like
+        the plugin does, with ModelOpt's ``input_scale`` used VERBATIM as the
+        second-level scale: the max over the experts for the shared FC1 input
+        and per expert for the FC2 input. No ``* 6`` there; that factor
+        belongs to the FP8 form.
+        """
+        self.gate_linear = nn.Linear(self.hidden_size,
+                                     self.num_experts,
+                                     bias=False,
+                                     dtype=torch.float16)
+        self.gate_linear.weight.data = self.gate.weight.data
+        device = self.gate.weight.device
+
+        if self._use_fp16_moe:
+
+            def _stack_t(proj_name):
+                # nn.Linear weight is [out, in]; the native op wants [in, out].
+                tensors = [
+                    getattr(expert, proj_name).weight.data.t()
+                    for expert in self.experts
+                ]
+                return torch.stack(tensors,
+                                   dim=0).to(device=device,
+                                             dtype=torch.float16).contiguous()
+
+            self.register_buffer("fc_gate_weights", _stack_t("gate_proj"))
+            self.register_buffer("fc_up_weights", _stack_t("up_proj"))
+            self.register_buffer("fc_down_weights", _stack_t("down_proj"))
+            logger.info(
+                "TRT_MoE FP16: %d experts stacked (transposed layout): "
+                "gate %s, up %s, down %s", self.num_experts,
+                list(self.fc_gate_weights.shape),
+                list(self.fc_up_weights.shape),
+                list(self.fc_down_weights.shape))
+        elif self._use_native_moe_w4a4:
+            self._prepare_native_moe_w4a4_weights(device)
+        else:
+            from ...checkpoint.repacking import stack_nvfp4_moe_projection
+
+            # ``nvfp4_<proj>_weight``: packed FP4 codes [E, out, in // 2]
+            # (int8); ``nvfp4_<proj>_block_scale``: fp16 [E, out, in // 16],
+            # already multiplied by the per-expert ``weight_scale_2``.
+            for proj in ("gate", "up", "down"):
+                weight, block_scale = stack_nvfp4_moe_projection(
+                    self.experts, f"{proj}_proj")
+                self.register_buffer(f"nvfp4_{proj}_weight",
+                                     weight.to(device).contiguous())
+                self.register_buffer(f"nvfp4_{proj}_block_scale",
+                                     block_scale.to(device).contiguous())
+
+            # Calibrated activation scales -> FP8 (amax/448 = input_scale*6).
+            input_gs, down_gs = _stack_nvfp4_moe_input_scales(self.experts)
+            act_scale = input_gs.max()
+            if not torch.allclose(
+                    input_gs, act_scale.expand_as(input_gs), rtol=1e-6,
+                    atol=0.0):
+                logger.warning(
+                    "TRT-native W4A8 MoE: per-expert FC1 input scales differ "
+                    "(min %.4g, max %.4g); using the max so the shared FP8 "
+                    "activation quantization saturates no expert",
+                    float(input_gs.min()), float(act_scale))
+            self.register_buffer("native_act_scale",
+                                 (act_scale * 6.0).to(device=device,
+                                                      dtype=torch.float16))
+            self.register_buffer("native_down_act_scale", (down_gs * 6.0).to(
+                device=device, dtype=torch.float32).contiguous())
+
+            # Biases are all-or-none and the activation scale must sit at
+            # input 9, so pass explicit zeros (a numeric no-op).
+            inter = self.moe_intermediate_size
+            zeros = lambda n: torch.zeros(
+                self.num_experts, n, dtype=torch.float16, device=device)
+            self.register_buffer("native_gate_bias", zeros(inter))
+            self.register_buffer("native_up_bias", zeros(inter))
+            self.register_buffer("native_down_bias", zeros(self.hidden_size))
+
+            logger.info(
+                "TRT_MoE W4A8: %d NVFP4 experts; act_scale=%.6g, "
+                "down_act_scale[0:2]=%s", self.num_experts,
+                float(self.native_act_scale),
+                self.native_down_act_scale[:2].tolist())
+        self.experts = nn.ModuleList()
+
+    def _prepare_native_moe_w4a4_weights(self, device: torch.device) -> None:
+        """Stack NVFP4 experts for the W4A4 ``TRT_MoE`` form (quantization_mode 2).
+
+        Weights keep separate scales: ``nvfp4_<proj>_weight`` (FP4 codes),
+        ``nvfp4_<proj>_block_scale_fp8`` (the E4M3 block scales verbatim) and
+        ``nvfp4_<proj>_global_scale`` (fp16 ``weight_scale_2`` per expert),
+        see :func:`~tensorrt_edgellm.checkpoint.repacking.stack_nvfp4_moe_projection_with_global_scale`.
+        The activation scales are ModelOpt's ``input_scale`` verbatim (no
+        ``* 6``, which is the FP8 convention of the W4A8 form): the max over
+        the experts for the shared FC1 input, rounded to an fp16-representable
+        value so the fp32 DynQ scale and the fp16 DQ scale agree, and the
+        per-expert FC2 scales as ``TRT_MoE`` input 9. The buffer names keep
+        the ``nvfp4_<proj>_weight`` suffix the FP4 reinterpretation keys on
+        and put "scale" into every scale buffer, which the export's dtype
+        passes skip and keep.
+        """
+        from ...checkpoint.repacking import \
+            stack_nvfp4_moe_projection_with_global_scale
+
+        for proj in ("gate", "up", "down"):
+            weight, block_scale, global_scale = (
+                stack_nvfp4_moe_projection_with_global_scale(
+                    self.experts, f"{proj}_proj"))
+            self.register_buffer(f"nvfp4_{proj}_weight",
+                                 weight.to(device).contiguous())
+            self.register_buffer(f"nvfp4_{proj}_block_scale_fp8",
+                                 block_scale.to(device).contiguous())
+            self.register_buffer(f"nvfp4_{proj}_global_scale",
+                                 global_scale.to(device).contiguous())
+
+        input_gs, down_gs = _stack_nvfp4_moe_input_scales(self.experts)
+        for name, scales in (("FC1", input_gs), ("FC2", down_gs)):
+            if not bool(torch.isfinite(scales).all() and (scales > 0).all()):
+                raise ValueError(
+                    f"TRT-native W4A4 MoE: {name} input_scale must be finite "
+                    f"and positive for every expert, got {scales.tolist()}")
+        act_dblq = input_gs.max()
+        if not torch.allclose(
+                input_gs, act_dblq.expand_as(input_gs), rtol=1e-6, atol=0.0):
+            logger.warning(
+                "TRT-native W4A4 MoE: per-expert FC1 input scales differ "
+                "(min %.4g, max %.4g); using the max so the shared NVFP4 "
+                "block scales saturate for no expert", float(input_gs.min()),
+                float(act_dblq))
+        # fp32 copy for TRT_FP4DynamicQuantize, fp16 copy (a Cast in the
+        # graph) for the block-scale DQ: one fp16-representable value.
+        act_dblq = act_dblq.to(torch.float16).to(torch.float32)
+        self.register_buffer("native_act_dblq_scale",
+                             act_dblq.to(device=device).contiguous())
+        self.register_buffer(
+            "native_down_act_scale",
+            down_gs.to(device=device, dtype=torch.float32).contiguous())
+
+        # Biases are all-or-none and the activation scale must sit at
+        # input 9, so pass explicit zeros (a numeric no-op).
+        inter = self.moe_intermediate_size
+        zeros = lambda n: torch.zeros(
+            self.num_experts, n, dtype=torch.float16, device=device)
+        self.register_buffer("native_gate_bias", zeros(inter))
+        self.register_buffer("native_up_bias", zeros(inter))
+        self.register_buffer("native_down_bias", zeros(self.hidden_size))
+
+        logger.info(
+            "TRT_MoE W4A4 (quantization_mode 2): %d NVFP4 experts; "
+            "act_dblq_scale=%.6g, down_act_scale[0:2]=%s", self.num_experts,
+            float(self.native_act_dblq_scale),
+            self.native_down_act_scale[:2].tolist())
+
+    def _native_moe_forward(self, hidden_states: torch.Tensor,
+                            hidden_flat: torch.Tensor,
+                            router_logits: torch.Tensor) -> torch.Tensor:
+        """TRT-native (OOTB) MoE: routing in the graph, ``TRT_MoE`` for the experts.
+
+        ``TRT_MoE`` takes PRE-COMPUTED routing (the plugins consume raw
+        router_logits and route internally), so softmax + top-k + renormalisation
+        happen here. Qwen3-30B-A3B ships ``norm_topk_prob=True`` and the plugin arm
+        hardcodes ``norm_topk_prob=1``, so the renormalisation is load-bearing.
+
+        IMoELayer needs rank-3 ``[B, S, *]`` tensors while the token-major
+        export contract hands the block ``[T, H]`` (T = sum of the batch's
+        query lengths at prefill, the active batch at decode; the same
+        ``[T, H]`` the plugins take). The layer is defined per token with no
+        cross-token reduction, so its batch/sequence split is layout only: wrap
+        all T tokens as one sequence ``[1, T, H]`` / ``[1, T, K]`` and reshape
+        the output back to the caller's shape. Holds for any batch size;
+        validated at B=4 ragged (tests/test_cases/ragged_batch.json).
+        """
+        hidden_dim = hidden_flat.shape[-1]
+        num_tokens = hidden_flat.shape[0]
+        probs = torch.softmax(router_logits, dim=-1)
+        sel_scores, sel_idx = torch.topk(probs, self.top_k, dim=-1)
+        sel_scores = sel_scores / sel_scores.sum(dim=-1, keepdim=True)
+        selected_experts = sel_idx.to(torch.int32).reshape(
+            1, num_tokens, self.top_k)
+        # scores stay FP32 on purpose -- FP16 breaks Myelin codegen.
+        scores = sel_scores.to(torch.float32).reshape(1, num_tokens,
+                                                      self.top_k)
+        hidden3 = hidden_flat.reshape(1, num_tokens, hidden_dim)
+        if self._use_native_moe_w4a4:
+            # W4A4 (quantization_mode 2): NVFP4 dynamic Q/DQ of the hidden
+            # states, NVFP4 weight DQ with per-expert global scales
+            # ([E, out, in] -> [E, in, out] for TRT_MoE's layout), per-expert
+            # fp32 FC2 dblq at input 9.
+            hidden3 = nvfp4_act_qdq_moe(hidden3, self.native_act_dblq_scale)
+            group = 16  # NVFP4 group size
+            gate_w = nvfp4_dequantize_moe_with_global_scale(
+                self.nvfp4_gate_weight, self.nvfp4_gate_block_scale_fp8,
+                self.nvfp4_gate_global_scale, group).transpose(1, 2)
+            up_w = nvfp4_dequantize_moe_with_global_scale(
+                self.nvfp4_up_weight, self.nvfp4_up_block_scale_fp8,
+                self.nvfp4_up_global_scale, group).transpose(1, 2)
+            down_w = nvfp4_dequantize_moe_with_global_scale(
+                self.nvfp4_down_weight, self.nvfp4_down_block_scale_fp8,
+                self.nvfp4_down_global_scale, group).transpose(1, 2)
+            routed = trt_moe_w4a4(
+                hidden3,
+                selected_experts,
+                scores,
+                gate_w,
+                up_w,
+                down_w,
+                self.native_gate_bias,
+                self.native_up_bias,
+                self.native_down_bias,
+                self.native_down_act_scale,
+                _TRT_MOE_ACT_SILU,
+                TRT_MOE_QUANT_DYNAMIC_DBLQ,
+                TRT_DATATYPE_FP4,
+                TRT_DATATYPE_FP8,  # dyn_q_output_scale_dtype: FP8 block scales
+                1.0,  # swiglu_alpha
+                0.0,  # swiglu_beta (no swiglu_limit: see trt::trt_moe_fp16)
+            )
+        elif self._use_nvfp4_moe:
+            # FP8 activation Q/DQ with the calibrated per-tensor scale, NVFP4
+            # weight DQ ([E, out, in] -> [E, in, out] for TRT_MoE's layout).
+            hidden3 = fp8_dequantize(
+                fp8_quantize(hidden3, self.native_act_scale),
+                self.native_act_scale)
+            group = 16  # NVFP4 group size
+            gate_w = nvfp4_dequantize_moe(self.nvfp4_gate_weight,
+                                          self.nvfp4_gate_block_scale,
+                                          group).transpose(1, 2)
+            up_w = nvfp4_dequantize_moe(self.nvfp4_up_weight,
+                                        self.nvfp4_up_block_scale,
+                                        group).transpose(1, 2)
+            down_w = nvfp4_dequantize_moe(self.nvfp4_down_weight,
+                                          self.nvfp4_down_block_scale,
+                                          group).transpose(1, 2)
+            routed = trt_moe_w4a8(
+                hidden3,
+                selected_experts,
+                scores,
+                gate_w,
+                up_w,
+                down_w,
+                self.native_gate_bias,
+                self.native_up_bias,
+                self.native_down_bias,
+                self.native_down_act_scale,
+                _TRT_MOE_ACT_SILU,
+                TRT_MOE_QUANT_STATIC,
+                TRT_DATATYPE_FP8,
+                1.0,  # swiglu_alpha
+                0.0,  # swiglu_beta (no swiglu_limit: see trt::trt_moe_fp16)
+            )
+        else:
+            routed = trt_moe_fp16(
+                hidden3,
+                selected_experts,
+                scores,
+                self.fc_gate_weights,
+                self.fc_up_weights,
+                self.fc_down_weights,
+                _TRT_MOE_ACT_SILU,
+                _TRT_MOE_QUANT_NONE,
+                1.0,  # swiglu_alpha
+                0.0,  # swiglu_beta (no swiglu_limit: see trt::trt_moe_fp16)
+            )
+        routed = routed.reshape(hidden_states.shape)
+        if self._has_shared_expert:
+            routed = routed + self._shared_expert_forward(hidden_states)
+        return routed
+
     def _prepare_fp16_moe_weights(self) -> None:
         """Stack unquantized experts into ``Fp16MoePlugin`` FP16 buffers.
 
-        FC1 uses the same 64-row up/gate interleave as the SM100/101/110
+        FC1 uses the same 64-row up/gate interleave as the SM100/101/103/110
         ``Nvfp4MoePlugin`` split kernel (see
         kernelSrcs/f16_moe_cutedsl/README.md, "Fixed plugin contract"):
         ``[up0:64, gate0:64, up64:128, gate64:128, ...]`` along FC1_N.
@@ -435,11 +809,12 @@ class Qwen3SparseMoeBlock(nn.Module):
     def _prepare_nvfp4_moe_weights_impl(self) -> None:
         """Repack Qwen3 NVFP4 experts for the active NVFP4 MoE plugin.
 
-        Decodes ModelOpt NVFP4 to dense, rounds through BF16, and emits the
+        Passes the ModelOpt FP4 weights and FP8 block scales through verbatim
+        (``weight_scale_2`` becomes the per-expert alpha) and emits the
         CuTeDSL 6D MMA scale layout the kernel expects. FC1 SwiGLU layout
         is selected from :func:`use_geforce_nvfp4_moe`:
 
-        * SM100/101/110 ``Nvfp4MoePlugin`` -- 64-row up/gate interleave (default).
+        * SM100/101/103/110 ``Nvfp4MoePlugin`` -- 64-row up/gate interleave (default).
         * SM12x ``NvFP4MoEPluginGeforce`` -- plain ``[up_all, gate_all]``
           concat along the M axis.
         """
@@ -454,19 +829,22 @@ class Qwen3SparseMoeBlock(nn.Module):
                                      dtype=torch.float16)
         self.gate_linear.weight.data = self.gate.weight.data
 
+        input_global_scale, down_input_scale = \
+            _stack_nvfp4_moe_input_scales(self.experts)
+
         use_geforce_plugin = use_geforce_nvfp4_moe()
         fc1_layout = "concat" if use_geforce_plugin else "interleave"
         moe_inter_size_alignment = (NVFP4_MOE_INTERMEDIATE_SIZE_ALIGNMENT
                                     if use_geforce_plugin else
                                     NVFP4_MOE_INTERLEAVE_SIZE_ALIGNMENT)
-        fc1_qweights, fc1_blocks_scale, fc2_qweights, fc2_blocks_scale = (
-            repack_nvfp4_gated_moe_experts(
-                self.experts,
-                self.hidden_size,
-                self.moe_intermediate_size,
-                self.group_size,
-                fc1_layout=fc1_layout,
-                moe_inter_size_alignment=moe_inter_size_alignment))
+        (fc1_qweights, fc1_blocks_scale, fc1_alpha, fc2_qweights,
+         fc2_blocks_scale, fc2_alpha) = repack_nvfp4_gated_moe_experts(
+             self.experts,
+             self.hidden_size,
+             self.moe_intermediate_size,
+             self.group_size,
+             fc1_layout=fc1_layout,
+             moe_inter_size_alignment=moe_inter_size_alignment)
         self._padded_moe_intermediate_size = int(fc2_qweights.shape[-1]) * 2
 
         device = self.gate.weight.device
@@ -478,21 +856,15 @@ class Qwen3SparseMoeBlock(nn.Module):
                              fc2_qweights.to(device).contiguous())
         self.register_buffer("fc2_blocks_scale",
                              fc2_blocks_scale.to(device).contiguous())
-        # FP32 alpha + activation scale buffers: one per expert. Populated
-        # by the calibration pipeline; default to ones so an uncalibrated
-        # checkpoint still produces numerically reasonable outputs.
-        self.register_buffer(
-            "fc1_alpha",
-            torch.ones(self.num_experts, dtype=torch.float32, device=device))
-        self.register_buffer(
-            "fc2_alpha",
-            torch.ones(self.num_experts, dtype=torch.float32, device=device))
-        self.register_buffer(
-            "input_global_scale",
-            torch.ones(self.num_experts, dtype=torch.float32, device=device))
-        self.register_buffer(
-            "down_input_scale",
-            torch.ones(self.num_experts, dtype=torch.float32, device=device))
+        # Per-expert FP32 weight_scale_2, applied as alpha in the kernel
+        # epilogue; the FP4 weights and FP8 block scales above are the
+        # checkpoint bytes. Activation scales come from checkpoint calibration.
+        self.register_buffer("fc1_alpha", fc1_alpha.to(device).contiguous())
+        self.register_buffer("fc2_alpha", fc2_alpha.to(device).contiguous())
+        self.register_buffer("input_global_scale",
+                             input_global_scale.to(device).contiguous())
+        self.register_buffer("down_input_scale",
+                             down_input_scale.to(device).contiguous())
         self.register_buffer(
             "e_score_correction_bias",
             torch.zeros(self.num_experts, dtype=torch.float32, device=device))
@@ -512,8 +884,8 @@ class Qwen3SparseMoeBlock(nn.Module):
 
     def _prepare_nvfp4_a16_moe_weights(self) -> None:
         """Stack routed-expert NVFP4 (W4A16) weights for ``Nvfp4A16MoePlugin``."""
-        from ...checkpoint.repacking import \
-            repack_nvfp4_a16_marlin_gated_moe_experts
+        from ...checkpoint.repacking import (
+            nvfp4_a16_from_dense, repack_nvfp4_a16_marlin_gated_moe_experts)
 
         self.gate_linear = nn.Linear(self.hidden_size,
                                      self.num_experts,
@@ -521,24 +893,33 @@ class Qwen3SparseMoeBlock(nn.Module):
                                      dtype=torch.float16)
         self.gate_linear.weight.data = self.gate.weight.data
 
+        def _source(proj: nn.Module):
+            buffers = proj._buffers
+            if buffers["weight"].dtype in (torch.float16, torch.bfloat16):
+                # Block-scaled FP8 experts arrive dequantized (see
+                # loader._fold_fp8_block_scales); W4A16 needs NVFP4 codes.
+                return nvfp4_a16_from_dense(buffers["weight"], self.group_size)
+            return (buffers["weight"], buffers["weight_scale"],
+                    buffers["weight_scale_2"])
+
         gate_p, gate_s, gate_g = [], [], []
         up_p, up_s, up_g = [], [], []
         down_p, down_s, down_g = [], [], []
         for expert in self.experts:
-            gate = expert.gate_proj._buffers
-            gate_p.append(gate["weight"])
-            gate_s.append(gate["weight_scale"])
-            gate_g.append(gate["weight_scale_2"])
+            gate = _source(expert.gate_proj)
+            gate_p.append(gate[0])
+            gate_s.append(gate[1])
+            gate_g.append(gate[2])
 
-            up = expert.up_proj._buffers
-            up_p.append(up["weight"])
-            up_s.append(up["weight_scale"])
-            up_g.append(up["weight_scale_2"])
+            up = _source(expert.up_proj)
+            up_p.append(up[0])
+            up_s.append(up[1])
+            up_g.append(up[2])
 
-            down = expert.down_proj._buffers
-            down_p.append(down["weight"])
-            down_s.append(down["weight_scale"])
-            down_g.append(down["weight_scale_2"])
+            down = _source(expert.down_proj)
+            down_p.append(down[0])
+            down_s.append(down[1])
+            down_g.append(down[2])
         (fc1_qweights, fc1_block_scales, fc1_global, fc2_qweights,
          fc2_block_scales,
          fc2_global) = (repack_nvfp4_a16_marlin_gated_moe_experts(
@@ -589,9 +970,12 @@ class Qwen3SparseMoeBlock(nn.Module):
         return torch.sigmoid(gate_logits) * shared_out
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        batch, seq_len, hidden_dim = hidden_states.shape
+        hidden_dim = hidden_states.shape[-1]
         hidden_flat = hidden_states.reshape(-1, hidden_dim)
         router_logits = self.gate_linear(hidden_flat).float()
+        if self._use_native_moe:
+            return self._native_moe_forward(hidden_states, hidden_flat,
+                                            router_logits)
         if self._use_fp16_moe:
             routed = fp16_moe_plugin(
                 router_logits,
@@ -722,7 +1106,8 @@ class Qwen3MoeDecoderLayer(nn.Module):
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
         kv_page_table: torch.Tensor,
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         residual = hidden_states
         attn_output, present_key_value = self.self_attn(
@@ -732,7 +1117,8 @@ class Qwen3MoeDecoderLayer(nn.Module):
             context_lengths,
             kvcache_start_index,
             kv_page_table,
-            skip_softmax_scale=skip_softmax_scale,
+            skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+            skip_softmax_decode_scale=skip_softmax_decode_scale,
         )
         hidden_states = residual + attn_output
 
@@ -740,6 +1126,16 @@ class Qwen3MoeDecoderLayer(nn.Module):
         hidden_states = residual + self.mlp(
             self.post_attention_layernorm(hidden_states))
 
+        return hidden_states, present_key_value
+
+    def forward_ragged(self, hidden_states: torch.Tensor, **kwargs) -> Tuple:
+        residual = hidden_states
+        attn_output, present_key_value = self.self_attn.forward_ragged(
+            self.input_layernorm(hidden_states), **kwargs)
+        hidden_states = residual + attn_output
+        residual = hidden_states
+        hidden_states = residual + self.mlp(
+            self.post_attention_layernorm(hidden_states))
         return hidden_states, present_key_value
 
 
@@ -783,6 +1179,8 @@ class Qwen3MoeTransformer(nn.Module):
         #     past_hidden semantics (modeling_qwen3_omni_moe.py:3176, where
         #     ``hidden_states[0][-1]`` resolves to the post-norm tensor).
         self.emitted_hidden_states: "torch.Tensor | None" = None
+        self.target_hidden_concat: "torch.Tensor | None" = None
+        self.all_hidden_states: "Tuple[torch.Tensor, ...] | None" = None
 
     def forward(
         self,
@@ -793,7 +1191,8 @@ class Qwen3MoeTransformer(nn.Module):
         kvcache_start_index: torch.Tensor,
         kv_page_table: torch.Tensor,
         deepstack_embeds: Tuple[torch.Tensor, ...] = (),
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...]]:
         hidden_states = inputs_embeds
         present_key_values_list: List[torch.Tensor] = []
@@ -813,7 +1212,8 @@ class Qwen3MoeTransformer(nn.Module):
                 context_lengths,
                 kvcache_start_index,
                 kv_page_table,
-                skip_softmax_scale=skip_softmax_scale,
+                skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+                skip_softmax_decode_scale=skip_softmax_decode_scale,
             )
             present_key_values_list.append(next_key_value)
 
@@ -849,6 +1249,51 @@ class Qwen3MoeTransformer(nn.Module):
             self.emitted_hidden_states = normed
 
         return normed, tuple(present_key_values_list)
+
+    def forward_ragged(
+        self,
+        inputs_embeds: torch.Tensor,
+        past_key_values: Tuple[torch.Tensor, ...],
+        deepstack_embeds: Tuple[torch.Tensor, ...] = (),
+        output_hidden_states: bool = False,
+        target_layer_ids: "List[int] | None" = None,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...]]:
+        hidden_states = inputs_embeds
+        present_key_values = []
+        target_layer = self.accept_hidden_layer
+        captured: "torch.Tensor | None" = None
+        all_hidden_states = []
+        target_hidden_by_layer: dict[int, torch.Tensor] = {}
+        target_layer_set = set(target_layer_ids or [])
+        for layer_index, layer in enumerate(self.layers):
+            if output_hidden_states:
+                all_hidden_states.append(hidden_states)
+            hidden_states, present_kv = layer.forward_ragged(
+                hidden_states,
+                past_key_value=past_key_values[layer_index],
+                **kwargs)
+            present_key_values.append(present_kv)
+            if layer_index in target_layer_set:
+                target_hidden_by_layer[layer_index] = hidden_states
+            if layer_index < len(deepstack_embeds):
+                hidden_states = hidden_states + deepstack_embeds[layer_index]
+            if target_layer >= 1 and layer_index == target_layer - 1:
+                captured = hidden_states
+
+        self.last_pre_norm_hidden_states = (captured if captured is not None
+                                            else hidden_states)
+        self.target_hidden_concat = _concat_hidden_in_provider_order(
+            target_hidden_by_layer, target_layer_ids)
+        normed = self.norm(hidden_states)
+        self.emitted_hidden_states = (self.last_pre_norm_hidden_states
+                                      if target_layer >= 1
+                                      and captured is not None else normed)
+        if output_hidden_states:
+            all_hidden_states.append(normed)
+        self.all_hidden_states = (tuple(all_hidden_states)
+                                  if output_hidden_states else None)
+        return normed, tuple(present_key_values)
 
 
 # ---------------------------------------------------------------------------
@@ -900,119 +1345,67 @@ class Qwen3MoeCausalLM(nn.Module):
                                            requires_grad=False)
 
     def onnx_export_spec(self) -> OnnxSpec:
-        """Return all model-specific parameters needed for ONNX export."""
-        config = self.config
-        Na = config.num_hidden_layers
-        # Multimodal MoE Thinker variants (e.g. Qwen3-Omni MoE) inject
-        # ``num_deepstack_features`` visual embeddings post-layer at the
-        # first N layers; match modeling_default.Transformer.
-        Nd = config.num_deepstack_features
-        device = next(itertools.chain(self.parameters(),
-                                      self.buffers())).device
-        dtype16 = torch.float16
-        batch_size, seq_len, past_len, max_pos = (_BATCH_SIZE, _SEQ_LEN,
-                                                  _PAST_LEN, _MAX_POS)
+        """Return the unified token-major ONNX export contract."""
+        tree_attention = (self.config.eagle_base
+                          or getattr(self.config, "dflash_base", False)
+                          or getattr(self.config, "jetspec_base", False)
+                          or getattr(self.config, "dspark_base", False))
+        return CausalLM._token_major_onnx_export_spec(
+            self, tree_attention=tree_attention)
 
-        inputs_embeds = torch.zeros(batch_size,
-                                    seq_len,
-                                    config.hidden_size,
-                                    dtype=dtype16,
-                                    device=device)
-        kv_dtype = (torch.float8_e4m3fn
-                    if config.quant.kv_cache_quant == "fp8" else dtype16)
-        # Paged KV pool binding: [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim].
-        # num_pages is a dummy placeholder for export; the builder sets the real fixed
-        # value (see llmBuilder.cpp setupKVCacheProfiles).
-        past_key_values_list: List[torch.Tensor] = [
-            torch.zeros(2,
-                        1,
-                        KV_PAGE_SIZE,
-                        config.num_key_value_heads,
-                        config.head_dim,
-                        dtype=kv_dtype,
-                        device=device) for _ in range(Na)
-        ]
-        rotary_dim = int(config.head_dim * config.partial_rotary_factor)
-        rope_rotary_cos_sin = torch.zeros(batch_size,
-                                          max_pos,
-                                          rotary_dim,
-                                          dtype=torch.float32,
-                                          device=device)
-        context_lengths = torch.zeros(batch_size,
-                                      dtype=torch.int32,
-                                      device=device)
-        kvcache_start_index = torch.zeros(batch_size,
-                                          dtype=torch.int32,
-                                          device=device)
-        kv_page_table = torch.zeros(batch_size,
-                                    2,
-                                    1,
-                                    dtype=torch.int32,
-                                    device=device)
-        last_token_ids = torch.zeros(batch_size,
-                                     1,
-                                     dtype=torch.int64,
-                                     device=device)
-
-        deepstack_embeds_list: List[torch.Tensor] = [
-            torch.zeros(batch_size,
-                        seq_len,
-                        config.hidden_size,
-                        dtype=dtype16,
-                        device=device) for _ in range(Nd)
-        ]
-
-        skip_softmax_scale = torch.zeros(1, dtype=torch.int8, device=device)
-        args = (inputs_embeds, *past_key_values_list, rope_rotary_cos_sin,
-                context_lengths, kvcache_start_index, kv_page_table,
-                last_token_ids, *deepstack_embeds_list, skip_softmax_scale)
-
-        input_names = (
-            ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
-                "rope_rotary_cos_sin", "context_lengths",
-                "kvcache_start_index", "kv_page_table", "last_token_ids"
-            ] + [f"deepstack_embeds_{i}"
-                 for i in range(Nd)] + ["skip_softmax_scale"])
-        output_names = (["logits"] +
-                        [f"present_key_values_{i}" for i in range(Na)])
-        if self.emit_hidden_states:
-            output_names = (["logits", "hidden_states"] +
-                            [f"present_key_values_{i}" for i in range(Na)])
-
-        batch = torch.export.Dim("batch", min=1, max=256)
-        seq = torch.export.Dim("seq_len", min=1, max=32768)
-        pos = torch.export.Dim("max_pos", min=1, max=32768)
-        rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
-        kv_batch = torch.export.Dim("kv_batch", min=1, max=256)
-        page_batch = torch.export.Dim("page_batch", min=1, max=256)
-        max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
-        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
-        skip_dim = torch.export.Dim("skip_softmax_scale_len",
-                                    min=0,
-                                    max=1048576)
-
-        all_shapes: list = [{0: batch, 1: seq}]  # inputs_embeds
-        for _ in range(Na):
-            all_shapes.append({1:
-                               num_pages})  # past_key_values_i (pool-shaped)
-        all_shapes.append({0: rope_batch, 1: pos})  # rope_rotary_cos_sin
-        all_shapes.append({0: batch})  # context_lengths
-        all_shapes.append({0: kv_batch})  # kvcache_start_index
-        all_shapes.append({0: page_batch, 2: max_pages})  # kv_page_table
-        all_shapes.append({0: batch})  # last_token_ids
-        for _ in range(Nd):
-            all_shapes.append({0: batch, 1: seq})  # deepstack_embeds_i
-        all_shapes.append({0: skip_dim})  # skip_softmax_scale
-
-        wrapped = _make_flat_wrapper(
-            self, Na, Nd, emit_hidden_states=self.emit_hidden_states)
-        wrapped.eval()
-
-        return OnnxSpec(wrapped=wrapped,
-                        args=args,
-                        input_names=input_names,
-                        output_names=output_names,
-                        dynamic_shapes=all_shapes)
+    def forward_ragged(
+        self,
+        inputs_embeds: torch.Tensor,
+        past_key_values: Tuple[torch.Tensor, ...],
+        rope_rotary_cos_sin: torch.Tensor,
+        positions: torch.Tensor,
+        query_start_offsets: torch.Tensor,
+        query_lengths: torch.Tensor,
+        past_lengths: torch.Tensor,
+        attention_sequence_lengths: torch.Tensor,
+        state_indices: torch.Tensor,
+        execution_phase_marker: torch.Tensor,
+        context_sequence_count_carrier: torch.Tensor,
+        kv_page_table: torch.Tensor,
+        logits_indices: torch.Tensor,
+        deepstack_embeds: Tuple[torch.Tensor, ...] = (),
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
+        attention_position_ids: "torch.Tensor | None" = None,
+        packed_attention_mask: "torch.Tensor | None" = None,
+        tree_parent_ids: "torch.Tensor | None" = None,
+        tree_depths: "torch.Tensor | None" = None,
+        valid_tree_counts: "torch.Tensor | None" = None,
+    ) -> Tuple:
+        hidden_states, present_key_values = self.model.forward_ragged(
+            inputs_embeds,
+            past_key_values,
+            rope_rotary_cos_sin=rope_rotary_cos_sin,
+            positions=positions,
+            query_start_offsets=query_start_offsets,
+            query_lengths=query_lengths,
+            past_lengths=past_lengths,
+            attention_sequence_lengths=attention_sequence_lengths,
+            state_indices=state_indices,
+            execution_phase_marker=execution_phase_marker,
+            context_sequence_count_carrier=context_sequence_count_carrier,
+            kv_page_table=kv_page_table,
+            deepstack_embeds=deepstack_embeds,
+            skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+            skip_softmax_decode_scale=skip_softmax_decode_scale,
+            attention_position_ids=attention_position_ids,
+            packed_attention_mask=packed_attention_mask,
+            tree_parent_ids=tree_parent_ids,
+            tree_depths=tree_depths,
+            valid_tree_counts=valid_tree_counts,
+            output_hidden_states=self.config.eagle_base,
+            target_layer_ids=CausalLM._target_hidden_layer_ids(self))
+        selected_hidden_states = torch.index_select(hidden_states, 0,
+                                                    logits_indices)
+        logits = self.lm_head(selected_hidden_states).to(torch.float32)
+        logits = logits.reshape(-1, logits.shape[-1])
+        emitted_hidden = CausalLM._ragged_emitted_hidden(self)
+        return logits, emitted_hidden, present_key_values
 
     def forward(
         self,
@@ -1024,7 +1417,8 @@ class Qwen3MoeCausalLM(nn.Module):
         kv_page_table: torch.Tensor,
         last_token_ids: torch.Tensor,
         deepstack_embeds: Tuple[torch.Tensor, ...] = (),
-        skip_softmax_scale: "torch.Tensor | None" = None,
+        skip_softmax_prefill_scale: "torch.Tensor | None" = None,
+        skip_softmax_decode_scale: "torch.Tensor | None" = None,
     ) -> Tuple:
         hidden_states, present_key_values = self.model(
             inputs_embeds,
@@ -1034,7 +1428,8 @@ class Qwen3MoeCausalLM(nn.Module):
             kvcache_start_index,
             kv_page_table,
             deepstack_embeds,
-            skip_softmax_scale=skip_softmax_scale,
+            skip_softmax_prefill_scale=skip_softmax_prefill_scale,
+            skip_softmax_decode_scale=skip_softmax_decode_scale,
         )
         # Select hidden states for specified token positions before lm_head.
         selected_hidden_states = torch.ops.trt.gather_nd(

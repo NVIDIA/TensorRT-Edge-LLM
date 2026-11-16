@@ -19,7 +19,9 @@
 
 #include "action/actionKvBatch.h"
 #include "action/actionModelTypes.h"
+#include "common/pagedKvTypes.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 #include "runtime/hybridCacheManager.h"
 #include "runtime/llmRuntimeUtils.h"
@@ -27,10 +29,13 @@
 #include "tokenizer/tokenizer.h"
 
 #include <NvInfer.h>
+#include <array>
 #include <cuda_runtime.h>
+#include <functional>
 #include <memory>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace trt_edgellm
@@ -41,14 +46,17 @@ namespace rt
 //! \brief Configuration parsed from the action engine's config.json
 struct ActionConfig
 {
-    float ropeTheta{0.0F};       //!< RoPE base frequency (from rope_theta)
+    std::vector<std::array<float, 2>> kvCacheScales; //!< FP8 codec used by the exported action plugins.
+    float ropeTheta{0.0F};                           //!< RoPE base frequency (from rope_theta)
     int32_t mropeSectionH{0};    //!< MRoPE frequency pairs for height dimension (from rope_parameters.mrope_section[1])
     int32_t mropeSectionW{0};    //!< MRoPE frequency pairs for width dimension (from rope_parameters.mrope_section[2])
     int32_t numDecoderLayers{0}; //!< Number of transformer decoder layers (from num_hidden_layers)
     int32_t numTrajTokens{0};    //!< Number of trajectory history tokens (from num_traj_tokens)
     int32_t trajTokenStart{0};   //!< Vocabulary ID of the first trajectory token (from traj_token_start)
     int32_t maxKVCacheCapacity{0}; //!< Maximum KV cache sequence capacity (from builder_config.max_kv_cache_capacity)
+    int32_t maxActionBatchSize{0}; //!< Action engine batch capacity (from builder_config.max_batch_size)
     int32_t numKVHeads{0};         //!< Number of key-value heads (from num_key_value_heads)
+    int32_t numActionTokens{0};    //!< Number of action tokens from n_diffusion_tokens
     int32_t headDim{0};            //!< Head dimension (from head_dim)
 };
 
@@ -59,6 +67,29 @@ struct ActionConfig
 class Alpamayo1ActionRunner
 {
 public:
+    //! Validate a KV binding's declared dtype before sharing the LLM pool address.
+    static void validateKVPoolDataType(
+        nvinfer1::DataType poolType, nvinfer1::DataType bindingType, std::string const& bindingName)
+    {
+        bool const compatible = poolType == bindingType
+            || (poolType == nvinfer1::DataType::kFP8 && bindingType == nvinfer1::DataType::kINT8);
+        ELLM_CHECK(compatible,
+            "Cannot share KV pool: LLM uses " + std::string(getDataTypeString(fromTrt(poolType)))
+                + ", but action binding " + bindingName + " expects " + getDataTypeString(fromTrt(bindingType)) + ".");
+    }
+
+    //! Validate the fixed action input profile against the actual LLM physical pool size.
+    static void validateKVPoolPageCount(int64_t actualPages, int64_t minPages, int64_t optPages, int64_t maxPages)
+    {
+        ELLM_CHECK(minPages == actualPages && optPages == actualPages && maxPages == actualPages,
+            "Action pool profile does not match the LLM pool: actual pages=" + std::to_string(actualPages)
+                + ", action MIN/OPT/MAX=" + std::to_string(minPages) + "/" + std::to_string(optPages) + "/"
+                + std::to_string(maxPages) + ". Rebuild action with matching max_kv_pool_pages.");
+    }
+
+    using KvAllGatherFn
+        = std::function<bool(void const* sendBuffer, void* recvBuffer, int32_t sendCount, cudaStream_t stream)>;
+
     //! \brief Load action engine, config, and allocate tensors
     //! \param engineDir Path to directory containing action.engine and config.json
     //! \param checkpointDir Original model checkpoint used for runtime weights
@@ -68,7 +99,8 @@ public:
     //!
     //! config.json must include rope_theta and num_hidden_layers (decoder layer count)
     Alpamayo1ActionRunner(std::string const& engineDir, std::string const& checkpointDir, cudaStream_t stream,
-        KVCacheManager::Config const& kvCacheConfig);
+        KVCacheManager::Config const& kvCacheConfig, int32_t tensorParallelSize, int32_t tensorParallelRank,
+        std::vector<std::array<float, 2>> kvCacheScales);
 
     ~Alpamayo1ActionRunner() noexcept = default;
 
@@ -81,6 +113,17 @@ public:
     //! \return True on success, false if the tensor is too small
     //! \note The tensor size must be >= getRequiredContextMemorySize(). Must be called before infer().
     bool setContextMemory(rt::Tensor& sharedContextMemory);
+
+    //! \brief Install the FP16 TP all-gather used to reconstruct full action KV tensors.
+    void setKvAllGather(KvAllGatherFn kvAllGather)
+    {
+        mKvAllGather = std::move(kvAllGather);
+    }
+
+    bool isRoot() const noexcept
+    {
+        return mTensorParallelRank == 0;
+    }
 
     //! \brief Get action head model type
     //! \return Action model type
@@ -126,10 +169,6 @@ private:
     //! \brief Allocate tensors for the action runner
     void allocateTensors(KVCacheManager::Config const& kvCacheConfig);
 
-    //! \brief Reshape batch-sized tensors to activeBatchSize
-    //! \return false if any reshape fails
-    bool reshapeActionTensorsForActiveBatch(int32_t activeBatchSize);
-
     //! \brief Initialize the noise trajectory
     //! \param randomSeed Random seed for the noise trajectory
     //! \param activeBatchSize Number of batch rows to fill
@@ -137,7 +176,16 @@ private:
 
     //! \brief Set TensorRT input shapes for the current active batch (dynamic batch / seq_length).
     //! \param activeBatchSize Number of active sequences
-    void setDynamicInputShapes(int32_t activeBatchSize);
+    void setPagedInputShapes(int32_t activeBatchSize, HybridCacheManager const& kvcache);
+
+    //! Shape the dense action inputs used for TP>1.
+    void setDenseInputShapes(int32_t activeBatchSize);
+
+    //! Gather and dequantize TP KV shards into rank-zero dense action caches.
+    bool gatherDenseKV(cudaStream_t stream, HybridCacheManager const& kvcache, ActionKvBatchView const& batch);
+
+    //! Reshape active-batch buffers on the dense TP path.
+    bool reshapeActionTensorsForActiveBatch(int32_t activeBatchSize);
 
     //! \brief Load model fields from config.json (e.g. rope_theta, num_hidden_layers).
     bool parseModelConfig(std::string const& configPath);
@@ -161,6 +209,15 @@ private:
     rt::Tensor mTimeStepsT1Device;
     rt::Tensor mTimeStepsT0Host;
     rt::Tensor mTimeStepsT1Host;
+    rt::Tensor mQueryLengthsHost;
+    rt::Tensor mQueryLengthsDevice;
+    rt::Tensor mAttentionSequenceLengthsHost;
+    rt::Tensor mAttentionSequenceLengthsDevice;
+    rt::Tensor mQueryStartOffsetsHost;
+    rt::Tensor mQueryStartOffsetsDevice;
+    rt::Tensor mContextMaskSelectorDevice;
+    rt::Tensor mExecutionPhaseMarkerDevice;
+    rt::Tensor mContextSequenceCountCarrierDevice;
     rt::Tensor mRopeCosSinDevice;
     rt::Tensor mPositionIdsHost;
     rt::Tensor mPositionIdsDevice;
@@ -170,8 +227,18 @@ private:
     int32_t mNumWaypoints{64};
     int64_t mRopeHeadDim{128};
     int32_t mMaxSequenceLength{0};
-    //! Allocated max batch for action staging (min of engine profile and KV cache maxBatchSize).
+    std::unique_ptr<KVPageTable> mActionPageTable;
+    std::vector<Tensor> mActionKVPools;
+    //! Configured LLM max batch size, validated against the action engine profile.
     int32_t mMaxActionBatchSize{0};
+    int32_t mTensorParallelSize{1};
+    int32_t mTensorParallelRank{0};
+    int32_t mLocalKVHeads{0};
+    bool mUseFp8KV{false};
+    KvAllGatherFn mKvAllGather{};
+    std::vector<std::array<float, 2>> mKVCacheScales;
+    rt::Tensor mLocalKVScratch;
+    rt::Tensor mGatheredKVScratch;
     std::vector<rt::Tensor> mKCacheLayers;
     std::vector<rt::Tensor> mVCacheLayers;
 };

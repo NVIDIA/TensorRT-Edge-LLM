@@ -47,7 +47,7 @@ bool cuteDslInt4GemvSupported(int32_t M);
 //! [M,N] fp16 written directly. Single launch, no workspace/locks. Returns 0 on
 //! success, -1 if M is unsupported or a launch fails.
 int32_t cuteDslInt4GemvLaunch(int32_t M, void const* A, void const* fragW, void const* scales, void* Out, int32_t N,
-    int32_t K, cudaStream_t stream);
+    int32_t K, int32_t groupSize, cudaStream_t stream);
 
 } // namespace plugins
 } // namespace trt_edgellm

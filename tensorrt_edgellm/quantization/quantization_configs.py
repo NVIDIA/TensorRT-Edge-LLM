@@ -14,11 +14,12 @@
 # limitations under the License.
 """Quantization recipe configurations for ModelOpt.
 
-``quant_cfg`` is an ordered list of rule entries
-(``{"quantizer_name": <glob>, "cfg": <attrs>?, "enable": <bool>?}``) applied
-last-match-wins. We start from a stock named config (``mtq.FP8_DEFAULT_CFG`` /
-``NVFP4_DEFAULT_CFG`` / ...) and append the overrides Edge-LLM needs, deriving
-per-submodule precision from that same config so bit-widths are never restated.
+ModelOpt represents ``quant_cfg`` as either an insertion-ordered mapping or a
+list of rule entries, depending on the installed release. Both schemas apply
+rules last-match-wins. We start from a stock named config
+(``mtq.FP8_DEFAULT_CFG`` / ``NVFP4_DEFAULT_CFG`` / ...) and append the
+overrides Edge-LLM needs, deriving per-submodule precision from that same
+config so bit-widths are never restated.
 """
 
 import copy
@@ -26,7 +27,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import modelopt.torch.quantization as mtq
 
+from tensorrt_edgellm.checkpoint.component_prefixes import (
+    ACTION_PREFIXES, AUDIO_PREFIXES, CODE_PREDICTOR_PREFIXES, VISUAL_PREFIXES)
+from tensorrt_edgellm.dflash import LAST_LAYER_PROJECTIONS
+
 QuantCfgEntry = Dict[str, Any]
+
+# Weight-only NVFP4; GPTQ instead of ModelOpt's default ``max`` calibrator.
+_NVFP4_A16_GPTQ_CFG = copy.deepcopy(mtq.W4A16_NVFP4_CFG)
+_NVFP4_A16_GPTQ_CFG["algorithm"] = "gptq"
 
 # Backbone recipes. Deep-copied per call so appended overrides never mutate the
 # shared module-level singletons.
@@ -34,49 +43,39 @@ _BACKBONE_CFG_MAP = {
     "fp8": mtq.FP8_DEFAULT_CFG,
     "int4_awq": mtq.INT4_AWQ_CFG,
     "nvfp4": mtq.NVFP4_DEFAULT_CFG,
+    "nvfp4_a16_gptq": _NVFP4_A16_GPTQ_CFG,
     "mxfp8": mtq.MXFP8_DEFAULT_CFG,
     "int8_sq": mtq.INT8_SMOOTHQUANT_CFG,
 }
 
 # Methods exposed on each per-submodule override surface.
 _LM_HEAD_METHODS = ("fp8", "int4_awq", "nvfp4", "mxfp8")
+# Head precisions with no pre_quant_scale consumer; INT4 W4A16 has one.
+_UNSMOOTHED_LM_HEAD_METHODS = ("fp8", "nvfp4", "mxfp8")
+_AWQ_ALGORITHMS = ("awq_lite", "awq_full")
+_LM_HEAD_QUANTIZERS = ("*lm_head.weight_quantizer", "*lm_head.input_quantizer")
 _VISUAL_METHODS = ("fp8", )
 _AUDIO_METHODS = ("fp8", )
-_CP_METHODS = ("fp8", )
+_CP_METHODS = ("fp8", "nvfp4")
 
-# Visual submodule prefixes across HuggingFace VLM families (Qwen-VL ``visual``,
-# InternVL ``vision_tower`` / ``multi_modal_projector`` / ``vision_model`` /
-# ``mlp1``, Phi-4mm ``image_embed``, Gemma4 ``embed_vision``).
-_VISUAL_PREFIXES = (
-    "visual",
-    "vision_tower",
-    "vision_model",
-    "multi_modal_projector",
-    "mlp1",
-    "image_embed",
-    "embed_vision",
-)
-_VISUAL_PATTERNS = tuple(f"*{p}.*" for p in _VISUAL_PREFIXES)
-
-# Audio submodule prefixes (Qwen3-ASR/Omni audio encoder, Phi-4mm audio_embed,
-# Gemma4 embed_audio).
-_AUDIO_PREFIXES = (
-    "audio_tower",
-    "audio_embed",
-    "embed_audio",
-)
-_AUDIO_PATTERNS = tuple(f"*{p}.*" for p in _AUDIO_PREFIXES)
-
-# Qwen3-Omni Talker CodePredictor.
-_CP_PREFIXES = ("code_predictor", )
-_CP_PATTERNS = tuple(f"*{p}.*" for p in _CP_PREFIXES)
+_VISUAL_PATTERNS = tuple(f"*{p}.*" for p in VISUAL_PREFIXES)
+_AUDIO_PATTERNS = tuple(f"*{p}.*" for p in AUDIO_PREFIXES)
+_CP_PATTERNS = tuple(f"*{p}.*" for p in CODE_PREDICTOR_PREFIXES)
+_ACTION_PATTERNS = tuple(f"*{p}.*" for p in ACTION_PREFIXES)
 
 # Linear submodules where FP8 loses precision: down_proj (silu*up ∈
 # [-39, 72] → per-tensor amax quantizes to garbage) and lm_head[0..14]
 # (each codebook sees 1/15 of calib signal, amax undertrained).
 # talker_projection runs as an fp16 sidecar GEMM in the C++ runtime, so
 # quantizing it only adds error without any kernel to use the FP8 weights.
+# All three stay excluded under nvfp4 too — down_proj additionally because
+# ``CodePredictorMLP`` reads its weight directly for the FP32 matmul.
 _CP_LINEAR_EXCLUDES = ("lm_head", "down_proj", "talker_projection")
+
+# Per-codebook embedding tables: the runtime gathers rows, there is no GEMM to
+# use quantized weights, and the sidecar extractor would write the packed
+# [vocab, hidden/2] buffer straight out for the gather to misread.
+_CP_EMBEDDING_EXCLUDES = ("codec_embedding", )
 
 # CP attention BMM quantizers (mixed-precision KV rejected by ONNX export).
 _CP_BMM_EXCLUDES = ("q_bmm", "k_bmm", "v_bmm")
@@ -92,16 +91,58 @@ def _method_weight_input_cfgs(
     named = _BACKBONE_CFG_MAP[method]
     weight_cfg: Optional[Dict[str, Any]] = None
     input_cfg: Optional[Dict[str, Any]] = None
-    for entry in named["quant_cfg"]:
-        name = entry.get("quantizer_name")
-        if name == "*weight_quantizer" and "cfg" in entry:
-            weight_cfg = entry["cfg"]
-        elif name == "*input_quantizer" and "cfg" in entry:
-            input_cfg = entry["cfg"]
+    quant_cfg = named["quant_cfg"]
+    if isinstance(quant_cfg, dict):
+        weight = copy.deepcopy(quant_cfg.get("*weight_quantizer"))
+        input_ = copy.deepcopy(quant_cfg.get("*input_quantizer"))
+        if weight is not None:
+            weight.pop("enable", None)
+            weight_cfg = weight
+        if input_ is not None and input_.get("enable", True):
+            input_.pop("enable", None)
+            input_cfg = input_
+    else:
+        for entry in quant_cfg:
+            name = entry.get("quantizer_name")
+            if name == "*weight_quantizer" and "cfg" in entry:
+                weight_cfg = entry["cfg"]
+            elif name == "*input_quantizer" and "cfg" in entry:
+                input_cfg = entry["cfg"]
     if weight_cfg is None:
         raise ValueError(
             f"ModelOpt config for {method!r} has no '*weight_quantizer' cfg.")
     return weight_cfg, input_cfg
+
+
+class _QuantCfgAppender:
+    """Append ordered overrides to either ModelOpt quant_cfg representation."""
+
+    def __init__(self, quant_cfg) -> None:
+        self.quant_cfg = quant_cfg
+
+    def append(self, entry: QuantCfgEntry) -> None:
+        if isinstance(self.quant_cfg, list):
+            self.quant_cfg.append(entry)
+            return
+        pattern = entry["quantizer_name"]
+        value = copy.deepcopy(entry.get("cfg", {}))
+        if "enable" in entry:
+            value["enable"] = entry["enable"]
+        # Reinsert existing patterns so their override retains last-match-wins.
+        self.quant_cfg.pop(pattern, None)
+        self.quant_cfg[pattern] = value
+
+    def __iadd__(self, entries):
+        for entry in entries:
+            self.append(entry)
+        return self
+
+
+def append_quant_cfg_entries(quant_cfg: Dict[str, Any],
+                             entries: List[QuantCfgEntry]) -> None:
+    """Append last-match-wins rules across ModelOpt dict/list schemas."""
+    appender = _QuantCfgAppender(quant_cfg["quant_cfg"])
+    appender += entries
 
 
 def _enable_entries(method: str, weight_pattern: str,
@@ -129,17 +170,31 @@ def _disable_entries(patterns) -> List[QuantCfgEntry]:
 
 
 def _cp_entries(method: str) -> List[QuantCfgEntry]:
-    """CodePredictor override: per-channel FP8 weight (axis=0) + per-tensor
-    static input, minus the down_proj / lm_head / q,k,v-bmm submodules. Explicit
-    (not derived) because the per-channel weight axis differs from the backbone.
-    Disables come after the enables so the excludes win."""
+    """CodePredictor override, minus the down_proj / lm_head /
+    talker_projection / q,k,v-bmm submodules. Explicit (not derived) because
+    the FP8 weight axis differs from the backbone's. Disables come after the
+    enables so the excludes win.
+
+    ``fp8`` is per-channel weight (axis=0) + per-tensor static input.
+    ``nvfp4`` is per-16-element block weight and input with FP8 E4M3 block
+    scales, matching ``NVFP4LinearMethod`` in models/linear.py."""
     if method not in _CP_METHODS:
         raise ValueError(f"Unsupported cp_quantization: {method}. "
                          f"Choose from: {list(_CP_METHODS)}")
-    weight_cfg = {"num_bits": (4, 3), "axis": 0}
-    input_cfg = {"num_bits": (4, 3), "axis": None}
+    if method == "nvfp4":
+        weight_cfg = input_cfg = {
+            "num_bits": (2, 1),
+            "block_sizes": {
+                -1: 16,
+                "type": "dynamic",
+                "scale_bits": (4, 3)
+            },
+        }
+    else:
+        weight_cfg = {"num_bits": (4, 3), "axis": 0}
+        input_cfg = {"num_bits": (4, 3), "axis": None}
     out: List[QuantCfgEntry] = []
-    for prefix in _CP_PREFIXES:
+    for prefix in CODE_PREDICTOR_PREFIXES:
         out.append({
             "quantizer_name": f"*{prefix}*weight_quantizer",
             "cfg": copy.deepcopy(weight_cfg),
@@ -150,8 +205,8 @@ def _cp_entries(method: str) -> List[QuantCfgEntry]:
             "cfg": copy.deepcopy(input_cfg),
             "enable": True,
         })
-    for prefix in _CP_PREFIXES:
-        for sub in _CP_LINEAR_EXCLUDES:
+    for prefix in CODE_PREDICTOR_PREFIXES:
+        for sub in _CP_LINEAR_EXCLUDES + _CP_EMBEDDING_EXCLUDES:
             out.append({
                 "quantizer_name": f"*{prefix}*{sub}*weight_quantizer",
                 "enable": False,
@@ -177,10 +232,12 @@ def build_quant_config(
     audio_quantization: Optional[str] = None,
     cp_quantization: Optional[str] = None,
     fuse_gdn_qkvzba_scales: bool = False,
+    exclude_action: bool = False,
+    fp16_layer_index: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build a composite ModelOpt quantization config from method names.
 
-    Returns ``{"quant_cfg": [<ordered rules>], "algorithm": ...}`` for
+    Returns a ModelOpt-version-compatible ``quant_cfg`` for
     :func:`mtq.quantize`. Overrides are appended on top of the stock backbone
     config and rely on last-match-wins ordering.
 
@@ -205,13 +262,22 @@ def build_quant_config(
                                Their per-tensor scales are then shared with
                                ``in_proj_qkv`` post-calibration so export can
                                fuse all four projections into a single GEMM.
+        exclude_action:        Keep VLA action-policy modules unquantized.
+        fp16_layer_index:      Keep this decoder layer's ``o_proj`` and MLP
+                               unquantized; ``None`` quantizes them.
     """
     if quantization is None:
-        cfg: Dict[str, Any] = {
-            "quant_cfg": [{
-                "quantizer_name": "*",
+        disabled = ({
+            "*": {
                 "enable": False
-            }],
+            }
+        } if isinstance(_BACKBONE_CFG_MAP["fp8"]["quant_cfg"], dict) else
+                    [{
+                        "quantizer_name": "*",
+                        "enable": False
+                    }])
+        cfg: Dict[str, Any] = {
+            "quant_cfg": disabled,
             "algorithm": "max",
         }
     elif quantization in _BACKBONE_CFG_MAP:
@@ -230,7 +296,7 @@ def build_quant_config(
             f"Unsupported kv_cache_quantization: {kv_cache_quantization}. "
             "Choose from: ['fp8']")
 
-    entries: List[QuantCfgEntry] = cfg["quant_cfg"]
+    entries = _QuantCfgAppender(cfg["quant_cfg"])
 
     if kv_cache_quantization == "fp8":
         entries.append({
@@ -254,6 +320,8 @@ def build_quant_config(
 
     # Disable every non-LLM group not opted into. code2wav is always off.
     disable_patterns: List[str] = list(_CODE2WAV_PATTERNS)
+    if exclude_action:
+        disable_patterns += _ACTION_PATTERNS
     if cp_quantization is None:
         disable_patterns += _CP_PATTERNS
     if visual_quantization is None:
@@ -269,7 +337,7 @@ def build_quant_config(
             raise ValueError(
                 f"Unsupported visual_quantization: {visual_quantization}. "
                 f"Choose from: {list(_VISUAL_METHODS)}")
-        for prefix in _VISUAL_PREFIXES:
+        for prefix in VISUAL_PREFIXES:
             entries += _enable_entries(visual_quantization,
                                        f"*{prefix}*weight_quantizer",
                                        f"*{prefix}*input_quantizer")
@@ -278,7 +346,7 @@ def build_quant_config(
         # but have no FP8 export/runtime path — keep them fp16 (disable after
         # enable so it wins).
         entries += _disable_entries([
-            pat for prefix in _VISUAL_PREFIXES
+            pat for prefix in VISUAL_PREFIXES
             for pat in (f"*{prefix}*pos_embed*",
                         f"*{prefix}*position_embedding*")
         ])
@@ -291,7 +359,7 @@ def build_quant_config(
             raise ValueError(
                 f"Unsupported visual_mha_quantization: "
                 f"{visual_mha_quantization}. Choose from: ['fp8']")
-        for prefix in _VISUAL_PREFIXES:
+        for prefix in VISUAL_PREFIXES:
             for q in ("q", "k", "v"):
                 entries.append({
                     "quantizer_name": f"*{prefix}*{q}_bmm_quantizer",
@@ -307,7 +375,7 @@ def build_quant_config(
             raise ValueError(
                 f"Unsupported audio_quantization: {audio_quantization}. "
                 f"Choose from: {list(_AUDIO_METHODS)}")
-        for prefix in _AUDIO_PREFIXES:
+        for prefix in AUDIO_PREFIXES:
             entries += _enable_entries(audio_quantization,
                                        f"*{prefix}*weight_quantizer",
                                        f"*{prefix}*input_quantizer")
@@ -327,4 +395,42 @@ def build_quant_config(
                 "nvfp4", f"*linear_attn.{proj}.weight_quantizer",
                 f"*linear_attn.{proj}.input_quantizer")
 
+    if fp16_layer_index is not None:
+        entries += [{
+            "quantizer_name":
+            f"*layers.{fp16_layer_index}.{module}.{quantizer}",
+            "enable": False,
+        } for module in LAST_LAYER_PROJECTIONS
+                    for quantizer in ("weight_quantizer", "input_quantizer")]
+
     return cfg
+
+
+def _uses_awq(algorithm) -> bool:
+    """True when a ModelOpt ``algorithm`` includes AWQ."""
+    if isinstance(algorithm, (list, tuple)):
+        return any(_uses_awq(a) for a in algorithm)
+    method = algorithm.get("method") if isinstance(algorithm,
+                                                   dict) else algorithm
+    return method in _AWQ_ALGORITHMS
+
+
+def split_lm_head_calibration(quant_cfg: Dict[str, Any],
+                              lm_head_quantization: Optional[str]):
+    """Take an FP8 / NVFP4 / MXFP8 ``lm_head`` out of an AWQ ``quant_cfg``.
+
+    AWQ smooths every module with an enabled weight quantizer, but those
+    lm_head layouts have no ``pre_quant_scale`` consumer. The head quantizers
+    are switched off in ``quant_cfg`` (in place) and the returned config
+    calibrates the head alone with ``max``; pass it to ``mtq.quantize`` after
+    the backbone call. Returns ``None`` when ``quant_cfg`` needs no split.
+    """
+    if (lm_head_quantization not in _UNSMOOTHED_LM_HEAD_METHODS
+            or not _uses_awq(quant_cfg.get("algorithm"))):
+        return None
+    append_quant_cfg_entries(quant_cfg, _disable_entries(_LM_HEAD_QUANTIZERS))
+    return {
+        "quant_cfg": _enable_entries(lm_head_quantization,
+                                     *_LM_HEAD_QUANTIZERS),
+        "algorithm": "max"
+    }

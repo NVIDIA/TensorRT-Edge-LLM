@@ -44,21 +44,51 @@ struct SharedResources
     //! unique_ptr because HybridCacheManager is move-only.
     std::vector<std::unique_ptr<HybridCacheManager>> cacheManagers;
 
-    //! One KVPageTable per cache manager, index-aligned with `cacheManagers`. Each table starts as an uploaded identity
-    //! mapping. Batch eviction compacts logical rows while leaving physical pages in place.
+    //! One full-capacity KVPageTable per cache manager, index-aligned with `cacheManagers`.
+    //! Every table starts with the legacy identity mapping. Production context reuse replaces
+    //! rows with leased global page IDs and compacts metadata without moving KV bytes.
     std::vector<std::unique_ptr<KVPageTable>> kvPageTables;
+
+    //! Optional independent SWA page table per cache manager, index-aligned with
+    //! `cacheManagers`. A non-null entry has the full logical sequence width but its
+    //! own bounded physical ID space. It is uploaded as all-sentinel state; the
+    //! runtime SWA cache manager populates and rotates live mappings.
+    std::vector<std::unique_ptr<KVPageTable>> swaKVPageTables;
+
+    //! Return the optional SWA page table for a cache manager.
+    KVPageTable* getSwaKVPageTable(int32_t cacheManagerIndex) noexcept
+    {
+        if (cacheManagerIndex < 0 || static_cast<size_t>(cacheManagerIndex) >= swaKVPageTables.size())
+        {
+            return nullptr;
+        }
+        return swaKVPageTables[cacheManagerIndex].get();
+    }
+
+    //! Const overload of getSwaKVPageTable().
+    KVPageTable const* getSwaKVPageTable(int32_t cacheManagerIndex) const noexcept
+    {
+        if (cacheManagerIndex < 0 || static_cast<size_t>(cacheManagerIndex) >= swaKVPageTables.size())
+        {
+            return nullptr;
+        }
+        return swaKVPageTables[cacheManagerIndex].get();
+    }
 
     RopeCache ropePool;
     std::unique_ptr<LoRAManager> loraManager;
     std::unique_ptr<ExternalWeightManager> externalWeightManager;
     Tensor zeroBuffer;
+    //! Stable one-byte backing storage for the shape-only SWA runtime mode input.
+    Tensor swaKVCacheMode;
 
     //! Build SharedResources for the vanilla single-engine LLM runtime
     //! (KV cache, RoPE pool, LoRA manager, external weight manager, zero buffer).
     //!
     //! Recurrent / conv state dtypes for hybrid models are read from
-    //! `cfg.recurrentStateDtype` / `cfg.convStateDtype` — they are parsed
-    //! strictly from `config.json` by `parseEngineConfig`.
+    //! `cfg.recurrentStateDtype` / `cfg.convStateDtype`, and the n-gram injection's from
+    //! `cfg.ngramConvStateDtype` — all parsed strictly from `config.json` by
+    //! `parseEngineConfig`.
     //!
     //! The returned `externalWeightManager` is constructed by this factory; the
     //! runtime is responsible for loading files, validating against the base

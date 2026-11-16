@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# L1 Export Test - public Gemma4 Orbax checkpoint conversion
+
+tests:
+  - tests/defs/test_flax_checkpoint_converter.py::test_gemma4_orbax_checkpoint_export
+  - tests/defs/test_flax_checkpoint_converter.py::test_gemma4_26b_orbax_checkpoint_export

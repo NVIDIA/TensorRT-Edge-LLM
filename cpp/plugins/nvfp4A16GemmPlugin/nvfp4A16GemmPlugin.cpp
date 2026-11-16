@@ -21,6 +21,7 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "kernels/moe/moeMarlinIndicesKernels.h"
 #include "kernels/moe/moe_marlin/moeMarlin.h"
 #include "plugins/utils/pluginUtils.h"
@@ -45,6 +46,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -62,6 +64,8 @@ constexpr char const* kPluginVersion{"1"};
 constexpr int32_t kNvfp4GroupSize{16};
 constexpr int32_t kDecodeBlockSize{8};
 constexpr int32_t kPrefillBlockSize{32};
+constexpr int32_t kTokenMajorActivationRank{2};
+constexpr int32_t kBatchedActivationRank{3};
 // The dense plugin only exercises the decode (8) and prefill (32) Marlin block sizes.
 constexpr int32_t kMaxBlockSize{kPrefillBlockSize};
 
@@ -74,6 +78,45 @@ constexpr int32_t kNbPluginFields{3};
 int32_t getMoeBlockSize(int64_t numTokens)
 {
     return numTokens == 1 ? kDecodeBlockSize : kPrefillBlockSize;
+}
+
+bool isSupportedActivationRank(int32_t rank) noexcept
+{
+    return rank == kTokenMajorActivationRank || rank == kBatchedActivationRank;
+}
+
+int64_t getTokenCount(Dims const& dims) noexcept
+{
+    if (!isSupportedActivationRank(dims.nbDims))
+    {
+        return 0;
+    }
+    int64_t tokens = 1;
+    for (int32_t index = 0; index < dims.nbDims - 1; ++index)
+    {
+        if (dims.d[index] <= 0 || tokens > std::numeric_limits<int64_t>::max() / dims.d[index])
+        {
+            return 0;
+        }
+        tokens *= dims.d[index];
+    }
+    return tokens;
+}
+
+bool haveMatchingRows(Dims const& input, Dims const& output) noexcept
+{
+    if (input.nbDims != output.nbDims)
+    {
+        return false;
+    }
+    for (int32_t index = 0; index < input.nbDims - 1; ++index)
+    {
+        if (input.d[index] != output.d[index])
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 //! Block-aligned row count for a given token count and block size.
@@ -292,11 +335,13 @@ int32_t Nvfp4A16GemmPlugin::getOutputShapes(DimsExprs const* inputs, int32_t nbI
     }
     (void) shapeInputs;
     (void) nbShapeInputs;
-    // Output mirrors activation [B, S, gemm_n].
-    outputs[0].nbDims = 3;
-    outputs[0].d[0] = inputs[kInActivation].d[0];
-    outputs[0].d[1] = inputs[kInActivation].d[1];
-    outputs[0].d[2] = exprBuilder.constant(mGemmN);
+    int32_t const rank = inputs[kInActivation].nbDims;
+    if (!isSupportedActivationRank(rank))
+    {
+        return -1;
+    }
+    outputs[0] = inputs[kInActivation];
+    outputs[0].d[rank - 1] = exprBuilder.constant(mGemmN);
     return 0;
 }
 
@@ -309,7 +354,9 @@ bool Nvfp4A16GemmPlugin::validateTensorDesc(int32_t pos, PluginTensorDesc const&
 
     switch (pos)
     {
-    case kInActivation: return desc.type == DataType::kHALF && desc.dims.nbDims == 3 && desc.dims.d[2] == mGemmK;
+    case kInActivation:
+        return desc.type == DataType::kHALF && isSupportedActivationRank(desc.dims.nbDims)
+            && desc.dims.d[desc.dims.nbDims - 1] == mGemmK;
     case kInQWeights:
         // INT8 view of Marlin-packed E2M1 codes: [1, K/16, 8*N] (8 int8 == 2 int32 per output column).
         return desc.type == DataType::kINT8 && desc.dims.nbDims == 3 && desc.dims.d[0] == 1
@@ -319,7 +366,9 @@ bool Nvfp4A16GemmPlugin::validateTensorDesc(int32_t pos, PluginTensorDesc const&
         return desc.type == DataType::kINT8 && desc.dims.nbDims == 3 && desc.dims.d[0] == 1
             && desc.dims.d[1] == mGemmK / kNvfp4GroupSize && desc.dims.d[2] == mGemmN;
     case kInGlobalScale: return desc.type == DataType::kHALF && desc.dims.nbDims == 1 && desc.dims.d[0] == 1;
-    case kOutOutput: return desc.type == DataType::kHALF && desc.dims.nbDims == 3 && desc.dims.d[2] == mGemmN;
+    case kOutOutput:
+        return desc.type == DataType::kHALF && isSupportedActivationRank(desc.dims.nbDims)
+            && desc.dims.d[desc.dims.nbDims - 1] == mGemmN;
     default: return false;
     }
 }
@@ -359,19 +408,12 @@ int32_t Nvfp4A16GemmPlugin::configurePlugin(
         }
 
         Dims const& actMax = in[kInActivation].max;
-        if (actMax.nbDims != 3 || actMax.d[0] <= 0 || actMax.d[1] <= 0 || actMax.d[2] != mGemmK)
+        int64_t const maxTokens = getTokenCount(actMax);
+        if (maxTokens <= 0 || actMax.d[actMax.nbDims - 1] != mGemmK)
         {
             LOG_ERROR("Nvfp4A16GemmPlugin: optimization profile activation dimensions are incomplete or invalid");
             return -1;
         }
-        int64_t const maxBatch = actMax.d[0];
-        int64_t const maxSeq = actMax.d[1];
-        if (maxBatch > std::numeric_limits<int64_t>::max() / maxSeq)
-        {
-            LOG_ERROR("Nvfp4A16GemmPlugin: profile batch*sequence overflows int64");
-            return -1;
-        }
-        int64_t const maxTokens = maxBatch * maxSeq;
         if (maxTokens > std::numeric_limits<int32_t>::max())
         {
             LOG_ERROR("Nvfp4A16GemmPlugin: profile token count overflows int32");
@@ -411,12 +453,8 @@ size_t Nvfp4A16GemmPlugin::getWorkspaceSize(DynamicPluginTensorDesc const* input
     {
         // configurePlugin normally resolves auto max_m; fall back to the profile max here for robustness.
         Dims const& actMax = inputs[kInActivation].max;
-        if (actMax.nbDims == 3 && actMax.d[0] > 0 && actMax.d[1] > 0
-            && actMax.d[0] <= std::numeric_limits<int64_t>::max() / actMax.d[1])
-        {
-            int64_t const maxTokens = actMax.d[0] * actMax.d[1];
-            effectiveMaxM = maxTokens > std::numeric_limits<int32_t>::max() ? 0 : static_cast<int32_t>(maxTokens);
-        }
+        int64_t const maxTokens = getTokenCount(actMax);
+        effectiveMaxM = maxTokens > std::numeric_limits<int32_t>::max() ? 0 : static_cast<int32_t>(maxTokens);
     }
     if (effectiveMaxM <= 0)
     {
@@ -460,14 +498,12 @@ int32_t Nvfp4A16GemmPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTen
         }
 
         Dims const& actDims = inputDesc[kInActivation].dims;
-        int64_t const batchSize = actDims.d[0];
-        int64_t const seqLen = actDims.d[1];
-        if (batchSize <= 0 || seqLen <= 0 || batchSize > std::numeric_limits<int64_t>::max() / seqLen)
+        int64_t const numTokens64 = getTokenCount(actDims);
+        if (numTokens64 <= 0)
         {
-            LOG_ERROR("Nvfp4A16GemmPlugin: runtime batch and sequence dimensions must be positive");
+            LOG_ERROR("Nvfp4A16GemmPlugin: runtime token dimensions must be positive and not overflow");
             return -1;
         }
-        int64_t const numTokens64 = batchSize * seqLen;
         if (numTokens64 > std::numeric_limits<int32_t>::max())
         {
             LOG_ERROR("Nvfp4A16GemmPlugin: runtime token count overflows int32");
@@ -479,9 +515,9 @@ int32_t Nvfp4A16GemmPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTen
             LOG_ERROR("Nvfp4A16GemmPlugin: runtime token count %d exceeds max_m=%d", numTokens, mMaxM);
             return -1;
         }
-        if (outputDesc[0].dims.d[0] != batchSize || outputDesc[0].dims.d[1] != seqLen)
+        if (!haveMatchingRows(actDims, outputDesc[0].dims))
         {
-            LOG_ERROR("Nvfp4A16GemmPlugin: output batch and sequence dimensions must match the activation");
+            LOG_ERROR("Nvfp4A16GemmPlugin: output leading dimensions must match the activation");
             return -1;
         }
 
@@ -521,20 +557,22 @@ int32_t Nvfp4A16GemmPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTen
             CUDA_CHECK(cudaGetLastError());
         }
 
-        Tensor activation(
-            const_cast<void*>(inputs[kInActivation]), {numTokens, mGemmK}, DeviceType::kGPU, DataType::kHALF);
+        Tensor activation(const_cast<void*>(inputs[kInActivation]), {numTokens, mGemmK}, DeviceType::kGPU,
+            trt_edgellm::DataType::kHALF);
         Tensor qWeights(const_cast<void*>(inputs[kInQWeights]), {1, mGemmK / kNvfp4GroupSize, 2 * mGemmN},
-            DeviceType::kGPU, DataType::kINT32);
+            DeviceType::kGPU, trt_edgellm::DataType::kINT32);
         Tensor blockScales(const_cast<void*>(inputs[kInBlockScales]), {1, mGemmK / kNvfp4GroupSize, mGemmN},
-            DeviceType::kGPU, DataType::kINT8);
-        Tensor globalScale(const_cast<void*>(inputs[kInGlobalScale]), {1}, DeviceType::kGPU, DataType::kHALF);
-        Tensor output(outputs[0], {numTokens, mGemmN}, DeviceType::kGPU, DataType::kHALF);
+            DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+        Tensor globalScale(
+            const_cast<void*>(inputs[kInGlobalScale]), {1}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+        Tensor output(outputs[0], {numTokens, mGemmN}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
-        Tensor sortedTokenIdsTensor(sortedTokenIds, {maxPaddedRows}, DeviceType::kGPU, DataType::kINT32);
-        Tensor expertIdsTensor(expertIds, {maxPaddedBlocks}, DeviceType::kGPU, DataType::kINT32);
-        Tensor numTokensPostPaddedTensor(numTokensPostPadded, {1}, DeviceType::kGPU, DataType::kINT32);
-        Tensor topkWeightsTensor(topkWeights, {maxPaddedRows}, DeviceType::kGPU, DataType::kFLOAT);
-        Tensor marlinWorkspaceTensor(marlinWorkspace, {marlinWorkspaceElements}, DeviceType::kGPU, DataType::kINT32);
+        Tensor sortedTokenIdsTensor(sortedTokenIds, {maxPaddedRows}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor expertIdsTensor(expertIds, {maxPaddedBlocks}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor numTokensPostPaddedTensor(numTokensPostPadded, {1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor topkWeightsTensor(topkWeights, {maxPaddedRows}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        Tensor marlinWorkspaceTensor(
+            marlinWorkspace, {marlinWorkspaceElements}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
 
         {
             NVTX_SCOPED_RANGE(nvtx_gemm, "Nvfp4A16GemmPlugin::gemm", nvtx_colors::BLUE);
@@ -575,15 +613,13 @@ int32_t Nvfp4A16GemmPlugin::onShapeChange(
         return -1;
     }
 
-    int64_t const batchSize = in[kInActivation].dims.d[0];
-    int64_t const seqLen = in[kInActivation].dims.d[1];
-    if (batchSize <= 0 || seqLen <= 0 || batchSize > std::numeric_limits<int64_t>::max() / seqLen)
+    int64_t const numTokens = getTokenCount(in[kInActivation].dims);
+    if (numTokens <= 0)
     {
-        LOG_ERROR("Nvfp4A16GemmPlugin: invalid runtime batch or sequence dimension");
+        LOG_ERROR("Nvfp4A16GemmPlugin: invalid runtime token dimensions");
         return -1;
     }
-    int64_t const numTokens = batchSize * seqLen;
-    if (out[0].dims.d[0] != batchSize || out[0].dims.d[1] != seqLen)
+    if (!haveMatchingRows(in[kInActivation].dims, out[0].dims))
     {
         LOG_ERROR("Nvfp4A16GemmPlugin: runtime output shape does not match the activation");
         return -1;

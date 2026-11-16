@@ -37,38 +37,31 @@ namespace plugins
 //!
 //! SiLU gating (z) is handled externally by the ONNX graph (gated_rms_norm).
 //!
-//! Inputs may include an optional seq_len dimension (e.g. x as [batch, seq_len, nheads, dim]
-//! instead of [batch, nheads, dim]). When seq_len > 1, the plugin loops over the single-step
-//! kernel internally, updating the SSM state in-place after each step.
-//!
-//! Performance note: the loop launches one kernel per time step. For decode (seq_len=1) this
-//! is optimal. For prefill (seq_len >> 1) this is O(seq_len) serial launches, which is correct
-//! but slower than a parallel chunked scan. A future optimization would dispatch to a
-//! mamba_chunk_scan_combined kernel when seq_len exceeds a threshold.
-//!
 //! Input ordering (see constants defined in mambaPlugin.cpp):
-//!   [0] x          [batch, (seq_len,) nheads, dim]       FP16 or FP32
-//!   [1] A          [nheads]                              FP32 (always)
-//!   [2] B          [batch, (seq_len,) ngroups, dstate]   FP16 or FP32
-//!   [3] C          [batch, (seq_len,) ngroups, dstate]   FP16 or FP32
-//!   [4] D          [nheads]                              FP16 or FP32
-//!   [5] dt         [batch, (seq_len,) nheads]            FP16 or FP32
-//!   [6] dt_bias    [nheads]                              FP16 or FP32
-//!   [7] state      [batch, nheads, dim, dstate]          FP16 or FP32
-//!   [8] context_lengths [batch]                          INT32
-//!   [9] state_start_index [0] or [batch]                 INT32
-//!
-//! `state_start_index` shares the runtime's `kvcache_start_index` sentinel
-//! contract: shape [0] selects the faster zero-state prefill kernel, while
-//! shape [batch] means restored recurrent state must seed prefill.
-//!
-//! All data tensors (everything except A) must use the same type.
-//! TRT selects FP32 when the ONNX graph declares FP32, and may optimize to
-//! FP16 during the builder phase when the FP16 flag is set.
+//!   [0] x          [tokens, nheads, dim]                  FP16
+//!   [1] A          [nheads]                              FP32
+//!   [2] B          [tokens, ngroups, dstate]             FP16
+//!   [3] C          [tokens, ngroups, dstate]             FP16
+//!   [4] D          [nheads]                              FP16
+//!   [5] dt         [tokens, nheads]                      FP16
+//!   [6] dt_bias    [nheads]                              FP16
+//!   [7] state      [resident_rows, nheads, dim, dstate]  FP16
+//!   [8] query_lengths [batch]                            INT32
+//!   [9] query_start_offsets [batch + 1]                  INT32
+//!   [10] state_indices [batch]                           INT32
+//!   [11] execution_phase_marker [1..8]                   INT32
+//!   [12] context_sequence_count_carrier [0..batch]       INT32 shape-only context count
+//!   [13] tree_parent_ids [tokens]                         INT32 (verify-capable instances)
+//!   [14] tree_depths [tokens]                            INT32 (verify-capable instances)
+//!   [15] spec_verify_layout [0..2]                      INT32 shape-only layout (verify-capable instances)
 //!
 //! Outputs:
-//!   [0] output     [batch, (seq_len,) nheads, dim]       same as input type
-//!   [1] state_out  [batch, nheads, dim, dstate]          same as input type
+//!   [0] output     [tokens, nheads, dim]                  FP16
+//!   [1] state_out  [resident_rows, nheads, dim, dstate]  aliased state pool
+//!   [2] replay_da  [tokens, nheads]                       FP32 (spec-verify engines only)
+//!   [3] replay_u   [tokens, nheads, dim]                  FP32 (spec-verify engines only)
+//!   [4] replay_b   [tokens, ngroups, dstate]              FP32 (spec-verify engines only)
+//!   [5] replay_dt  [tokens, nheads]                       FP32 (spec-verify engines only)
 class MambaPlugin : public nvinfer1::IPluginV3,
                     public nvinfer1::IPluginV3OneCore,
                     public nvinfer1::IPluginV3OneBuild,
@@ -114,10 +107,27 @@ public:
     void setPluginNamespace(char const* pluginNamespace) noexcept;
 
 protected:
-    //! Plugin input/output counts depend on the spec-verify mode: it adds a trailing
-    //! ``spec_verify_phase_marker`` input and an ``intermediate_recurrent_states`` output.
+    //! The common ragged input contract is unconditional. DDTree engines append parent/depth inputs;
+    //! spec-verify engines append replay outputs.
     int32_t numInputs() const noexcept;
     int32_t numOutputs() const noexcept;
+
+    //! Phase 8 needs a plain (non-spec-verify) layer whose head/state dims have a packed SSD kernel on this GPU.
+    bool supportsCompactPhase(int32_t headDim, int32_t stateDim) const noexcept;
+
+    //! This layer's name and shape for error logs (describePluginLayer).
+    std::string describeLayer() const;
+
+    //! Phase 8: prefill rows [0, T_p) through the selected packed SSD kernel, decode rows [T_p, T) through
+    //! enqueueDecodeRows.
+    int32_t enqueueCompact(nvinfer1::PluginTensorDesc const* inputDesc, nvinfer1::PluginTensorDesc const* outputDesc,
+        void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream) noexcept;
+
+    //! Decode emission of phase 3 and of the phase 8 decode rows: numSequences sequences of rowsPerSequence rows
+    //! starting at token row firstRow and sequence firstSequence.
+    void enqueueDecodeRows(nvinfer1::PluginTensorDesc const* inputDesc, void const* const* inputs, void* const* outputs,
+        int32_t firstRow, int32_t firstSequence, int32_t numSequences, int32_t rowsPerSequence,
+        cudaStream_t stream) const;
 
     std::string mLayerName;
     std::string mNamespace;
@@ -127,8 +137,10 @@ protected:
     int32_t mNheads{};
     int32_t mNgroups{};
     int32_t mDtSoftplus{};
-    //! MTP spec-verify: emit per-token intermediate recurrent states for accepted-token rollback.
+    //! Emit per-token replay factors for accepted-path state reconstruction.
     int32_t mUseSpecVerifyState{};
+    //! DDTree verify consumes parent/depth inputs and evaluates each node from its ancestor state.
+    //! Serialized replay format guard; non-spec engines do not consume replay outputs.
 
     std::vector<nvinfer1::PluginField> mDataToSerialize;
     nvinfer1::PluginFieldCollection mFCToSerialize;

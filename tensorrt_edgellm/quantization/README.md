@@ -2,8 +2,8 @@
 
 Decoupled quantization pipeline that produces **unified HuggingFace
 checkpoints** (safetensors + config) consumable by `tensorrt_edgellm`.
-Runs in a clean venv with the dependencies listed in `requirements.txt`.
-See `requirements.txt` for the full dependency list.
+Install the quantization dependencies directly with
+`pip install -e ".[quantize]"`.
 
 ## Design
 
@@ -24,6 +24,7 @@ heavy and brittle.
 │  quantize.py              Load → quant → save│
 │  models/                                     │
 │    eagle3_draft.py        Eagle3 draft model │
+│    eagle4_draft.py        EAGLE-4 drafter    │
 │    dflash_draft.py        DFlash draft model │
 │  ../scripts/quantize.py    CLI entry point   │
 └──────────────────┬───────────────────────────┘
@@ -62,13 +63,13 @@ heavy and brittle.
 
 ### Supported quantization methods
 
-| Backbone        | LM-head         | KV-cache | Visual tower | Audio tower | CodePredictor |
-|-----------------|-----------------|----------|--------------|-------------|---------------|
-| `fp8`           | `fp8`           | `fp8`    | `fp8`        | `fp8`       | `fp8`         |
-| `int4_awq`      | `int4_awq`      | —        | —            | —           | —             |
-| `nvfp4`         | `nvfp4`         | —        | —            | —           | —             |
-| `mxfp8`         | `mxfp8`         | —        | —            | —           | —             |
-| `int8_sq`       | —               | —        | —            | —           | —             |
+| Backbone        | LM-head         | Token embedding | KV-cache | Visual tower | Audio tower | CodePredictor |
+|-----------------|-----------------|-----------------|----------|--------------|-------------|---------------|
+| `fp8`           | `fp8`           | `fp8`           | `fp8`    | `fp8`        | `fp8`       | `fp8`         |
+| `int4_awq`      | `int4_awq`      | —               | —        | —            | —           | —             |
+| `nvfp4`         | `nvfp4`         | `nvfp4`         | —        | —            | —           | —             |
+| `mxfp8`         | `mxfp8`         | —               | —        | —            | —           | —             |
+| `int8_sq`       | —               | —               | —        | —            | —           | —             |
 
 Any backbone method can be combined with any lm_head method.  Examples:
 
@@ -76,6 +77,24 @@ Any backbone method can be combined with any lm_head method.  Examples:
 - `nvfp4` backbone + `fp8` lm_head → mixed precision
 - `nvfp4` backbone + `int4_awq` lm_head → INT4 lm_head
 - `fp8` backbone + `fp8` lm_head + `fp8` kv_cache → full FP8
+
+The token embedding is independently selectable. For a checkpoint with a tied
+token embedding and LM head, the workflow separates
+their storage before exporting the embedding and linear-layer layouts. The
+token embedding may be quantized while leaving the LM head in FP16.
+
+Gemma4 E2B/E4B also have a separate packed per-layer embedding (PLE) table.
+Use `--ple_embedding_quantization fp8` to store that table as per-tensor FP8;
+the ONNX exporter, checkpoint-direct builder, and runtime gather dequantize it with its
+ModelOpt scale and Gemma4 embedding scale. This option is independent of the
+canonical token embedding. On a BF16 Qwen4-Exp checkpoint the same option
+writes the n-gram table as FP8 shards with one scalar `weight_scale`, the layout
+of the released FP8 checkpoints.
+
+For export-time quantization of a dense checkpoint, use
+`tensorrt-edgellm-export MODEL_DIR OUTPUT_DIR --fp8-embedding --fp8-ple`.
+The token and PLE flags are independent. `--fp8-ple` writes the PLE table
+under `OUTPUT_DIR/ple/`; keep this directory accessible at runtime.
 
 ## Usage
 
@@ -86,8 +105,14 @@ tensorrt-edgellm-quantize llm \
     --model_dir /path/to/Qwen3.5-0.8B \
     --output_dir /path/to/output \
     --quantization nvfp4 \
-    --lm_head_quantization nvfp4
+    --lm_head_quantization nvfp4 \
+    --token_embedding_quantization nvfp4
 ```
+
+For Gemma4 E2B/E4B, use `--token_embedding_quantization fp8` and
+`--ple_embedding_quantization fp8` together to quantize both input tables.
+Leave the E4B LM head in FP16: its separate FP8 compiled path currently
+diverges from the provider's output.
 
 Calibration uses the default `cnn_dailymail` text dataset; pick another with
 `--text_dataset <name>`.
@@ -127,6 +152,8 @@ the exporter can keep its full-FP32 accumulation path.
 |------|---------|-------------|
 | `--quantization` | None | Backbone method |
 | `--lm_head_quantization` | None | LM-head method |
+| `--token_embedding_quantization` | None | Canonical runtime token table (`fp8` per-tensor or `nvfp4` block-16) |
+| `--ple_embedding_quantization` | None | Gemma4 PLE or Qwen4-Exp n-gram table (`fp8` per-tensor) |
 | `--kv_cache_quantization` | None | KV-cache method (fp8) |
 | `--visual_quantization` | None | Visual tower method (fp8) |
 | `--audio_quantization` | None | Audio tower method (fp8) |

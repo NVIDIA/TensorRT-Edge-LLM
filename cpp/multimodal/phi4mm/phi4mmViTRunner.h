@@ -63,9 +63,10 @@ public:
     //! \brief Constructor for Phi4MMViTRunner
     //! \param[in] engineDir Directory containing the TensorRT engine files
     //! \param[in] stream CUDA stream for execution
+    //! \param[in] checkpointDir HF checkpoint directory used by runtime weight loading
     //! \throws std::runtime_error if engineDir does not contain valid engine files
     //! \throws std::runtime_error if buffer allocation fails
-    Phi4MMViTRunner(std::string const& engineDir, cudaStream_t stream);
+    Phi4MMViTRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
     ~Phi4MMViTRunner() noexcept = default;
 
     //! \brief Preprocess multimodal input including images and text
@@ -121,19 +122,16 @@ private:
         std::vector<int64_t> const& numImages, std::vector<int64_t> const& imageTokenLengths,
         tokenizer::Tokenizer const* tokenizer);
 
-    //! \brief Normalize the GPU-resident image, tile to blocks, and update token-length accounting
+    //! \brief Tile the preprocessed image to blocks and update token-length accounting
     //! \throws std::runtime_error if image not divisible into blocks
     void formatPatch(rt::imageUtils::ImageData const& image, std::vector<int64_t>& imageTokenLengths,
         int64_t& numImages, int64_t& totalNumBlocks, bool isThumbnail, cudaStream_t stream);
 
     Phi4MMViTConfig mConfig{};           //!< Phi-4MM visual configuration
     rt::Tensor mVitInput{};              //!< Visual engine input tensor
-    rt::Tensor mImageMean{};             //!< Image mean tensor [C]
-    rt::Tensor mImageStd{};              //!< Image std tensor [C]
-    rt::Tensor mImageDevice{};           //!< Temporary image buffer (holds the GPU-resized image)
-    rt::Tensor mNormalizedImageDevice{}; //!< Temporary normalized image buffer
-    rt::Tensor mRawImageDevice{};        //!< Raw (pre-resize) image device buffer for the GPU resize path
-    rt::Tensor mResizeTmpDevice{};       //!< Float scratch (horizontal pass) for the GPU resize
+    std::array<float, 3> mImageMean{};   //!< Per-channel normalisation mean, RGB
+    std::array<float, 3> mImageStd{};    //!< Per-channel normalisation standard deviation, RGB
+    rt::Tensor mNormalizedImageDevice{}; //!< Preprocessed frame, [1, H, W, 3] HALF
     std::vector<std::vector<std::vector<int64_t>>> mImagesBlockGridHW; //!< Per-image block grid sizes [[hb, wb], ...]
 
     // Buffer for raw ViT outputs from the TRT engine before Phi4MM postprocess (HD transform)

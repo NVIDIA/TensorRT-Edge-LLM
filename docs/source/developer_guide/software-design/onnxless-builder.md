@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Experimental ONNX-less Builder Design
 
 The experimental builder compiles TensorRT engines directly from checkpoint
@@ -40,7 +43,7 @@ features, and current limitations, see
 
 ## Package Boundaries
 
-The implementation is under `experimental/builder`:
+The implementation is under `tensorrt_edgellm/builder`:
 
 | Layer | Main files | Responsibility |
 |---|---|---|
@@ -169,7 +172,7 @@ Concrete call paths are:
 | `x + residual` | `Tensor.__add__` | `Net.elementwise` | `add_elementwise` |
 | `x.reshape(shape)` | `Tensor.reshape` | `Net.reshape` | `add_shuffle` |
 | `x @ weight` | `Tensor.matmul` | `Net.matmul` | `add_matrix_multiply` |
-| FP16 `Linear(x)` | `Linear.forward` -> `F.linear_from_weights` | `Net.linear_from_weights` -> `Net.linear` | `add_constant`, `add_matrix_multiply`, optional `add_elementwise` |
+| FP16 `Linear(x)` | `Linear.forward` -> `F.linear_from_weights` | `Net.linear_from_weights` -> `Net.linear` | Weight input or `add_constant`, `add_matrix_multiply`, optional `add_elementwise` |
 | `RMSNorm(x)` | `RMSNorm.forward` -> `F.rms_norm` | `Net.rmsnorm` | `add_cast`, `add_reduce`, `add_elementwise`, `add_unary` |
 | Decoder attention | `F.attention` | `Net.operation("attention", ...)` | plugin creator plus `add_plugin_v3` |
 | ViT attention | `F.vit_attention` | `Net.operation("vit_attention", ...)` | plugin creator plus `add_plugin_v3` |
@@ -178,10 +181,12 @@ Concrete call paths are:
 
 Dense projection shows how a semantic frontend operation maps to a native
 TensorRT layer composition. The builder creates a strongly typed network and
-represents an FP16 projection as:
+represents an FP16 projection using either an external weight input or a
+constant, according to the weight policy:
 
 ```text
-checkpoint weight -> IConstantLayer
+checkpoint metadata -> external weight input (default for eligible FP16 weights)
+checkpoint weight -> IConstantLayer (when baked)
 activation, weight -> IMatrixMultiplyLayer
 optional bias -> IElementWiseLayer
 ```
@@ -270,7 +275,8 @@ frontend name. A model family's `weights.py` owns aliases, prefix changes,
 special tensor combinations, and quantized layout conversion. This prevents a
 generic loader from accumulating model-name conditionals.
 
-Large quantized extension weights can be static TensorRT network inputs:
+Eligible dense FP16 weights and large quantized extension weights can be
+static TensorRT network inputs:
 
 - Dense INT4 GEMM qweights and scales
 - INT4 MoE qweights
@@ -283,13 +289,73 @@ only final tensor metadata and the provider-checkpoint conversion recipe.
 config, and the C++ `ExternalWeightManager` maps, transforms, and binds the
 original checkpoint once when loading the engine.
 
+### Experimental Weightless Constants
+
+`BuildArgs.weightless_engine` and the CLI `--weightless-engine` flag opt into
+a separate weight transport contract; both default to disabled. This path
+requires compatible TensorRT/Myelin null-weight placeholder support, not merely
+availability of the refit flags. Dense FP16, native FP8/NVFP4, and supported
+INT4 checkpoint layouts are eligible; parameter lowering requires reproducible
+checkpoint recipes. Execution requires vanilla single-rank decoding; both
+unquantized and FP8 KV caches are supported. Quantization overrides must also use supported layouts.
+The builder rejects LoRA, reduced vocabulary,
+speculative configurations, non-LLM components, and explicit external-weight selections.
+
+The existing model graph and checkpoint conversion recipes are reused:
+
+1. `core.builder._configure_weightless_engine` validates scope and selects
+   `STRIP_PLAN` and `REFIT_INDIVIDUAL`, preserving the normal optimization level.
+2. `Net.parameter` and `Net.weight_input` lower reproducible checkpoint parameter
+   slots, including normalization scales, to constants with a null data
+   pointer and the final dtype/count. The canonical binding `engine_name`
+   becomes the named TensorRT weight; `REFIT_PROXY` is not used.
+   Native FP8 matrices and NVFP4 matrices/block scales use typed placeholders.
+   For tied embeddings, an FP16 parameter with an identical materialization
+   recipe remains an engine input so the runtime can share its storage with
+   the embedding. Matching includes checkpoint source, locations, shape, dtype,
+   layout and transforms; scaled embeddings cannot share storage. This avoids
+   both a refitted copy of the embedding and the large refittable-head compiler
+   temporaries without introducing model-family-specific lowering.
+   Global quantization and KV-cache scales remain build-time constants. Packed INT4 and
+   NVFP4-A16 plugin parameters retain their byte-addressable storage types.
+3. `core/artifacts/external_weights.py` retains the ordinary checkpoint
+   recipes and adds `destination: "refit"` to those entries. Bindings without
+   a destination retain their input behavior. There is no second manifest.
+4. The component config records `weightless_engine: true`. A missing or false
+   marker selects ordinary engines; backend compatibility requires qualification
+   with the actual TensorRT package.
+
+Runtime initialization follows this order:
+
+```text
+checkpoint identity and binding validation
+  -> checkpoint conversion into final-layout refit device storage
+  -> engine deserialization
+  -> named device-weight refit on the initialization stream
+  -> stream completion and transient refit-storage release
+  -> execution-context creation
+```
+
+`ExternalWeightManager` separates transient `RefitWeightSet` ownership from
+persistent runtime inputs and embeddings. The embedding table is not refitted;
+a tied embedding/output head cannot alias storage across those lifetimes.
+`runtime/weight/refitWeights.cpp` checks the exact named-weight set, dtype,
+count, device storage, and missing weights before refit. The completion path
+drains the explicit stream before releasing storage, including a false-return
+failure. `runtime/exec/engineExecutor.cpp` performs refit before context creation.
+A build without `ENABLE_EXPERIMENTAL_WEIGHTLESS=ON` rejects marked bundles;
+TensorRT RTX is outside this path.
+
 ## Profiles And Runtime Artifacts
 
 Text-like components receive separate context and generation optimization
 profiles. Profile construction is centralized in `core/builder.py`, but the
 shape set is driven by bindings declared by the concrete `NetworkModule`.
 Visual, audio, Code2Wav, and action components receive component-specific
-profiles derived from their own inputs and command limits.
+profiles derived from their own inputs and command limits. pi0.5 additionally
+owns the cross-component prefix capacity, paged K/V pool, fixed action horizon,
+and hoisted-condition profiles so its direct engines retain the same bindings
+as the experimental C++ policy runtime.
 
 Artifact ownership follows the model:
 

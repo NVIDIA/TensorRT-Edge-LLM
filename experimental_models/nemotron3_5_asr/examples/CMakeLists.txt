@@ -17,8 +17,7 @@
 add_executable(nemotron_asr_inference nemotron_asr_inference.cpp)
 target_link_libraries(
   nemotron_asr_inference PRIVATE nemotronAsrExperimental edgellmCore
-                                 exampleUtils commonLibraryExt)
+                                 edgellmApplicationSupport commonLibraryExt)
 target_include_directories(
-  nemotron_asr_inference PRIVATE ${CMAKE_SOURCE_DIR}/cpp ${COMMON_INCLUDE_DIRS}
-                                 ${CMAKE_SOURCE_DIR}/examples/utils)
+  nemotron_asr_inference PRIVATE ${CMAKE_SOURCE_DIR}/cpp ${COMMON_INCLUDE_DIRS})
 add_cross_build_link_options(nemotron_asr_inference)

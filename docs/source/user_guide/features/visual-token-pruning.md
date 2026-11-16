@@ -21,7 +21,7 @@ so existing engines work as-is.
   compacted before the engine executes; the decode path and CUDA graphs are untouched
 - Text tokens are never pruned; kept tokens retain their original absolute RoPE positions and
   generation continues as if nothing was removed
-- Disabled by default; enable per run with `--visualPrune`
+- Disabled by default; enable per run with `--visual-prune`
 - Measured on Qwen3-VL-4B (FP16, single image, 1995-token prefill):
 
 | Reduction ratio | Accuracy impact | Prefill speedup (Jetson Thor) | Prefill speedup (x86 Blackwell) |
@@ -34,23 +34,23 @@ so existing engines work as-is.
 ## Usage
 
 ```bash
-./build/examples/llm/llm_inference \
-  --engineDir engines/qwen3-vl-4b/llm \
-  --multimodalEngineDir engines/qwen3-vl-4b/visual \
-  --inputFile tests/test_cases/vlm_basic.json \
-  --outputFile output.json \
-  --visualPrune --dartReductionRatio 0.25
+./build/bin/llm_inference \
+  --engine-dir engines/qwen3-vl-4b/llm \
+  --multimodal-engine-dir engines/qwen3-vl-4b/visual \
+  --input-file tests/test_cases/vlm_basic.json \
+  --output-file output.json \
+  --visual-prune --dart-reduction-ratio 0.25
 ```
 
 ### Options
 
 | Flag | Default | Description |
 |---|---|---|
-| `--visualPrune` | off | Enable visual-token pruning |
-| `--visualPruneAlgo` | `dart` | Selection algorithm (custom algorithms register via `rt::registerVisualPruner`) |
-| `--dartReductionRatio` | 0.25 | Fraction of visual tokens to remove, in (0, 1) |
-| `--dartPivotImageTokens` | 4 | DART: number of image pivot tokens |
-| `--dartPivotTextTokens` | 4 | DART: number of text pivot tokens |
+| `--visual-prune` | off | Enable visual-token pruning |
+| `--visual-prune-algo` | `dart` | Selection algorithm (custom algorithms register via `rt::registerVisualPruner`) |
+| `--dart-reduction-ratio` | 0.25 | Fraction of visual tokens to remove, in (0, 1) |
+| `--dart-pivot-image-tokens` | 4 | DART: number of image pivot tokens |
+| `--dart-pivot-text-tokens` | 4 | DART: number of text pivot tokens |
 
 ### C++ API
 
@@ -64,7 +64,7 @@ runtime.setVisualPrunerConfig(config);   // before the first request
 
 ### Profiling
 
-With `--dumpProfile`, pruned tokens are reported separately from KV-cache reuse:
+With `--dump-profile`, pruned tokens are reported separately from KV-cache reuse:
 
 ```
 === LLM Prefill ===
@@ -79,7 +79,7 @@ Pruned Tokens (visual-token pruning): 990
 
 `examples/accuracy/scripts/run_dart_accuracy.py` compares accuracy with pruning off vs. one run
 per reduction ratio on a multiple-choice VLM dataset (MMStar / MMMU). It reports accuracy only;
-for latency numbers use `llm_inference --dumpProfile --warmup N` (warmup matters — cold-start
+for latency numbers use `llm_inference --dump-profile --warmup N` (warmup matters — cold-start
 and GPU-clock effects bias unwarmed single-pass timings):
 
 ```bash
@@ -119,8 +119,13 @@ the host. Total selector overhead is ~1–2 ms per prefill and is included in al
 Pruning is applied only when all of the following hold (it silently no-ops otherwise):
 
 - mRoPE VLM engine (Qwen2.5-VL / Qwen3-VL family) with visual input present
-- Batch size 1, fresh KV cache (not combined with system-prompt cache reuse)
-- Not combined with speculative decoding, the Omni Talker, or the VLA action runner
+- Fresh KV cache (not combined with KV cache reuse). Batched prefill is supported:
+  each request in the batch is pruned independently (per-slot selection, then one repack of the
+  batch buffers to the new padded length)
+- Not combined with the Omni Talker or the VLA action runner. Speculative decoding is
+  supported: the base and draft models both operate on the pruned sequence (host token ids and
+  raw multimodal feature rows are compacted alongside the embeddings, so draft prefill
+  re-embeds exactly what the base KV cache holds)
 - At least `minVisualTokens` (default 16) visual tokens in the request
 
 Quality is dataset-dependent: ratio 0.25 is a safe default; re-validate on your own workload
@@ -153,4 +158,4 @@ rt::registerVisualPruner("my-algo",
 
 The base class owns the guards and the buffer compaction; a selection-style algorithm only
 chooses which visual tokens survive. Select the algorithm at runtime with
-`--visualPruneAlgo my-algo` or `VisualPrunerConfig::algorithm`.
+`--visual-prune-algo my-algo` or `VisualPrunerConfig::algorithm`.

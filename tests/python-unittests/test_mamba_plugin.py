@@ -38,7 +38,9 @@ from dataclasses import dataclass
 
 import pytest
 from test_plugin_base import (DEPENDENCIES_AVAILABLE, IMPORT_ERROR,
-                              RAGGED_CASES, PluginRunner, assert_close,
+                              RAGGED_CASES, PluginRunner, _device_sm,
+                              assert_close, assert_compact_workspace,
+                              assert_execute_rejected, load_edgellm_plugins,
                               pf_int32, poison_padding)
 
 if DEPENDENCIES_AVAILABLE:
@@ -52,6 +54,27 @@ pytestmark = pytest.mark.skipif(
 DEV = "cuda"
 PLUGIN_NAME = "update_ssm_state"
 PLUGIN_VERSION = "1"
+
+
+def test_creator_accepts_official_sequential_chunk_marker():
+    logger = trt.Logger(trt.Logger.ERROR)
+    load_edgellm_plugins(logger)
+    creator = trt.get_plugin_registry().get_creator(PLUGIN_NAME,
+                                                    PLUGIN_VERSION, "")
+    assert creator is not None
+
+    plugin = creator.create_plugin(
+        PLUGIN_NAME,
+        trt.PluginFieldCollection([
+            pf_int32("dim", 64),
+            pf_int32("dstate", 128),
+            pf_int32("nheads", 8),
+            pf_int32("ngroups", 2),
+            pf_int32("chunk_size", 0),
+            pf_int32("use_spec_verify_state", 0),
+        ]), trt.TensorRTPhase.BUILD)
+
+    assert plugin is not None
 
 
 def selective_scan_ref(
@@ -130,13 +153,14 @@ def _supports_d80_blackwell():
     if not DEPENDENCIES_AVAILABLE or not torch.cuda.is_available():
         return False
     major, minor = torch.cuda.get_device_capability()
-    return major * 10 + minor in (100, 101, 110)
+    return major * 10 + minor in (100, 101, 103, 110)
 
 
 REQUIRES_D80_BLACKWELL = pytest.mark.skipif(
     not _supports_d80_blackwell(),
     reason=
-    "D80 SSD requires compiled Blackwell artifacts on SM100, SM101, or SM110")
+    "D80 SSD requires compiled Blackwell artifacts on SM100, SM101, SM103, or SM110"
+)
 
 
 @dataclass
@@ -153,9 +177,17 @@ class MambaConfig:
 class MambaRunner:
     """Builds + runs update_ssm_state for prefill (4D x) or decode (3D x)."""
 
-    def __init__(self, cfg: MambaConfig, prefill: bool):
+    def __init__(self,
+                 cfg: MambaConfig,
+                 prefill: bool,
+                 verify=False,
+                 shape_attributes=True):
         self.cfg = cfg
+        self.verify = verify
         self.prefill = prefill
+        # Without "dim" / "dstate" the plugin takes them from the input shapes,
+        # as for an ONNX node that omits them.
+        self.shape_attributes = shape_attributes
         self.runner = PluginRunner()
         self._build()
 
@@ -164,28 +196,18 @@ class MambaRunner:
         h, dim, n, g = c.nheads, c.head_dim, c.dstate, c.ngroups
         mb, ms = c.max_batch, c.max_seq
         F16, F32, I32 = trt.float16, trt.float32, trt.int32
-        if self.prefill:
-            x = ("x", F16, (-1, -1, h, dim))
-            B = ("B", F16, (-1, -1, g, n))
-            C = ("C", F16, (-1, -1, g, n))
-            dt = ("dt", F16, (-1, -1, h))
-            prof = {
-                "x": ((1, 1, h, dim), (1, 16, h, dim), (mb, ms, h, dim)),
-                "B": ((1, 1, g, n), (1, 16, g, n), (mb, ms, g, n)),
-                "C": ((1, 1, g, n), (1, 16, g, n), (mb, ms, g, n)),
-                "dt": ((1, 1, h), (1, 16, h), (mb, ms, h)),
-            }
-        else:
-            x = ("x", F16, (-1, h, dim))
-            B = ("B", F16, (-1, g, n))
-            C = ("C", F16, (-1, g, n))
-            dt = ("dt", F16, (-1, h))
-            prof = {
-                "x": ((1, h, dim), (1, h, dim), (mb, h, dim)),
-                "B": ((1, g, n), (1, g, n), (mb, g, n)),
-                "C": ((1, g, n), (1, g, n), (mb, g, n)),
-                "dt": ((1, h), (1, h), (mb, h)),
-            }
+        max_tokens = mb * ms if self.prefill else mb
+        opt_tokens = min(16, max_tokens) if self.prefill else mb
+        x = ("x", F16, (-1, h, dim))
+        B = ("B", F16, (-1, g, n))
+        C = ("C", F16, (-1, g, n))
+        dt = ("dt", F16, (-1, h))
+        prof = {
+            "x": ((1, h, dim), (opt_tokens, h, dim), (max_tokens, h, dim)),
+            "B": ((1, g, n), (opt_tokens, g, n), (max_tokens, g, n)),
+            "C": ((1, g, n), (opt_tokens, g, n), (max_tokens, g, n)),
+            "dt": ((1, h), (opt_tokens, h), (max_tokens, h)),
+        }
         input_specs = [
             x,
             ("A", F32, (h, )),
@@ -195,29 +217,47 @@ class MambaRunner:
             dt,
             ("dt_bias", F16, (h, )),
             ("state", F16, (-1, h, dim, n)),
-            ("context_lengths", I32, (-1, )),
-            ("state_start_index", I32, (-1, )),
+            ("query_lengths", I32, (-1, )),
+            ("query_start_offsets", I32, (-1, )),
+            ("state_indices", I32, (-1, )),
+            ("execution_phase_marker", I32, (-1, )),
+            ("context_sequence_count_carrier", I32, (-1, )),
         ]
         prof.update({
             "A": ((h, ), (h, ), (h, )),
             "D": ((h, ), (h, ), (h, )),
             "dt_bias": ((h, ), (h, ), (h, )),
             "state": ((1, h, dim, n), (1, h, dim, n), (mb, h, dim, n)),
-            "context_lengths": ((1, ), (1, ), (mb, )),
-            "state_start_index": ((0, ), (1, ), (mb, )),
+            "query_lengths": ((1, ), (mb, ), (mb, )),
+            "query_start_offsets": ((2, ), (mb + 1, ), (mb + 1, )),
+            "state_indices": ((1, ), (mb, ), (mb, )),
+            "execution_phase_marker":
+            ((1, ), (1 if self.prefill else 3, ), (8, )),
+            "context_sequence_count_carrier":
+            ((0, ), (mb if self.prefill else 0, ), (mb, )),
         })
+        if self.verify:
+            for name in ("tree_parent_ids", "tree_depths",
+                         "spec_verify_layout"):
+                input_specs.append((name, I32, (-1, )))
+                prof[name] = (((0, ), (1, ),
+                               (2, )) if name == "spec_verify_layout" else
+                              ((1, ), (opt_tokens, ), (max_tokens, )))
         self.runner.build(
             input_specs=input_specs,
-            output_names=["output", "state_out"],
+            output_names=["output", "state_out"] +
+            (["replay_da", "replay_x", "replay_b", "replay_dt"]
+             if self.verify else []),
             plugin_name=PLUGIN_NAME,
             plugin_version=PLUGIN_VERSION,
-            plugin_fields=[
-                pf_int32("dim", dim),
-                pf_int32("dstate", n),
-                pf_int32("nheads", h),
-                pf_int32("ngroups", g),
-                pf_int32("dt_softplus", int(c.dt_softplus)),
-            ],
+            plugin_fields=([pf_int32(
+                "dim", dim), pf_int32(
+                    "dstate", n)] if self.shape_attributes else []) + [
+                        pf_int32("nheads", h),
+                        pf_int32("ngroups", g),
+                        pf_int32("dt_softplus", int(c.dt_softplus)),
+                        pf_int32("use_spec_verify_state", int(self.verify)),
+                    ],
             profiles=prof,
         )
 
@@ -231,33 +271,270 @@ class MambaRunner:
             dt_bias,
             state,
             context_lengths,
-            state_start_index=None,
-            synchronize=True):
-        out = torch.empty_like(x)
-        state_out = torch.empty_like(state)
-        input_shapes = None
-        if state_start_index is None or state_start_index.numel() == 0:
-            # TensorRT requires a non-null address even when the runtime input shape is the cold-prefill [0] sentinel.
-            state_start_index = torch.empty(1, dtype=torch.int32, device=DEV)
-            input_shapes = {"state_start_index": (0, )}
+            state_indices=None,
+            synchronize=True,
+            layout=0,
+            parents=None,
+            depths=None,
+            cuda_graph=False,
+            restored=False):
+        batch = x.shape[0]
+        seq = x.shape[1] if x.dim() == 4 else 1
+        tokens = batch * seq
+        original_shape = x.shape
+        out = torch.empty((tokens, self.cfg.nheads, self.cfg.head_dim),
+                          dtype=x.dtype,
+                          device=DEV)
+        if state_indices is None or state_indices.numel() == 0:
+            state_indices = torch.arange(batch, dtype=torch.int32, device=DEV)
+        if layout:
+            phase = 5
+        elif self.prefill:
+            phase = 2 if restored else 1
+        else:
+            phase = 3
+        carrier_extent = batch if phase in (1, 2) else 0
+        input_shapes = ({
+            "context_sequence_count_carrier": (0, )
+        } if carrier_extent == 0 else None)
         bindings = {
-            "x": x,
-            "A": A,
-            "B": B,
-            "C": C,
-            "D": D,
-            "dt": dt,
-            "dt_bias": dt_bias,
-            "state": state,
-            "context_lengths": context_lengths,
-            "state_start_index": state_start_index,
-            "output": out,
-            "state_out": state_out,
+            "x":
+            x.reshape(tokens, self.cfg.nheads, self.cfg.head_dim),
+            "A":
+            A,
+            "B":
+            B.reshape(tokens, self.cfg.ngroups, self.cfg.dstate),
+            "C":
+            C.reshape(tokens, self.cfg.ngroups, self.cfg.dstate),
+            "D":
+            D,
+            "dt":
+            dt.reshape(tokens, self.cfg.nheads),
+            "dt_bias":
+            dt_bias,
+            "state":
+            state,
+            "query_lengths":
+            context_lengths,
+            "query_start_offsets":
+            torch.arange(0, tokens + 1, seq, dtype=torch.int32, device=DEV),
+            "state_indices":
+            state_indices,
+            "execution_phase_marker":
+            torch.empty(phase, dtype=torch.int32, device=DEV),
+            "context_sequence_count_carrier":
+            torch.empty(max(1, carrier_extent), dtype=torch.int32, device=DEV),
+            "output":
+            out,
+            "state_out":
+            state,
         }
-        self.runner.execute(bindings,
-                            input_shapes=input_shapes,
-                            synchronize=synchronize)
-        return out, state_out
+        input_shapes = input_shapes or {}
+        if self.verify:
+            if parents is None:
+                parents = torch.arange(-1,
+                                       seq - 1,
+                                       dtype=torch.int32,
+                                       device=DEV).repeat(batch)
+            if depths is None:
+                depths = torch.arange(seq, dtype=torch.int32,
+                                      device=DEV).repeat(batch)
+            bindings.update({
+                "tree_parent_ids":
+                parents,
+                "tree_depths":
+                depths,
+                "spec_verify_layout":
+                torch.empty(max(1, layout), dtype=torch.int32, device=DEV),
+                "replay_da":
+                torch.empty(tokens, self.cfg.nheads, device=DEV),
+                "replay_x":
+                torch.empty(tokens,
+                            self.cfg.nheads,
+                            self.cfg.head_dim,
+                            device=DEV),
+                "replay_b":
+                torch.empty(tokens,
+                            self.cfg.ngroups,
+                            self.cfg.dstate,
+                            device=DEV),
+                "replay_dt":
+                torch.empty(tokens, self.cfg.nheads, device=DEV),
+            })
+            input_shapes["spec_verify_layout"] = (layout, )
+        if cuda_graph:
+            initial = state.clone()
+            self.runner.execute(bindings, input_shapes=input_shapes)
+            state.copy_(initial)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                self.runner.execute(bindings,
+                                    input_shapes=input_shapes,
+                                    synchronize=False)
+            graph.replay()
+            torch.cuda.current_stream().synchronize()
+        else:
+            self.runner.execute(bindings,
+                                input_shapes=input_shapes,
+                                synchronize=synchronize)
+        self.last_replay = {
+            name: value
+            for name, value in bindings.items() if name.startswith("replay_")
+        }
+        return out.reshape(original_shape), state
+
+    def run_tokens(self, tokens, A, D, dt_bias, pool, query_lengths,
+                   state_indices, phase, num_prefill):
+        """Execute one step over an unpadded token run against a resident
+        state pool (updated in place); returns the output [T, h, dim].
+
+        ``tokens`` is (x, B, C, dt) token-major; sequence ``i`` owns
+        ``query_lengths[i]`` consecutive rows and pool row
+        ``state_indices[i]``.
+        """
+        x, B, C, dt = tokens
+        q_len = torch.tensor(query_lengths, dtype=torch.int32, device=DEV)
+        offsets = torch.zeros(len(query_lengths) + 1,
+                              dtype=torch.int32,
+                              device=DEV)
+        offsets[1:] = torch.cumsum(q_len, 0)
+        out = torch.empty_like(x)
+        bindings = {
+            "x":
+            x,
+            "A":
+            A,
+            "B":
+            B,
+            "C":
+            C,
+            "D":
+            D,
+            "dt":
+            dt,
+            "dt_bias":
+            dt_bias,
+            "state":
+            pool,
+            "query_lengths":
+            q_len,
+            "query_start_offsets":
+            offsets,
+            "state_indices":
+            torch.tensor(state_indices, dtype=torch.int32, device=DEV),
+            "execution_phase_marker":
+            torch.empty(phase, dtype=torch.int32, device=DEV),
+            "context_sequence_count_carrier":
+            torch.empty(max(1, num_prefill), dtype=torch.int32, device=DEV),
+            "output":
+            out,
+            "state_out":
+            pool,
+        }
+        input_shapes = {"context_sequence_count_carrier": (num_prefill, )}
+        if self.verify:
+            c, total = self.cfg, x.shape[0]
+            bindings.update({
+                "tree_parent_ids":
+                torch.full((total, ), -1, dtype=torch.int32, device=DEV),
+                "tree_depths":
+                torch.zeros(total, dtype=torch.int32, device=DEV),
+                "spec_verify_layout":
+                torch.empty(1, dtype=torch.int32, device=DEV),
+                "replay_da":
+                torch.empty(total, c.nheads, device=DEV),
+                "replay_x":
+                torch.empty(total, c.nheads, c.head_dim, device=DEV),
+                "replay_b":
+                torch.empty(total, c.ngroups, c.dstate, device=DEV),
+                "replay_dt":
+                torch.empty(total, c.nheads, device=DEV),
+            })
+            input_shapes["spec_verify_layout"] = (0, )
+        self.runner.execute(bindings, input_shapes=input_shapes)
+        return out
+
+
+def _spec_replay_output_shapes(*, context_profile: bool):
+    h, dim, n, g = 2, 64, 64, 1
+    token_profile = ((1, h, dim), (8, h, dim), (16, h, dim))
+    group_profile = ((1, g, n), (8, g, n), (16, g, n))
+    head_profile = ((1, h), (8, h), (16, h))
+    batch_profile = ((1, ), (2, ), (4, ))
+    phase = 1 if context_profile else 5
+    carrier_profile = (batch_profile if context_profile else
+                       ((0, ), (0, ), (0, )))
+    profiles = {
+        "x": token_profile,
+        "A": ((h, ), (h, ), (h, )),
+        "B": group_profile,
+        "C": group_profile,
+        "D": ((h, ), (h, ), (h, )),
+        "dt": head_profile,
+        "dt_bias": ((h, ), (h, ), (h, )),
+        "state": ((1, h, dim, n), (2, h, dim, n), (4, h, dim, n)),
+        "query_lengths": batch_profile,
+        "query_start_offsets": ((2, ), (3, ), (5, )),
+        "state_indices": batch_profile,
+        "execution_phase_marker": ((phase, ), (phase, ), (phase, )),
+        "context_sequence_count_carrier": carrier_profile,
+        "tree_parent_ids": ((1, ), (8, ), (16, )),
+        "tree_depths": ((1, ), (8, ), (16, )),
+        "spec_verify_layout": ((0, ), (1, ), (2, )),
+    }
+    runner = PluginRunner().build(
+        input_specs=[
+            ("x", trt.float16, (-1, h, dim)),
+            ("A", trt.float32, (h, )),
+            ("B", trt.float16, (-1, g, n)),
+            ("C", trt.float16, (-1, g, n)),
+            ("D", trt.float16, (h, )),
+            ("dt", trt.float16, (-1, h)),
+            ("dt_bias", trt.float16, (h, )),
+            ("state", trt.float16, (-1, h, dim, n)),
+            ("query_lengths", trt.int32, (-1, )),
+            ("query_start_offsets", trt.int32, (-1, )),
+            ("state_indices", trt.int32, (-1, )),
+            ("execution_phase_marker", trt.int32, (-1, )),
+            ("context_sequence_count_carrier", trt.int32, (-1, )),
+            ("tree_parent_ids", trt.int32, (-1, )),
+            ("tree_depths", trt.int32, (-1, )),
+            ("spec_verify_layout", trt.int32, (-1, )),
+        ],
+        output_names=[
+            "output", "state_out", "replay_da", "replay_u", "replay_b",
+            "replay_dt"
+        ],
+        plugin_name=PLUGIN_NAME,
+        plugin_version=PLUGIN_VERSION,
+        plugin_fields=[
+            pf_int32("dim", dim),
+            pf_int32("dstate", n),
+            pf_int32("nheads", h),
+            pf_int32("ngroups", g),
+            pf_int32("use_spec_verify_state", 1),
+        ],
+        profiles=profiles,
+    )
+    for name, (_, opt_shape, _) in profiles.items():
+        assert runner.context.set_input_shape(name, opt_shape)
+    return tuple(
+        tuple(runner.context.get_tensor_shape(name))
+        for name in ("replay_da", "replay_u", "replay_b", "replay_dt"))
+
+
+def test_spec_replay_outputs_are_empty_for_context_profile():
+    assert _spec_replay_output_shapes(context_profile=True) == ((0, 2), (0, 2,
+                                                                         64),
+                                                                (0, 1,
+                                                                 64), (0, 2))
+
+
+def test_spec_replay_outputs_keep_token_rows_for_verify_profile():
+    assert _spec_replay_output_shapes(context_profile=False) == ((8, 2), (8, 2,
+                                                                          64),
+                                                                 (8, 1,
+                                                                  64), (8, 2))
 
 
 def _rand_inputs(cfg: MambaConfig, b, s, gen, seq_dim=True):
@@ -394,7 +671,8 @@ def test_prefill_ssd(seq, batch):
 
 
 @pytest.mark.parametrize("restored", [False, True], ids=["cold", "restored"])
-def test_prefill_ssd_state_start_index_contract(restored):
+def test_prefill_ssd_resident_state_contract(restored):
+    """Cold and restored prefill preserve their recurrent-state semantics."""
     cfg = MambaConfig(max_batch=1, max_seq=128)
     seq = 128
     batch = 1
@@ -402,13 +680,10 @@ def test_prefill_ssd_state_start_index_contract(restored):
     r = MambaRunner(cfg, prefill=True)
     x, A, B, C, D, dt, dt_bias = _rand_inputs(cfg, batch, seq, gen)
     if restored:
-        state0 = (torch.randn(batch,
-                              cfg.nheads,
-                              cfg.head_dim,
-                              cfg.dstate,
-                              generator=gen,
-                              device=DEV) * 0.1).to(torch.float16)
-        state_start_index = torch.zeros(batch, dtype=torch.int32, device=DEV)
+        state0 = (torch.randn(
+            batch, cfg.nheads, cfg.head_dim, cfg.dstate, generator=gen) *
+                  0.1).to(device=DEV, dtype=torch.float16)
+        state_indices = torch.zeros(batch, dtype=torch.int32, device=DEV)
     else:
         state0 = torch.zeros(batch,
                              cfg.nheads,
@@ -416,10 +691,19 @@ def test_prefill_ssd_state_start_index_contract(restored):
                              cfg.dstate,
                              dtype=torch.float16,
                              device=DEV)
-        state_start_index = torch.empty(0, dtype=torch.int32, device=DEV)
+        state_indices = torch.empty(0, dtype=torch.int32, device=DEV)
     ctx = torch.full((batch, ), seq, dtype=torch.int32, device=DEV)
-    out, state_out = r.run(x, A, B, C, D, dt, dt_bias, state0.clone(), ctx,
-                           state_start_index)
+    out, state_out = r.run(x,
+                           A,
+                           B,
+                           C,
+                           D,
+                           dt,
+                           dt_bias,
+                           state0.clone(),
+                           ctx,
+                           state_indices,
+                           restored=restored)
     ref_y, ref_state = selective_scan_ref(x, A, B, C, dt, dt_bias, D, state0,
                                           cfg.ngroups, True, ctx)
     _check(cfg, out, state_out, ref_y, ref_state, ctx, 5e-2, 5e-2)
@@ -792,3 +1076,293 @@ def test_batch_invariance():
         L = seqlens[orig]
         assert_close(f"batch-inv-y[{new_i}]", out0[orig, :L], out1[new_i, :L])
     assert_close("batch-inv-state", st0[pcpu], st1)
+
+
+def test_one_verify_artifact_executes_inactive_chain_and_tree():
+    # Given one Mamba verify artifact, when switching layout with graphs on/off,
+    # then outputs follow ancestry, verify preserves state, and replay stores raw x.
+    cfg = MambaConfig(max_batch=1, max_seq=8)
+    runner = MambaRunner(cfg, prefill=True, verify=True)
+    x, A, B, C, D, dt, bias = _rand_inputs(cfg, 1, 4,
+                                           torch.Generator().manual_seed(273))
+    initial = torch.full((1, cfg.nheads, cfg.head_dim, cfg.dstate),
+                         0.25,
+                         dtype=torch.float16,
+                         device=DEV)
+    lengths = torch.tensor([4], dtype=torch.int32, device=DEV)
+    expected, expected_state = selective_scan_ref(x, A, B, C, dt, bias, D,
+                                                  initial, cfg.ngroups, True)
+    parents = torch.tensor([-1, 0, 0, 2], dtype=torch.int32, device=DEV)
+    depths = torch.tensor([0, 1, 1, 2], dtype=torch.int32, device=DEV)
+    tree_outputs = []
+    for path in ([0], [0, 1], [0, 2], [0, 2, 3]):
+        path_output, _ = selective_scan_ref(x[:, path], A, B[:, path],
+                                            C[:, path], dt[:, path], bias, D,
+                                            initial, cfg.ngroups, True)
+        tree_outputs.append(path_output[:, -1])
+    tree_expected = torch.stack(tree_outputs, dim=1)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for cuda_graph in (False, True):
+            for layout in (0, 1, 2):
+                actual, state = runner.run(
+                    x,
+                    A,
+                    B,
+                    C,
+                    D,
+                    dt,
+                    bias,
+                    initial.clone(),
+                    lengths,
+                    layout=layout,
+                    parents=parents if layout == 2 else None,
+                    depths=depths if layout == 2 else None,
+                    cuda_graph=cuda_graph)
+                assert_close("Mamba layout output",
+                             tree_expected if layout == 2 else expected,
+                             actual, 2e-2, 2e-2)
+                assert_close("Mamba resident state",
+                             initial if layout else expected_state, state,
+                             2e-2, 2e-2)
+                if layout:
+                    assert_close("Mamba raw x replay",
+                                 x.flatten(0, 1).float(),
+                                 runner.last_replay["replay_x"], 0, 0)
+
+
+# --------------------------------------------------------------------------- #
+# Compact phase 8: packed prefill rows first, then one decode row per sequence,
+# against a resident state pool with non-contiguous slots.
+# --------------------------------------------------------------------------- #
+# Packed SSD prefill has AOT kernels on these SMs.
+COMPACT_SSD_SMS = frozenset({100, 101, 103, 110, 120, 121})
+_SSD_POOL_ROWS = 6
+# (label, prefill [(slot, query_length, continued)], decode slots); the short
+# prefill sequences share 128-token chunks with their neighbours.
+_SSD_COMPACT_CASES = [
+    ("prefill_and_decode", [(4, 150, True), (1, 37, False),
+                            (2, 1, True)], [3, 0]),
+    ("short_prefill_only", [(2, 20, True), (5, 9, False), (0, 64, True)], []),
+    ("decode_only", [], [3, 0, 5]),
+    # Profile 0 upper bound of _ssd_compact_cfg: N = B = 6, T = T_max = 768,
+    # with the decode row after the largest prefill.
+    ("profile_upper_bound", [(0, 200, True), (1, 150, False), (2, 128, True),
+                             (3, 100, False), (4, 189, True)], [5]),
+    # Np = B = 6, T_p = T_max.
+    ("profile_upper_bound_prefill_only", [(0, 200, True), (1, 150, False),
+                                          (2, 128, True), (3, 100, False),
+                                          (4, 90, True), (5, 100, True)], []),
+]
+
+
+def _ssd_compact_cfg(head_dim, dstate=128):
+    return MambaConfig(nheads=8,
+                       head_dim=head_dim,
+                       dstate=dstate,
+                       ngroups=2,
+                       max_batch=_SSD_POOL_ROWS,
+                       max_seq=128)
+
+
+@pytest.fixture
+def compact_ssd_stream():
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        yield
+    stream.synchronize()
+
+
+@pytest.mark.skipif(_device_sm() not in COMPACT_SSD_SMS,
+                    reason="packed SSD prefill needs a supported AOT kernel")
+@pytest.mark.parametrize("head_dim,dstate,shape_attributes", [
+    (64, 128, True),
+    (80, 128, True),
+    (64, 64, True),
+    (64, 128, False),
+    pytest.param(80,
+                 64,
+                 True,
+                 marks=pytest.mark.skipif(_device_sm() not in {120, 121},
+                                          reason="SM12x packed variant")),
+    pytest.param(128,
+                 64,
+                 True,
+                 marks=pytest.mark.skipif(_device_sm() not in {120, 121},
+                                          reason="SM12x packed variant")),
+    pytest.param(128,
+                 128,
+                 True,
+                 marks=pytest.mark.skipif(_device_sm() not in {120, 121},
+                                          reason="SM12x packed variant")),
+],
+                         ids=[
+                             "d64_n128", "d80_n128", "d64_n64",
+                             "d64_n128_from_shapes", "d80_n64", "d128_n64",
+                             "d128_n128"
+                         ])
+@pytest.mark.parametrize("label,prefill,decode", _SSD_COMPACT_CASES)
+def test_compact_phase_matches_separate_prefill_and_decode(
+        label, prefill, decode, head_dim, dstate, shape_attributes,
+        compact_ssd_stream):
+    """Phase 8 equals separate execution for every Blackwell head/state
+    variant, also when head and state dims come from the input shapes: each
+    prefill sequence (fresh or continued from its resident state, several
+    sharing one chunk) matches the sequential reference, the decode rows and
+    their states match a phase 3 step bit for bit, also without prefill rows,
+    slots outside the step are untouched, and the profile 0 upper bound runs."""
+    cfg = _ssd_compact_cfg(head_dim, dstate)
+    runner = MambaRunner(cfg, prefill=True, shape_attributes=shape_attributes)
+    gen = torch.Generator().manual_seed(4100 + head_dim + dstate +
+                                        len(prefill))
+    query_lengths = [q for _, q, _ in prefill] + [1] * len(decode)
+    slots = [slot for slot, _, _ in prefill] + decode
+    x, A, B, C, D, dt, dt_bias = _rand_inputs(cfg, 1, sum(query_lengths), gen)
+    tokens = (x[0], B[0], C[0], dt[0])
+    pool = (torch.randn((_SSD_POOL_ROWS, cfg.nheads, cfg.head_dim, cfg.dstate),
+                        generator=gen) * 0.5).to(torch.float16).to(DEV)
+    for slot, _, continued in prefill:
+        if not continued:
+            pool[slot].zero_()
+    initial = pool.clone()
+
+    out = runner.run_tokens(tokens, A, D, dt_bias, pool, query_lengths, slots,
+                            8, len(prefill))
+
+    offset = 0
+    for slot, q_len, _ in prefill:
+        rows = slice(offset, offset + q_len)
+        ref_y, ref_state = selective_scan_ref(x[:, rows], A, B[:, rows],
+                                              C[:, rows], dt[:, rows], dt_bias,
+                                              D, initial[slot:slot + 1],
+                                              cfg.ngroups, cfg.dt_softplus)
+        assert_close(f"compact[{label}].y[slot{slot}]", ref_y[0], out[rows],
+                     5e-2, 5e-2)
+        assert_close(f"compact[{label}].state[slot{slot}]", ref_state[0],
+                     pool[slot], 5e-2, 5e-2)
+        offset += q_len
+    if decode:
+        ref_pool = initial.clone()
+        ref_out = runner.run_tokens(tuple(t[offset:] for t in tokens), A, D,
+                                    dt_bias, ref_pool, [1] * len(decode),
+                                    decode, 3, 0)
+        assert torch.equal(ref_out, out[offset:]), \
+            f"compact[{label}]: decode rows differ from phase 3"
+        assert torch.equal(ref_pool[decode], pool[decode]), \
+            f"compact[{label}]: decode states differ from phase 3"
+    untouched = sorted(set(range(_SSD_POOL_ROWS)) - set(slots))
+    assert torch.equal(pool[untouched], initial[untouched]), \
+        f"compact[{label}]: slots outside the step changed"
+
+
+@pytest.mark.parametrize("head_dim,verify,shape", [
+    (64, True, "8 heads, head dim 64, state size 128, spec-verify state"),
+    pytest.param(128,
+                 False,
+                 "8 heads, head dim 128, state size 128",
+                 marks=pytest.mark.skipif(
+                     _device_sm() in {120, 121},
+                     reason="D128 has SM12x packed kernels")),
+    pytest.param(256,
+                 False,
+                 "8 heads, head dim 256, state size 128",
+                 marks=pytest.mark.skipif(_device_sm() not in {120, 121},
+                                          reason="SM12x unsupported shape")),
+],
+                         ids=[
+                             "d64_spec_verify", "d128_no_packed_kernel",
+                             "d256_no_packed_kernel"
+                         ])
+def test_compact_phase_rejected_for_unsupported_layer(capfd, head_dim, verify,
+                                                      shape,
+                                                      compact_ssd_stream):
+    """On every GPU, phase 8 on a spec-verify layer or a head/state dim without
+    a packed SSD kernel fails enqueue with the unsupported-layer error, which
+    names the layer and its shape, and leaves the resident state untouched."""
+    cfg = _ssd_compact_cfg(head_dim)
+    runner = MambaRunner(cfg, prefill=True, verify=verify)
+    gen = torch.Generator().manual_seed(4200 + head_dim)
+    x, A, B, C, D, dt, dt_bias = _rand_inputs(cfg, 1, 8, gen)
+    pool = torch.randn((_SSD_POOL_ROWS, cfg.nheads, cfg.head_dim, cfg.dstate),
+                       generator=gen).to(torch.float16).to(DEV)
+    initial = pool.clone()
+    message = (
+        f"update_ssm_state '{PLUGIN_NAME}' ({shape}): compact execution is not "
+        "supported for this layer on this GPU.")
+    tokens = (x[0], B[0], C[0], dt[0])
+    assert_execute_rejected(
+        capfd, message, lambda: runner.run_tokens(tokens, A, D, dt_bias, pool,
+                                                  [7, 1], [2, 4], 8, 1))
+    assert torch.equal(pool, initial), \
+        "phase 8 rejection must not touch the resident state"
+
+
+@pytest.mark.parametrize("verify", [False, True], ids=["plain", "spec_verify"])
+def test_build_reports_whether_the_layer_reserved_the_compact_workspace(
+        capfd, verify):
+    """The engine build reports a head dim 64, state size 128 layer as
+    reserving the compact workspace exactly where it accepts compact
+    execution: on the packed SSD SMs without spec-verify state, and nowhere
+    with it; a layer that does not reserve it is named in a WARNING."""
+    runner = MambaRunner(_ssd_compact_cfg(64), prefill=True, verify=verify)
+    assert_compact_workspace(runner.runner, not verify
+                             and _device_sm() in COMPACT_SSD_SMS, capfd)
+
+
+@pytest.mark.parametrize("restored", [False, True], ids=["cold", "restored"])
+@pytest.mark.parametrize("batch", [1, 2], ids=["bs1", "bs2"])
+@pytest.mark.parametrize(
+    "head_dim,dstate", [
+        (64, 64),
+        (64, 128),
+        pytest.param(80, 128, marks=REQUIRES_D80_BLACKWELL),
+        (128, 128),
+    ],
+    ids=["d64_n64", "d64_n128", "d80_n128", "generic_d128_n128"])
+def test_prefill_ssd_indexed_cold_and_restored(restored, batch, head_dim,
+                                               dstate):
+    """Prefill preserves indexed cold/restored state and inactive pool rows."""
+    seq = 128
+    pool_rows = batch + 2
+    cfg = MambaConfig(head_dim=head_dim,
+                      dstate=dstate,
+                      max_batch=pool_rows,
+                      max_seq=seq)
+    runner = MambaRunner(cfg, prefill=True)
+    gen = torch.Generator().manual_seed(4700 + head_dim + batch)
+    x, A, B, C, D, dt, dt_bias = _rand_inputs(cfg, batch, seq, gen)
+    A.fill_(-0.02)
+    dt_bias.fill_(-3.0)
+    slots = [pool_rows - 1] if batch == 1 else [pool_rows - 1, 1]
+    indices = torch.tensor(slots, dtype=torch.int32, device=DEV)
+    initial = (
+        torch.randn(pool_rows, cfg.nheads, head_dim, dstate, generator=gen) *
+        0.5).to(device=DEV, dtype=torch.float16)
+    if not restored:
+        initial[indices] = 0
+    elif batch == 2:
+        initial[slots[-1]].zero_()
+    lengths = torch.full((batch, ), seq, dtype=torch.int32, device=DEV)
+    if batch == 2:
+        lengths[-1] = seq // 2
+    selected = initial.index_select(0, indices)
+    expected_y, expected_state = selective_scan_ref(x, A, B, C, dt, dt_bias, D,
+                                                    selected, cfg.ngroups,
+                                                    True, lengths)
+    output, actual = runner.run(x,
+                                A,
+                                B,
+                                C,
+                                D,
+                                dt,
+                                dt_bias,
+                                initial.clone(),
+                                lengths,
+                                indices,
+                                restored=restored)
+    _check(cfg, output, actual.index_select(0, indices), expected_y,
+           expected_state, lengths, 5e-2, 5e-2)
+    untouched = [i for i in range(pool_rows) if i not in slots]
+    assert torch.equal(actual[untouched], initial[untouched])

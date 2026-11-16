@@ -100,7 +100,7 @@ public:
     //! \param uncondEmbeds Optional FLOAT16 unconditional (empty-prompt) embeddings [B,S',hidden] for CFG;
     //!                     nullptr (or guidance == 1) runs the single-forward conditional path.
     std::vector<float> generatePolicy(rt::Tensor const& pixelValues, rt::Tensor const& inputsEmbeds,
-        rt::Tensor const* uncondEmbeds, cudaStream_t stream);
+        rt::Tensor const* uncondEmbeds, std::vector<float> const& currentState, cudaStream_t stream);
 
 private:
     //! \brief Run the UND prefill engine over the prompt embeddings, writing per-layer K/V into the

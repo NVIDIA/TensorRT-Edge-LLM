@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Python plugin tests compare TensorRT output with a PyTorch reference. They do
+# not use the ONNX exporter, ModelOpt, server, or multimodal tool dependencies.
+numpy>=2.2.6,<3
+torch==2.14.0

@@ -33,51 +33,21 @@ struct KVLayerInfo
     int32_t maxSeqLen;  //!< Active-slot row capacity (capPadded)
 };
 
-/**
- * @brief Generic tensor compaction along batch dimension
- *
- * This kernel compacts a tensor by removing evicted batches.
- *
- * @param src               Source tensor (const input)
- * @param batchMapping      [oldActiveBatch] GPU tensor (const input), mapping[i] = newBatchIdx or -1
- * @param dst               Destination tensor (output, can be same as src for in-place operation)
- * @param oldActiveBatch    Number of batches before eviction
- * @param newActiveBatch    Number of batches after eviction
- * @param stream            CUDA stream
- *
- * @note Assumes batch dimension is the first dimension (dim 0)
- * @note For in-place operation, pass the same tensor as both src and dst
- * @throws std::runtime_error if tensors are not located on the GPU, or tensor shapes are invalid
- */
+//! Compact a stable old-to-new batch mapping in place. Surviving rows must retain order, so every mapped index is no
+//! greater than its source index and the surviving destination indices are contiguous.
+//! `batchMapping[i]` is the destination row or -1 for an evicted row. The batch dimension must be dimension zero.
 void compactTensorBatch(rt::Tensor const& src, rt::Tensor const& batchMapping, rt::Tensor& dst, int32_t oldActiveBatch,
     int32_t newActiveBatch, cudaStream_t stream);
 
-/**
- * @brief Batched in-place KV pool compaction across a headDim group, moving only live prefixes.
- *
- * One grouped launch covers every layer in `layerInfos` (all sharing `headDim`), K and V halves of
- * the active-slot K/V views included. For each moved row only the contiguous live prefix
- * (`liveLengths[oldBatchIdx] * numKVHeads * headDim` elements) is copied with vectorized
- * loads/stores; padding beyond the live length is left untouched. Scheduled CTAs are proportional
- * to the number of layers (not the allocated capacity), and identity (`oldActiveBatch ==
- * newActiveBatch`) or all-evicted (`newActiveBatch == 0`) calls return without launching.
- *
- * @param layerInfos        [numLayers] GPU array of KVLayerInfo for one headDim group
- * @param batchMapping      [oldActiveBatch] GPU tensor (const input), mapping[i] = newBatchIdx or -1
- * @param liveLengths       [oldActiveBatch] GPU INT32 tensor (const input), live token length per old batch slot
- * @param numLayers         Number of layers in this group
- * @param headDim           Head dimension shared by all layers in this group
- * @param kvPoolPages       Physical K-page count; determines the V-half offset
- * @param kvCacheType       KV pool dtype (kHALF or kFP8); selects the copy element type
- * @param oldActiveBatch    Number of batches before eviction
- * @param newActiveBatch    Number of batches after eviction
- * @param stream            CUDA stream
- *
- * @throws std::invalid_argument for unsupported kvCacheType
- */
-void compactKVCacheBatched(KVLayerInfo const* layerInfos, rt::Tensor const& batchMapping, rt::Tensor const& liveLengths,
-    int32_t numLayers, int32_t headDim, int32_t kvPoolPages, nvinfer1::DataType kvCacheType, int32_t oldActiveBatch,
+//! Compact execution-owned sequence blocks while preserving a flattened token-major leading dimension.
+//! The input may be batch-major `[B, ...]` or entry-padded token-major `[B * rowsPerSequence, ...]`.
+void compactExecutionTensorBatch(rt::Tensor& tensor, rt::Tensor const& batchMapping, int32_t oldActiveBatch,
     int32_t newActiveBatch, cudaStream_t stream);
+
+//! Compact per-sequence absolute execution-row indices and rebase them to the compacted sequence slots.
+//! Unlike logical positions and resident indices, these values include the old execution-slot row base.
+void compactExecutionRowIndices(rt::Tensor& indices, rt::Tensor const& batchMapping, int32_t oldActiveBatch,
+    int32_t newActiveBatch, int32_t executionRowsPerSequence, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

@@ -1,0 +1,121 @@
+{
+    "batch_size": 1,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 1,
+    "max_generate_length": 256,
+    "requests": [
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Give me a person record with a name and an age."
+                }
+            ],
+            "guided_decoding": {
+                "json_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string"
+                        },
+                        "age": {
+                            "type": "integer"
+                        }
+                    },
+                    "required": [
+                        "name",
+                        "age"
+                    ]
+                }
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Describe a cat as a small JSON object with a name and an age."
+                }
+            ],
+            "guided_decoding": {
+                "json_object": true
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "What is an email address for support?"
+                }
+            ],
+            "guided_decoding": {
+                "regex": "[a-z]+@[a-z]+\\.(com|org)"
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Answer with a or b."
+                }
+            ],
+            "guided_decoding": {
+                "ebnf": "root ::= \"a\" | \"b\""
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Call the weather tool for Paris."
+                }
+            ],
+            "guided_decoding": {
+                "structural_tag": {
+                    "type": "structural_tag",
+                    "format": {
+                        "type": "triggered_tags",
+                        "triggers": [
+                            "<function="
+                        ],
+                        "tags": [
+                            {
+                                "begin": "<function=get_weather>",
+                                "content": {
+                                    "type": "json_schema",
+                                    "json_schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "city": {
+                                                "type": "string"
+                                            }
+                                        },
+                                        "required": [
+                                            "city"
+                                        ]
+                                    }
+                                },
+                                "end": "</function>"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Is the sky blue? Answer with yes, no, or maybe."
+                }
+            ],
+            "guided_decoding": {
+                "choice": [
+                    "yes",
+                    "no",
+                    "maybe"
+                ]
+            }
+        }
+    ]
+}

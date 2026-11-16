@@ -17,6 +17,7 @@
 
 #include "runtime/state/sharedResources.h"
 
+#include "common/bindingNames.h"
 #include "common/checkMacros.h"
 
 #include <algorithm>
@@ -37,11 +38,12 @@ bool needsBaseVerifyIntermediateStates(DeploymentConfig const& bundle)
     switch (bundle.base.specDecodeType)
     {
     case SpecDecodeMode::kMTP:
+    case SpecDecodeMode::kEAGLE:
     case SpecDecodeMode::kDFlash:
     case SpecDecodeMode::kJetSpec:
+    case SpecDecodeMode::kDomino:
     case SpecDecodeMode::kDSpark: return true;
     case SpecDecodeMode::kGemma4MTP:
-    case SpecDecodeMode::kEAGLE:
     case SpecDecodeMode::kNONE: return false;
     }
     return false;
@@ -52,7 +54,7 @@ namespace
 bool isDFlashDDTreeShape(DeploymentConfig const& bundle)
 {
     return bundle.specConfig.has_value() && isCachedBlockDraftMode(bundle.base.specDecodeType)
-        && bundle.specConfig->draftingTopK > 1;
+        && bundle.specConfig->draftTopK > 1;
 }
 
 int32_t baseVerifyIntermediateSeqLen(DeploymentConfig const& bundle)
@@ -63,26 +65,100 @@ int32_t baseVerifyIntermediateSeqLen(DeploymentConfig const& bundle)
     }
     if (!isCachedBlockDraftMode(bundle.base.specDecodeType))
     {
-        return bundle.specConfig->maxVerifySize;
+        return bundle.specConfig->maxVerifyTokens;
     }
-    return isDFlashDDTreeShape(bundle) ? bundle.specConfig->verifySize : bundle.specConfig->dflashBlockSize;
+    // A DDTree grafting round verifies jumpVerifyTokenCount nodes; a linear block never widens.
+    return isDFlashDDTreeShape(bundle) ? bundle.specConfig->jumpVerifyTokenCount : bundle.specConfig->draftBlockSize;
+}
+
+void initializeRopeCaches(SharedResources& resources, LLMEngineConfig const& cfg, cudaStream_t stream)
+{
+    if (cfg.useDualRope)
+    {
+        check::check(
+            cfg.slidingRopeConfig.type != RopeType::kLongRope && cfg.fullRopeConfig.type != RopeType::kLongRope,
+            "LongRope is not supported with dual RoPE bindings");
+        resources.ropePool.getOrCreate(cfg.slidingRopeConfig, cfg.slidingRotaryDim, cfg.maxKVCacheCapacity, stream);
+        resources.ropePool.getOrCreate(cfg.fullRopeConfig, cfg.fullRotaryDim, cfg.maxKVCacheCapacity, stream);
+    }
+    else if (cfg.ropeConfig.type != RopeType::kMRope)
+    {
+        resources.ropePool.getOrCreate(cfg.ropeConfig, cfg.rotaryDim, cfg.maxKVCacheCapacity, stream);
+    }
 }
 } // namespace
 
 void allocateZeroBuffer(SharedResources& res, int64_t bytes)
 {
-    res.zeroBuffer = Tensor({bytes}, DeviceType::kGPU, nvinfer1::DataType::kUINT8, "SharedResources::zeroBuffer");
+    res.zeroBuffer = Tensor({bytes}, DeviceType::kGPU, trt_edgellm::DataType::kUINT8, "SharedResources::zeroBuffer");
     CUDA_CHECK(cudaMemset(res.zeroBuffer.rawPointer(), 0, res.zeroBuffer.getMemoryCapacity()));
 }
 
-//! Build the initially identity-mapped page table sized from `kv`.
+//! Build the initial full-capacity identity table. Context reuse may replace rows after admission.
 std::unique_ptr<KVPageTable> makeIdentityPageTable(KVCacheManager const& kv, cudaStream_t stream)
 {
-    auto table
-        = std::make_unique<KVPageTable>(kv.getConfig().maxBatchSize, pagesPerSlot(kv.maxCapPadded()), kv.numPages());
+    auto table = std::make_unique<KVPageTable>(
+        kv.getConfig().maxBatchSize, computeMaxPagesPerSeq(kv.getConfig().maxSequenceLength), kv.numPages());
     table->setIdentity();
     table->upload(stream);
     return table;
+}
+
+//! Build an independent sparse SWA table with full logical width and the SWA pool's bounded ID space.
+std::unique_ptr<KVPageTable> makeSwaPageTable(KVCacheManager const& kv, cudaStream_t stream)
+{
+    if (!kv.hasReducedKVCache())
+    {
+        return nullptr;
+    }
+
+    int32_t swaNumPages = 0;
+    for (int32_t layerIdx = 0; layerIdx < kv.numLayers(); ++layerIdx)
+    {
+        if (isReducedKvCacheCapacity(kv.getLayerConfig(layerIdx).kvCacheCapacity, kv.getConfig().maxSequenceLength))
+        {
+            swaNumPages = kv.numPages(layerIdx);
+            break;
+        }
+    }
+    check::check(swaNumPages > 0, "SharedResources: reduced KV manager has no SWA pool.");
+
+    auto table = std::make_unique<KVPageTable>(kv.getConfig().maxBatchSize,
+        computeMaxPagesPerSeq(kv.getConfig().maxSequenceLength), swaNumPages, KVPageTable::Mode::kSparseWindow);
+    // Leave logical entries unused until the runtime SWA cache manager admits a request.
+    table->upload(stream);
+    return table;
+}
+
+void appendPageTables(SharedResources& resources, KVCacheManager const& kv, cudaStream_t stream)
+{
+    resources.kvPageTables.push_back(makeIdentityPageTable(kv, stream));
+    resources.swaKVPageTables.push_back(makeSwaPageTable(kv, stream));
+}
+
+bool hasReducedKVLayer(LLMEngineConfig const& cfg)
+{
+    return std::any_of(cfg.kvLayerConfigs.begin(), cfg.kvLayerConfigs.end(), [&](KVLayerConfig const& layerConfig) {
+        return isReducedKvCacheCapacity(layerConfig.kvCacheCapacity, cfg.maxKVCacheCapacity);
+    });
+}
+
+//! The Qwen4-Exp n-gram injection's dilated convolution keeps one state per injected layer. It is
+//! an auxiliary state rather than a recurrent-layer one because ple_layer_ids may name a layer of
+//! any type, and because the injected layer usually already has a mixer state of its own.
+std::vector<rt::HybridCacheManager::AuxConvStateConfig> makeNgramConvStates(LLMEngineConfig const& cfg)
+{
+    std::vector<rt::HybridCacheManager::AuxConvStateConfig> states;
+    states.reserve(cfg.ngramLayers.size());
+    for (int32_t layer : cfg.ngramLayers)
+    {
+        states.push_back({/*.absLayerIdx=*/layer,
+            /*.stateIdx=*/binding_names::kNgramConvStateIdx,
+            /*.convDim=*/cfg.ngramConvDim,
+            /*.convWidth=*/cfg.ngramConvStateLen(),
+            /*.dataType=*/cfg.ngramConvStateDtype});
+    }
+    return states;
 }
 
 std::unique_ptr<SharedResources> SharedResources::createForLLM(
@@ -100,6 +176,8 @@ std::unique_ptr<SharedResources> SharedResources::createForLLM(
         /*.layerConfigs=*/cfg.kvLayerConfigs,
         /*.kvCacheType=*/cfg.kvCacheDtype,
         /*.numPages=*/cfg.kvPoolPages,
+        /*.numSwaPages=*/cfg.numSwaPages,
+        /*.useBoundedSwaKVCache=*/cfg.usesBoundedSwaKVCache(),
     };
     rt::MambaCacheManager::Config mambaCfg{
         /*.numRecurrentLayers=*/cfg.numLinearAttnLayers,
@@ -120,28 +198,12 @@ std::unique_ptr<SharedResources> SharedResources::createForLLM(
         /*.kvConfig=*/std::move(kvCfg),
         /*.mambaConfig=*/std::move(mambaCfg),
         /*.maxBatchSize=*/cfg.maxSupportedBatchSize,
+        /*.auxConvStateConfigs=*/makeNgramConvStates(cfg),
     };
     resources->cacheManagers.push_back(std::make_unique<HybridCacheManager>(hybridCfg, stream));
-    resources->kvPageTables.push_back(
-        makeIdentityPageTable(resources->cacheManagers.back()->getKVCacheManager(), stream));
+    appendPageTables(*resources, resources->cacheManagers.back()->getKVCacheManager(), stream);
 
-    // RoPE cache
-    // For MRope, the cache is stored in PipelineIO (initialized below).
-    // For standard / dynamic / LongRope / NoRope, getOrCreate handles initialization.
-    if (cfg.useDualRope)
-    {
-        check::check(
-            cfg.slidingRopeConfig.type != RopeType::kLongRope && cfg.fullRopeConfig.type != RopeType::kLongRope,
-            "LongRope is not supported with dual RoPE bindings");
-        resources->ropePool.getOrCreate(cfg.slidingRopeConfig, cfg.slidingRotaryDim, cfg.maxKVCacheCapacity, stream);
-        resources->ropePool.getOrCreate(cfg.fullRopeConfig, cfg.fullRotaryDim, cfg.maxKVCacheCapacity, stream);
-    }
-    else if (cfg.ropeConfig.type != RopeType::kMRope)
-    {
-        // Standard / Dynamic / LongRope / NoRope — getOrCreate handles initialization.
-        resources->ropePool.getOrCreate(cfg.ropeConfig, cfg.rotaryDim, cfg.maxKVCacheCapacity, stream);
-    }
-    // MRope: handled via PipelineIO::mropeCosSin below.
+    initializeRopeCaches(*resources, cfg, stream);
 
     // LoRA
     if (cfg.maxSupportedLoraRank > 0)
@@ -164,13 +226,13 @@ std::unique_ptr<SharedResources> SharedResources::createForLLM(
 
     // Zero buffer — sized to the largest shape any consumer binds:
     //  * deepstack_embeds_* during non-prefill phases
-    //    (batch × seqLen × hiddenSize HALF; seqLen = maxVerifyTreeSize for SpecDecode, else 1)
+    //    (batch × seqLen × hiddenSize HALF; seqLen = maxSpecVerifyTokens for SpecDecode, else 1)
     //  * attention mask / pos ids on paths that still need a dummy bind
     //  * LoRA dummy weights on resetWeights paths
     // kvcache_start_index is now a registry-bound tensor and does not need a dummy.
     {
         int64_t const maxBatch = cfg.maxSupportedBatchSize;
-        int64_t const deepstackSeqLen = cfg.isSpecDecodeBase ? std::max(cfg.maxVerifyTreeSize, 1) : 1;
+        int64_t const deepstackSeqLen = cfg.isSpecDecodeBase ? std::max(cfg.maxSpecVerifyTokens, 1) : 1;
         int64_t deepstackSize = 0;
         if (!cfg.isDiffusionBackbone && cfg.numDeepstackFeatures > 0)
         {
@@ -178,6 +240,11 @@ std::unique_ptr<SharedResources> SharedResources::createForLLM(
         }
         int64_t const zeroBufferBytes = std::max(deepstackSize, static_cast<int64_t>(256));
         allocateZeroBuffer(*resources, zeroBufferBytes);
+    }
+    if (cfg.supportsBoundedSwaKVCache())
+    {
+        resources->swaKVCacheMode
+            = Tensor({1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32, "SharedResources::swaKVCacheMode");
     }
 
     return resources;
@@ -191,14 +258,17 @@ std::unique_ptr<SharedResources> SharedResources::createForSpecDecode(Deployment
         bundle.draft.has_value(), "SharedResources::createForSpecDecode requires DeploymentConfig.draft to be set");
     check::check(bundle.specConfig.has_value(),
         "SharedResources::createForSpecDecode requires DeploymentConfig.specConfig to be set");
+    check::check(!hasReducedKVLayer(bundle.base),
+        "SharedResources::createForSpecDecode does not support SWA-capable KV configuration on the base engine.");
+    check::check(!bundle.draft.has_value() || !hasReducedKVLayer(*bundle.draft),
+        "SharedResources::createForSpecDecode does not support SWA-capable KV configuration on the draft engine.");
 
     auto resources = std::make_unique<SharedResources>();
 
-    int32_t const maxDraftProposalSize = bundle.specConfig->maxDraftProposalSize;
+    int32_t const maxDraftTokens = bundle.specConfig->maxDraftTokens;
 
-    // Base hybrid cache manager (index 0). Hybrid spec-decode base verification
-    // writes per-token recurrent/conv snapshots; after accept, the decoder
-    // scatters only the accepted prefix into the persistent state pools.
+    // Base hybrid cache manager (index 0). Verification writes recurrent replay stashes
+    // and conv snapshots; commit applies only the accepted path to persistent state pools.
     {
         int32_t const baseMaxIntermediateSeqLen = baseVerifyIntermediateSeqLen(bundle);
         rt::KVCacheManager::Config kvCfg{
@@ -208,6 +278,8 @@ std::unique_ptr<SharedResources> SharedResources::createForSpecDecode(Deployment
             /*.layerConfigs=*/bundle.base.kvLayerConfigs,
             /*.kvCacheType=*/bundle.base.kvCacheDtype,
             /*.numPages=*/bundle.base.kvPoolPages,
+            /*.numSwaPages=*/bundle.base.numSwaPages,
+            /*.useBoundedSwaKVCache=*/bundle.base.usesBoundedSwaKVCache(),
         };
         rt::MambaCacheManager::Config mambaCfg{
             /*.numRecurrentLayers=*/bundle.base.numLinearAttnLayers,
@@ -228,10 +300,10 @@ std::unique_ptr<SharedResources> SharedResources::createForSpecDecode(Deployment
             /*.kvConfig=*/std::move(kvCfg),
             /*.mambaConfig=*/std::move(mambaCfg),
             /*.maxBatchSize=*/bundle.base.maxSupportedBatchSize,
+            /*.auxConvStateConfigs=*/makeNgramConvStates(bundle.base),
         };
         resources->cacheManagers.push_back(std::make_unique<HybridCacheManager>(hybridCfg, stream));
-        resources->kvPageTables.push_back(
-            makeIdentityPageTable(resources->cacheManagers.back()->getKVCacheManager(), stream));
+        appendPageTables(*resources, resources->cacheManagers.back()->getKVCacheManager(), stream);
     }
 
     // Draft hybrid cache manager (index 1). Gemma4 MTP assistant reads the
@@ -250,6 +322,8 @@ std::unique_ptr<SharedResources> SharedResources::createForSpecDecode(Deployment
             /*.layerConfigs=*/bundle.draft->kvLayerConfigs,
             /*.kvCacheType=*/bundle.draft->kvCacheDtype,
             /*.numPages=*/bundle.draft->kvPoolPages,
+            /*.numSwaPages=*/bundle.draft->numSwaPages,
+            /*.useBoundedSwaKVCache=*/bundle.draft->usesBoundedSwaKVCache(),
         };
         rt::MambaCacheManager::Config mambaCfg{
             /*.numRecurrentLayers=*/0,
@@ -260,36 +334,22 @@ std::unique_ptr<SharedResources> SharedResources::createForSpecDecode(Deployment
             /*.convDim=*/0,
             /*.convKernel=*/0,
             /*.maxIntermediateSeqLen=*/0,
-            /*.recurrentStateType=*/nvinfer1::DataType::kHALF,
-            /*.convStateType=*/nvinfer1::DataType::kHALF,
+            /*.recurrentStateType=*/trt_edgellm::DataType::kHALF,
+            /*.convStateType=*/trt_edgellm::DataType::kHALF,
         };
         rt::HybridCacheManager::Config hybridCfg{
             /*.layerTypes=*/bundle.draft->layerTypes,
             /*.kvConfig=*/std::move(kvCfg),
             /*.mambaConfig=*/std::move(mambaCfg),
             /*.maxBatchSize=*/bundle.draft->maxSupportedBatchSize,
+            /*.auxConvStateConfigs=*/makeNgramConvStates(*bundle.draft),
         };
         resources->cacheManagers.push_back(std::make_unique<HybridCacheManager>(hybridCfg, stream));
-        resources->kvPageTables.push_back(
-            makeIdentityPageTable(resources->cacheManagers.back()->getKVCacheManager(), stream));
+        appendPageTables(*resources, resources->cacheManagers.back()->getKVCacheManager(), stream);
     }
 
-    // RoPE cache (shared — base and draft use same RoPE config)
-    if (bundle.base.useDualRope)
-    {
-        check::check(bundle.base.slidingRopeConfig.type != RopeType::kLongRope
-                && bundle.base.fullRopeConfig.type != RopeType::kLongRope,
-            "LongRope is not supported with dual RoPE bindings");
-        resources->ropePool.getOrCreate(
-            bundle.base.slidingRopeConfig, bundle.base.slidingRotaryDim, bundle.base.maxKVCacheCapacity, stream);
-        resources->ropePool.getOrCreate(
-            bundle.base.fullRopeConfig, bundle.base.fullRotaryDim, bundle.base.maxKVCacheCapacity, stream);
-    }
-    else if (bundle.base.ropeConfig.type != RopeType::kMRope)
-    {
-        resources->ropePool.getOrCreate(
-            bundle.base.ropeConfig, bundle.base.rotaryDim, bundle.base.maxKVCacheCapacity, stream);
-    }
+    initializeRopeCaches(*resources, bundle.base, stream);
+    initializeRopeCaches(*resources, *bundle.draft, stream);
 
     // LoRA
     if (bundle.base.maxSupportedLoraRank > 0)
@@ -312,18 +372,17 @@ std::unique_ptr<SharedResources> SharedResources::createForSpecDecode(Deployment
 
     // Zero buffer — sized to the largest shape any consumer binds:
     //  * deepstack_embeds_* during non-prefill phases
-    //    (maxRuntimeBatchSize × verifySize × hiddenSize HALF)
+    //    (maxRuntimeBatchSize × jumpVerifyTokenCount × hiddenSize HALF)
     //  * attention_pos_id dummy shapes during vanilla fallback on a SpecDecode runtime
     {
         int64_t const maxBatch = maxRuntimeBatchSize;
-        int64_t const verifySeqLen = bundle.specConfig->verifySize;
+        int64_t const verifySeqLen = bundle.specConfig->jumpVerifyTokenCount;
         int64_t deepstackSize = 0;
         if (!bundle.base.isDiffusionBackbone && bundle.base.numDeepstackFeatures > 0)
         {
             deepstackSize = maxBatch * verifySeqLen * bundle.base.hiddenSize * static_cast<int64_t>(sizeof(uint16_t));
         }
-        int64_t const attnPosIdSize
-            = maxBatch * std::max(maxDraftProposalSize, 1) * static_cast<int64_t>(sizeof(int32_t));
+        int64_t const attnPosIdSize = maxBatch * std::max(maxDraftTokens, 1) * static_cast<int64_t>(sizeof(int32_t));
         int64_t const zeroBufferBytes = std::max({deepstackSize, attnPosIdSize, static_cast<int64_t>(256)});
         allocateZeroBuffer(*resources, zeroBufferBytes);
     }

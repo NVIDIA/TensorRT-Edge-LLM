@@ -24,6 +24,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 from typing import TYPE_CHECKING, Any, Dict, Tuple
 
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "RUNTIME_TOKENIZER_FILENAMES",
+    "validate_external_speculative_target",
     "normalize_rope_scaling_for_runtime",
     "rotary_dim_for_runtime",
     "load_checkpoint_config_dicts",
@@ -47,10 +49,22 @@ RUNTIME_TOKENIZER_FILENAMES: Tuple[str, ...] = (
     "tokenizer_config.json",
     "tokenizer.model",
     "special_tokens_map.json",
-    "processed_chat_template.json",
-    "chat_template.jinja",
-    "chat_template.json",
 )
+
+
+def validate_external_speculative_target(config: Dict[str, Any],
+                                         *,
+                                         mode: str = "") -> None:
+    """Reject unsupported external speculative verifier architectures."""
+    model_type = str(config.get("model_type", "")).lower()
+    if model_type == "nemotron_h" and mode in ("dflash", "dspark",
+                                               "dspark_onnx"):
+        return
+    if model_type == "nemotron_h_puzzle" and mode == "lilicorr":
+        return
+    if model_type.startswith("nemotron"):
+        raise ValueError(
+            "Nemotron external speculative decoding is not supported")
 
 
 def normalize_rope_scaling_for_runtime(rope_scaling: Any) -> Any:
@@ -210,6 +224,15 @@ def _promote_alpamayo_llm_config(root: Dict[str, Any]) -> Dict[str, Any]:
     return llm
 
 
+# TODO: remove together with the pruning in load_checkpoint_config_dicts once
+# dense Qwen4 ships its own HF config class (no MoE defaults left to strip).
+_MOE_COUNT_KEYS = ("num_experts", "num_local_experts", "n_routed_experts",
+                   "moe_num_experts")
+_MOE_SIZING_KEYS = _MOE_COUNT_KEYS + (
+    "num_experts_per_tok", "moe_intermediate_size",
+    "shared_expert_intermediate_size", "decoder_sparse_step")
+
+
 def load_checkpoint_config_dicts(
         model_dir: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Return ``(root_dict, llm_dict)`` from the checkpoint config.
@@ -243,8 +266,10 @@ def load_checkpoint_config_dicts(
     try:
         config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
         root = config.to_dict()
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, AttributeError) as exc:
         # Unknown / not-yet-registered model type — fall back to raw JSON.
+        # transformers' RoPE validation raises AttributeError for DeepSpec
+        # Gemma4 drafts that mix scalar and per-layer-type rope_parameters.
         logger.warning(
             "AutoConfig.from_pretrained failed for %s (%s); "
             "falling back to raw config.json.",
@@ -254,10 +279,65 @@ def load_checkpoint_config_dicts(
         root = raw
         config = root
 
+    speculator_type = raw.get("speculators_model_type")
+    transformer_layer_config = raw.get("transformer_layer_config")
+    if (speculator_type in ("eagle3", "dflash", "dspark", "peagle")
+            and isinstance(transformer_layer_config, dict)):
+        # Speculators checkpoints keep the decoder architecture in a dedicated
+        # sub-config and the algorithm contract at the root.
+        root = raw
+        llm = dict(transformer_layer_config)
+        for key, value in raw.items():
+            if key not in llm and value is not None:
+                llm[key] = value
+
+        if speculator_type in ("eagle3", "peagle"):
+            target_layers = raw.get("eagle_aux_hidden_state_layer_ids")
+            if target_layers:
+                llm["target_layer_ids"] = list(target_layers)
+        elif speculator_type == "dflash":
+            aux_layers = [
+                int(layer)
+                for layer in raw.get("aux_hidden_state_layer_ids") or []
+            ]
+            if any(layer <= 0 for layer in aux_layers):
+                raise ValueError(
+                    "DFlash auxiliary hidden-state layer IDs must be positive")
+            dflash_config = {
+                "target_layer_ids": [layer - 1 for layer in aux_layers],
+                "block_size": raw.get("block_size", 8),
+            }
+            if raw.get("mask_token_id") is not None:
+                dflash_config["mask_token_id"] = raw["mask_token_id"]
+            llm["dflash_config"] = dflash_config
+        else:
+            aux_layers = [
+                int(layer)
+                for layer in raw.get("aux_hidden_state_layer_ids") or []
+            ]
+            if any(layer <= 0 for layer in aux_layers):
+                raise ValueError(
+                    "DSpark auxiliary hidden-state layer IDs must be positive")
+            dspark_config = {
+                "target_layer_ids": [layer - 1 for layer in aux_layers],
+                "block_size":
+                raw.get("block_size", 8),
+                "enable_confidence_head":
+                raw.get("enable_confidence_head", False),
+                "confidence_head_with_markov":
+                raw.get("confidence_head_with_markov", False),
+                "markov_head_type":
+                raw.get("markov_head_type", ""),
+                "markov_rank":
+                raw.get("markov_rank", 0),
+            }
+            if raw.get("mask_token_id") is not None:
+                dspark_config["mask_token_id"] = raw["mask_token_id"]
+            llm["dspark_config"] = dspark_config
     # Alpamayo-R1: flat config with no embedded VLM sub-config.
     # Load the full VLM architecture config from vlm_name_or_path and promote
     # the text sub-config so downstream sees a standard Qwen3-VL text config.
-    if root.get("model_type") == "alpamayo_r1":
+    elif root.get("model_type") == "alpamayo_r1":
         llm = _promote_alpamayo_llm_config(root)
     else:
         llm = _promote_llm_subconfig(config, root)
@@ -268,6 +348,56 @@ def load_checkpoint_config_dicts(
     for key, val in raw.items():
         if key not in llm and val is not None:
             llm[key] = val
+
+    # Sliding-window compatibility: HF attention configs (e.g. Qwen3Config) null
+    # out sliding_window unless the legacy use_sliding_window flag is set, but
+    # checkpoints on the newer convention declare per-layer "sliding_attention"
+    # in layer_types and omit that flag. The patch-back above only fills ABSENT
+    # keys, so the nulled window would survive. Treat layer_types as the
+    # authority and recover the raw value; a checkpoint that deliberately
+    # disables its window reports full_attention layers and is untouched.
+    if llm.get("sliding_window") is None:
+        for source in (llm, raw):
+            layer_types = source.get("layer_types")
+            if not isinstance(layer_types, list):
+                continue
+            if "sliding_attention" not in layer_types:
+                continue
+            raw_window = raw.get("sliding_window")
+            if raw_window is None:
+                sub = raw.get("text_config")
+                raw_window = sub.get("sliding_window") if isinstance(
+                    sub, dict) else None
+            if raw_window is not None:
+                llm["sliding_window"] = raw_window
+            break
+    architectures = llm.get("architectures") or raw.get("architectures") or []
+    if (any("dspark" in str(name).lower() for name in architectures)
+            and not llm.get("dspark_config")
+            and isinstance(llm.get("dflash_config"), dict)):
+        llm["dspark_config"] = dict(llm["dflash_config"])
+
+    # Recover fields from nested text sub-config that AutoConfig.to_dict()
+    # drops (e.g. Gemma4TextConfig drops global_head_dim).
+    for subkey in ("text_config", "llm_config", "language_config"):
+        raw_sub = raw.get(subkey)
+        if isinstance(raw_sub, dict):
+            for key, val in raw_sub.items():
+                if key not in llm and val is not None:
+                    llm[key] = val
+            break
+
+    # AutoConfig fills class defaults; keep expert sizing only when the
+    # checkpoint itself declares an expert count.
+    # TODO: remove once dense Qwen4 ships its own HF config class.
+    if raw:
+        declared = (raw, _promote_llm_subconfig(raw, raw),
+                    raw.get("transformer_layer_config") or {})
+        if not any(
+                source.get(key) for source in declared
+                for key in _MOE_COUNT_KEYS):
+            for key in _MOE_SIZING_KEYS:
+                llm.pop(key, None)
 
     # VLM / transformers v5 rope compatibility: rope_scaling may be null
     # while rope_parameters carries the real config (transformers v5
@@ -295,6 +425,54 @@ def load_checkpoint_config_dicts(
     return root, llm
 
 
+def _alpamayo_kv_cache_scales(model: "CausalLM", root_cfg: Dict[str, Any],
+                              cfg_json: Dict[str, Any]):
+    """Return Alpamayo's per-layer FP8 K/V dequant scales, if required.
+
+    The ONNX export path caches each attention layer's calibrated ``[q, k,
+    v]`` values on ``_qkv_scales_float`` before tracing.  The action engine is
+    an external FP16 KV consumer, so its runtime sidecar must retain the K/V
+    entries instead of leaving them only inside the serialized LLM plugins.
+    """
+    if (root_cfg.get("model_type") != "alpamayo_r1"
+            or cfg_json.get("kv_cache_dtype") != "fp8"):
+        return None
+
+    layer_scales = {}
+    for name, module in model.named_modules():
+        if not getattr(module, "enable_fp8_kv_cache", False):
+            continue
+        if any(component in name
+               for component in ("visual", "vision", "action", "expert")):
+            continue
+        match = re.search(r"(?:^|\.)layers\.(\d+)\.self_attn$", name)
+        if match is None:
+            continue
+        layer = int(match.group(1))
+        if layer in layer_scales:
+            raise ValueError(
+                f"Alpamayo FP8 KV export found duplicate scales for decoder layer {layer}"
+            )
+        qkv_scales = getattr(module, "_qkv_scales_float", None)
+        if qkv_scales is None or len(qkv_scales) != 3:
+            raise ValueError(
+                "Alpamayo FP8 KV export is missing a Q/K/V scale triple")
+        pair = [float(qkv_scales[1]), float(qkv_scales[2])]
+        if not all(math.isfinite(scale) and scale > 0.0 for scale in pair):
+            raise ValueError(
+                "Alpamayo FP8 KV dequant scales must be finite and positive")
+        layer_scales[layer] = pair
+
+    expected_layers = int(cfg_json["num_hidden_layers"])
+    expected_indices = set(range(expected_layers))
+    if set(layer_scales) != expected_indices:
+        raise ValueError(
+            "Alpamayo FP8 KV export found "
+            f"scales for decoder layers {sorted(layer_scales)}, expected "
+            f"{sorted(expected_indices)}")
+    return [layer_scales[layer] for layer in range(expected_layers)]
+
+
 def load_config_dict(model_dir: str) -> Dict[str, Any]:
     """Return only the promoted LLM config dict."""
     return load_checkpoint_config_dicts(model_dir)[1]
@@ -312,6 +490,8 @@ def _determine_spec_decode_type(config) -> str:
         return "gemma4_mtp"
     if config.is_eagle3_draft or config.eagle_base:
         return "eagle3"
+    if config.is_domino_draft or config.domino_base:
+        return "domino"
     if config.is_dflash_draft or config.dflash_base:
         return "dflash"
     if config.is_jetspec_draft or config.jetspec_base:
@@ -380,6 +560,19 @@ def _apply_global_model_fields(out: Dict[str, Any],
     for field in _GLOBAL_MODEL_FIELDS:
         if field in out and global_llm_config.get(field) is not None:
             out[field] = global_llm_config[field]
+
+
+def _tp_global_kv_layer_configs(local_configs: list, tp_size: int) -> list:
+    global_configs = []
+    for layer in local_configs:
+        if layer is None:
+            global_configs.append(None)
+            continue
+        global_layer = dict(layer)
+        if "num_kv_heads" in global_layer:
+            global_layer["num_kv_heads"] *= tp_size
+        global_configs.append(global_layer)
+    return global_configs
 
 
 def build_runtime_llm_config_dict(
@@ -474,33 +667,6 @@ def build_runtime_llm_config_dict(
             "enable_moe_block": bool(config.enable_moe_block),
         })
 
-    local_shape_values = {
-        field: out[field]
-        for field in _RANK_LOCAL_OVERRIDE_FIELDS if field in out
-    }
-
-    if world_size > 1 or tp_size > 1:
-        # Only TP exports need a shared world-level view. Single-device and
-        # specialized exports (for example reduced-layer validation, MTP
-        # draft, and TTS code-predictor models) must retain model.config
-        # because it describes the ONNX graph that was actually exported.
-        _apply_global_model_fields(out, global_llm_config)
-
-        config_overrides: Dict[str, Any] = {}
-        for field, local_value in local_shape_values.items():
-            if out.get(field) != local_value:
-                config_overrides[field] = local_value
-
-        rank_config: Dict[str, Any] = {
-            "rank": rank,
-        }
-        if tp_rank != rank:
-            rank_config["tp_rank"] = tp_rank
-        if config_overrides:
-            rank_config["config_overrides"] = config_overrides
-        out["rank_configs"] = _merge_rank_config(existing_rank_configs,
-                                                 rank_config)
-
     if config.is_diffusion_gemma:
         diffusion_cfg = (config.diffusion.to_dict()
                          if config.diffusion is not None else {})
@@ -529,6 +695,10 @@ def build_runtime_llm_config_dict(
             },
         })
 
+    attention_layer_types = (getattr(config, "attention_layer_types", []) if
+                             (str(config.model_type).startswith("gemma4")
+                              or config.is_diffusion_gemma) else [])
+
     # Heterogeneous head dimensions (e.g. Gemma4: sliding=256, global=512)
     if config.global_head_dim and config.global_head_dim != config.head_dim:
         out["global_head_dim"] = config.global_head_dim
@@ -540,29 +710,6 @@ def build_runtime_llm_config_dict(
                 and config.num_global_key_value_heads
                 != config.num_key_value_heads):
             out["num_global_key_value_heads"] = config.num_global_key_value_heads
-        out["layer_types"] = config.layer_types
-        # Emit kv_layer_configs so C++ runtime sizes per-layer KV cache correctly.
-        # The C++ parser expects "attention"/"mamba" strings in layer_types when
-        # kv_layer_configs is present, so emit a normalised copy.
-        norm_lt: list = []
-        kv_cfgs: list = []
-        full_attention_kv_heads = (config.num_global_key_value_heads
-                                   if use_global_kv_heads else
-                                   config.num_key_value_heads)
-        for lt in config.layer_types:
-            norm_lt.append("attention")  # all layers are attention in Gemma4
-            if lt == "full_attention":
-                kv_cfgs.append({
-                    "num_kv_heads": full_attention_kv_heads,
-                    "head_dim": config.global_head_dim
-                })
-            else:
-                kv_cfgs.append({
-                    "num_kv_heads": config.num_key_value_heads,
-                    "head_dim": config.head_dim
-                })
-        out["layer_types"] = norm_lt
-        out["kv_layer_configs"] = kv_cfgs
         # Per-layer-type RoPE: extract global attention RoPE parameters from
         # rope_scaling.full_attention (Gemma4: theta=1000000, prf=0.25).
         full_attn_rope = (rope_scaling or {}).get("full_attention", {})
@@ -583,10 +730,36 @@ def build_runtime_llm_config_dict(
         out["kv_sharing_donors"] = donors
 
     ple_enabled = config.hidden_size_per_layer_input > 0
-    out["ple_enabled"] = ple_enabled
-    out["num_ple_inputs"] = config.num_hidden_layers if ple_enabled else 0
-    out["ple_hidden_size"] = (config.hidden_size_per_layer_input
-                              if ple_enabled else 0)
+    out["gemma_ple_enabled"] = ple_enabled
+    out["gemma_ple_layer_count"] = config.num_hidden_layers if ple_enabled else 0
+    out["gemma_ple_hidden_size"] = (config.hidden_size_per_layer_input
+                                    if ple_enabled else 0)
+
+    # Qwen4-Exp n-gram injection. Unrelated to the Gemma4 fields above despite the shared name;
+    # these describe a hashed n-gram table the runtime gathers from, not per-layer embeddings.
+    # Absent entirely when no layer asks for it, so that the runtime builds no state and binds
+    # no tensor for a model without one.
+    if config.ngram_layers:
+        out["ngram_layers"] = config.ngram_layers
+        out["ngram_embed_dim"] = config.ple_embed_dim
+        out["ngram_conv_kernel"] = config.ple_conv_kernel_size
+        # The injection writes into every residual stream at once, so its conv spans the full
+        # multi-stream width. Emitted directly: the runtime needs the width, not the reason.
+        out["ngram_conv_dim"] = config.hc_count * config.hidden_size
+        out["ngram_size"] = config.ngram_size
+        out["ngram_heads_per_order"] = config.heads_per_ngram
+        # Read from the model class, as the hybrid state dtypes below are: that attribute is what
+        # `export_onnx` builds the dummy state tensor from, which fixes the engine binding dtype.
+        # Separate from `conv_state_dtype`, which is only emitted for models with recurrent layers.
+        ngram_conv_dtype = getattr(model, "NGRAM_CONV_STATE_DTYPE", None)
+        if ngram_conv_dtype is None:
+            raise AttributeError(
+                f"{type(model).__name__} declares ngram_layers but does not expose "
+                f"NGRAM_CONV_STATE_DTYPE. Add a class-level NGRAM_CONV_STATE_DTYPE "
+                f"(torch.dtype) matching the dtype of the n-gram conv state tensor its "
+                f"export_onnx builds.")
+        out["ngram_conv_state_dtype"] = _torch_dtype_to_config_str(
+            ngram_conv_dtype)
 
     # longrope requires original_max_position_embeddings for scaling factor computation.
     if (isinstance(rope_scaling, dict)
@@ -654,11 +827,19 @@ def build_runtime_llm_config_dict(
     # Emit canonical per-layer config consumed by the C++ HybridCacheManager.
     # Only attention and linear-attention layers carry KV/recurrent state and
     # must appear in the per-layer routing table. MLP/MoE layers are skipped.
+    # Pure-attention Gemma4 models also need this table when sliding layers use
+    # a different cache capacity.
     _emit_kv_table = config.layer_types and (
-        config.is_hybrid or config.num_attn_layers != config.num_hidden_layers)
+        config.is_hybrid or config.num_attn_layers != config.num_hidden_layers
+        or attention_layer_types or config.indexer_head_dim > 0)
     if _emit_kv_table:
         from ..config import (_VALID_ATTENTION_LAYER_TYPES, LAYER_ATTN,
                               LAYER_GDN, LAYER_MAMBA)
+
+        gemma4_kv_layer_config = None
+        if attention_layer_types:
+            from ..models.gemma4.modeling_gemma4_text import \
+                _gemma4_kv_layer_config as gemma4_kv_layer_config
 
         # ``config.layer_types`` normalizes recurrent layers to LAYER_GDN /
         # LAYER_MAMBA, but attention layers keep their raw HF type (e.g.
@@ -672,21 +853,14 @@ def build_runtime_llm_config_dict(
         for layer_idx, lt in enumerate(config.layer_types):
             if lt in attention_types:
                 normalized_layer_types.append("attention")
-                num_kv_heads = config.num_key_value_heads
-                head_dim = config.head_dim
-                if (str(config.model_type).startswith("gemma4")
-                        and config.attention_layer_types):
-                    attention_type = config.attention_layer_types[layer_idx]
-                    if attention_type == "full_attention":
-                        if config.global_head_dim:
-                            head_dim = config.global_head_dim
-                        if (config.attention_k_eq_v
-                                and config.num_global_key_value_heads):
-                            num_kv_heads = config.num_global_key_value_heads
-                kv_layer_configs.append({
-                    "num_kv_heads": num_kv_heads,
-                    "head_dim": head_dim,
-                })
+                if gemma4_kv_layer_config is not None:
+                    layer_config = gemma4_kv_layer_config(config, layer_idx)
+                else:
+                    layer_config = {
+                        "num_kv_heads": config.num_key_value_heads,
+                        "head_dim": config.kv_pool_head_dim,
+                    }
+                kv_layer_configs.append(layer_config)
             elif lt in (LAYER_MAMBA, LAYER_GDN):
                 normalized_layer_types.append("mamba")
                 kv_layer_configs.append(None)
@@ -695,25 +869,44 @@ def build_runtime_llm_config_dict(
         out["layer_types"] = normalized_layer_types
         out["kv_layer_configs"] = kv_layer_configs
 
+    # Declares that every attention layer runs Qwen Sparse Attention (see
+    # kv_pool_head_dim), which the runtime's compact capability check refuses.
+    if config.indexer_head_dim > 0:
+        out["indexer_head_dim"] = config.indexer_head_dim
+
     if config.is_eagle3_draft:
         draft_vocab = config.draft_vocab_size or config.vocab_size
         target_hidden = config.eagle3_target_hidden_size
+        eagle3_config = {
+            "target_layer_ids": list(config.eagle3_target_layer_ids),
+            "num_target_layers": config.eagle3_num_target_layers,
+        }
+        if config.eagle_fc_norm:
+            eagle3_config["fc_norm"] = True
+        if config.eagle_norm_output:
+            eagle3_config["norm_output"] = True
+        if config.draft_candidate_count > 0:
+            eagle3_config["candidate_head"] = {
+                "type": "low_rank",
+                "rank": config.draft_candidate_rank,
+                "num_candidates": config.draft_candidate_count,
+            }
         out.update({
             "draft_vocab_size": draft_vocab,
             "base_model_hidden_size":
             target_hidden * config.eagle3_num_target_layers,
-            "eagle3_config": {
-                "target_layer_ids": list(config.eagle3_target_layer_ids),
-                "num_target_layers": config.eagle3_num_target_layers,
-            },
+            "eagle3_config": eagle3_config,
         })
 
     if config.is_mtp_draft:
-        # MTP draft shares vocab with base (no reduced vocab) and receives
-        # base hidden states of size hidden_size (not 3x like EAGLE3).
+        # draft_vocab_size stays the full vocab; reduced_vocab_size, if set,
+        # narrows only the logits width. The base feeds back its residual,
+        # which is hc_count streams wide on a multi-stream model.
         out.update({
-            "draft_vocab_size": config.vocab_size,
-            "base_model_hidden_size": config.hidden_size,
+            "draft_vocab_size":
+            config.vocab_size,
+            "base_model_hidden_size":
+            config.hidden_size * max(config.hc_count, 1),
         })
 
     if config.gemma4_mtp_base:
@@ -776,27 +969,54 @@ def build_runtime_llm_config_dict(
             list(config.kv_sharing_map),
         })
 
-    if config.is_dflash_draft:
-        out.update({
-            "draft_vocab_size":
-            config.vocab_size,
-            "base_model_hidden_size":
-            len(config.dflash_target_layer_ids) * config.hidden_size,
-            "dflash_config": {
-                "target_layer_ids": list(config.dflash_target_layer_ids),
-                "block_size": config.dflash_block_size,
-                "mask_token_id": config.dflash_mask_token_id,
-            },
-        })
-
-    if config.dflash_base:
-        out.update({
-            "dflash_config": {
-                "target_layer_ids": list(config.dflash_target_layer_ids),
-                "block_size": config.dflash_block_size,
-                "mask_token_id": config.dflash_mask_token_id,
-            },
-        })
+    is_dflash = config.is_dflash_draft or config.dflash_base
+    if is_dflash:
+        version = int(config.dflash_version)
+        dflash = {
+            "version": version,
+            "target_layer_ids": list(config.dflash_target_layer_ids),
+            "block_size": config.dflash_block_size,
+            "mask_token_id": config.dflash_mask_token_id,
+            "supports_probabilistic_sampling": version == 2,
+        }
+        is_lilicorr = config.dflash_projector_type == "lilicorr"
+        if version == 2:
+            dflash.update({
+                "is_causal": bool(config.dflash2_is_causal),
+                "conv_kernel_size": config.dflash2_conv_kernel_size,
+                "conv_group_size": config.dflash2_conv_group_size,
+            })
+            if not is_lilicorr:
+                dflash.update({
+                    "selector_rank": config.dflash2_selector_rank,
+                    "selector_top_k": config.dflash2_selector_top_k,
+                    "selector_file": "dflash2_selector.safetensors",
+                })
+        if is_lilicorr:
+            dflash.update({
+                "projector_type":
+                "lilicorr",
+                "lilicorr_candidate_topk":
+                config.lilicorr_candidate_topk,
+            })
+        if config.dflash_projector_type == "domino":
+            dflash.update({
+                "projector_type": "domino",
+                "gru_hidden_dim": config.domino_gru_hidden_dim,
+                "proj_dim": config.domino_proj_dim,
+                "prefix_len": config.domino_prefix_len,
+                "pool_size": config.domino_pool_size,
+                "shift_label": config.domino_shift_label,
+                "heads_file": "domino_heads.safetensors",
+            })
+        out["dflash_config"] = dflash
+        if config.is_dflash_draft:
+            out.update({
+                "draft_vocab_size":
+                config.vocab_size,
+                "base_model_hidden_size":
+                len(config.dflash_target_layer_ids) * config.hidden_size,
+            })
 
     if config.is_jetspec_draft:
         out.update({
@@ -832,6 +1052,9 @@ def build_runtime_llm_config_dict(
             config.dspark_confidence_head_with_markov,
             "markov_head_type": config.dspark_markov_head_type,
             "markov_rank": config.dspark_markov_rank,
+            "causal_head": bool(config.dspark_causal_proposal),
+            "contiguous_query_swa": bool(config.sliding_window_size > 0),
+            "sample_from_anchor": config.dspark_sample_from_anchor,
             "heads_file": "dspark_heads.safetensors",
             "heads_info_file": "dspark_heads_info.json",
         }
@@ -855,6 +1078,7 @@ def build_runtime_llm_config_dict(
                 config.dspark_confidence_head_with_markov,
                 "markov_head_type": config.dspark_markov_head_type,
                 "markov_rank": config.dspark_markov_rank,
+                "sample_from_anchor": config.dspark_sample_from_anchor,
             },
         })
 
@@ -863,7 +1087,7 @@ def build_runtime_llm_config_dict(
         target_layers = list(config.eagle3_target_layer_ids)
         if not target_layers:
             n_layers = config.num_hidden_layers
-            target_layers = [2, n_layers // 2, n_layers - 4]
+            target_layers = [2, n_layers // 2, n_layers - 3]
         out["eagle_hidden_state_layers"] = target_layers
 
     if config.reduced_vocab_size:
@@ -897,6 +1121,50 @@ def build_runtime_llm_config_dict(
                     f"builds and the dtype mandated by the plugin schema.")
             out[key] = _torch_dtype_to_config_str(torch_dtype)
 
+    if world_size > 1 or tp_size > 1:
+        # Rank-local fields are emitted throughout this function. Capture
+        # them only after the complete runtime config has been assembled,
+        # then restore the shared top-level model view.
+        override_fields = list(_RANK_LOCAL_OVERRIDE_FIELDS)
+        if config.gdn_cfg is not None:
+            override_fields.extend(("recurrent_state_num_heads", "conv_dim"))
+        local_shape_values = {
+            field: out[field]
+            for field in override_fields if field in out
+        }
+        if "kv_layer_configs" in out:
+            local_shape_values["kv_layer_configs"] = [
+                dict(layer) if layer is not None else None
+                for layer in out["kv_layer_configs"]
+            ]
+
+        # Only TP exports need a shared world-level view. Single-device and
+        # specialized exports (for example reduced-layer validation, MTP
+        # draft, and TTS code-predictor models) must retain model.config
+        # because it describes the ONNX graph that was actually exported.
+        _apply_global_model_fields(out, global_llm_config)
+        if isinstance(global_llm_config, dict):
+            if config.gdn_cfg is not None:
+                for field in ("recurrent_state_num_heads", "conv_dim"):
+                    if field in local_shape_values:
+                        out[field] = local_shape_values[field] * tp_size
+            if "kv_layer_configs" in local_shape_values:
+                out["kv_layer_configs"] = _tp_global_kv_layer_configs(
+                    local_shape_values["kv_layer_configs"], tp_size)
+
+        config_overrides: Dict[str, Any] = {}
+        for field, local_value in local_shape_values.items():
+            if out.get(field) != local_value:
+                config_overrides[field] = local_value
+
+        rank_config: Dict[str, Any] = {"rank": rank}
+        if tp_rank != rank:
+            rank_config["tp_rank"] = tp_rank
+        if config_overrides:
+            rank_config["config_overrides"] = config_overrides
+        out["rank_configs"] = _merge_rank_config(existing_rank_configs,
+                                                 rank_config)
+
     return out
 
 
@@ -912,18 +1180,17 @@ def _build_alpamayo_tokenizer(config: Dict[str, Any], out_dir: str) -> None:
         return
 
     try:
-        from transformers import AutoProcessor
+        from transformers import AutoTokenizer
         try:
-            processor = AutoProcessor.from_pretrained(vlm_name,
+            tokenizer = AutoTokenizer.from_pretrained(vlm_name,
                                                       trust_remote_code=True)
         except (OSError, ValueError) as online_exc:
             logger.warning(
                 "Failed to load Alpamayo tokenizer from %s (%s); "
                 "retrying local cache", vlm_name, online_exc)
-            processor = AutoProcessor.from_pretrained(vlm_name,
+            tokenizer = AutoTokenizer.from_pretrained(vlm_name,
                                                       trust_remote_code=True,
                                                       local_files_only=True)
-        tokenizer = processor.tokenizer
 
         # Add discrete trajectory tokens
         traj_vocab_size = config.get("traj_vocab_size", 768)
@@ -988,13 +1255,76 @@ def _build_alpamayo_tokenizer(config: Dict[str, Any], out_dir: str) -> None:
 
 def _runtime_embedding_scale(model: "CausalLM") -> float:
     """Return the scale folded into runtime token embedding sidecars."""
-    config = model.config
+    return runtime_embedding_scale(model.config)
+
+
+def runtime_embedding_scale(config) -> float:
+    """Return the scale folded into the runtime token embedding table of a model with *config*."""
     explicit_scale = getattr(config, "embedding_scale", None)
     if explicit_scale is not None:
         return float(explicit_scale)
     if str(getattr(config, "model_type", "")).startswith("gemma4"):
         return math.sqrt(float(config.hidden_size))
     return 1.0
+
+
+def _gemma_ple_checkpoint_metadata(model_dir, config):
+    from . import ple_source
+
+    location = None
+    weight_scale = None
+    if (os.path.isfile(os.path.join(model_dir, "model.safetensors.index.json"))
+            or any(
+                name.endswith(".safetensors")
+                for name in os.listdir(model_dir))):
+        key, identity = ple_source.gemma_ple_identity(
+            model_dir, config.is_diffusion_gemma)
+        if identity["dtype"] == "F8_E4M3":
+            weight_scale = ple_source.gemma_ple_weight_scale(model_dir, key)
+    else:
+        import torch
+
+        index_path = os.path.join(model_dir, "pytorch_model.bin.index.json")
+        if os.path.isfile(index_path):
+            with open(index_path) as source:
+                weight_map = json.load(source)["weight_map"]
+            key = ple_source.select_gemma_ple_tensor(weight_map,
+                                                     config.is_diffusion_gemma)
+            filename = weight_map[key]
+            path = ple_source.checkpoint_shard_path(model_dir, filename)
+            state = torch.load(path, map_location="meta", weights_only=True)
+        else:
+            filename = "pytorch_model.bin"
+            path = ple_source.checkpoint_shard_path(model_dir, filename)
+            state = torch.load(path, map_location="meta", weights_only=True)
+            state = state.get("state_dict", state)
+            key = ple_source.select_gemma_ple_tensor(state,
+                                                     config.is_diffusion_gemma)
+        state = state.get("state_dict", state)
+        tensor = state[key]
+        offset = getattr(tensor.untyped_storage(), "_checkpoint_offset", None)
+        if offset is None or not tensor.is_contiguous():
+            raise ValueError(
+                "PLE checkpoint requires a contiguous tensor with an archive byte offset"
+            )
+        offset += tensor.storage_offset() * tensor.element_size()
+        byte_count = tensor.numel() * tensor.element_size()
+        dtype = {
+            torch.float16: "F16",
+            torch.bfloat16: "BF16",
+            torch.float32: "F32"
+        }.get(tensor.dtype)
+        identity = {
+            "dtype": dtype,
+            "shape": list(tensor.shape),
+            "bytes": byte_count,
+            "samples": ple_source.read_ple_samples(path, offset, byte_count)
+        }
+        location = {"file": filename, "offset": offset, "bytes": byte_count}
+    return ple_source.make_gemma_ple_source_metadata(
+        key, identity, config.vocab_size_per_layer_input,
+        config.num_hidden_layers * config.hidden_size_per_layer_input,
+        config.hidden_size_per_layer_input, location, weight_scale)
 
 
 def write_runtime_artifacts(model: "CausalLM",
@@ -1004,7 +1334,7 @@ def write_runtime_artifacts(model: "CausalLM",
                             reduced_vocab_dir: str = "",
                             config_filename: str = "config.json",
                             write_shared_artifacts: bool = True) -> None:
-    """Write the runtime config, ``embedding.safetensors``, tokenizer copies, chat template.
+    """Write runtime config and the shared model-input artifacts.
 
     ``config_filename`` selects the filename for the runtime config. Use
     the default ``"config.json"`` for single-device exports, or
@@ -1018,8 +1348,7 @@ def write_runtime_artifacts(model: "CausalLM",
 
     from tensorrt_edgellm._safetensors_io import save_file
 
-    from ..chat_template import (process_chat_template,
-                                 write_fallback_processed_chat_template)
+    from ..chat_template import write_chat_template
 
     os.makedirs(out_dir, exist_ok=True)
 
@@ -1049,6 +1378,9 @@ def write_runtime_artifacts(model: "CausalLM",
         model,
         global_llm_config=global_llm_config,
         existing_rank_configs=existing_rank_configs)
+    kv_cache_scales = _alpamayo_kv_cache_scales(model, root_cfg, cfg_json)
+    if kv_cache_scales is not None:
+        cfg_json["kv_cache_scales"] = kv_cache_scales
 
     # For VLM models, the C++ VLM runner (qwenViTRunner, internViTRunner)
     # reads vision_config from the LLM config.json.  Preserve it from the
@@ -1057,38 +1389,53 @@ def write_runtime_artifacts(model: "CausalLM",
     if root_cfg.get("vision_config"):
         cfg_json["vision_config"] = root_cfg["vision_config"]
     # Propagate eos_token_id so the C++ runtime can stop on any EOS
-    # token (e.g. Gemma4 uses [1, 106]). Check config.json first,
-    # then fall back to generation_config.json (some models only set
-    # eos_token_id there).
-    eos = root_cfg.get("eos_token_id")
-    if eos is None and model_dir:
+    # token (e.g. Gemma4 uses [1, 106]). Union config.json with
+    # generation_config.json: HF generate stops on the generation_config
+    # set, which may extend the model config's single EOS (e.g. HunYuan
+    # adds <|extra_5|> alongside <|eos|>), and some models only set
+    # eos_token_id in one of the two files.
+    def _eos_ids(value) -> "list[int]":
+        if isinstance(value, list):
+            return [int(x) for x in value]
+        if isinstance(value, int):
+            return [value]
+        return []
+
+    eos_ids = _eos_ids(root_cfg.get("eos_token_id"))
+    if model_dir:
         gen_cfg_path = os.path.join(model_dir, "generation_config.json")
         if os.path.exists(gen_cfg_path):
             with open(gen_cfg_path) as _gf:
                 gen_cfg = json.load(_gf)
-            eos = gen_cfg.get("eos_token_id")
-    if isinstance(eos, list):
-        cfg_json["eos_token_id"] = [int(x) for x in eos]
-    elif isinstance(eos, int):
-        cfg_json["eos_token_id"] = [eos]
+            eos_ids += _eos_ids(gen_cfg.get("eos_token_id"))
+    if eos_ids:
+        cfg_json["eos_token_id"] = list(dict.fromkeys(eos_ids))
 
-    with open(cfg_path, "w") as f:
-        json.dump(cfg_json, f, indent=2)
+    ple_dir = getattr(model, "_ple_checkpoint_dir", model_dir)
+    if model.config.ple_enabled:
+        cfg_json["ple_pool"] = _gemma_ple_checkpoint_metadata(
+            ple_dir, model.config)
+        cfg_json["checkpoint_dir"] = os.path.abspath(ple_dir)
+    elif model.config.ngram_layers:
+        from . import ple_source
+        cfg_json["ple_pool"] = ple_source.make_ngram_pool_metadata(
+            ple_dir, model.config.ple_embed_dim, model.config.ngram_heads)
+        cfg_json["checkpoint_dir"] = os.path.abspath(ple_dir)
+    with open(cfg_path + ".tmp", "w") as output:
+        json.dump(cfg_json, output, indent=2)
+    os.replace(cfg_path + ".tmp", cfg_path)
     logger.info("Wrote %s to %s", config_filename, out_dir)
 
     if not write_shared_artifacts:
         return
 
-    # EAGLE3 draft models don't need embedding.safetensors — the C++ runtime
-    # uses the base model's shared embedding table (the builder already skips
-    # copying for draft models).
-    if (model.config.is_eagle3_draft or model.config.is_mtp_draft
-            or model.config.is_gemma4_mtp_draft):
-        kind = ("EAGLE3 draft"
-                if model.config.is_eagle3_draft else "Gemma4 MTP draft"
-                if model.config.is_gemma4_mtp_draft else "MTP draft")
+    engine_role = _determine_engine_role(model.config)
+
+    # Every speculative draft shares the base model's embedding table.
+    if engine_role == "draft":
+        kind = _determine_spec_decode_type(model.config)
         logger.info(
-            "%s: skipping embedding.safetensors (uses base model embedding)",
+            "%s draft: skipping embedding.safetensors (uses base model embedding)",
             kind)
     else:
         embed = getattr(model, "embed_tokens", None)
@@ -1099,52 +1446,54 @@ def write_runtime_artifacts(model: "CausalLM",
             embed = getattr(getattr(model, "backbone", None), "embeddings",
                             None)
         if embed is not None:
-            weight = embed.weight.data.detach().cpu()
-            embedding_scale = _runtime_embedding_scale(model)
-            if embedding_scale != 1.0:
-                weight = weight * embedding_scale
-            # C++ runtime requires FP16 (or FP8) embedding; cast if needed.
-            if weight.dtype in (torch.float32, torch.bfloat16):
-                weight = weight.to(torch.float16)
             embedding_path = os.path.join(out_dir, "embedding.safetensors")
-            if fp8_embedding:
-                from .embedding_quantization import quantize_embedding_to_fp8
-                embedding_fp8, scales = quantize_embedding_to_fp8(weight)
-                save_file(
-                    {
-                        "embedding": embedding_fp8,
-                        "embedding_scale": scales
-                    }, embedding_path)
-                logger.info("Wrote FP8 embedding.safetensors (%s)",
-                            list(weight.shape))
+            from .embedding_quantization import write_modelopt_embedding
+            runtime_weight = getattr(embed, "runtime_weight", None)
+            quantized_weight = (not callable(runtime_weight)
+                                and embed.weight.dtype
+                                in (torch.float8_e4m3fn, torch.uint8))
+            if quantized_weight:
+                if fp8_embedding:
+                    raise ValueError(
+                        "--fp8-embedding cannot requantize a ModelOpt embedding"
+                    )
+                if not model_dir or not write_modelopt_embedding(
+                        model_dir, embed, _runtime_embedding_scale(model),
+                        embedding_path):
+                    raise ValueError(
+                        "Quantized token embedding requires ModelOpt scales in the checkpoint"
+                    )
             else:
-                save_file({"embedding": weight}, embedding_path)
-                logger.info("Wrote embedding.safetensors (%s)",
-                            list(weight.shape))
+                weight = (runtime_weight() if callable(runtime_weight) else
+                          embed.weight.data).detach().cpu()
+                embedding_scale = _runtime_embedding_scale(model)
+                if embedding_scale != 1.0 and not fp8_embedding:
+                    weight = weight * embedding_scale
+                # C++ runtime requires FP16 (or FP8) embedding; cast if needed.
+                if weight.dtype in (torch.float32, torch.bfloat16):
+                    weight = weight.to(torch.float16)
+                if fp8_embedding:
+                    from .embedding_quantization import \
+                        quantize_embedding_to_fp8
+                    embedding_fp8, scales = quantize_embedding_to_fp8(weight)
+                    save_file(
+                        {
+                            "embedding": embedding_fp8,
+                            "embedding_scale": scales * embedding_scale
+                        }, embedding_path)
+                    logger.info("Wrote FP8 embedding.safetensors (%s)",
+                                list(weight.shape))
+                else:
+                    save_file({"embedding": weight}, embedding_path)
+                    logger.info("Wrote embedding.safetensors (%s)",
+                                list(weight.shape))
         else:
             logger.warning(
                 "embed_tokens not found; skipping embedding.safetensors")
 
-        if model.config.ple_enabled:
-            ple_embed = getattr(getattr(model, "model", None),
-                                "embed_tokens_per_layer", None)
-            if ple_embed is None:
-                raise ValueError(
-                    "Gemma4 PLE is enabled but embed_tokens_per_layer is missing"
-                )
-            ple_weight = ple_embed.weight.data.detach().cpu()
-            ple_weight = ple_weight * math.sqrt(
-                model.config.hidden_size_per_layer_input)
-            if ple_weight.dtype in (torch.float32, torch.bfloat16):
-                ple_weight = ple_weight.to(torch.float16)
-            ple_path = os.path.join(out_dir, "ple_embedding.safetensors")
-            save_file({"weight": ple_weight.contiguous()}, ple_path)
-            logger.info("Wrote ple_embedding.safetensors (%s)",
-                        list(ple_weight.shape))
-
     # Alpamayo-R1: tokenizer lives in the VLM checkpoint, not in model_dir.
     # Build it first so that tokenizer files exist before the copy loop
-    # (which is a no-op for Alpamayo) and before process_chat_template.
+    # (which is a no-op for Alpamayo) and before write_chat_template.
     if root_cfg.get("model_type") == "alpamayo_r1":
         _build_alpamayo_tokenizer(root_cfg, out_dir)
 
@@ -1184,8 +1533,5 @@ def write_runtime_artifacts(model: "CausalLM",
     from ..vocab_reduction.onnx_export import copy_reduced_vocab_artifacts
     copy_reduced_vocab_artifacts(model, out_dir, reduced_vocab_dir)
 
-    template_dst = os.path.join(out_dir, "processed_chat_template.json")
-    if not os.path.exists(template_dst) and model_dir:
-        process_chat_template(model_dir, out_dir)
-    if not os.path.exists(template_dst):
-        write_fallback_processed_chat_template(model_dir, out_dir)
+    if engine_role != "draft":
+        write_chat_template(model_dir, out_dir)

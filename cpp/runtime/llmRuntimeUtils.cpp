@@ -19,25 +19,42 @@
 
 #include "common/checkMacros.h"
 #include "common/logger.h"
+#include "common/mmapReader.h"
 #include "common/safetensorsUtils.h"
 #include "common/stringUtils.h"
 #include "kernels/posEncoding/initializeCosSinCache.h"
 #include "runtime/state/decodingInferenceContext.h"
 #include "runtime/streaming.h"
+#include "sampler/sampling.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
 
-using namespace nvinfer1;
 namespace trt_edgellm
 {
 namespace rt
 {
+
+char const* guideTypeName(GuideType type)
+{
+    switch (type)
+    {
+    case GuideType::kJsonObject: return "json_object";
+    case GuideType::kJsonSchema: return "json_schema";
+    case GuideType::kRegex: return "regex";
+    case GuideType::kEbnf: return "ebnf";
+    case GuideType::kStructuralTag: return "structural_tag";
+    case GuideType::kChoice: return "choice";
+    }
+    return "unknown";
+}
+
 namespace
 {
 
@@ -146,6 +163,112 @@ bool computeYarnInvFreq(
     return true;
 }
 
+//! Per-dimension inverse frequencies for Llama-3 scaling, mirroring `apply_rope_scaling` in HF's Llama modeling.
+//!
+//! Each band is classified by its wavelength: fully scaled below the low-frequency cutoff, untouched above the
+//! high-frequency one, and linearly blended between them. The blend is over the *smoothing factor*, so it degenerates
+//! to the two endpoints when the cutoffs coincide.
+bool computeLlama3InvFreq(RopeConfig const& config, int64_t rotaryDim, std::vector<float>& invFreq) noexcept
+{
+    constexpr float kPi = 3.14159265358979323846F;
+
+    if (rotaryDim <= 0 || rotaryDim % 2 != 0)
+    {
+        LOG_ERROR("Llama-3 RoPE requires a positive, even rotaryDim; got %lld.", static_cast<long long>(rotaryDim));
+        return false;
+    }
+    if (!config.llama3.has_value())
+    {
+        LOG_ERROR("Llama-3 RoPE requires its scaling parameters.");
+        return false;
+    }
+
+    Llama3Params const& params = config.llama3.value();
+    if (params.factor <= 0.0F || params.originalMaxPositionEmbeddings <= 0 || params.lowFreqFactor <= 0.0F
+        || params.highFreqFactor <= 0.0F)
+    {
+        LOG_ERROR("Llama-3 RoPE requires positive factor, original_max_position_embeddings and freq factors.");
+        return false;
+    }
+    if (params.highFreqFactor == params.lowFreqFactor)
+    {
+        // The blend below divides by their difference. HF has the same constraint; it is a malformed config rather
+        // than a degenerate-but-valid one, so it is refused instead of silently clamped.
+        LOG_ERROR("Llama-3 RoPE requires low_freq_factor != high_freq_factor.");
+        return false;
+    }
+
+    auto const origMax = static_cast<float>(params.originalMaxPositionEmbeddings);
+    float const lowFreqWavelen = origMax / params.lowFreqFactor;
+    float const highFreqWavelen = origMax / params.highFreqFactor;
+    float const base = config.rotaryTheta;
+    int64_t const halfDim = rotaryDim / 2;
+
+    invFreq.resize(static_cast<size_t>(halfDim));
+    for (int64_t d = 0; d < halfDim; ++d)
+    {
+        float const freq = 1.0F / std::pow(base, 2.0F * static_cast<float>(d) / static_cast<float>(rotaryDim));
+        float const wavelen = 2.0F * kPi / freq;
+
+        float scaled{};
+        if (wavelen > lowFreqWavelen)
+        {
+            scaled = freq / params.factor;
+        }
+        else if (wavelen < highFreqWavelen)
+        {
+            scaled = freq;
+        }
+        else
+        {
+            float const smooth
+                = (origMax / wavelen - params.lowFreqFactor) / (params.highFreqFactor - params.lowFreqFactor);
+            scaled = (1.0F - smooth) * freq / params.factor + smooth * freq;
+        }
+        invFreq[static_cast<size_t>(d)] = scaled;
+    }
+    return true;
+}
+
+//! Build the cos/sin cache for Llama-3 scaling.
+//!
+//! Shares YaRN's kernel: once the per-dimension inverse frequencies are known, both schemes are the same table
+//! build. `mscale` is 1 because Llama-3 rescales frequencies only, leaving attention magnitude alone.
+bool initializeLlama3RopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& config, cudaStream_t stream) noexcept
+{
+    int64_t const maxLength = cosSinCache.getShape()[1];
+    int64_t const rotaryDim = cosSinCache.getShape()[2];
+
+    if (rotaryDim != 64 && rotaryDim != 128)
+    {
+        LOG_ERROR("Llama-3 RoPE supports rotaryDim 64 or 128 only; got %lld.", static_cast<long long>(rotaryDim));
+        return false;
+    }
+
+    std::vector<float> invFreq;
+    if (!computeLlama3InvFreq(config, rotaryDim, invFreq))
+    {
+        return false;
+    }
+    int64_t const halfDim = rotaryDim / 2;
+
+    try
+    {
+        rt::Tensor invFreqDevice({halfDim}, DeviceType::kGPU, DataType::kFLOAT, "Llama3Rope::invFreq");
+        CUDA_CHECK(cudaMemcpyAsync(invFreqDevice.rawPointer(), invFreq.data(),
+            static_cast<size_t>(halfDim) * sizeof(float), cudaMemcpyHostToDevice, stream));
+        kernel::initializeYarnCosSin(cosSinCache.dataPointer<float>(), invFreqDevice.dataPointer<float>(),
+            /*mscale=*/1.0F, static_cast<int32_t>(rotaryDim), static_cast<int32_t>(maxLength), stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("initializeLlama3RopeCosSinCache kernel launch failed: %s", e.what());
+        return false;
+    }
+    return true;
+}
+
 bool initializeYarnRopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& config, cudaStream_t stream) noexcept
 {
     int64_t const maxLength = cosSinCache.getShape()[1];
@@ -157,26 +280,16 @@ bool initializeYarnRopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& co
         return false;
     }
 
-    std::vector<float> invFreq;
-    float mscale = 1.0F;
-    if (!computeYarnInvFreq(config, rotaryDim, invFreq, mscale))
-    {
-        return false;
-    }
-    int64_t const halfDim = rotaryDim / 2;
-
     try
     {
-        rt::Tensor invFreqDevice({halfDim}, DeviceType::kGPU, DataType::kFLOAT, "YarnRope::invFreq");
-        CUDA_CHECK(cudaMemcpyAsync(invFreqDevice.rawPointer(), invFreq.data(),
-            static_cast<size_t>(halfDim) * sizeof(float), cudaMemcpyHostToDevice, stream));
-        kernel::initializeYarnCosSin(cosSinCache.dataPointer<float>(), invFreqDevice.dataPointer<float>(), mscale,
-            static_cast<int32_t>(rotaryDim), static_cast<int32_t>(maxLength), stream);
+        rt::Tensor invFreqDevice = uploadYarnInvFreq(config, rotaryDim, stream);
+        kernel::initializeYarnCosSin(cosSinCache.dataPointer<float>(), invFreqDevice.dataPointer<float>(),
+            config.yarn->mscale, static_cast<int32_t>(rotaryDim), static_cast<int32_t>(maxLength), stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
     }
     catch (std::exception const& e)
     {
-        LOG_ERROR("initializeYarnCosSin kernel launch failed: %s", e.what());
+        LOG_ERROR("YaRN RoPE cache initialization failed: %s", e.what());
         return false;
     }
     return true;
@@ -214,6 +327,7 @@ std::ostream& operator<<(std::ostream& os, RopeType const& type)
     case RopeType::kMRope: os << "MRope"; break;
     case RopeType::kNoRope: os << "NoRope"; break;
     case RopeType::kYarn: os << "YaRN"; break;
+    case RopeType::kLlama3: os << "Llama3"; break;
     }
     return os;
 }
@@ -229,12 +343,19 @@ std::string formatRopeConfig(RopeConfig const& config)
         ss << "LongRopeConfig:" << "  originalMaxPositionEmbeddings: "
            << config.longRope.value().originalMaxPositionEmbeddings;
     }
-    if (config.type == RopeType::kYarn && config.yarn.has_value())
+    if (config.yarn.has_value())
     {
         ss << "  YarnConfig:" << "  factor: " << config.yarn->factor
            << "  originalMaxPositionEmbeddings: " << config.yarn->originalMaxPositionEmbeddings
            << "  betaFast: " << config.yarn->betaFast << "  betaSlow: " << config.yarn->betaSlow
            << "  mscale: " << config.yarn->mscale;
+    }
+    if (config.type == RopeType::kLlama3 && config.llama3.has_value())
+    {
+        ss << "  Llama3Config:" << "  factor: " << config.llama3->factor
+           << "  originalMaxPositionEmbeddings: " << config.llama3->originalMaxPositionEmbeddings
+           << "  lowFreqFactor: " << config.llama3->lowFreqFactor
+           << "  highFreqFactor: " << config.llama3->highFreqFactor;
     }
     return ss.str();
 }
@@ -242,6 +363,7 @@ std::string formatRopeConfig(RopeConfig const& config)
 RopeConfig collectRopeConfig(nlohmann::json const& config)
 {
     RopeConfig ropeConfig{};
+    float dynamicNtkAlpha = 0.0F;
 
     // Check for explicit use_rope flag (set by hybrid model export)
     if (config.contains("use_rope") && config["use_rope"].is_boolean() && !config["use_rope"].get<bool>())
@@ -264,20 +386,38 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
             ropeTypeIt = ropeScalingIt->find("rope_type");
         }
         auto mropeSectionIt = ropeScalingIt->find("mrope_section");
+        bool isYarn{false};
         if (ropeTypeIt != ropeScalingIt->end())
         {
             std::string const ropeTypeStr = ropeTypeIt->get<std::string>();
-            if (ropeTypeStr == "mrope" || (ropeTypeStr == "default" && mropeSectionIt != ropeScalingIt->end()))
+            isYarn = ropeTypeStr == "yarn";
+            if (ropeTypeStr == "mrope"
+                || ((ropeTypeStr == "default" || isYarn) && mropeSectionIt != ropeScalingIt->end()))
             {
                 // Accept both the legacy HF value ("mrope") and the newer
                 // `Qwen2_5_VLVisionConfig` convention ("default" + mrope_section).
+                // "yarn" + mrope_section (Qwen3.5) is MRoPE over YaRN-scaled frequencies.
                 // Talker uses same config (3D position_ids + interleaved MRoPE) as in PyTorch.
                 ropeConfig.type = RopeType::kMRope;
+                if (mropeSectionIt != ropeScalingIt->end())
+                {
+                    check::check(mropeSectionIt->is_array(), "rope_scaling.mrope_section must be an array");
+                    ropeConfig.mropeSection = mropeSectionIt->get<std::vector<int32_t>>();
+                    check::check(ropeConfig.mropeSection.size() >= 3,
+                        "rope_scaling.mrope_section must contain temporal, height, and width partitions");
+                }
             }
-            else if (ropeTypeStr == "default" || ropeTypeStr == "llama3")
+            else if (ropeTypeStr == "llama3")
             {
-                // Route the llama3 config to default type.
+                ropeConfig.type = RopeType::kLlama3;
+            }
+            else if (ropeTypeStr == "default")
+            {
                 ropeConfig.type = RopeType::kDefault;
+            }
+            else if (ropeTypeStr == "nope")
+            {
+                ropeConfig.type = RopeType::kNoRope;
             }
             else if (ropeTypeStr == "proportional")
             {
@@ -286,12 +426,19 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
             else if (ropeTypeStr == "dynamic")
             {
                 ropeConfig.type = RopeType::kDynamic;
+                // HunYuan V1 DynamicNTKAlpha: "dynamic" with an "alpha" field statically
+                // rescales the base (applied after rope_theta detection below).
+                auto alphaIt = ropeScalingIt->find("alpha");
+                if (alphaIt != ropeScalingIt->end() && alphaIt->is_number())
+                {
+                    dynamicNtkAlpha = alphaIt->get<float>();
+                }
             }
             else if (ropeTypeStr == "longrope")
             {
                 ropeConfig.type = RopeType::kLongRope;
             }
-            else if (ropeTypeStr == "yarn")
+            else if (isYarn)
             {
                 ropeConfig.type = RopeType::kYarn;
             }
@@ -321,7 +468,49 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
             ropeConfig.longRope = std::move(params);
         }
 
-        if (ropeConfig.type == RopeType::kYarn)
+        if (ropeConfig.type == RopeType::kLlama3)
+        {
+            // All four fields are required, as they are in HF: each is a divisor or a band boundary in
+            // computeLlama3InvFreq, and defaulting one builds a plausible cache for a model trained with different
+            // ones. Reading and checking each in place, rather than defaulting now and validating later.
+            Llama3Params params{};
+
+            auto const factorIt = ropeScalingIt->find("factor");
+            check::check(factorIt != ropeScalingIt->end() && factorIt->get<float>() > 0.0F,
+                "rope_scaling.factor must be a positive number for llama3 RoPE");
+            params.factor = factorIt->get<float>();
+
+            auto const lowFreqIt = ropeScalingIt->find("low_freq_factor");
+            auto const highFreqIt = ropeScalingIt->find("high_freq_factor");
+            check::check(lowFreqIt != ropeScalingIt->end() && highFreqIt != ropeScalingIt->end(),
+                "llama3 RoPE requires both low_freq_factor and high_freq_factor");
+            params.lowFreqFactor = lowFreqIt->get<float>();
+            params.highFreqFactor = highFreqIt->get<float>();
+            // Ordering, not just inequality. The two divide the same reference length into the wavelength cutoffs
+            // that decide which bands are scaled, so swapping them moves the scaling onto the bands that should
+            // have been left alone -- silently, since the cache still builds.
+            check::check(params.lowFreqFactor > 0.0F && params.lowFreqFactor < params.highFreqFactor,
+                "llama3 RoPE requires 0 < low_freq_factor < high_freq_factor");
+
+            // transformers moved this inside rope_scaling; older configs keep it at the top level. Accept either,
+            // the same way the yarn branch does. Two separate lookups because iterators into different json
+            // objects cannot be compared against one another.
+            auto const origMaxIt = ropeScalingIt->find("original_max_position_embeddings");
+            if (origMaxIt != ropeScalingIt->end())
+            {
+                params.originalMaxPositionEmbeddings = origMaxIt->get<int32_t>();
+            }
+            else if (config.contains("original_max_position_embeddings"))
+            {
+                params.originalMaxPositionEmbeddings = config["original_max_position_embeddings"].get<int32_t>();
+            }
+            check::check(params.originalMaxPositionEmbeddings > 0,
+                "llama3 RoPE requires a positive original_max_position_embeddings");
+
+            ropeConfig.llama3 = params;
+        }
+
+        if (isYarn)
         {
             YarnParams params{};
 
@@ -408,6 +597,27 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
         LOG_WARNING("rope_theta is not specified in the model config, using default value: %f", ropeConfig.rotaryTheta);
     }
 
+    // DynamicNTKAlpha (HunYuan V1): unlike HF's factor-based dynamic NTK, the alpha variant
+    // rescales the base once, independent of sequence length:
+    //   base = rope_theta * alpha^(head_dim / (head_dim - 2))
+    if (dynamicNtkAlpha > 0.0F)
+    {
+        float dim = 0.0F;
+        if (config.contains("head_dim"))
+        {
+            dim = config["head_dim"].get<float>();
+        }
+        else if (config.contains("hidden_size") && config.contains("num_attention_heads")
+            && config["num_attention_heads"].get<float>() > 0.0F)
+        {
+            dim = config["hidden_size"].get<float>() / config["num_attention_heads"].get<float>();
+        }
+        check::check(dim > 2.0F,
+            "rope_scaling.alpha requires head_dim > 2 (from head_dim, or hidden_size / num_attention_heads).");
+        ropeConfig.rotaryTheta *= std::pow(dynamicNtkAlpha, dim / (dim - 2.0F));
+        LOG_INFO("DynamicNTKAlpha RoPE: alpha=%f rescales base to %f", dynamicNtkAlpha, ropeConfig.rotaryTheta);
+    }
+
     // Detect MaxPositionEmbeddings
     if (config.contains("max_position_embeddings"))
     {
@@ -448,6 +658,10 @@ bool initializeRopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& config
     {
         return initializeYarnRopeCosSinCache(cosSinCache, config, stream);
     }
+    if (config.type == RopeType::kLlama3)
+    {
+        return initializeLlama3RopeCosSinCache(cosSinCache, config, stream);
+    }
     if (config.type == RopeType::kDefault || config.type == RopeType::kDynamic
         || config.type == RopeType::kProportional)
     {
@@ -483,6 +697,18 @@ bool initializeRopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& config
         }
     }
     return true;
+}
+
+Tensor uploadYarnInvFreq(RopeConfig const& config, int64_t rotaryDim, cudaStream_t stream)
+{
+    std::vector<float> invFreq;
+    float mscale{};
+    check::check(computeYarnInvFreq(config, rotaryDim, invFreq, mscale), "Invalid YaRN RoPE parameters.");
+    Tensor invFreqDevice({rotaryDim / 2}, DeviceType::kGPU, DataType::kFLOAT, "YarnRope::invFreq");
+    // A pageable source is staged before the call returns, so invFreq may go out of scope.
+    CUDA_CHECK(cudaMemcpyAsync(
+        invFreqDevice.rawPointer(), invFreq.data(), invFreq.size() * sizeof(float), cudaMemcpyHostToDevice, stream));
+    return invFreqDevice;
 }
 
 bool initializeNopeCosSinCache(rt::Tensor& cosSinCache, cudaStream_t stream) noexcept
@@ -604,6 +830,8 @@ void compactVector(std::vector<int32_t> const& batchMapping, std::vector<T>& vec
 
 template void compactVector<int8_t>(std::vector<int32_t> const&, std::vector<int8_t>&);
 template void compactVector<int32_t>(std::vector<int32_t> const&, std::vector<int32_t>&);
+template void compactVector<int64_t>(std::vector<int32_t> const&, std::vector<int64_t>&);
+template void compactVector<uint64_t>(std::vector<int32_t> const&, std::vector<uint64_t>&);
 template void compactVector<std::vector<int32_t>>(std::vector<int32_t> const&, std::vector<std::vector<int32_t>>&);
 template void compactVector<std::string>(std::vector<int32_t> const&, std::vector<std::string>&);
 template void compactVector<std::vector<std::string>>(
@@ -612,6 +840,9 @@ template void compactVector<std::unordered_map<int32_t, float>>(
     std::vector<int32_t> const&, std::vector<std::unordered_map<int32_t, float>>&);
 template void compactVector<SlotStreamState>(std::vector<int32_t> const&, std::vector<SlotStreamState>&);
 template void compactVector<LogprobsSlot>(std::vector<int32_t> const&, std::vector<LogprobsSlot>&);
+template void compactVector<JumpForwardSlotStats>(std::vector<int32_t> const&, std::vector<JumpForwardSlotStats>&);
+template void compactVector<ResidentRef>(std::vector<int32_t> const&, std::vector<ResidentRef>&);
+template void compactVector<RowSamplingParams>(std::vector<int32_t> const&, std::vector<RowSamplingParams>&);
 
 // Build batch mapping from finished states
 // Returns a vector mapping old batch indices to new indices (-1 for evicted batches)
@@ -641,31 +872,77 @@ std::vector<int32_t> buildBatchMapping(std::vector<int8_t> const& finishedStates
 // Embedding Loading Utilities
 //=============================================================================
 
-EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cudaStream_t stream)
+namespace
 {
+
+Tensor* findEmbeddingTensor(std::vector<Tensor>& tensors, std::string_view name)
+{
+    auto const found = std::find_if(
+        tensors.begin(), tensors.end(), [name](Tensor const& tensor) { return tensor.getName() == name; });
+    return found == tensors.end() ? nullptr : &*found;
+}
+
+kernel::EmbeddingTableDescriptor parseNvfp4EmbeddingDescriptor(nlohmann::json const& value)
+{
+    kernel::EmbeddingTableDescriptor descriptor;
+    descriptor.format = kernel::EmbeddingTableFormat::kNVFP4;
+    descriptor.logicalShape = Coords{value.at("logical_shape").get<std::vector<int64_t>>()};
+    descriptor.groupSize = value.at("group_size").get<int64_t>();
+    descriptor.modelOutputScale = value.value("model_output_scale", 1.0F);
+    return descriptor;
+}
+
+} // namespace
+
+EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cudaStream_t stream, bool offload)
+{
+    LOG_INFO("Loading embedding artifact into %s memory", offload ? "pinned host" : "device");
     ELLM_CHECK(std::filesystem::exists(embeddingPath),
         format::fmtstr("Embedding file not found: %s", embeddingPath.string().c_str()));
 
-    std::vector<rt::Tensor> tensors;
-    ELLM_CHECK(safetensors::loadSafetensors(embeddingPath, tensors, stream),
-        format::fmtstr("Failed to load embedding file: %s", embeddingPath.string().c_str()));
-
-    // Find tensors by name
-    rt::Tensor* embeddingPtr = nullptr;
-    rt::Tensor* scalesPtr = nullptr;
-
-    for (auto& tensor : tensors)
+    file_io::MmapReader reader(embeddingPath.string());
+    safetensors::FileMetadata const fileMetadata
+        = safetensors::parseMetadata(reader.getData(), reader.getSize(), embeddingPath.string());
+    auto const descriptorMetadata = fileMetadata.metadata.find(kEmbeddingDescriptorMetadataKey);
+    std::optional<kernel::EmbeddingTableDescriptor> nvfp4Descriptor;
+    if (descriptorMetadata != fileMetadata.metadata.end())
     {
-        if (tensor.getName() == "embedding")
-        {
-            embeddingPtr = &tensor;
-        }
-        else if (tensor.getName() == "embedding_scale")
-        {
-            scalesPtr = &tensor;
-        }
+        nvfp4Descriptor = parseNvfp4EmbeddingDescriptor(nlohmann::json::parse(descriptorMetadata->second));
     }
 
+    std::vector<rt::Tensor> tensors;
+    ELLM_CHECK(
+        safetensors::loadSafetensors(embeddingPath, tensors, stream, offload ? DeviceType::kCPU : DeviceType::kGPU),
+        format::fmtstr("Failed to load embedding file: %s", embeddingPath.string().c_str()));
+
+    rt::Tensor* embeddingPtr = findEmbeddingTensor(tensors, kEmbeddingTensorName);
+    if (nvfp4Descriptor.has_value())
+    {
+        rt::Tensor* blockScalePtr = findEmbeddingTensor(tensors, kNvfp4EmbeddingBlockScaleTensorName);
+        rt::Tensor* multiplierScalePtr = findEmbeddingTensor(tensors, kNvfp4EmbeddingMultiplierScaleTensorName);
+        ELLM_CHECK(embeddingPtr != nullptr && blockScalePtr != nullptr && multiplierScalePtr != nullptr,
+            "NVFP4 embedding requires table, block scale, and multiplier scale tensors");
+
+        nvfp4Descriptor->packedShape = embeddingPtr->getShape();
+        nvfp4Descriptor->packedDataType = embeddingPtr->getDataType();
+        nvfp4Descriptor->scaleShape = blockScalePtr->getShape();
+        nvfp4Descriptor->scaleDataType = blockScalePtr->getDataType();
+        ELLM_CHECK(
+            multiplierScalePtr->getDataType() == DataType::kFLOAT && multiplierScalePtr->getShape().volume() == 1,
+            "NVFP4 embedding multiplier scale must be an FP32 scalar");
+        CUDA_CHECK(cudaMemcpyAsync(&nvfp4Descriptor->multiplierGlobalScale, multiplierScalePtr->rawPointer(),
+            sizeof(float), cudaMemcpyDefault, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        EmbeddingData result;
+        result.table = std::move(*embeddingPtr);
+        result.tableScalingFactor = std::move(*blockScalePtr);
+        result.descriptor = std::move(*nvfp4Descriptor);
+        LOG_INFO("Loaded packed NVFP4 embedding");
+        return result;
+    }
+
+    rt::Tensor* scalesPtr = findEmbeddingTensor(tensors, kFp8EmbeddingScaleTensorName);
     ELLM_CHECK(embeddingPtr != nullptr,
         format::fmtstr("Embedding file missing 'embedding' tensor: %s", embeddingPath.string().c_str()));
 
@@ -677,14 +954,12 @@ EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cud
 
     EmbeddingData result;
 
-    // Detect FP8 vs FP16 by checking dtype
-    if (embeddingPtr->getDataType() == nvinfer1::DataType::kFP8)
+    if (embeddingPtr->getDataType() == trt_edgellm::DataType::kFP8)
     {
-        // FP8 format - requires scales
         ELLM_CHECK(scalesPtr != nullptr,
             format::fmtstr("FP8 embedding requires 'embedding_scale' tensor: %s", embeddingPath.string().c_str()));
 
-        ELLM_CHECK(scalesPtr->getDataType() == nvinfer1::DataType::kFLOAT,
+        ELLM_CHECK(scalesPtr->getDataType() == trt_edgellm::DataType::kFLOAT,
             format::fmtstr("embedding_scale must have FP32 dtype, got %d", static_cast<int>(scalesPtr->getDataType())));
 
         ELLM_CHECK(scalesPtr->getShape().getNumDims() == 2,
@@ -693,13 +968,10 @@ EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cud
         int64_t scaleVocabSize = scalesPtr->getShape()[0];
         int64_t numGroups = scalesPtr->getShape()[1];
 
-        ELLM_CHECK(vocabSize == scaleVocabSize,
-            format::fmtstr("Vocab size mismatch: embedding has %ld, scales has %ld", vocabSize, scaleVocabSize));
+        ELLM_CHECK(scaleVocabSize > 0 && vocabSize % scaleVocabSize == 0,
+            format::fmtstr("Embedding vocab size %ld must be divisible by scale rows %ld", vocabSize, scaleVocabSize));
 
-        ELLM_CHECK(hiddenSize % kFP8EmbeddingBlockSize == 0,
-            format::fmtstr("Hidden size %ld must be divisible by block size %ld", hiddenSize, kFP8EmbeddingBlockSize));
-
-        int64_t expectedNumGroups = hiddenSize / kFP8EmbeddingBlockSize;
+        int64_t expectedNumGroups = scaleVocabSize == 1 && numGroups == 1 ? 1 : hiddenSize / kFP8EmbeddingBlockSize;
         ELLM_CHECK(numGroups == expectedNumGroups,
             format::fmtstr("Scale groups mismatch: expected %ld, got %ld", expectedNumGroups, numGroups));
 
@@ -711,7 +983,6 @@ EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cud
     }
     else
     {
-        // FP16 format
         LOG_INFO("Loaded FP16 embedding: [%ld, %ld]", vocabSize, hiddenSize);
 
         result.table = std::move(*embeddingPtr);
@@ -743,7 +1014,7 @@ rt::Tensor generateMultimodalIndices(
     int64_t const batchSize = shape[0];
     int64_t const seqLen = shape[1];
 
-    rt::Tensor multimodalIndices({batchSize, seqLen}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32);
+    rt::Tensor multimodalIndices({batchSize, seqLen}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32);
 
     int32_t const* inputIdsPtr = inputIds.dataPointer<int32_t>();
     int32_t* indicesPtr = multimodalIndices.dataPointer<int32_t>();
@@ -768,7 +1039,7 @@ rt::Tensor generateMultimodalIndices(
             }
             else
             {
-                indicesPtr[pos] = 0;
+                indicesPtr[pos] = -1;
             }
         }
     }
@@ -776,17 +1047,56 @@ rt::Tensor generateMultimodalIndices(
     return multimodalIndices;
 }
 
+void mapMediaIndicesToReservationRows(std::vector<int32_t> const& requestLocalIndices, int32_t sliceBegin,
+    int32_t sliceLength, int32_t slot, int32_t maxMediaRowsPerSlot, int64_t totalReservedRows, int32_t* globalIndices)
+{
+    check::check(sliceBegin >= 0 && sliceLength >= 0
+            && static_cast<int64_t>(sliceBegin) + sliceLength <= static_cast<int64_t>(requestLocalIndices.size()),
+        "media index slice must lie within the request prompt");
+    check::check(slot >= 0 && maxMediaRowsPerSlot > 0, "slot must be non-negative and E_max positive");
+    check::check(sliceLength == 0 || globalIndices != nullptr, "globalIndices must not be null");
+
+    int64_t const slotBase = static_cast<int64_t>(slot) * maxMediaRowsPerSlot;
+    for (int32_t i = 0; i < sliceLength; ++i)
+    {
+        int32_t const local = requestLocalIndices[static_cast<size_t>(sliceBegin) + i];
+        if (local == -1)
+        {
+            globalIndices[i] = -1;
+            continue;
+        }
+        // Messages are formatted only on failure: this runs per media position of every prefill step.
+        if (local < 0 || local >= maxMediaRowsPerSlot)
+        {
+            throw std::runtime_error(format::fmtstr(
+                "request-local media row %d is outside the slot reservation of %d rows", local, maxMediaRowsPerSlot));
+        }
+        int64_t const global = slotBase + local;
+        if (global >= totalReservedRows)
+        {
+            throw std::runtime_error(format::fmtstr("global media row %lld must be below the %lld reserved rows",
+                static_cast<long long>(global), static_cast<long long>(totalReservedRows)));
+        }
+        if (global > std::numeric_limits<int32_t>::max())
+        {
+            throw std::runtime_error(format::fmtstr(
+                "global media row %lld does not fit the INT32 index tensor", static_cast<long long>(global)));
+        }
+        globalIndices[i] = static_cast<int32_t>(global);
+    }
+}
+
 rt::Tensor generateVisionBlockIds(rt::Tensor const& inputIds, int32_t imageTokenId)
 {
     auto const shape = inputIds.getShape();
     check::check(shape.getNumDims() == 2, "inputIds must be 2D tensor");
     check::check(inputIds.getDeviceType() == rt::DeviceType::kCPU, "inputIds must be a host tensor");
-    check::check(inputIds.getDataType() == nvinfer1::DataType::kINT32, "inputIds must have INT32 dtype");
+    check::check(inputIds.getDataType() == trt_edgellm::DataType::kINT32, "inputIds must have INT32 dtype");
     check::check(imageTokenId >= 0, "imageTokenId must be non-negative");
 
     int64_t const batchSize = shape[0];
     int64_t const seqLen = shape[1];
-    rt::Tensor blockIds({batchSize, seqLen}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32);
+    rt::Tensor blockIds({batchSize, seqLen}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32);
     int32_t const* tokens = inputIds.dataPointer<int32_t>();
     int32_t* blocks = blockIds.dataPointer<int32_t>();
 

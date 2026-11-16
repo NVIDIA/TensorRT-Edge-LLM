@@ -16,14 +16,14 @@ assignees: ''
 **Build configuration:**
 ```bash
 # Paste your CMake command, for example:
-# cmake .. -DCMAKE_BUILD_TYPE=Release -DTRT_PACKAGE_DIR=/path/to/TensorRT -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake -DEMBEDDED_TARGET=jetson-thor
+# make CMAKE_ARGS="-DTRT_PACKAGE_DIR=/path/to/TensorRT"
 ```
 
 **Runtime command used:**
 ```bash
 # Paste the exact command(s) you ran, for example:
-# ./build/examples/llm/llm_build --onnxDir ./onnx_models/qwen3-0.6b --engineDir ./engines/qwen3-0.6b --maxBatchSize 1
-# ./build/examples/llm/llm_inference --engineDir ./engines/qwen3-0.6b --inputFile input.json --outputFile output.json
+# ./build/bin/llm_build --onnxDir ./onnx_models/qwen3-0.6b --engineDir ./engines/qwen3-0.6b --maxBatchSize 1
+# ./build/bin/llm_inference --engineDir ./engines/qwen3-0.6b --inputFile input.json --outputFile output.json
 ```
 
 ### Expected behavior

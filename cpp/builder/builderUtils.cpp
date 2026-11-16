@@ -18,6 +18,7 @@
 #include "builderUtils.h"
 #include "common/cudaUtils.h"
 #include "common/logger.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
 
 #include <NvOnnxParser.h>
@@ -49,7 +50,7 @@ namespace
 
 } // namespace
 
-std::string applyCompileWorkarounds([[maybe_unused]] int32_t maxBatchSize)
+std::string applyCompileWorkarounds([[maybe_unused]] bool useTrtNativeMoe)
 {
     std::string lunowudFlags;
     char const* existingLunowud = std::getenv("__LUNOWUD");
@@ -61,10 +62,23 @@ std::string applyCompileWorkarounds([[maybe_unused]] int32_t maxBatchSize)
     appendLunowudFlag(lunowudFlags, "-peep:match_dual_gemm=off");
 #endif
 #if NV_TENSORRT_MAJOR >= 11
-    // TRT dual-GEMM fusion miscompiles NVFP4 graphs; no known-good 11.x on sm12x
-    if (getSMVersion() / 10 == 12)
+    // Disable a broken TensorRT 11 dual-GEMM fusion on Blackwell.
+    if (getSMVersion() >= 100)
     {
         appendLunowudFlag(lunowudFlags, "-peep:match_dual_gemm=off");
+    }
+#endif
+#if NV_TENSORRT_MAJOR > 11 || (NV_TENSORRT_MAJOR == 11 && NV_TENSORRT_MINOR > 0)
+    // CUDA Tile MXFP8 quantization produces NaNs for zero blocks.
+    if (useTrtNativeMoe)
+    {
+        // TensorRT's native MoE layer is implemented only in the CUDA Tile code generator, so it must stay
+        // enabled for these networks. They never use MXFP8, so the workaround does not apply to them.
+        LOG_INFO("Keeping CUDA Tile code generation enabled: the model uses TensorRT's native MoE layer");
+    }
+    else
+    {
+        appendLunowudFlag(lunowudFlags, "-kgen:codegen:cuda_tile=0");
     }
 #endif
 #if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 15)
@@ -72,15 +86,18 @@ std::string applyCompileWorkarounds([[maybe_unused]] int32_t maxBatchSize)
     appendLunowudFlag(lunowudFlags, "-mlir:collective:fp4=off");
     appendLunowudFlag(lunowudFlags, "-cask_fusion:async_policy=1");
 #endif
-#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 13)
-    if (maxBatchSize == 1)
-    {
-        appendLunowudFlag(lunowudFlags, "-peep:fc_h_fusion=off");
-    }
+    // Turning FP8 fc-h-fusion off, otherwise TRT would emit empty text
+    // for per-channel-scaled FP8 GEMMs on Blackwell.
+#if IS_TRT_RTX || NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 13)
+    appendLunowudFlag(lunowudFlags, "-peep:fc_h_fusion=off");
 #endif
     if (existingLunowud || !lunowudFlags.empty())
     {
+#if defined(_WIN32)
+        _putenv_s("__LUNOWUD", lunowudFlags.c_str());
+#else
         setenv("__LUNOWUD", lunowudFlags.c_str(), 1);
+#endif
     }
     return lunowudFlags;
 }
@@ -275,7 +292,7 @@ std::string printOptimizationProfile(nvinfer1::IOptimizationProfile const* profi
 std::pair<std::unique_ptr<nvinfer1::IBuilder>, std::unique_ptr<nvinfer1::INetworkDefinition>> createBuilderAndNetwork()
 {
     // Create builder
-    auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(gLogger));
+    auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(TrtLogger::instance()));
     if (!builder)
     {
         LOG_ERROR("Failed to create TensorRT builder");
@@ -294,7 +311,7 @@ std::pair<std::unique_ptr<nvinfer1::IBuilder>, std::unique_ptr<nvinfer1::INetwor
     return {std::move(builder), std::move(network)};
 }
 
-std::unique_ptr<nvinfer1::IBuilderConfig> createBuilderConfig(nvinfer1::IBuilder* builder)
+std::unique_ptr<nvinfer1::IBuilderConfig> createBuilderConfig(nvinfer1::IBuilder* builder, bool enableAliasedPluginIO)
 {
     if (!builder)
     {
@@ -312,8 +329,24 @@ std::unique_ptr<nvinfer1::IBuilderConfig> createBuilderConfig(nvinfer1::IBuilder
 #if (NV_TENSORRT_MAJOR >= 10 && NV_TENSORRT_MINOR >= 6) || NV_TENSORRT_MAJOR >= 11
     config->setFlag(nvinfer1::BuilderFlag::kMONITOR_MEMORY);
 #endif
+#if IS_TRT_RTX
+    // An engine for every compute capability must also run on GPUs without block-scaled MMA, so TensorRT-RTX
+    // keeps MXFP8 GEMMs on a dequantize + FP16 GEMM path. Target only the build GPU.
+    if (!config->setNbComputeCapabilities(1) || !config->setComputeCapability(nvinfer1::ComputeCapability::kCURRENT, 0))
+    {
+        LOG_ERROR("Failed to target the current GPU's compute capability");
+        return nullptr;
+    }
+#endif
 #if IS_TRT_RTX || NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 3)
-    config->setPreviewFeature(nvinfer1::PreviewFeature::kALIASED_PLUGIN_IO_10_03, true);
+    // Only DFlash/DSpark draft engines declare a plugin I/O alias (present KV pool
+    // aliases past KV pool in DFlashTargetKVCacheUpdatePlugin). Every other plugin
+    // returns -1 from getAliasedInput, so enabling this preview elsewhere opts the
+    // engine into an unused path that can force a redundant per-layer KV copy.
+    if (enableAliasedPluginIO)
+    {
+        config->setPreviewFeature(nvinfer1::PreviewFeature::kALIASED_PLUGIN_IO_10_03, true);
+    }
 #endif
 
     return config;
@@ -329,7 +362,7 @@ std::unique_ptr<nvonnxparser::IParser> parseOnnxModel(
     }
 
     // Create ONNX parser
-    auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, gLogger));
+    auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, TrtLogger::instance()));
     if (!parser)
     {
         LOG_ERROR("Failed to create ONNX parser");

@@ -92,7 +92,7 @@ plugin layer name and the FC1 packing convention differ):
 
 ```
 router_logits      fp32    [T, E]         # pre-softmax; plugin applies moeTopkSoftmax
-hidden_states      fp16    [B, S, H]      # per-token NVFP4 quant done inside the kernel
+hidden_states      fp16    [T, H]         # primary token-major API; per-token NVFP4 quant in the kernel
 fc1_qweights       int8    [E, N1, H/2]   # N1 = 2*I (swiglu/geglu) or I otherwise; plain [up,gate] concat
 fc1_blocks_scale   int8    [E, m_tiles_1, k_tiles_1, 32, 4, 4]
 fc1_alpha          fp32    [E]
@@ -102,7 +102,7 @@ fc2_alpha          fp32    [E]
 input_global_scale       fp32    [E]
 down_input_scale         fp32    [E]
 e_score_correction_bias  fp32    [E]     # router correction bias; zeros for softmax-topk
--> output                fp16    [B, S, H]
+-> output                fp16    [T, H]
 ```
 
 Block scales use the contiguous physical CuTe DSL NVFP4 layout

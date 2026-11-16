@@ -28,6 +28,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, Mapping, Sequence, Set, Tuple
 
+from . import oss
 from .config import (CONTRACT, REPO_ROOT, cuda_driver_stub, load_matrix,
                      load_toml, require_variant, sha256)
 
@@ -37,7 +38,20 @@ _REQUIRED = set(CONTRACT.RUNTIME_VARIANT_FIELDS) | {
     "cutedsl_groups",
     "evidence_sha256",
     "source_provenance_sha256",
+    "oss_policy_sha256",
     "submodule_revisions",
+}
+_GLIBC_BASELINES = {
+    ("ubuntu", "22.04"): (2, 35),
+    ("ubuntu", "24.04"): (2, 39),
+    ("jetson", "jp70"): (2, 39),
+    ("jetson", "jp71"): (2, 39),
+    ("jetson", "jp72"): (2, 39),
+    ("drive", "7.2"): (2, 39),
+    ("igx-thor", "current"): (2, 39),
+    ("dgx-spark", "current"): (2, 39),
+    ("gb200", "current"): (2, 39),
+    ("gb300", "current"): (2, 39),
 }
 
 
@@ -95,6 +109,17 @@ def _stage_path(stage: Path, relative: str) -> Path:
 
 
 def _audit_tool(name: str) -> str:
+    if name == "cuobjdump":
+        toolkit_roots = [
+            Path(value)
+            for variable in ("CUDAToolkit_ROOT", "CUDA_HOME", "CUDA_PATH")
+            if (value := os.environ.get(variable))
+        ]
+        toolkit_roots.append(Path("/usr/local/cuda"))
+        for root in toolkit_roots:
+            toolkit_tool = root / "bin" / name
+            if (toolkit_tool.is_file() and os.access(toolkit_tool, os.X_OK)):
+                return os.fspath(toolkit_tool)
     executable = shutil.which(name)
     if executable is not None:
         return executable
@@ -142,21 +167,69 @@ def _audit_elf(path: Path, cpu_arch: str, allowed: Set[str]) -> Set[str]:
     return needed
 
 
+def _audit_glibc_symbols(path: Path, row: Mapping[str, Any]) -> None:
+    """Reject ELF symbols newer than the payload target platform."""
+    platform = (str(row["platform_family"]), str(row["platform_release"]))
+    try:
+        baseline = _GLIBC_BASELINES[platform]
+    except KeyError as error:
+        raise RuntimeError(
+            f"No reviewed GLIBC baseline for platform {platform}.") from error
+    versions = {
+        (int(major), int(minor))
+        for major, minor in re.findall(
+            r"\bGLIBC_(\d+)\.(\d+)\b",
+            _tool_output(["readelf", "--version-info",
+                          os.fspath(path)]),
+        )
+    }
+    required = max(versions, default=(0, 0))
+    if required > baseline:
+        raise RuntimeError(
+            f"{path} requires GLIBC {required[0]}.{required[1]}, newer than "
+            f"{platform[0]} {platform[1]} baseline "
+            f"{baseline[0]}.{baseline[1]}.")
+
+
+def _audit_extension_exports(path: Path) -> None:
+    """Require a Python-only export surface for the native extension."""
+    symbols = _tool_output(
+        ["readelf", "--dyn-syms", "--wide",
+         os.fspath(path)])
+    exported = set()
+    for line in symbols.splitlines():
+        fields = line.split()
+        if (len(fields) >= 8 and fields[0].endswith(":")
+                and fields[4] in {"GLOBAL", "WEAK"} and fields[6] != "UND"):
+            exported.add(fields[7].split("@", 1)[0])
+    expected = {"PyInit__edgellm_runtime"}
+    if exported != expected:
+        raise RuntimeError(
+            f"{path} has unexpected dynamic exports: "
+            f"{sorted(exported - expected)}; missing={sorted(expected - exported)}."
+        )
+
+
 def _audit_device_images(path: Path, gpu_sm: int) -> None:
     executable = _audit_tool("cuobjdump")
-    result = subprocess.run(
-        [executable, "--dump-elf", os.fspath(path)],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT)
+    # Inspect one architecture at a time so a later malformed entry cannot
+    # prevent cuobjdump from reaching SM120 in a mixed SM110/SM120 fatbin.
+    # The base filter (for example sm_120) also selects an a-qualified cubin.
+    result = subprocess.run([
+        executable, "--dump-elf", "--gpu-architecture", f"sm_{gpu_sm}",
+        os.fspath(path)
+    ],
+                            check=False,
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT)
     pattern = rf"arch\s*=\s*sm[_-]?{gpu_sm}(?:a)?(?:\D|$)"
     if re.search(pattern, result.stdout, re.IGNORECASE):
         return
     if result.returncode != 0:
         raise RuntimeError(
-            f"Audit command failed (cuobjdump --dump-elf {path}):\n"
-            f"{result.stdout}")
+            f"Audit command failed (cuobjdump --dump-elf --gpu-architecture "
+            f"sm_{gpu_sm} {path}):\n{result.stdout}")
     raise RuntimeError(f"{path} contains no listed SM{gpu_sm} device image.")
 
 
@@ -238,21 +311,16 @@ def _validate_payload_metadata(
     payload = _read_json(stage / "payload.json")
     missing = sorted(_REQUIRED - set(payload))
     extra = sorted(set(payload) - _REQUIRED)
-    if missing or extra or payload.get("schema_version") != 1:
+    if (missing or extra
+            or payload.get("schema_version") != CONTRACT.SCHEMA_VERSION):
         raise RuntimeError(
             f"Invalid payload metadata; missing={missing}, extra={extra}, "
             f"schema={payload.get('schema_version')}.")
     if not re.fullmatch(r"[0-9a-f]{40}", str(payload["source_revision"])):
         raise RuntimeError(
             "payload source_revision must be a full lowercase Git SHA.")
-    if not re.fullmatch(r"cp3\d{2}", str(payload["python_abi"])):
-        raise RuntimeError("payload python_abi must be cp3XY.")
-
-    matrix, rows = load_matrix(matrix_path.resolve())
+    _, rows = load_matrix(matrix_path.resolve())
     row = require_variant(rows, str(payload["variant_id"]))
-    if payload["python_abi"] not in matrix["qualified_python_abis"]:
-        raise RuntimeError(
-            f"Payload uses unqualified ABI {payload['python_abi']}.")
     fields = (
         "platform_family",
         "platform_release",
@@ -289,15 +357,12 @@ def _payload_binaries(stage: Path,
     payload_prefix = f"_native/payloads/{payload['variant_id']}/"
     extension_relative = str(payload["extension"])
     plugin_relative = str(payload["plugin"])
-    expected_extension = (
-        f"_edgellm_runtime.cpython-{str(payload['python_abi'])[2:]}-"
-        f"{payload['cpu_arch']}-linux-gnu.so")
+    expected_extension = "_edgellm_runtime.abi3.so"
     if (not extension_relative.startswith(payload_prefix)
             or "/" in extension_relative[len(payload_prefix):]
             or extension_relative[len(payload_prefix):] != expected_extension):
         raise RuntimeError(
-            "Extension SOABI architecture does not match the selected "
-            f"{payload['cpu_arch']} payload layout.")
+            "Extension path does not contain the stable-ABI runtime module.")
     if plugin_relative != payload_prefix + "lib/libNvInfer_edgellm_plugin.so":
         raise RuntimeError(
             "Plugin path does not match the selected variant layout.")
@@ -306,11 +371,6 @@ def _payload_binaries(stage: Path,
     plugin = _stage_path(package_stage, plugin_relative)
     _validate_payload_hash(extension, payload, "extension_sha256")
     _validate_payload_hash(plugin, payload, "plugin_sha256")
-    digits = str(payload["python_abi"])[2:]
-    if f"cpython-{digits}" not in extension.name:
-        raise RuntimeError(
-            f"Extension {extension.name} does not match ABI {payload['python_abi']}."
-        )
     return package_stage, extension, plugin
 
 
@@ -382,16 +442,23 @@ def _audit_cutedsl_evidence(metadata: Mapping[str, Any],
     symbols = evidence.get("generated_symbols")
     linked = set(evidence.get("linked_symbols") or [])
     defined = set(evidence.get("defined_symbols") or [])
+    archive_defined = set(evidence.get("archive_defined_symbols") or [])
     unresolved = set(evidence.get("unresolved_symbols") or [])
     if (not isinstance(variants, list) or not variants
             or not isinstance(members, list) or not members
             or not isinstance(symbols, list) or not symbols):
         raise RuntimeError("CuTe evidence has an incomplete inventory.")
     member_text = "\n".join(str(value) for value in members)
+    # Multi-SM artifacts qualify every generated object with its target SM to
+    # keep archive members and exported symbols unique.  Compare metadata's
+    # canonical variant names against a canonicalized inventory as well.  The
+    # marker can precede a generated suffix, for example
+    # gdn_decode_mtp__arch110_cache.o -> gdn_decode_mtp_cache.o.
+    canonical_member_text = re.sub(r"__arch\d+(?=[_.]|$)", "", member_text)
     missing_variants = sorted(variant for variant in variants
-                              if variant not in member_text)
-    missing_symbols = sorted(set(symbols) - linked - defined)
-    unresolved_generated = sorted(set(symbols) & unresolved)
+                              if variant not in canonical_member_text)
+    missing_symbols = sorted(set(symbols) - linked - defined - archive_defined)
+    unresolved_generated = sorted((set(symbols) & unresolved) - defined)
     if missing_variants or missing_symbols or unresolved_generated:
         raise RuntimeError("CuTe link evidence is incomplete: "
                            f"variants={missing_variants[:20]}, "
@@ -457,6 +524,8 @@ def _audit_binary_dependencies(payload: Mapping[str, Any], extension: Path,
             f"{sorted(platform_provided - allowed)}.")
     needed = _audit_elf(extension, str(payload["cpu_arch"]), allowed)
     needed.update(_audit_elf(plugin, str(payload["cpu_arch"]), allowed))
+    _audit_glibc_symbols(extension, row)
+    _audit_glibc_symbols(plugin, row)
     required_dsos = {
         payload["cuda_runtime_soname"], payload["tensorrt_runtime_soname"]
     }
@@ -514,7 +583,10 @@ def verify(stage: Path,
     """Validate metadata, content, dependencies, architecture, and size."""
     stage = stage.resolve(strict=True)
     payload, row = _validate_payload_metadata(stage, matrix_path)
+    oss.require_policy(payload)
     package_stage, extension, plugin = _payload_binaries(stage, payload)
+    oss.audit_file(extension)
+    oss.audit_file(plugin)
     cutedsl_metadata = _validate_cutedsl_metadata(stage, payload, row)
     evidence_dir, evidence = _load_evidence(stage, payload)
     license_file = _audit_stage_inventory(stage, extension, plugin,
@@ -524,11 +596,15 @@ def verify(stage: Path,
         raise RuntimeError(
             "Payload is missing the canonical, unmodified LICENSE file.")
     _audit_cutedsl_evidence(cutedsl_metadata, evidence)
+    _audit_extension_exports(extension)
     _audit_binary_dependencies(payload, extension, plugin, row, allowlist_path,
                                dependency_roots, require_dependency_resolution)
     if require_device_images:
-        _audit_device_images(extension, int(payload["gpu_sm"]))
-        _audit_device_images(plugin, int(payload["gpu_sm"]))
+        # CuTe DSL cubins are runtime-loaded archive data rather than ELF CUDA
+        # sections; their complete SM inventory is checked by link evidence.
+        for gpu_sm in CONTRACT.matrix_variant_gpu_sms(row):
+            _audit_device_images(extension, gpu_sm)
+            _audit_device_images(plugin, gpu_sm)
     _audit_payload_size(package_stage, size_budget_path,
                         str(payload["cpu_arch"]))
     return payload
@@ -543,7 +619,7 @@ def main(argv=None) -> None:
                      matrix_path=args.matrix,
                      require_device_images=not args.no_device_image_check,
                      dependency_roots=args.dependency_root)
-    print(f"verified {payload['variant_id']} {payload['python_abi']}")
+    print(f"verified {payload['variant_id']} cp310-abi3")
 
 
 if __name__ == "__main__":

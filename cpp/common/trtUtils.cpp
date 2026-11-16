@@ -17,7 +17,9 @@
 
 #include "trtUtils.h"
 #include "checkMacros.h"
+#include "common/trtInterop.h"
 #include "cudaUtils.h"
+#include "logger.h"
 #include "mmapReader.h"
 #include <algorithm>
 #include <array>
@@ -25,17 +27,119 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#if !defined(_WIN32)
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+#include <limits>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace trt_edgellm
 {
+namespace
+{
+
+std::filesystem::path getCurrentModulePath() noexcept
+{
+#if defined(_WIN32)
+    HMODULE module{};
+    auto const address = reinterpret_cast<LPCSTR>(&loadEdgellmPluginLib);
+    if (!GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, address, &module))
+    {
+        return {};
+    }
+
+    std::array<char, 32768> path{};
+    DWORD const length = GetModuleFileNameA(module, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length == path.size())
+    {
+        return {};
+    }
+    return std::filesystem::path(std::string_view(path.data(), length));
+#else
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<void const*>(&loadEdgellmPluginLib), &info) == 0 || info.dli_fname == nullptr)
+    {
+        return {};
+    }
+    return std::filesystem::path(info.dli_fname);
+#endif
+}
+
+} // namespace
+
+std::unique_ptr<void, DlDeleter> loadEdgellmPluginLib(void) noexcept
+{
+#if defined(_WIN32)
+    constexpr char const* pluginName = "NvInfer_edgellm_plugin.dll";
+#else
+    constexpr char const* pluginName = "libNvInfer_edgellm_plugin.so";
+#endif
+    std::vector<std::filesystem::path> candidates;
+    if (char const* configuredPath = std::getenv("EDGELLM_PLUGIN_PATH"))
+    {
+        candidates.emplace_back(configuredPath);
+    }
+    else
+    {
+        auto const modulePath = getCurrentModulePath();
+        if (!modulePath.empty())
+        {
+            std::error_code error;
+            auto const moduleDir = std::filesystem::absolute(modulePath, error).parent_path();
+#if defined(_WIN32)
+            candidates.emplace_back(moduleDir / pluginName);
+#else
+            if (moduleDir.filename() == "bin")
+            {
+                candidates.emplace_back(moduleDir.parent_path() / "lib" / pluginName);
+            }
+            else
+            {
+                candidates.emplace_back(moduleDir / pluginName);
+                candidates.emplace_back(moduleDir / "lib" / pluginName);
+            }
+#endif
+        }
+        // Installed SDK consumers may live outside the SDK prefix. Their
+        // imported target carries the SDK lib directory in RUNPATH, so let the
+        // dynamic loader resolve the bare SONAME after module-relative probes.
+        candidates.emplace_back(pluginName);
+    }
+    for (auto const& pluginPath : candidates)
+    {
+        auto const pluginPathString = pluginPath.string();
+        LOG_INFO("TensorRT Edge-LLM plugin: %s", pluginPathString.c_str());
+
+        auto handle = std::unique_ptr<void, DlDeleter>(openDynamicLibrary(pluginPathString.c_str()));
+        if (!handle)
+        {
+            continue;
+        }
+
+        using InitPluginsFn = bool (*)(void*, char const*);
+        auto initPlugins = reinterpret_cast<InitPluginsFn>(getDynamicLibrarySymbol(handle.get(), "initEdgellmPlugins"));
+        if (initPlugins)
+        {
+            initPlugins(static_cast<nvinfer1::ILogger*>(&TrtLogger::instance()), "");
+        }
+        return handle;
+    }
+    if (!candidates.empty())
+    {
+        logDynamicLibraryOpenError(candidates.back().string().c_str());
+    }
+    return nullptr;
+}
+
 namespace
 {
 
@@ -163,6 +267,23 @@ public:
         , mDeviceTransferBuffers{
               PinnedHostBuffer{kEngineDeviceTransferChunkSize}, PinnedHostBuffer{kEngineDeviceTransferChunkSize}}
     {
+#if defined(_WIN32)
+        mFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (mFile == INVALID_HANDLE_VALUE)
+        {
+            throw std::runtime_error("Failed to open engine file: " + mPath);
+        }
+
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(mFile, &size) || size.QuadPart <= 0)
+        {
+            CloseHandle(mFile);
+            mFile = INVALID_HANDLE_VALUE;
+            throw std::runtime_error("Engine file is empty: " + mPath);
+        }
+        mSize = static_cast<int64_t>(size.QuadPart);
+#else
         mFd = open(mPath.c_str(), O_RDONLY);
         if (mFd < 0)
         {
@@ -183,21 +304,29 @@ public:
             throw std::runtime_error("Engine file is empty: " + mPath);
         }
         mSize = static_cast<int64_t>(status.st_size);
+#endif
     }
-
     FileStreamReaderV2(FileStreamReaderV2 const&) = delete;
     FileStreamReaderV2& operator=(FileStreamReaderV2 const&) = delete;
 
     ~FileStreamReaderV2() override
     {
+#if defined(_WIN32)
+        if (mFile != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(mFile);
+        }
+#else
         if (mFd >= 0)
         {
             close(mFd);
         }
+#endif
     }
 
     int64_t read(void* destination, int64_t nbBytes, cudaStream_t stream) noexcept override
     {
+        std::lock_guard<std::mutex> const lock(mMutex);
         if (destination == nullptr || nbBytes < 0)
         {
             return -1;
@@ -217,6 +346,7 @@ public:
 
     bool seek(int64_t offset, nvinfer1::SeekPosition where) noexcept override
     {
+        std::lock_guard<std::mutex> const lock(mMutex);
         int64_t base = 0;
         switch (where)
         {
@@ -242,14 +372,9 @@ private:
         int64_t totalRead = 0;
         while (totalRead < bytesToRead)
         {
-            ssize_t const chunk = pread(mFd, output + totalRead, static_cast<size_t>(bytesToRead - totalRead),
-                static_cast<off_t>(mOffset + totalRead));
+            int64_t const chunk = readAt(output + totalRead, bytesToRead - totalRead, mOffset + totalRead);
             if (chunk < 0)
             {
-                if (errno == EINTR)
-                {
-                    continue;
-                }
                 return -1;
             }
             if (chunk == 0)
@@ -262,6 +387,8 @@ private:
         return totalRead;
     }
 
+    //! Positional read of up to size bytes; returns the byte count, 0 at end of file, or -1 on error.
+    int64_t readAt(std::byte* output, int64_t size, int64_t offset) noexcept;
     int64_t readToDevice(void* destination, int64_t bytesToRead, cudaStream_t stream) noexcept
     {
         auto* output = static_cast<std::byte*>(destination);
@@ -301,11 +428,41 @@ private:
     }
 
     std::string mPath;
+#if defined(_WIN32)
+    HANDLE mFile{INVALID_HANDLE_VALUE};
+#else
     int mFd{-1};
+#endif
     int64_t mSize{0};
     int64_t mOffset{0};
     std::array<PinnedHostBuffer, kEngineDeviceTransferBufferCount> mDeviceTransferBuffers;
+    std::mutex mMutex;
 };
+
+int64_t FileStreamReaderV2::readAt(std::byte* output, int64_t size, int64_t offset) noexcept
+{
+#if defined(_WIN32)
+    DWORD const request = static_cast<DWORD>(std::min(size, static_cast<int64_t>(std::numeric_limits<DWORD>::max())));
+    ULARGE_INTEGER position{};
+    position.QuadPart = static_cast<ULONGLONG>(offset);
+    OVERLAPPED operation{};
+    operation.Offset = position.LowPart;
+    operation.OffsetHigh = position.HighPart;
+    DWORD count{};
+    if (!ReadFile(mFile, output, request, &count, &operation))
+    {
+        return GetLastError() == ERROR_HANDLE_EOF ? 0 : -1;
+    }
+    return static_cast<int64_t>(count);
+#else
+    ssize_t count{};
+    do
+    {
+        count = pread(mFd, output, static_cast<size_t>(size), static_cast<off_t>(offset));
+    } while (count < 0 && errno == EINTR);
+    return static_cast<int64_t>(count);
+#endif
+}
 
 #endif // IStreamReaderV2
 

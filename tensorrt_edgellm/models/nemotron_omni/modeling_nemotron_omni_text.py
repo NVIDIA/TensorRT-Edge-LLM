@@ -22,7 +22,7 @@ the default ``AutoModel`` pipeline from ``llm_config.architectures =
 
 This module re-exports it under the Nemotron-Omni namespace so all three
 components (LLM, visual, audio) are exported together by
-:mod:`tensorrt_edgellm.scripts.export` when the checkpoint lives in one HF repo.
+:mod:`tensorrt_edgellm.onnx.cli` when the checkpoint lives in one HF repo.
 
 For export:
     from tensorrt_edgellm.model import AutoModel

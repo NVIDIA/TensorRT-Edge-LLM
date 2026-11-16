@@ -38,42 +38,44 @@ namespace rt
 class HybridSnapshotStorage
 {
 public:
-    //! boundaryHiddenDim > 0 (Hybrid+MTP only) additionally allocates one base-hidden vector per recurrent slot. The
+    //! boundaryHiddenDim > 0 (Hybrid+spec only) additionally allocates one base-hidden vector per recurrent slot. The
     //! successor-dependent boundary MTP draft slot is recomputed at restore from this saved hidden state instead of
     //! being matched by the lookup key, which lets a checkpoint be reused regardless of the token that follows it. A
     //! non-null draftCacheManager additionally captures the paired draft KV pool page alongside every base page.
     HybridSnapshotStorage(HybridCacheManager& cacheManager, int32_t recurrentSlotCount, int32_t partialKvSlotCount,
         HybridCacheManager* draftCacheManager = nullptr, int32_t boundaryHiddenDim = 0,
-        nvinfer1::DataType boundaryHiddenType = nvinfer1::DataType::kHALF);
+        trt_edgellm::DataType boundaryHiddenType = trt_edgellm::DataType::kHALF);
     HybridSnapshotStorage(HybridSnapshotStorage const&) = delete;
     HybridSnapshotStorage& operator=(HybridSnapshotStorage const&) = delete;
 
     //! Per-slot device footprint of each snapshot axis. Sizing a pool from a byte budget must sum every slab the
-    //! constructor allocates against that slot: a Hybrid+MTP slot carries the base *and* the paired draft partial-KV
+    //! constructor allocates against that slot: a Hybrid+spec slot carries the base *and* the paired draft partial-KV
     //! page on the partial-KV axis, and the boundary hidden row rides on the recurrent axis.
-    static size_t recurrentBytesPerSlot(MambaCacheManager::Config const& config);
+    //! The auxiliary conv states ride the recurrent axis too (the Qwen4-Exp n-gram injection keeps one per
+    //! injected layer), so a checkpoint that omitted them would restore a sequence whose injection
+    //! convolution starts from zero mid-stream.
+    static size_t recurrentBytesPerSlot(HybridCacheManager::Config const& config);
     static size_t partialKvBytesPerSlot(KVCacheManager::Config const& config);
-    static size_t boundaryHiddenBytesPerSlot(int32_t boundaryHiddenDim, nvinfer1::DataType boundaryHiddenType);
+    static size_t boundaryHiddenBytesPerSlot(int32_t boundaryHiddenDim, trt_edgellm::DataType boundaryHiddenType);
 
     void zeroRecurrent(int32_t batchSlot, cudaStream_t stream);
     void captureRecurrent(int32_t snapshotSlot, int32_t batchSlot, cudaStream_t stream);
     void restoreRecurrent(int32_t snapshotSlot, int32_t batchSlot, cudaStream_t stream);
     void capturePartialKv(int32_t snapshotSlot, PageId sourcePage, int32_t validTokenCount, cudaStream_t stream);
     void restorePartialKv(int32_t snapshotSlot, PageId destinationPage, int32_t validTokenCount, cudaStream_t stream);
-    //! Hybrid+MTP paired capture/restore: the base page snapshot and the draft page snapshot share
+    //! Hybrid+spec paired capture/restore: the base page snapshot and the draft page snapshot share
     //! partialKvSnapshotSlot. Requires a draft cache manager.
     void capturePartialKv(int32_t snapshotSlot, PageId sourceBasePage, PageId sourceDraftPage, int32_t validTokenCount,
         cudaStream_t stream);
     void restorePartialKv(int32_t snapshotSlot, PageId destinationBasePage, PageId destinationDraftPage,
         int32_t validTokenCount, cudaStream_t stream);
 
-    //! Save one base-hidden row (the checkpoint's successor-dependent boundary hidden state) from a live [batch, seq,
-    //! hidden] tensor into the boundary-hidden slab at snapshotSlot. Requires boundaryHiddenDim > 0.
-    void captureBoundaryHidden(int32_t snapshotSlot, Tensor const& sourceHiddenStates, int32_t batchSlot,
-        int32_t position, cudaStream_t stream);
-    //! Restore the saved boundary hidden row into destinationHiddenStates[batchSlot, position, :].
-    void restoreBoundaryHidden(int32_t snapshotSlot, Tensor& destinationHiddenStates, int32_t batchSlot,
-        int32_t position, cudaStream_t stream);
+    //! Save one successor-dependent boundary row from a live token-major [physicalTokens, hidden] tensor.
+    void captureBoundaryHidden(
+        int32_t snapshotSlot, Tensor const& sourceHiddenStates, int32_t physicalRow, cudaStream_t stream);
+    //! Restore the saved boundary hidden row into destinationHiddenStates[physicalRow, :].
+    void restoreBoundaryHidden(
+        int32_t snapshotSlot, Tensor& destinationHiddenStates, int32_t physicalRow, cudaStream_t stream);
 
     int32_t recurrentSlotCount() const noexcept;
     int32_t partialKvSlotCount() const noexcept;
@@ -96,6 +98,8 @@ private:
     int32_t mBoundaryHiddenDim{};
     std::vector<Tensor> mRecurrentSnapshots;
     std::vector<Tensor> mConvSnapshots;
+    //! One slab per auxiliary conv state, parallel to the cache manager's own ordering.
+    std::vector<Tensor> mAuxConvSnapshots;
     std::vector<Tensor> mPartialKvSnapshots;
     std::vector<Tensor> mDraftPartialKvSnapshots;
     //! One [recurrentSlotCount, boundaryHiddenDim] slab holding each checkpoint's saved boundary hidden state.

@@ -21,6 +21,7 @@
 #include "common/logger.h"
 #include "runtime/llmRankRuntime.h"
 #include "runtime/multiDevice/runtimeCoordinator.h"
+#include "runtime/runtimeSession.h"
 
 #include <exception>
 #include <utility>
@@ -30,81 +31,75 @@ namespace trt_edgellm
 namespace rt
 {
 
+namespace
+{
+RuntimeResources singleDeviceResources(cudaStream_t stream)
+{
+    RuntimeResources resources{};
+    resources.localRanks = {0};
+    resources.localStreams = {stream};
+    resources.ownsLocalStreams = false;
+    return resources;
+}
+} // namespace
+
+LLMInferenceRuntime::LLMInferenceRuntime(DeploymentOptions options, cudaStream_t stream)
+{
+    auto artifacts = std::make_unique<ModelArtifacts>(ModelArtifacts::loadFromEngineDir(options.engineDir,
+        options.draftingConfig, options.checkpointDir, options.draftCheckpointDir, options.contextCacheConfig.enabled,
+        stream, options.runtimeCachePath, options.offloadEmbedding));
+    initializeCoordinator(std::move(options), singleDeviceResources(stream), std::move(artifacts));
+}
+
+LLMInferenceRuntime::LLMInferenceRuntime(DeploymentOptions options, RuntimeResources resources)
+{
+    initializeCoordinator(std::move(options), std::move(resources));
+}
+
+LLMInferenceRuntime::LLMInferenceRuntime(ModelArtifacts&& artifacts, DeploymentOptions options, cudaStream_t stream)
+{
+    artifacts.validateDeploymentOptions(options);
+    options.draftingConfig = artifacts.deployment.draftingConfig();
+    initializeCoordinator(
+        std::move(options), singleDeviceResources(stream), std::make_unique<ModelArtifacts>(std::move(artifacts)));
+}
+
 LLMInferenceRuntime::LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
     std::unordered_map<std::string, std::string> const& loraWeightsMap, SpecDecodeDraftingConfig const& draftingConfig,
     cudaStream_t stream, ContextCacheConfig const& contextCacheConfig, std::string const& checkpointDir,
-    std::string const& draftCheckpointDir)
+    std::string const& draftCheckpointDir, std::optional<std::filesystem::path> const& runtimeCachePath,
+    PleRuntimeConfig const& pleConfig)
+    : LLMInferenceRuntime(DeploymentOptions{engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig,
+                              contextCacheConfig, pleConfig, checkpointDir, draftCheckpointDir, {}, runtimeCachePath},
+          stream)
 {
-    ParallelExecutionConfig config{};
-    config.localRanks = {0};
-    config.localStreams = {stream};
-    config.ownsLocalStreams = false;
-    config.draftingConfig = draftingConfig;
-    config.contextCacheConfig = contextCacheConfig;
-    config.checkpointDir = checkpointDir;
-    config.draftCheckpointDir = draftCheckpointDir;
-    auto artifacts = std::make_unique<ModelArtifacts>(
-        ModelArtifacts::loadFromEngineDir(engineDir, draftingConfig, checkpointDir, draftCheckpointDir, stream));
-    initializeCoordinator(engineDir, multimodalEngineDir, loraWeightsMap, std::move(config), std::move(artifacts));
 }
 
 LLMInferenceRuntime::LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
     std::unordered_map<std::string, std::string> const& loraWeightsMap, cudaStream_t stream,
-    ContextCacheConfig const& contextCacheConfig, std::string const& checkpointDir)
+    ContextCacheConfig const& contextCacheConfig, std::string const& checkpointDir,
+    std::optional<std::filesystem::path> const& runtimeCachePath, PleRuntimeConfig const& pleConfig)
+    : LLMInferenceRuntime(DeploymentOptions{engineDir, multimodalEngineDir, loraWeightsMap, std::nullopt,
+                              contextCacheConfig, pleConfig, checkpointDir, {}, {}, runtimeCachePath},
+          stream)
 {
-    ParallelExecutionConfig config{};
-    config.localRanks = {0};
-    config.localStreams = {stream};
-    config.ownsLocalStreams = false;
-    config.contextCacheConfig = contextCacheConfig;
-    config.checkpointDir = checkpointDir;
-    auto artifacts = std::make_unique<ModelArtifacts>(
-        ModelArtifacts::loadFromEngineDir(engineDir, std::nullopt, checkpointDir, "", stream));
-    initializeCoordinator(engineDir, multimodalEngineDir, loraWeightsMap, std::move(config), std::move(artifacts));
-}
-
-LLMInferenceRuntime::LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
-    std::unordered_map<std::string, std::string> const& loraWeightsMap, ParallelExecutionConfig config)
-{
-    initializeCoordinator(engineDir, multimodalEngineDir, loraWeightsMap, std::move(config));
 }
 
 LLMInferenceRuntime::LLMInferenceRuntime(ModelArtifacts&& artifacts, std::string const& engineDir,
     std::string const& multimodalEngineDir, std::unordered_map<std::string, std::string> const& loraWeightsMap,
     std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream,
     ContextCacheConfig const& contextCacheConfig)
+    : LLMInferenceRuntime(std::move(artifacts),
+          DeploymentOptions{engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig, contextCacheConfig}, stream)
 {
-    ParallelExecutionConfig config{};
-    config.localRanks = {0};
-    config.localStreams = {stream};
-    config.ownsLocalStreams = false;
-    config.draftingConfig = draftingConfig;
-    config.contextCacheConfig = contextCacheConfig;
-    initializeCoordinator(engineDir, multimodalEngineDir, loraWeightsMap, std::move(config),
-        std::make_unique<ModelArtifacts>(std::move(artifacts)));
 }
 
 LLMInferenceRuntime::~LLMInferenceRuntime() noexcept = default;
 
-void LLMInferenceRuntime::initializeCoordinator(std::string const& engineDir, std::string const& multimodalEngineDir,
-    std::unordered_map<std::string, std::string> const& loraWeightsMap, ParallelExecutionConfig config,
-    std::unique_ptr<ModelArtifacts> modelArtifacts)
+void LLMInferenceRuntime::initializeCoordinator(
+    DeploymentOptions options, RuntimeResources resources, std::unique_ptr<ModelArtifacts> modelArtifacts)
 {
-    RuntimeCoordinator::Config coordinatorConfig{};
-    coordinatorConfig.engineDir = engineDir;
-    coordinatorConfig.multimodalEngineDir = multimodalEngineDir;
-    coordinatorConfig.loraWeightsMap = loraWeightsMap;
-    coordinatorConfig.parallelConfig = config.parallelConfig;
-    coordinatorConfig.draftingConfig = config.draftingConfig;
-    coordinatorConfig.contextCacheConfig = config.contextCacheConfig;
-    coordinatorConfig.checkpointDir = std::move(config.checkpointDir);
-    coordinatorConfig.draftCheckpointDir = std::move(config.draftCheckpointDir);
-    coordinatorConfig.localRanks = std::move(config.localRanks);
-    coordinatorConfig.localRankDevices = std::move(config.localRankDevices);
-    coordinatorConfig.localStreams = std::move(config.localStreams);
-    coordinatorConfig.ownsLocalStreams = config.ownsLocalStreams;
-    coordinatorConfig.backendHandles = std::move(config.backendHandles);
-    coordinatorConfig.modelArtifacts = std::move(modelArtifacts);
+    RuntimeCoordinator::Config coordinatorConfig{std::move(options), std::move(resources), std::move(modelArtifacts)};
     mCoordinator = std::make_unique<RuntimeCoordinator>(std::move(coordinatorConfig));
 }
 
@@ -141,6 +136,11 @@ bool LLMInferenceRuntime::captureDecodingCUDAGraph(cudaStream_t stream)
     }
 }
 
+int32_t LLMInferenceRuntime::worldSize() const noexcept
+{
+    return mCoordinator != nullptr ? mCoordinator->worldSize() : 1;
+}
+
 bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLMGenerationResponse& response,
     cudaStream_t stream, bool outputThinkerEmbeddings)
 {
@@ -148,6 +148,10 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
     bool const dispatched
         = mCoordinator->dispatchRequest(request, getProfilingEnabled(), outputThinkerEmbeddings, stream);
     bool const succeeded = dispatched && mCoordinator->localRanksSucceeded();
+    if (mCoordinator->ownsGlobalRank(0))
+    {
+        rootRuntime().selectProfilingTimer();
+    }
     response = LLMGenerationResponse{};
     if (mCoordinator->ownsGlobalRank(0))
     {
@@ -156,16 +160,26 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
     return succeeded;
 }
 
-std::vector<int32_t> LLMInferenceRuntime::countPromptTokens(LLMGenerationRequest const& request) const
+bool LLMInferenceRuntime::supportsSteppedExecution() const noexcept
 {
-    return rootRuntime().countPromptTokens(request);
+    return mCoordinator != nullptr && mCoordinator->supportsSteppedExecution();
 }
 
-bool LLMInferenceRuntime::genAndSaveSystemPromptKVCache(
-    std::string const& prompt, std::string const& loraWeightsName, cudaStream_t stream)
+std::string LLMInferenceRuntime::unavailableReason() const
+{
+    return mCoordinator->unavailableReason();
+}
+
+std::unique_ptr<RuntimeSession> LLMInferenceRuntime::openSession(cudaStream_t stream, SessionOptions options)
 {
     ELLM_CHECK(mCoordinator != nullptr, "Runtime coordinator is not initialized.");
-    return mCoordinator->genAndSaveSystemPromptKVCache(prompt, loraWeightsName, stream);
+    return mCoordinator->openSession(getProfilingEnabled(), stream, options);
+}
+
+std::vector<int32_t> LLMInferenceRuntime::countPromptTokens(LLMGenerationRequest const& request) const
+{
+    ELLM_CHECK(mCoordinator != nullptr, "Runtime coordinator is not initialized.");
+    return mCoordinator->countPromptTokens(request);
 }
 
 void LLMInferenceRuntime::setActionNoiseSeed(int32_t seed)
@@ -195,6 +209,11 @@ metrics::SpecDecodeGenerationMetrics const& LLMInferenceRuntime::getSpecDecodeGe
 char const* LLMInferenceRuntime::getSpeculativeDecodingStrategyName() const
 {
     return rootRuntime().getSpeculativeDecodingStrategyName();
+}
+
+char const* LLMInferenceRuntime::getDefaultDecodingStrategyName() const
+{
+    return rootRuntime().getDefaultDecodingStrategyName();
 }
 
 metrics::LLMGenerationMetrics const& LLMInferenceRuntime::getGenerationMetrics() const
@@ -235,6 +254,16 @@ std::vector<std::vector<int32_t>> const& LLMInferenceRuntime::getBaseModelInputT
 bool LLMInferenceRuntime::hasDraftModel() const
 {
     return rootRuntime().hasDraftModel();
+}
+
+bool LLMInferenceRuntime::supportsSeatedAdmission() const
+{
+    return rootRuntime().supportsSeatedAdmission();
+}
+
+int32_t LLMInferenceRuntime::maxBatchSize() const
+{
+    return rootRuntime().maxBatchSize();
 }
 
 bool LLMInferenceRuntime::ownsGlobalRank(int32_t globalRank) const noexcept

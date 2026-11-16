@@ -108,9 +108,9 @@ __global__ void pivotDotsKernel(
 
 void computeDartRowNorms(rt::Tensor const& embeds, rt::Tensor& norms, cudaStream_t stream)
 {
-    check::check(embeds.getDataType() == nvinfer1::DataType::kHALF, "DART selector expects FP16 embeddings");
+    check::check(embeds.getDataType() == trt_edgellm::DataType::kHALF, "DART selector expects FP16 embeddings");
     check::check(embeds.getShape().getNumDims() == 2, "embeds must be [numRows, hiddenSize]");
-    check::check(norms.getDataType() == nvinfer1::DataType::kFLOAT, "norms must be FP32");
+    check::check(norms.getDataType() == trt_edgellm::DataType::kFLOAT, "norms must be FP32");
     int64_t const numRows = embeds.getShape()[0];
     int64_t const hiddenSize = embeds.getShape()[1];
     check::check(norms.getShape().volume() >= numRows * 2, "norms buffer too small");
@@ -123,9 +123,9 @@ void computeDartRowNorms(rt::Tensor const& embeds, rt::Tensor& norms, cudaStream
 void computeDartPivotDots(
     rt::Tensor const& embeds, int32_t const* pivotIndices, int32_t numPivots, rt::Tensor& dots, cudaStream_t stream)
 {
-    check::check(embeds.getDataType() == nvinfer1::DataType::kHALF, "DART selector expects FP16 embeddings");
+    check::check(embeds.getDataType() == trt_edgellm::DataType::kHALF, "DART selector expects FP16 embeddings");
     check::check(embeds.getShape().getNumDims() == 2, "embeds must be [numRows, hiddenSize]");
-    check::check(dots.getDataType() == nvinfer1::DataType::kFLOAT, "dots must be FP32");
+    check::check(dots.getDataType() == trt_edgellm::DataType::kFLOAT, "dots must be FP32");
     check::check(numPivots > 0 && numPivots <= kDartMaxPivots, "numPivots out of range");
     int64_t const numRows = embeds.getShape()[0];
     int64_t const hiddenSize = embeds.getShape()[1];

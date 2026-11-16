@@ -163,4 +163,3 @@ extern "C" EDGELLM_PLUGIN_EXPORT bool edgellmRegisterNcclCommForAllReducePlugin(
     int deviceId, void* ncclComm, void* ncclAllReduceFunction) noexcept;
 extern "C" EDGELLM_PLUGIN_EXPORT bool edgellmUnregisterNcclCommForAllReducePlugin(
     int deviceId, void* ncclComm) noexcept;
-

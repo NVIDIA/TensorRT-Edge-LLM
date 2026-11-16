@@ -77,5 +77,8 @@ cudaError_t launchFillFp32(void* dFp32, int64_t n, float value, cudaStream_t str
 //! Write up to 256 FP32 values passed as kernel arguments.
 cudaError_t launchWriteFp32(float const* values, int32_t count, void* dFp32, cudaStream_t stream);
 
+//! Scale and write up to 512 FP16 values passed as kernel arguments.
+cudaError_t launchWriteFp16(float const* values, int32_t count, float scale, void* dFp16, cudaStream_t stream);
+
 } // namespace kernel
 } // namespace trt_edgellm

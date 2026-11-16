@@ -28,39 +28,23 @@ namespace kernel
 /// Per-layer pointer bundle for batched MTP state scatter (analogous to KVLayerInfo).
 struct MtpLayerInfo
 {
-    void* recurrentDst; //!< Main recurrent state pool [batchSize, recElements] FP32
-    void* recurrentSrc; //!< Intermediate recurrent state buffer [batchSize, verifyTreeSize, recElements] FP32
-    void* convDst;      //!< Main conv state pool [batchSize, convElements] FP16
+    void* recurrentDst; //!< Main recurrent state pool [residentPoolRows, recElements] FP32
+    void* recurrentSrc; //!< Recurrent replay stash, with layout owned by the recurrent backend
+    void* convDst;      //!< Main conv state pool [residentPoolRows, convElements] FP16
     void* convSrc;      //!< Intermediate conv state buffer [batchSize, verifyTreeSize, convElements] FP16
 };
 
-/// Batched scatter of accepted recurrent states (FP32) across all GDN layers.
-/// For each (layer, batch): dst[b, :] = src[b, acceptLengths[b] - 1, :].
-/// Skip if acceptLengths[b] <= 0; no-op if acceptLengths[b] >= verifyTreeSize.
-/// stateElements must be divisible by 8 (DVec<float> vec_size).
-void mtpScatterRecurrentStates(MtpLayerInfo const* deviceLayerInfos, int32_t numLayers, int32_t activeBatchSize,
-    int32_t verifyTreeSize, int32_t stateElements, int32_t const* acceptLengths, cudaStream_t stream,
-    bool recurrentStateIsHalf = false);
-
-/// Batched scatter of accepted conv states (FP16). Same shape as recurrent variant.
+/// Commit each accepted conv prefix endpoint to its selected resident row.
+/// Zero-length prefixes preserve the resident state. stateElements must be divisible by 8.
 void mtpScatterConvStates(MtpLayerInfo const* deviceLayerInfos, int32_t numLayers, int32_t activeBatchSize,
-    int32_t verifyTreeSize, int32_t stateElements, int32_t const* acceptLengths, cudaStream_t stream);
+    int32_t residentPoolRows, int32_t verifyTreeSize, int32_t stateElements, int32_t const* acceptLengths,
+    int32_t const* stateIndices, cudaStream_t stream);
 
-/// Batched scatter of accepted recurrent states (FP32) for DDTree verification.
-/// For each (layer, batch), finds the last stateNodeId >= 0 within
-/// acceptedStateNodeIds[b, 0:min(acceptLengths[b], maxAcceptLen)] and copies:
-/// dst[b, :] = src[b, nodeId, :].
-/// Skip if no non-negative state node id is present.
-/// stateElements must be divisible by 8 (DVec<float> vec_size).
-void mtpScatterAcceptedTreeRecurrentStates(MtpLayerInfo const* deviceLayerInfos, int32_t numLayers,
-    int32_t activeBatchSize, int32_t verifyTreeSize, int32_t stateElements, int32_t const* acceptedStateNodeIds,
-    int32_t maxAcceptLen, int32_t const* acceptLengths, cudaStream_t stream);
-
-/// Batched scatter of accepted conv states (FP16) for DDTree verification. Same
-/// accepted-state-node semantics as the recurrent variant.
+/// Commit the last non-negative node within each accepted path to its selected resident conv row.
+/// Paths without an accepted node preserve the resident state. stateElements must be divisible by 8.
 void mtpScatterAcceptedTreeConvStates(MtpLayerInfo const* deviceLayerInfos, int32_t numLayers, int32_t activeBatchSize,
-    int32_t verifyTreeSize, int32_t stateElements, int32_t const* acceptedStateNodeIds, int32_t maxAcceptLen,
-    int32_t const* acceptLengths, cudaStream_t stream);
+    int32_t residentPoolRows, int32_t verifyTreeSize, int32_t stateElements, int32_t const* acceptedStateNodeIds,
+    int32_t maxAcceptLen, int32_t const* acceptLengths, int32_t const* stateIndices, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

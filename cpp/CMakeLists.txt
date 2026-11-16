@@ -9,26 +9,26 @@
 # license agreement from NVIDIA CORPORATION or its affiliates is strictly
 # prohibited.
 
-set(CMAKE_CXX_FLAGS
-    "${CMAKE_CXX_FLAGS} -Wfatal-errors -Wall -Wextra -Wno-unknown-pragmas -Wno-deprecated -fPIC"
-)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(MSVC)
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
+  set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE}")
+  set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -G")
+else()
+  set(CMAKE_CXX_FLAGS
+      "${CMAKE_CXX_FLAGS} -Wfatal-errors -Wall -Wextra -Wno-unknown-pragmas -Wno-deprecated"
+  )
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr -t 0")
+  set(CUDA_PTXAS_FLAGS "-warn-lmem-usage -warn-double-usage -warn-spills")
+  set(CMAKE_CUDA_FLAGS_RELEASE
+      "${CMAKE_CUDA_FLAGS_RELEASE} -res-usage -Xptxas='${CUDA_PTXAS_FLAGS}'")
+  set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -g")
+endif()
 
-# Define additional CUDA flags for kernel compilation.
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr -t 0 -fPIC")
-set(CUDA_PTXAS_FLAGS "-warn-lmem-usage -warn-double-usage -warn-spills")
-set(CMAKE_CUDA_FLAGS_RELEASE
-    "${CMAKE_CUDA_FLAGS_RELEASE} -lineinfo -res-usage --use_fast_math -Xptxas='${CUDA_PTXAS_FLAGS}'"
-)
-
-set(CMAKE_CUDA_FLAGS_DEBUG "-g")
-
-# Hide internal C++ symbols; only EDGELLM_PLUGIN_EXPORT entry points stay
-# visible. Prevents duplicate-symbol collisions when our libraries are loaded
-# together.
-function(edgellm_set_hidden_visibility target)
-  set_target_properties(${target} PROPERTIES CXX_VISIBILITY_PRESET hidden
-                                             VISIBILITY_INLINES_HIDDEN ON)
-endfunction()
+# Device line tables expose build paths that host prefix maps cannot rewrite.
+if(NOT DEFINED EDGELLM_WHEEL_PAYLOAD_DIR)
+  set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} -lineinfo")
+endif()
 
 # ------------------------------------------------------------------------------
 # FMHA Cubin Conditional Compilation Exclude SM architectures that are not in
@@ -90,6 +90,12 @@ file(GLOB XQA_SOURCE_FILES "${CMAKE_SOURCE_DIR}/kernelSrcs/xqa/*.cu"
 set(NVFP4_A16_BLACKWELL_GEMV_JIT_SOURCE_FILES
     "${CMAKE_SOURCE_DIR}/kernelSrcs/nvfp4A16BlackwellGemv/nvfp4A16BlackwellGemv.cu"
 )
+file(GLOB QSA_INDEXER_JIT_SOURCE_FILES
+     "${CMAKE_SOURCE_DIR}/kernelSrcs/qsaIndexer/*.cu"
+     "${CMAKE_SOURCE_DIR}/kernelSrcs/qsaIndexer/*.cuh")
+set(NVFP4_A16_BLACKWELL_MOE_JIT_SOURCE_FILES
+    "${CMAKE_SOURCE_DIR}/kernelSrcs/nvfp4A16BlackwellMoe/nvfp4A16BlackwellMoeKernels.cu"
+)
 
 # The generated TU embeds CUDA toolkit headers verbatim, so it is stale after a
 # toolkit change even when no repo file moved. Depend on the headers themselves
@@ -121,11 +127,15 @@ add_custom_command(
     ${Python3_EXECUTABLE} ${PLUGIN_JIT_EMBED_SCRIPT} -o
     ${PLUGIN_JIT_EMBEDDED_SOURCES_OUTPUT} --xqa_dir
     ${CMAKE_SOURCE_DIR}/kernelSrcs/xqa --gemv_dir
-    ${CMAKE_SOURCE_DIR}/kernelSrcs/nvfp4A16BlackwellGemv --cpp_dir
+    ${CMAKE_SOURCE_DIR}/kernelSrcs/nvfp4A16BlackwellGemv --qsa_indexer_dir
+    ${CMAKE_SOURCE_DIR}/kernelSrcs/qsaIndexer --moe_dir
+    ${CMAKE_SOURCE_DIR}/kernelSrcs/nvfp4A16BlackwellMoe --cpp_dir
     ${CMAKE_SOURCE_DIR}/cpp --cuda_include_dir ${CUDA_RUNTIME_API_INCLUDE_DIR}
   DEPENDS
     ${XQA_SOURCE_FILES}
     ${NVFP4_A16_BLACKWELL_GEMV_JIT_SOURCE_FILES}
+    ${QSA_INDEXER_JIT_SOURCE_FILES}
+    ${NVFP4_A16_BLACKWELL_MOE_JIT_SOURCE_FILES}
     ${PLUGIN_JIT_EMBED_SCRIPT}
     ${PLUGIN_JIT_EMBEDDED_CUDA_HEADER_DEPS}
     "${CMAKE_SOURCE_DIR}/cpp/common/cudaMacros.h"
@@ -144,6 +154,11 @@ set_source_files_properties(${PLUGIN_JIT_EMBEDDED_SOURCES_OUTPUT}
 file(GLOB_RECURSE COMMON_CPP_SRCS "common/*.cpp")
 file(GLOB_RECURSE KERNELS_CPP_SRCS "kernels/*.cpp")
 file(GLOB_RECURSE KERNELS_CU_SRCS "kernels/*.cu")
+# CuTe DSL artifacts may contain a generated host dispatcher. It has its own
+# target in CuteDsl.cmake and must not be swept into every kernel archive by the
+# recursive source glob above.
+list(FILTER KERNELS_CPP_SRCS EXCLUDE REGEX "/cuteDSLArtifact/")
+
 # Exclude MoE Marlin ops/instantiations - compiled only via include from
 # moeMarlin.cu.
 list(
@@ -155,19 +170,48 @@ list(
 )
 # JIT compilation and module loading belong to the plugin, not the core kernel
 # archives. Unit tests link this target explicitly for direct compiler coverage.
+# The whole QSA indexer lives here: its launchers JIT-compile on first use, and
+# its cub-based runner is their only caller. The Thor W4A16 MoE runner also
+# lives here: its CUDA-core kernels are NVRTC bundles launched through the
+# driver API (its grouped GEMMs stay CuTe DSL AOT, hence the cute_dsl_setup
+# entry for this target below).
 set(PLUGIN_JIT_CPP_SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/PluginJitKernels/pluginJitCompiler.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/decodeAttentionKernels/decoderXQAJitCompiler.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/nvfp4A16BlackwellGemv/nvfp4A16BlackwellGemvJitCompiler.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/nvfp4A16BlackwellGemv/nvfp4A16BlackwellGemvJitRunner.cpp"
-)
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/moe/nvfp4A16BlackwellMoe/nvfp4A16BlackwellMoeJitCompiler.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/moe/nvfp4A16BlackwellMoe/nvfp4A16BlackwellMoeJitRunner.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/moe/nvfp4A16BlackwellMoe/nvfp4A16BlackwellMoeRunner.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/qsaIndexer/qsaIndexerJitCompiler.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/qsaIndexer/qsaIndexerKernels.cpp")
+set(PLUGIN_JIT_CU_SRCS
+    "${CMAKE_CURRENT_SOURCE_DIR}/kernels/qsaIndexer/qsaIndexerRunner.cu")
 list(REMOVE_ITEM KERNELS_CPP_SRCS ${PLUGIN_JIT_CPP_SRCS})
+list(REMOVE_ITEM KERNELS_CU_SRCS ${PLUGIN_JIT_CU_SRCS})
 
 file(GLOB_RECURSE SAMPLER_CPP_SRCS "sampler/*.cpp")
 file(GLOB_RECURSE SAMPLER_CU_SRCS "sampler/*.cu")
+# RoPE cache initialization needs accurate pow/sin/cos and division. Keep fast
+# math on the other CUDA sources, including the per-token RoPE/KV write kernel.
+set(FAST_MATH_CU_SRCS ${COMMON_CU_SRCS} ${KERNELS_CU_SRCS}
+                      ${PLUGIN_JIT_CU_SRCS} ${SAMPLER_CU_SRCS})
+list(REMOVE_ITEM FAST_MATH_CU_SRCS
+     "${CMAKE_CURRENT_SOURCE_DIR}/kernels/posEncoding/initializeCosSinCache.cu")
+set_property(
+  SOURCE ${FAST_MATH_CU_SRCS}
+  APPEND
+  PROPERTY COMPILE_OPTIONS "$<$<CONFIG:Release>:--use_fast_math>")
 file(GLOB_RECURSE MULTIMODAL_CPP_SRCS "multimodal/*.cpp")
 file(GLOB_RECURSE ACTION_CPP_SRCS "action/*.cpp")
 file(GLOB_RECURSE RUNTIME_CPP_SRCS "runtime/*.cpp")
+file(GLOB_RECURSE SCHEDULER_CPP_SRCS "scheduler/*.cpp")
+# The TRT-RTX runtime cache uses APIs that only exist in the TRT-RTX runtime;
+# compile it there only.
+if(NOT IS_TRT_RTX)
+  list(FILTER RUNTIME_CPP_SRCS EXCLUDE REGEX
+       "runtime/exec/rtxRuntimeCache\\.cpp$")
+endif()
 file(GLOB_RECURSE PROFILER_CPP_SRCS "profiling/*.cpp")
 
 # Enable relocatable device code for MoE Marlin kernels
@@ -176,10 +220,16 @@ set_source_files_properties(${MOE_MARLIN_CU_SRCS} PROPERTIES COMPILE_FLAGS
                                                              "-rdc=true")
 
 # Build-time NVRTC compilers and runtime CUDA Driver module loaders.
-add_library(edgellmPluginJit STATIC ${PLUGIN_JIT_CPP_SRCS}
-                                    ${PLUGIN_JIT_EMBEDDED_SOURCES_OUTPUT})
+add_library(
+  edgellmPluginJit STATIC ${PLUGIN_JIT_CPP_SRCS} ${PLUGIN_JIT_CU_SRCS}
+                          ${PLUGIN_JIT_EMBEDDED_SOURCES_OUTPUT})
 target_include_directories(edgellmPluginJit PRIVATE ${COMMON_INCLUDE_DIRS}
                                                     ${NVRTC_INCLUDE_DIR})
+# No link dependency on edgellmKernels here: the unit tests link edgellmCore
+# whole-archive, and a second copy of the (separable-compilation) kernel objects
+# would enter through the device-link step. The plugin library instead lists
+# this archive before edgellmKernels so the MoE runner's references to the
+# shared routing / tile-layout kernels resolve.
 target_link_libraries(
   edgellmPluginJit PRIVATE ${NVRTC_LIB} ${CUDA_DRIVER_LINK_LIB} ${CUDART_LIB})
 add_dependencies(edgellmPluginJit generatePluginJitEmbeddedSources)
@@ -201,6 +251,16 @@ set_target_properties(edgellmKernels PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 edgellm_set_hidden_visibility(edgellmKernels)
 
 file(GLOB_RECURSE TOKENIZER_CPP_SRCS "tokenizer/*.cpp")
+file(GLOB_RECURSE CHAT_TEMPLATE_CPP_SRCS "chatTemplate/*.cpp")
+
+add_library(edgellmChatTemplate STATIC ${CHAT_TEMPLATE_CPP_SRCS})
+set_target_properties(edgellmChatTemplate PROPERTIES EXPORT_NAME ChatTemplate)
+target_include_directories(
+  edgellmChatTemplate PRIVATE ${COMMON_INCLUDE_DIRS}
+                              ${CMAKE_SOURCE_DIR}/3rdParty/inja/include)
+set_target_properties(edgellmChatTemplate PROPERTIES POSITION_INDEPENDENT_CODE
+                                                     ON)
+edgellm_set_hidden_visibility(edgellmChatTemplate)
 
 add_library(
   edgellmCore STATIC
@@ -213,48 +273,98 @@ add_library(
   ${MULTIMODAL_CPP_SRCS}
   ${ACTION_CPP_SRCS}
   ${RUNTIME_CPP_SRCS}
+  ${SCHEDULER_CPP_SRCS}
   ${PROFILER_CPP_SRCS}
   ${TOKENIZER_CPP_SRCS})
-target_include_directories(edgellmCore PRIVATE ${COMMON_INCLUDE_DIRS})
+set_target_properties(edgellmCore PROPERTIES EXPORT_NAME Core)
+target_include_directories(
+  edgellmCore
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/cpp>
+         $<BUILD_INTERFACE:${EDGELLM_PUBLIC_BUILD_INCLUDE_DIR}>
+         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/tensorrt_edgellm>
+  PRIVATE ${COMMON_INCLUDE_DIRS} ${XGRAMMAR_INCLUDE_DIRS})
+if(ENABLE_EXPERIMENTAL_WEIGHTLESS)
+  target_compile_definitions(edgellmCore PUBLIC ENABLE_EXPERIMENTAL_WEIGHTLESS)
+endif()
+if(WIN32)
+  # Public headers include <windows.h>; keep its min/max macros out of
+  # consumers' std::numeric_limits calls.
+  target_compile_definitions(edgellmCore INTERFACE NOMINMAX)
+endif()
 if(ENABLE_CUTEDSL_MODULE_TEST_HOOK)
   target_compile_definitions(edgellmCore
                              PRIVATE ENABLE_CUTEDSL_MODULE_TEST_HOOK)
 endif()
-target_link_libraries(edgellmCore PRIVATE ${CMAKE_DL_LIBS})
+target_link_libraries(edgellmCore PRIVATE ${CMAKE_DL_LIBS} edgellmChatTemplate)
+target_link_libraries(edgellmCore PUBLIC commonLibraryExt)
+# Guided decoding: XGrammar is referenced only from
+# runtime/decoding/guidedDecoder.cpp; PUBLIC so downstream executables that link
+# edgellmCore statically also pull in the archive.
+target_link_libraries(edgellmCore PRIVATE xgrammarCore)
 # Apply FMHA SM exclusion definitions
 target_compile_definitions(edgellmCore PRIVATE ${FMHA_EXCLUDE_DEFINITIONS})
 edgellm_apply_qnx_warning_suppressions(edgellmCore)
 # Enable separable compilation for MoE Marlin kernel templates
 set_target_properties(edgellmCore PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 edgellm_set_hidden_visibility(edgellmCore)
+add_library(TensorRTEdgeLLM::Core ALIAS edgellmCore)
 
 # Generate builder C++ static library
 file(GLOB_RECURSE BUILDER_CPP_SRCS "builder/*.cpp")
+list(FILTER BUILDER_CPP_SRCS EXCLUDE REGEX "/builder/safety/")
+if(ENABLE_SAFETY_RUNTIME)
+  file(GLOB BUILDER_SAFETY_CPP_SRCS "builder/safety/*.cpp")
+  list(APPEND BUILDER_CPP_SRCS ${BUILDER_SAFETY_CPP_SRCS})
+endif()
 add_library(edgellmBuilder STATIC ${BUILDER_CPP_SRCS} ${COMMON_CPP_SRCS})
-target_include_directories(edgellmBuilder PRIVATE ${ONNX_PARSER_INCLUDE_DIR}
-                                                  ${COMMON_INCLUDE_DIRS})
-target_link_libraries(edgellmBuilder PRIVATE ${NV_ONNX_PARSER_LIB}
+set_target_properties(edgellmBuilder PROPERTIES EXPORT_NAME Builder)
+target_include_directories(
+  edgellmBuilder
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/cpp>
+         $<BUILD_INTERFACE:${EDGELLM_PUBLIC_BUILD_INCLUDE_DIR}>
+         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/tensorrt_edgellm>
+  PRIVATE ${ONNX_PARSER_INCLUDE_DIR} ${COMMON_INCLUDE_DIRS})
+target_link_libraries(edgellmBuilder PUBLIC commonLibraryExt)
+target_link_libraries(edgellmBuilder PRIVATE TensorRT::OnnxParser
                                              ${CMAKE_DL_LIBS})
+if(ENABLE_SAFETY_RUNTIME)
+  # Safety engine construction remains a host/development capability backed by
+  # the combined Automotive package. Keep it out of the safety-only D7QS flow,
+  # which returns before Standard targets are configured.
+  target_compile_definitions(edgellmBuilder PRIVATE ENABLE_SAFETY_RUNTIME=1)
+  target_link_libraries(
+    edgellmBuilder PRIVATE TensorRT::TensorRTSafe ${CUDA_DRIVER_LINK_LIB}
+                           ${CUDART_LIB})
+endif()
 edgellm_apply_qnx_warning_suppressions(edgellmBuilder)
 edgellm_set_hidden_visibility(edgellmBuilder)
+add_library(TensorRTEdgeLLM::Builder ALIAS edgellmBuilder)
 
 # Generate the TensorRT plugin shared libraries
 file(GLOB_RECURSE PLUGIN_CPP_SRCS "plugins/*.cpp")
 add_library(NvInfer_edgellm_plugin SHARED ${PLUGIN_CPP_SRCS})
-set_target_properties(NvInfer_edgellm_plugin PROPERTIES VERSION 1.0 SOVERSION 1)
-set_target_properties(NvInfer_edgellm_plugin PROPERTIES LIBRARY_OUTPUT_DIRECTORY
-                                                        ${CMAKE_BINARY_DIR})
+set_target_properties(
+  NvInfer_edgellm_plugin
+  PROPERTIES VERSION 1.0
+             SOVERSION 1
+             CUDA_RUNTIME_LIBRARY Shared
+             EXPORT_NAME Plugin)
 target_include_directories(NvInfer_edgellm_plugin
                            PRIVATE ${COMMON_INCLUDE_DIRS})
+# edgellmPluginJit precedes edgellmKernels: the Thor W4A16 MoE runner in the JIT
+# archive calls the shared grouped-routing / tile-layout kernels.
 target_link_libraries(
-  NvInfer_edgellm_plugin
-  PRIVATE commonLibraryExt edgellmKernels edgellmPluginJit
-          ${CUDA_DRIVER_LINK_LIB} ${CUDART_LIB})
+  NvInfer_edgellm_plugin PRIVATE commonLibraryExt edgellmPluginJit
+                                 edgellmKernels ${CMAKE_DL_LIBS})
 add_cross_build_link_options(NvInfer_edgellm_plugin)
 edgellm_apply_qnx_warning_suppressions(NvInfer_edgellm_plugin)
 edgellm_set_hidden_visibility(NvInfer_edgellm_plugin)
 # Also drop symbols pulled in from static archives (edgellmKernels, CuTe DSL).
-target_link_options(NvInfer_edgellm_plugin PRIVATE "-Wl,--exclude-libs,ALL")
+if(NOT MSVC)
+  target_link_options(NvInfer_edgellm_plugin PRIVATE "-Wl,--exclude-libs,ALL")
+endif()
 
 # cmake-format: off
 # CuTe DSL unified kernels: link locally generated static library. Artifacts are
@@ -265,13 +375,21 @@ target_link_options(NvInfer_edgellm_plugin PRIVATE "-Wl,--exclude-libs,ALL")
 #   gdn              -- gated delta net (Mamba2-style hybrid SSM)
 #   f16_moe          -- target-specific FP16 grouped MoE for Ampere,
 #                       Blackwell DC, and Blackwell GeForce
+#   lora             -- Blackwell FP16 grouped LoRA A/B projections
 #   nvfp4_moe        -- SM110 (Thor) split FC1/FC2 NVFP4 MoE; consumed by the
 #                       SM110-only ``Nvfp4MoePlugin``
 #   nvfp4_fused_moe  -- SM12x (consumer Blackwell / Spark GB10) fused NVFP4
 #                       MoE; consumed by ``NvFP4MoEPluginGeforce``
 #   rmsnorm          -- FP16/BF16 RMSNorm for supported production hidden sizes
+#   layernorm        -- FP16/BF16 LayerNorm for benchmarked hidden sizes plus
+#                       odd-H correctness coverage
 # or a semicolon-separated list (e.g. fmha;gdn), or ALL. fmha is always linked.
 # See the top-level CMakeLists.txt for the canonical option list.
 # cmake-format: on
 include(${CMAKE_SOURCE_DIR}/cmake/CuteDsl.cmake)
-cute_dsl_setup(LINK_TARGETS edgellmKernels edgellmCore NvInfer_edgellm_plugin)
+cute_dsl_setup(LINK_TARGETS edgellmKernels edgellmCore edgellmPluginJit
+               NvInfer_edgellm_plugin)
+
+if(ENABLE_SAFETY_RUNTIME)
+  add_subdirectory(safety_inference)
+endif()

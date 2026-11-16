@@ -20,6 +20,7 @@
 #include "common/checkMacros.h"
 #include "common/logger.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "kernels/audioAttentionKernels/gemma4AudioAttention.h"
 #include "plugins/utils/pluginUtils.h"
 
@@ -34,6 +35,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -277,18 +279,18 @@ int32_t Gemma4AudioAttentionPlugin::enqueue(PluginTensorDesc const* inputDesc,
 
         // Build rt::Tensor wrappers (non-owning).
         rt::Coords const qkvShape{B, S, H, D};
-        rt::Tensor qRaw(const_cast<void*>(inputs[kIN_QRAW_IDX]), qkvShape, rt::DeviceType::kGPU, qDesc.type);
-        rt::Tensor kRaw(const_cast<void*>(inputs[kIN_KRAW_IDX]), qkvShape, rt::DeviceType::kGPU, qDesc.type);
-        rt::Tensor v(const_cast<void*>(inputs[kIN_V_IDX]), qkvShape, rt::DeviceType::kGPU, qDesc.type);
+        rt::Tensor qRaw(const_cast<void*>(inputs[kIN_QRAW_IDX]), qkvShape, rt::DeviceType::kGPU, fromTrt(qDesc.type));
+        rt::Tensor kRaw(const_cast<void*>(inputs[kIN_KRAW_IDX]), qkvShape, rt::DeviceType::kGPU, fromTrt(qDesc.type));
+        rt::Tensor v(const_cast<void*>(inputs[kIN_V_IDX]), qkvShape, rt::DeviceType::kGPU, fromTrt(qDesc.type));
 
         rt::Tensor gamma(const_cast<void*>(inputs[kIN_GAMMA_IDX]), rt::Coords{D}, rt::DeviceType::kGPU,
-            inputDesc[kIN_GAMMA_IDX].type);
+            fromTrt(inputDesc[kIN_GAMMA_IDX].type));
         rt::Tensor relKey(const_cast<void*>(inputs[kIN_RELKEY_IDX]), rt::Coords{P, H, D}, rt::DeviceType::kGPU,
-            inputDesc[kIN_RELKEY_IDX].type);
+            fromTrt(inputDesc[kIN_RELKEY_IDX].type));
         rt::Tensor valid(const_cast<void*>(inputs[kIN_VALID_IDX]), rt::Coords{B, S}, rt::DeviceType::kGPU,
-            inputDesc[kIN_VALID_IDX].type);
+            fromTrt(inputDesc[kIN_VALID_IDX].type));
 
-        rt::Tensor out(outputs[kOUT_IDX], qkvShape, rt::DeviceType::kGPU, qDesc.type);
+        rt::Tensor out(outputs[kOUT_IDX], qkvShape, rt::DeviceType::kGPU, fromTrt(qDesc.type));
 
         kernel::Gemma4AudioAttentionParams params{};
         params.chunkSize = mChunkSize;

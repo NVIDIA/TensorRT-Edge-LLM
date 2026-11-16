@@ -48,14 +48,14 @@ def _wrap_with_dynamic_lm_head(base: nn.Module) -> nn.Module:
     base_call = ", ".join(names)
     src = (f"def _forward(self, {', '.join(new_names)}):\n"
            f"    out = self._base({base_call})\n"
-           f"    m = self._base._model\n"
-           f"    last_hidden = m._cp_last_hidden\n"
-           f"    full_hidden = m._cp_full_hidden\n"
+           f"    full_hidden = out[1]\n"
+           f"    last_hidden = torch.index_select(full_hidden, 0, "
+           f"logits_indices)\n"
            f"    head = lm_heads.index_select(0, "
            f"lm_head_idx.to(torch.long)).squeeze(0)\n"
            f"    logits = torch.matmul(last_hidden, "
            f"head.T).to(torch.float32)\n"
-           f"    return (logits, full_hidden) + tuple(out[1:])\n")
+           f"    return (logits, full_hidden) + tuple(out[2:])\n")
     globs: dict = {"torch": torch}
     exec(src, globs)  # noqa: S102
 
@@ -77,6 +77,7 @@ class Qwen3OmniNextCodePredictorCausalLM(Qwen3_5CausalLM):
     # pass would re-cast it to FP16, producing a mixed-dtype MatMul TRT rejects.
     preserve_fp32_initializer_patterns = ("down_proj.weight", )
     match_fp32_matmul_initializers = True
+    emit_hidden_states = True
 
     def forward(
             self,

@@ -32,9 +32,6 @@ from sphinx.ext.autodoc.mock import mock as _mock
 sys.path.insert(0, str(Path(__file__).parent))  # For importing helper module
 sys.path.insert(0, str(
     Path(__file__).parent.parent.parent))  # For importing tensorrt_edgellm
-sys.path.insert(
-    0, str(Path(__file__).parent.parent.parent /
-           "experimental"))  # For importing the experimental server package
 
 # Import helper functions for auto-generating API documentation
 from helper import generate_module_rst_files, generate_python_api_rst
@@ -47,9 +44,8 @@ copyright = '2025, Nvidia'
 author = 'Nvidia'
 html_show_sphinx = False
 
-# Rendered pages link to this commit on GitHub, so a release build must be told
-# the public commit: an archive export has no repository, and a GitLab SHA does
-# not resolve there.
+# An exported source tree has no repository; explicitly select the public
+# GitHub commit used for documentation links.
 commit_sha = os.environ.get('EDGELLM_DOCS_COMMIT_SHA')
 
 if not commit_sha:

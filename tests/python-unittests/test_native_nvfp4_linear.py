@@ -20,7 +20,7 @@ import pytest
 trt = pytest.importorskip("tensorrt")
 torch = pytest.importorskip("torch")
 
-from experimental.builder.ops import backend
+from tensorrt_edgellm.builder.ops import backend
 
 
 @pytest.mark.parametrize("with_bias", [False, True])

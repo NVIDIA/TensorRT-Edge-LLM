@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <cub/block/block_scan.cuh>
 #include <cuda_runtime.h>
 
 namespace trt_edgellm
@@ -35,7 +36,9 @@ namespace
 
 // ---- GPU kernel ----
 
-__global__ void build_layout_kernel(int32_t const* __restrict__ token_selected_experts,
+constexpr int32_t kBlockSize = 256;
+
+__global__ void __launch_bounds__(kBlockSize) build_layout_kernel(int32_t const* __restrict__ token_selected_experts,
     int32_t* __restrict__ permuted_idx, int32_t* __restrict__ tile_group_idx, int32_t* __restrict__ tile_mn_limit,
     int32_t* __restrict__ num_non_exiting_tiles, int32_t num_expanded, int32_t local_num_experts, int32_t tile_size,
     int32_t max_mPadded)
@@ -61,30 +64,37 @@ __global__ void build_layout_kernel(int32_t const* __restrict__ token_selected_e
     }
     __syncthreads();
 
-    // Phase 2: Prefix sum + tile metadata + fill -1
-    if (tid == 0)
+    // Phase 2: Prefix sum + tile metadata + fill -1. Each thread owns a contiguous expert range; one block-wide scan
+    // of tile counts gives every expert's first tile, and its padded offset is that tile index times tile_size.
+    using BlockScan = cub::BlockScan<int32_t, kBlockSize>;
+    __shared__ typename BlockScan::TempStorage scan_storage;
+    int32_t const experts_per_thread = (local_num_experts + kBlockSize - 1) / kBlockSize;
+    int32_t const first_expert = min(tid * experts_per_thread, local_num_experts);
+    int32_t const end_expert = min(first_expert + experts_per_thread, local_num_experts);
+    int32_t thread_tiles = 0;
+    for (int32_t e = first_expert; e < end_expert; e++)
+        thread_tiles += (s_expert_counts[e] + tile_size - 1) / tile_size;
+    int32_t running_tiles = 0;
+    int32_t total_tiles = 0;
+    BlockScan(scan_storage).ExclusiveSum(thread_tiles, running_tiles, total_tiles);
+    for (int32_t e = first_expert; e < end_expert; e++)
     {
-        int32_t running_offset = 0;
-        int32_t running_tiles = 0;
-        for (int32_t e = 0; e < local_num_experts; e++)
+        int32_t count = s_expert_counts[e];
+        int32_t ntiles = (count + tile_size - 1) / tile_size;
+        int32_t running_offset = running_tiles * tile_size;
+        s_expert_offsets[e] = running_offset;
+        for (int32_t t = 0; t < ntiles; t++)
         {
-            int32_t count = s_expert_counts[e];
-            int32_t padded = (count > 0) ? ((count + tile_size - 1) / tile_size) * tile_size : 0;
-            int32_t ntiles = padded / tile_size;
-            s_expert_offsets[e] = running_offset;
-            for (int32_t t = 0; t < ntiles; t++)
-            {
-                tile_group_idx[running_tiles + t] = e;
-                int32_t valid_limit = (t + 1) * tile_size;
-                if (valid_limit > count)
-                    valid_limit = count;
-                tile_mn_limit[running_tiles + t] = running_offset + valid_limit;
-            }
-            running_offset += padded;
-            running_tiles += ntiles;
+            tile_group_idx[running_tiles + t] = e;
+            int32_t valid_limit = (t + 1) * tile_size;
+            if (valid_limit > count)
+                valid_limit = count;
+            tile_mn_limit[running_tiles + t] = running_offset + valid_limit;
         }
-        num_non_exiting_tiles[0] = running_tiles;
+        running_tiles += ntiles;
     }
+    if (tid == 0)
+        num_non_exiting_tiles[0] = total_tiles;
     __syncthreads();
 
     for (int32_t i = tid; i < max_mPadded; i += blockDim_x)
@@ -127,7 +137,6 @@ void buildLayoutGpu(MoELayoutBuffers& buf, int32_t const* tokenSelectedExperts, 
         return;
     }
 
-    constexpr int32_t kBlockSize = 256;
     size_t const smemBytes = static_cast<size_t>(3 * localNumExperts) * sizeof(int32_t);
 
     build_layout_kernel<<<1, kBlockSize, smemBytes, stream>>>(tokenSelectedExperts,

@@ -1,0 +1,18 @@
+{
+    "batch_size": 1,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 50,
+    "max_generate_length": 128,
+    "requests": [
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Please introduce the company NVIDIA and its CEO."
+                }
+            ],
+            "reference": "NVIDIA is a leading technology company that specializes in graphics processing units (GPUs) and other hardware and software solutions for gaming, data centers, self-driving cars, and more. Founded in 1993, NVIDIA is headquartered in Santa Clara, California.\n\nThe current CEO of NVIDIA is Jensen Huang. He has been with the company since its inception and took over as CEO in 2000. Huang is known for his vision and leadership in the tech industry, particularly in the areas of artificial intelligence, autonomous vehicles, and gaming."
+        }
+    ]
+}

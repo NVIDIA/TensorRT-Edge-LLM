@@ -109,6 +109,25 @@ bool RopeCache::configsMatch(RopeConfig const& a, int32_t rotaryDimA, int32_t ma
             }
         }
     }
+    if (a.type == RopeType::kLlama3)
+    {
+        bool const aHasLlama3 = a.llama3.has_value();
+        bool const bHasLlama3 = b.llama3.has_value();
+        if (aHasLlama3 != bHasLlama3)
+        {
+            return false;
+        }
+        if (aHasLlama3)
+        {
+            auto const& la = *a.llama3;
+            auto const& lb = *b.llama3;
+            if (la.originalMaxPositionEmbeddings != lb.originalMaxPositionEmbeddings || la.factor != lb.factor
+                || la.lowFreqFactor != lb.lowFreqFactor || la.highFreqFactor != lb.highFreqFactor)
+            {
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -133,8 +152,8 @@ rt::Tensor& RopeCache::getOrCreate(RopeConfig const& config, int32_t rotaryDim, 
     newEntry.maxSeqLen = maxSeqLen;
 
     // Allocate the cos/sin cache tensor: shape [1, maxSeqLen, rotaryDim].
-    newEntry.tensor
-        = rt::Tensor({1, maxSeqLen, rotaryDim}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "RopeCache::cosSinCache");
+    newEntry.tensor = rt::Tensor(
+        {1, maxSeqLen, rotaryDim}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "RopeCache::cosSinCache");
 
     // Initialize the cache based on RoPE type.
     bool initialized{false};
@@ -151,9 +170,9 @@ rt::Tensor& RopeCache::getOrCreate(RopeConfig const& config, int32_t rotaryDim, 
         else
         {
             rt::Tensor shortCosSinCache = rt::Tensor({1, maxSeqLen, rotaryDim}, rt::DeviceType::kGPU,
-                nvinfer1::DataType::kFLOAT, "RopeCache::shortCosSinCache");
+                trt_edgellm::DataType::kFLOAT, "RopeCache::shortCosSinCache");
             rt::Tensor longCosSinCache = rt::Tensor({1, maxSeqLen, rotaryDim}, rt::DeviceType::kGPU,
-                nvinfer1::DataType::kFLOAT, "RopeCache::longCosSinCache");
+                trt_edgellm::DataType::kFLOAT, "RopeCache::longCosSinCache");
             initialized = initializeLongRopeCosSinCache(shortCosSinCache, longCosSinCache, config, stream);
             if (initialized)
             {

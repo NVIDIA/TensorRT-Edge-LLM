@@ -110,7 +110,7 @@ To narrow the run, either invoke one group directly or set `GTEST_FILTER`, which
 ctest passes through to each executable:
 
 ```bash
-./build_coverage/unittests/unitTestCommon --gtest_filter="LoggerTest.*"
+./build_coverage/bin/unitTests/unitTestCommon --gtest_filter="LoggerTest.*"
 GTEST_FILTER="LoggerTest.*" ctest --test-dir build_coverage
 ```
 

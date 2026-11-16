@@ -97,7 +97,7 @@ __inline__ __device__ uint32_t cast_smem_ptr_to_uint(void const* const ptr)
 
 __inline__ __device__ void ldmatrix_m8n8_x4_b16(half* shared_warp, int ax0_0, uint32_t addr)
 {
-    __asm__ __volatile__(
+    asm volatile(
         "ldmatrix.sync.aligned.m8n8.x4.shared.b16"
         "{%0, %1, %2, %3}, [%4];"
         : "=r"(((unsigned*) (shared_warp + (ax0_0 * 8)))[0]), "=r"(((unsigned*) (shared_warp + (ax0_0 * 8)))[1]),
@@ -120,7 +120,7 @@ __inline__ __device__ void cp_async_cg_A(uint32_t smem_int_ptr, uint4 const* __r
 
 __device__ __inline__ void mma_m16n8k16(half* C_warp, half* A_shared_warp, half* B_shared_warp)
 {
-    __asm__ __volatile__(
+    asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16"
         "{%0, %1}, {%2, %3, %4, %5}, {%6, %7}, {%8, %9};"
         : "=r"(((unsigned*) C_warp)[0]), "=r"(((unsigned*) C_warp)[1])

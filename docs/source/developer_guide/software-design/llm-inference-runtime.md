@@ -1,4 +1,28 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # LLM Inference Runtime
+
+## Checkpoint-backed Engine Initialization
+
+Experimental direct-built engines can obtain weights from the original
+checkpoint instead of serializing every weight in the plan. The default path
+keeps eligible weights as persistent external inputs. The opt-in weightless
+path instead supplies named FP16 parameters to TensorRT refit before execution
+context creation; ordinary request handling does not perform refit.
+
+`ModelArtifacts`, `ExternalWeightManager`, and `TrtEngineExecutor` validate the
+checkpoint binding contract, prepare final-layout weights, deserialize the
+engine, and complete refit on an explicit initialization stream. Transient
+refit storage survives until stream completion; the embedding and ordinary
+input storage remain runtime-owned. Do not reuse transient output-head storage
+for a persistent tied embedding or create a context before refit succeeds.
+
+This requires `ENABLE_EXPERIMENTAL_WEIGHTLESS=ON` and a compatible
+TensorRT/Myelin package with null-weight placeholder support. The builder
+requires dense unquantized FP16 weights and single-rank vanilla decoding.
+See the [builder contract](onnxless-builder.md#experimental-weightless-constants)
+and [opt-in commands](../../user_guide/getting_started/direct-engine-builder.md#experimental-weightless-refit-mode).
 
 ## Architecture
 
@@ -82,7 +106,7 @@ class END_NODES invisibleSubGraph
 
 | Component | Description |
 |-----------|-------------|
-| **Engine Executor (Base)** | Executes TensorRT engines and manages dual-phase inference for the base model. Core engine execution component owned by `LLMInferenceRuntime`. Uses a single TensorRT execution context that switches optimization profiles between prefill and generation phases. Manages its own Linear KV Cache instance, produces logits that are consumed by the runtime's sampling calls. Supports dynamic LoRA adapter switching. *Files:* `cpp/runtime/exec/engineExecutor.{h,cpp}` |
+| **Engine Executor (Base)** | Executes TensorRT engines and manages dual-phase inference for the base model. Core engine execution component owned by `LLMInferenceRuntime`. Uses one TensorRT execution context that switches optimization profiles between prefill and generation phases; a compact in-flight-batching session adds a second context, dedicated to phase-8 prompt steps on the prefill profile, that shares the first context's device memory (see [In-Flight Batching](in-flight-batching.md#cuda-graphs)). Manages its own Linear KV Cache instance, produces logits that are consumed by the runtime's sampling calls. Supports dynamic LoRA adapter switching. *Files:* `cpp/runtime/exec/engineExecutor.{h,cpp}` |
 | **Engine Executor (Draft — optional)** | Specialized engine executor for draft models used in speculative decoding (for example, EAGLE3, MTP, or DFlash). Only instantiated when a `SpecDecodeDraftingConfig` is provided. Generates candidate token sequences that are verified by the base model. Maintains its own separate KV cache. *Files:* `cpp/runtime/exec/engineExecutor.{h,cpp}` |
 | **Decoder Registry & Decoding Strategies** | Pluggable decoding strategy layer introduced by the runtime refactor. The `DecoderRegistry` selects the appropriate `DecodingStrategy` (Vanilla, EAGLE, MTP, DFlash, etc.) based on the deployment config and per-request compatibility. Each strategy owns its decode-step logic, private resources, CUDA graph capture, and strategy-specific prompt cache. *Files:* `cpp/runtime/decoding/decoderRegistry.{h,cpp}`, `cpp/runtime/decoding/decodingStrategy.h` |
 | **Tokenizer** | HuggingFace-compatible text tokenization system. Converts between text and token IDs using Byte-Pair Encoding (BPE). Supports various model vocabularies (GPT, Llama, Qwen) with configurable special tokens and preprocessing steps. *Files:* `cpp/tokenizer/tokenizer.{h,cpp}`, `preTokenizer.{h,cpp}`, `tokenEncoder.{h,cpp}` |
@@ -90,7 +114,7 @@ class END_NODES invisibleSubGraph
 | **Linear KV Cache** | Attention key-value cache management. Each engine executor maintains its own Linear KV Cache instance. Stores attention key-value pairs across inference steps for efficient autoregressive generation. Uses linear memory layout optimized for GPU access with support for batched processing and variable sequence lengths. *Files:* `cpp/runtime/linearKVCache.{h,cpp}` |
 | **Sampling Kernels** | Token generation from model logits. Converts model output logits into probability distributions and samples the next token using configurable strategies (greedy, top-k, top-p, temperature). Called directly by the runtime (not by engine executors) after engine execution produces logits. Operates on GPU for efficient batch processing. *Files:* `cpp/sampler/sampling.{cu,h}` |
 | **Speculative Decode Util Kernels** | Speculative decoding utility kernels (only used when a draft model is present). Specialized CUDA kernels for tree-based and block-based speculative decoding operations. Handles candidate token generation, verification logic, and accept/reject mechanisms for speculative tokens. *Files:* `cpp/kernels/speculative/` |
-| **TRT Engines** | TensorRT inference engines. In vanilla mode, a single base engine is used. In speculative decoding mode, dual engines (base + draft) are used. Optimized TensorRT engines compiled from ONNX models. Provides high-performance inference through TensorRT optimizations including kernel fusion, precision calibration, and memory optimization. *Files:* Built by `llm_build` (see Engine Builder section) |
+| **TRT Engines** | TensorRT inference engines. In vanilla mode, a single base engine is used. In speculative decoding mode, dual engines (base + draft) are used. Optimized TensorRT engines compiled from ONNX models. Provides high-performance inference through TensorRT optimizations including kernel fusion and memory optimization. *Files:* Built by `llm_build` (see Engine Builder section) |
 
 
 
@@ -397,9 +421,9 @@ CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
 // Configure EAGLE drafting parameters
 SpecDecodeDraftingConfig draftingConfig;
-draftingConfig.draftingTopK = 10;
+draftingConfig.draftTopK = 10;
 draftingConfig.draftingStep = 6;
-draftingConfig.verifyTreeSize = 60;
+draftingConfig.verifyTokens = 60;
 
 // Initialize runtime — speculative decoding mode
 std::unordered_map<std::string, std::string> loraWeightsMap{};
@@ -454,7 +478,7 @@ mmMsg.contents.push_back({"image", "/path/to/image.jpg"});
 mmMsg.contents.push_back({"text", "What's in this image?"});
 request.requests[0].messages.push_back(std::move(mmMsg));
 // Image bytes are provided separately via imageBuffers.
-request.requests[0].imageBuffers.push_back(imageUtils::loadImageFromFile("/path/to/image.jpg"));
+request.requests[0].imageBuffers.push_back(imageUtils::loadRgbImageFromFile("/path/to/image.jpg"));
 request.maxGenerateLength = 150;
 request.temperature = 1.0;
 request.topK = 50;

@@ -20,18 +20,18 @@
 #include "cuteDslInt4Gemm.h"
 #include "common/cudaUtils.h"
 
-// The AOT-generated headers use cudaLibrary_t (CUDA 12.8+ runtime). On CUDA < 12.8
-// the build defines TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT; route it to the driver type.
+// CUDA 12.0-12.7 AOT headers use cudaLibrary_t, which the runtime does not
+// declare until 12.8. CUDA 11.4 headers use CUmodule, and CUlibrary does not exist.
 #include <cuda.h>
 #if defined(TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT)
 #include <cuda_runtime.h>
-#if CUDA_VERSION < 12800
+#if CUDA_VERSION >= 12000 && CUDA_VERSION < 12080
 typedef CUlibrary cudaLibrary_t;
 static inline cudaError_t cudaLibraryUnload(cudaLibrary_t lib)
 {
     return static_cast<cudaError_t>(cuLibraryUnload(lib));
 }
-#endif
+#endif // CUDA_VERSION >= 12000 && CUDA_VERSION < 12080
 #endif
 
 #include "cutedsl_all.h"
@@ -158,13 +158,13 @@ bool cuteDslInt4GemmLoadModules()
     } while (0)
 
 int32_t cuteDslInt4GemmLaunch(CuteDslInt4Variant const& v, void const* A, void const* fragW, void const* scales,
-    void* C, void* locks, int32_t M, int32_t N, int32_t K, int32_t swizzle, cudaStream_t stream)
+    void* C, void* locks, int32_t M, int32_t N, int32_t K, int32_t groupSize, int32_t swizzle, cudaStream_t stream)
 {
-    if (!gLoaded)
+    if (!gLoaded || groupSize < 64 || groupSize % 64 != 0 || K % groupSize != 0)
     {
         return -1;
     }
-    int32_t const scaleRows = divUp(K, 128); // group_size == 128 for these variants
+    int32_t const scaleRows = divUp(K, groupSize);
 #define DISPATCH(prefix, bm, bn, bk, st, sk)                                                                           \
     if (v.bM == (bm) && v.bN == (bn) && v.bK == (bk) && v.stages == (st) && v.splitK == (sk))                          \
     {                                                                                                                  \
@@ -182,7 +182,7 @@ int32_t cuteDslInt4GemmLaunch(CuteDslInt4Variant const& v, void const* A, void c
         SET_2D(tWs, C, M, N);                                                                                          \
         prefix##_Tensor_mLocks_t tL{};                                                                                 \
         SET_1D(tL, locks, nTiles);                                                                                     \
-        return cute_dsl_##prefix##_wrapper(&g_##prefix, &tA, &tW, &tS, &tC, &tWs, &tL, swizzle, stream);               \
+        return cute_dsl_##prefix##_wrapper(&g_##prefix, &tA, &tW, &tS, &tC, &tWs, &tL, groupSize, swizzle, stream);    \
     }
     INT4_FP16_GEMM_VARIANTS(DISPATCH)
 #undef DISPATCH

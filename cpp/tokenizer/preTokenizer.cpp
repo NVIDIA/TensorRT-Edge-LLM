@@ -17,6 +17,7 @@
 
 #include "preTokenizer.h"
 #include "tokenizerUtils.h"
+#include <algorithm>
 #include <cassert>
 #include <iterator>
 #include <stdexcept>
@@ -106,11 +107,81 @@ std::vector<std::string> RegexSplit::process(std::string const& text) const
     return bpeWords;
 }
 
+Metaspace::Metaspace(std::string replacement, std::string prependScheme, bool split)
+    : mReplacement(std::move(replacement))
+    , mPrepend(prependScheme != "never")
+    , mSplit(split)
+{
+    if (mReplacement.empty())
+    {
+        throw std::invalid_argument("Metaspace: replacement must not be empty");
+    }
+    if (prependScheme != "first" && prependScheme != "always" && prependScheme != "never")
+    {
+        throw std::invalid_argument("Metaspace: unsupported prepend_scheme '" + prependScheme + "'");
+    }
+}
+
+std::vector<std::string> Metaspace::process(std::string const& text) const
+{
+    if (text.empty())
+    {
+        return {};
+    }
+    if (text.size() > MAX_TEXT_SIZE_BYTES)
+    {
+        throw std::runtime_error(
+            "Metaspace: Input text too large for processing: " + std::to_string(text.size()) + " bytes");
+    }
+
+    std::string transformed;
+    transformed.reserve(text.size() + mReplacement.size());
+    if (mPrepend && text.front() != ' ')
+    {
+        transformed += mReplacement;
+    }
+    for (char const character : text)
+    {
+        if (character == ' ')
+        {
+            transformed += mReplacement;
+        }
+        else
+        {
+            transformed += character;
+        }
+    }
+
+    if (!mSplit)
+    {
+        return {std::move(transformed)};
+    }
+
+    std::vector<std::string> pieces;
+    size_t begin = 0;
+    while (begin < transformed.size())
+    {
+        size_t const next = transformed.find(mReplacement, begin + mReplacement.size());
+        pieces.emplace_back(transformed.substr(begin, next - begin));
+        if (next == std::string::npos)
+        {
+            break;
+        }
+        begin = next;
+    }
+    return pieces;
+}
+
 // Sequence implementation
 Sequence::Sequence(std::vector<std::unique_ptr<PreTokenizer>> steps) noexcept
     : mSteps(std::move(steps))
 {
     // Empty sequences are allowed - they act as pass-through
+}
+
+bool Sequence::prependsSpaceMarker() const noexcept
+{
+    return std::any_of(mSteps.begin(), mSteps.end(), [](auto const& step) { return step->prependsSpaceMarker(); });
 }
 
 std::vector<std::string> Sequence::process(std::string const& text) const

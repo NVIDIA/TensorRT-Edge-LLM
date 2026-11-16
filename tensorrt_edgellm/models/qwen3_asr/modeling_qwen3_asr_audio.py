@@ -32,9 +32,16 @@ ONNX Forward I/O:
     Inputs:
         padded_feature                 [num_chunks, num_mel_bins, n_window*2]  float16
         padded_mask_after_cnn_indices  [num_attention_elems, 2]               int64
-        attention_mask                 [num_attention_elems, num_attention_elems] float16
+        cu_seqlens                     [num_windows+1]                         int32
+        max_seqlen_carrier             [max_window_len]            int32, shape only
     Output:
         last_hidden_state              [num_attention_elems, output_dim]       float16
+
+Attention runs on ViTAttentionPlugin over the chunk windows ``cu_seqlens``
+describes. ``USE_AUDIO_ATTN_PLUGIN=0`` exports the dense graph instead, which
+takes ``attention_mask`` [num_attention_elems, num_attention_elems] float16 in
+place of the two ragged inputs. That mask is block diagonal over the same
+windows, so both graphs compute the same attention.
 
 The ``padded_mask_after_cnn_indices`` approach avoids non-zero ONNX nodes that are
 TensorRT-unfriendly. The C++ runtime computes this tensor during pre-processing.
@@ -162,26 +169,43 @@ class QwenAudioAttention(nn.Module):
             d_model,
             bias=True,
             module_name=f"{name_prefix}.out_proj" if name_prefix else "")
-        self._use_trt_attn = ops.is_trt_native_attention_enabled()
+        self._use_attn_plugin = ops.is_audio_attention_plugin_enabled()
+        # Both paths claim cu_seqlens, so they cannot share one exported graph.
+        self._use_trt_attn = (ops.is_trt_native_attention_enabled()
+                              and not self._use_attn_plugin)
 
-    def forward(self,
-                hidden_states: torch.Tensor,
-                attention_mask: torch.Tensor,
-                cu_seqlens: Optional[torch.Tensor] = None,
-                kv_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+            self,
+            hidden_states: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            cu_seqlens: Optional[torch.Tensor] = None,
+            kv_lengths: Optional[torch.Tensor] = None,
+            max_seqlen_carrier: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             hidden_states: [T, d_model] — ragged sequence (all chunks concatenated)
             attention_mask: [T, T] additive mask (0 = attend, -inf = ignore)
-            cu_seqlens: [batch+1] int32 cumulative sequence lengths — TRT path only
+            cu_seqlens: [num_windows+1] int32 window boundaries (plugin) or [batch+1] (TRT)
             kv_lengths: [batch+1] int32 — TRT path only
+            max_seqlen_carrier: [max_seqlen] int32, shape-only — plugin path only
         """
         T = hidden_states.shape[0]
         q = self.q_proj(hidden_states).view(T, self.num_heads, self.head_dim)
         k = self.k_proj(hidden_states).view(T, self.num_heads, self.head_dim)
         v = self.v_proj(hidden_states).view(T, self.num_heads, self.head_dim)
 
-        if self._use_trt_attn:
+        if self._use_attn_plugin:
+            out = ops.vit_attention_plugin(
+                q.to(torch.float16),
+                k.to(torch.float16),
+                v.to(torch.float16),
+                cu_seqlens,
+                max_seqlen_carrier,
+                num_heads=self.num_heads,
+                head_size=self.head_dim,
+                attention_scale=self.attention_scale,
+            ).reshape(T, -1)
+        elif self._use_trt_attn:
             # TODO: Enable these paths when supported
             raise RuntimeError(
                 "Qwen3-ASR TRT-native attention is currently not supported.")
@@ -268,15 +292,18 @@ class QwenAudioEncoderLayer(nn.Module):
             bias=True,
             module_name=f"{name_prefix}.fc2" if name_prefix else "")
 
-    def forward(self,
-                hidden_states: torch.Tensor,
-                attention_mask: torch.Tensor,
-                cu_seqlens: Optional[torch.Tensor] = None,
-                kv_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+            self,
+            hidden_states: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            cu_seqlens: Optional[torch.Tensor] = None,
+            kv_lengths: Optional[torch.Tensor] = None,
+            max_seqlen_carrier: Optional[torch.Tensor] = None) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
         hidden_states = self.self_attn(hidden_states, attention_mask,
-                                       cu_seqlens, kv_lengths)
+                                       cu_seqlens, kv_lengths,
+                                       max_seqlen_carrier)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -304,8 +331,12 @@ class QwenAudioEncoder(nn.Module):
     ONNX forward:
         padded_feature                 [C, num_mel_bins, n_window*2]  float16
         padded_mask_after_cnn_indices  [T, 2]                        int64
-        attention_mask                 [T, T]                        float16
+        cu_seqlens                     [num_windows+1]               int32
+        max_seqlen_carrier             [max_window_len]              int32
         → last_hidden_state            [T, output_dim]               float16
+
+    With ``USE_AUDIO_ATTN_PLUGIN=0`` the two ragged inputs are replaced by
+    ``attention_mask`` [T, T] float16.
 
     Checkpoint keys are directly under the constructor prefix stripped by
     :func:`build_qwen_audio`. The instance attribute ``config`` exposes the
@@ -374,7 +405,9 @@ class QwenAudioEncoder(nn.Module):
                 name_prefix=f"{name_prefix}.layers.{i}" if name_prefix else "")
             for i in range(num_layers)
         ])
-        self._use_trt_attn = ops.is_trt_native_attention_enabled()
+        self._use_attn_plugin = ops.is_audio_attention_plugin_enabled()
+        self._use_trt_attn = (ops.is_trt_native_attention_enabled()
+                              and not self._use_attn_plugin)
         self.ln_post = nn.LayerNorm(d_model)
         self.proj1 = make_linear(
             model_config,
@@ -389,19 +422,22 @@ class QwenAudioEncoder(nn.Module):
             bias=True,
             module_name=f"{name_prefix}.proj2" if name_prefix else "")
 
-    def forward(self,
-                padded_feature: torch.Tensor,
-                padded_mask_after_cnn_indices: torch.Tensor,
-                attention_mask: torch.Tensor,
-                cu_seqlens: Optional[torch.Tensor] = None,
-                kv_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+            self,
+            padded_feature: torch.Tensor,
+            padded_mask_after_cnn_indices: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            cu_seqlens: Optional[torch.Tensor] = None,
+            kv_lengths: Optional[torch.Tensor] = None,
+            max_seqlen_carrier: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             padded_feature: [num_chunks, num_mel_bins, n_window*2]
             padded_mask_after_cnn_indices: [num_attention_elems, 2]  int64
             attention_mask: [num_attention_elems, num_attention_elems]  float16
-            cu_seqlens: [batch+1] int32 cumulative sequence lengths — TRT path only
+            cu_seqlens: [num_windows+1] int32 window boundaries (plugin) or [batch+1] (TRT)
             kv_lengths: [batch+1] int32 — TRT path only
+            max_seqlen_carrier: [max_seqlen] int32, shape-only — plugin path only
         Returns:
             [num_attention_elems, output_dim]
         """
@@ -426,7 +462,7 @@ class QwenAudioEncoder(nn.Module):
 
         for layer in self.layers:
             hidden_states = layer(hidden_states, attention_mask, cu_seqlens,
-                                  kv_lengths)
+                                  kv_lengths, max_seqlen_carrier)
 
         hidden_states = self.ln_post(hidden_states)
         hidden_states = self.proj1(hidden_states)
@@ -451,20 +487,13 @@ class QwenAudioEncoder(nn.Module):
                                                     2,
                                                     dtype=torch.int64,
                                                     device=device)
-        attention_mask = torch.zeros(num_attention_elems,
-                                     num_attention_elems,
-                                     dtype=torch.float16,
-                                     device=device)
-
         onnx_input_names = [
             "padded_feature",
             "padded_mask_after_cnn_indices",
-            "attention_mask",
         ]
         dynamo_inputs = {
             "padded_feature": padded_feature,
             "padded_mask_after_cnn_indices": padded_mask_after_cnn_indices,
-            "attention_mask": attention_mask,
         }
 
         output_names = ["last_hidden_state"]
@@ -477,11 +506,31 @@ class QwenAudioEncoder(nn.Module):
             "padded_mask_after_cnn_indices": {
                 0: T
             },
-            "attention_mask": {
-                0: T,
-                1: T
-            },
         }
+
+        if not self._use_attn_plugin:
+            onnx_input_names.append("attention_mask")
+            dynamo_inputs["attention_mask"] = torch.zeros(num_attention_elems,
+                                                          num_attention_elems,
+                                                          dtype=torch.float16,
+                                                          device=device)
+            dynamic_shapes["attention_mask"] = {0: T, 1: T}
+        else:
+            # Block-diagonal windows expressed as segment boundaries. The carrier
+            # is shape-only: the plugin reads its length as the max segment length.
+            onnx_input_names.extend(["cu_seqlens", "max_seqlen_carrier"])
+            dynamo_inputs["cu_seqlens"] = torch.tensor(
+                [0, t_out, 2 * t_out, num_attention_elems],
+                dtype=torch.int32,
+                device=device)
+            dynamo_inputs["max_seqlen_carrier"] = torch.zeros(
+                t_out, dtype=torch.int32, device=device)
+            dynamic_shapes["cu_seqlens"] = {
+                0: torch.export.Dim("num_windows_p1")
+            }
+            dynamic_shapes["max_seqlen_carrier"] = {
+                0: torch.export.Dim("max_window_len")
+            }
 
         if self._use_trt_attn:
             onnx_input_names.extend(["cu_seqlens", "kv_lengths"])

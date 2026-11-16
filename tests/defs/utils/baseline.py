@@ -19,14 +19,68 @@ Parses a multi-section results CSV from a previous test run and provides
 regression checking against current results.
 
 Accuracy threshold: 5%  (higher-is-better metrics)
-Perf threshold:     20% (board-specific, time/throughput/memory)
+Perf threshold:     50% (temporary default; selected metrics are tighter)
 """
 
 import csv
+import errno
 import io
+import math
 import os
 import re
-from typing import Dict, List, Optional, Tuple
+import time
+import uuid
+from contextlib import contextmanager
+from typing import AbstractSet, Dict, List, Optional, Tuple
+
+
+@contextmanager
+def _baseline_lock(path: str, timeout: float = 60):
+    """Serialize baseline writers using a persistent sidecar and OS locks."""
+    with open(path, 'a+b') as lock:
+        if os.name == 'nt':
+            import msvcrt
+
+            # Windows byte-range locking needs a byte at offset zero.
+            if os.fstat(lock.fileno()).st_size == 0:
+                lock.write(b'\0')
+                lock.flush()
+
+            def acquire():
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+
+            def release():
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            def acquire():
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def release():
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                acquire()
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN,
+                                       errno.EDEADLK):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f'Baseline lock timed out: {path}') from error
+                time.sleep(min(0.05, remaining))
+        try:
+            yield
+        finally:
+            release()
+
 
 # TODO: Restore thresholds after baselines stabilize
 # Original values: CORRECTNESS=0.01, ROUGE=0.20, PERF=0.20
@@ -35,12 +89,18 @@ ROUGE_ACCURACY_THRESHOLD = float(
     os.environ.get('BASELINE_ROUGE_ACCURACY_THRESHOLD', '0.50'))
 PERF_THRESHOLD = 0.50
 
-# Per-column overrides for PERF_THRESHOLD. minADE drift is well-bounded
-# (paper +/- 5%, quant +/- 10%) so 20% is plenty without waiting for the
-# global threshold to be tightened.
+# Per-column overrides for PERF_THRESHOLD. Keep regression-sensitive metrics
+# strict without changing the temporary default for every legacy baseline.
 _PERF_THRESHOLD_OVERRIDES = {
     'accuracy_minade_3s': 0.20,
     'accuracy_minade_6s': 0.20,
+    'spec_decode_avg_accept_length': 0.15,
+    'spec_decode_acceptance_rate': 0.15,
+    'spec_decode_avg_tokens_per_run': 0.15,
+    'spec_decode_overall_tokens_per_second (tokens/s)': 0.15,
+    'spec_decode_draft_model_prefill_avg_time (ms)': 0.15,
+    'spec_decode_draft_proposal_avg_time (ms)': 0.15,
+    'spec_decode_base_model_verification_avg_time (ms)': 0.15,
 }
 
 ACCURACY_COLUMNS = (
@@ -69,9 +129,39 @@ PERF_LOWER_IS_BETTER = {
 PERF_HIGHER_IS_BETTER = {
     'llm_prefill_tokens_per_second (tokens/s)',
     'llm_generation_excluding_sampling_after_prefill_tokens_per_second (tokens/s)',
-    'spec_decode_avg_acceptance_rate',
+    'spec_decode_avg_accept_length',
+    'spec_decode_acceptance_rate',
     'spec_decode_avg_tokens_per_run',
     'spec_decode_overall_tokens_per_second (tokens/s)',
+}
+
+MODEL_TEST_METRICS = {
+    'accuracy': {
+        'overall_accuracy': 'accuracy_overall_accuracy',
+        'minade_3s': 'accuracy_minade_3s',
+        'minade_6s': 'accuracy_minade_6s',
+        'rouge1': 'accuracy_rouge_1',
+        'rouge2': 'accuracy_rouge_2',
+        'rouge_l': 'accuracy_rouge_l',
+        'rouge_lsum': 'accuracy_rouge_lsum',
+        'wer': 'accuracy_wer',
+    },
+    'performance': {
+        'generation_tokens_per_second':
+        'llm_generation_excluding_sampling_after_prefill_tokens_per_second (tokens/s)',
+        'multimodal_time_per_token_ms':
+        'multimodal_avg_time_per_token (ms)',
+        'peak_gpu_memory_mb':
+        'memory_usage_peak_gpu_memory (MB)',
+        'prefill_tokens_per_second':
+        'llm_prefill_tokens_per_second (tokens/s)',
+        'spec_decode_acceptance_rate':
+        'spec_decode_acceptance_rate',
+        'spec_decode_average_accept_length':
+        'spec_decode_avg_accept_length',
+        'spec_decode_tokens_per_second':
+        'spec_decode_overall_tokens_per_second (tokens/s)',
+    },
 }
 
 PEAK_GPU_MEMORY_COLUMN = 'memory_usage_peak_gpu_memory (MB)'
@@ -102,8 +192,10 @@ _STDOUT_PERF_PATTERNS = [
      ),
     (r'Peak GPU Memory:\s+([\d.]+)\s+MB', 'memory_usage_peak_gpu_memory (MB)'),
     (r'Peak CPU Memory:\s+([\d.]+)\s+MB', 'memory_usage_peak_cpu_memory (MB)'),
-    (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Average Acceptance Rate:\s+([\d.]+)',
-     'spec_decode_avg_acceptance_rate'),
+    (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Average Accept Length:\s+([\d.]+)',
+     'spec_decode_avg_accept_length'),
+    (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Acceptance Rate:\s+([\d.]+)',
+     'spec_decode_acceptance_rate'),
     (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Average Tokens per Run:\s+([\d.]+)',
      'spec_decode_avg_tokens_per_run'),
     (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Overall Tokens/Second \(excluding base prefill\):\s+([\d.]+)',
@@ -258,8 +350,13 @@ class BaselineData:
                     f"REGRESSION {line} [threshold {threshold*100:.0f}%]")
         return regressions, summaries
 
-    def check_perf_regression(self, baseline: Dict,
-                              current: Dict) -> Tuple[List[str], List[str]]:
+    def check_perf_regression(
+        self,
+        baseline: Dict,
+        current: Dict,
+        report_only_columns: AbstractSet[str] = frozenset(),
+        threshold_overrides: Optional[Dict[str, float]] = None,
+    ) -> Tuple[List[str], List[str]]:
         """Compare current perf metrics against baseline.
 
         Returns (regressions, summaries).
@@ -268,6 +365,7 @@ class BaselineData:
         """
         regressions = []
         summaries = []
+        thresholds = threshold_overrides or {}
 
         for col in PERF_LOWER_IS_BETTER:
             if col not in baseline or col not in current:
@@ -276,13 +374,16 @@ class BaselineData:
             curr_val = current[col]
             if not isinstance(base_val, (int, float)) or base_val <= 0:
                 continue
-            threshold = _PERF_THRESHOLD_OVERRIDES.get(col, PERF_THRESHOLD)
+            threshold = thresholds.get(
+                col, _PERF_THRESHOLD_OVERRIDES.get(col, PERF_THRESHOLD))
             change_pct = (curr_val - base_val) / base_val * 100
             label = "worse" if change_pct > 0 else "better"
             line = (f"{col} (lower=better): {curr_val:.2f} vs baseline "
                     f"{base_val:.2f} ({change_pct:+.1f}%, {label})")
-            summaries.append(line)
-            if curr_val > base_val * (1 + threshold):
+            report_only = col in report_only_columns
+            summaries.append(line +
+                             (" [informational]" if report_only else ""))
+            if (not report_only and round(change_pct, 1) > threshold * 100):
                 regressions.append(
                     f"REGRESSION {line} [threshold {threshold*100:.0f}%]")
 
@@ -293,13 +394,16 @@ class BaselineData:
             curr_val = current[col]
             if not isinstance(base_val, (int, float)) or base_val <= 0:
                 continue
-            threshold = _PERF_THRESHOLD_OVERRIDES.get(col, PERF_THRESHOLD)
+            threshold = thresholds.get(
+                col, _PERF_THRESHOLD_OVERRIDES.get(col, PERF_THRESHOLD))
             change_pct = (curr_val - base_val) / base_val * 100
             label = "better" if change_pct > 0 else "worse"
             line = (f"{col} (higher=better): {curr_val:.1f} vs baseline "
                     f"{base_val:.1f} ({change_pct:+.1f}%, {label})")
-            summaries.append(line)
-            if curr_val < base_val * (1 - threshold):
+            report_only = col in report_only_columns
+            summaries.append(line +
+                             (" [informational]" if report_only else ""))
+            if (not report_only and round(change_pct, 1) < -threshold * 100):
                 regressions.append(
                     f"REGRESSION {line} [threshold {threshold*100:.0f}%]")
 
@@ -338,13 +442,20 @@ _TEST_FILE_MAP = {
     'vlm': 'tests/defs/test_vlm_pipeline.py',
 }
 
+_TEST_FUNCTION_FILE_MAP = {
+    'test_build_and_run': 'tests/defs/test_builder_pipeline.py',
+}
+
 _CLASS_NAME_MAP = {}
 
 
 def _build_case_name(model_type_value: str, test_func: str,
                      param_str: str) -> str:
-    test_file = _TEST_FILE_MAP.get(
-        model_type_value, f'tests/defs/test_{model_type_value}_pipeline.py')
+    test_file = _TEST_FUNCTION_FILE_MAP.get(test_func)
+    if test_file is None:
+        test_file = _TEST_FILE_MAP.get(
+            model_type_value,
+            f'tests/defs/test_{model_type_value}_pipeline.py')
     class_name = _CLASS_NAME_MAP.get(model_type_value)
     if class_name:
         return f"{test_file}::{class_name}::{test_func}[{param_str}]"
@@ -375,12 +486,61 @@ def _is_significantly_better(col: str, curr, base) -> bool:
     return False
 
 
-def promote_baseline_if_better(csv_path: str,
-                               model_type_value: str,
-                               test_func: str,
-                               param_str: str,
-                               result: Dict,
-                               logger=None) -> List[str]:
+def _atomic_write_baseline(csv_path: str, content: str) -> None:
+    """Publish a complete CSV while preserving the previous file on failure."""
+    directory = os.path.dirname(os.path.abspath(csv_path))
+    temporary_path = None
+    try:
+        temporary_path = os.path.join(directory,
+                                      '.baseline-' + uuid.uuid4().hex)
+        descriptor = os.open(temporary_path,
+                             os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+            if os.path.exists(csv_path):
+                os.chmod(temporary_path, os.stat(csv_path).st_mode & 0o777)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, csv_path)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+def promote_baseline_if_better(
+        csv_path: str,
+        model_type_value: str,
+        test_func: str,
+        param_str: str,
+        result: Dict,
+        logger=None,
+        compute_capability: Optional[int] = None) -> List[str]:
+    """Serialize explicit promotion with missing-cell writes."""
+    if (not result.get('success', False) or result.get('threshold_failure')
+            or result.get('baseline_regressions')
+            or not os.environ.get('PROMOTE_BASELINE')
+            or not os.path.isfile(csv_path)):
+        return []
+    try:
+        with _baseline_lock(os.path.abspath(csv_path) + '.lock', timeout=60):
+            return _promote_baseline_if_better(csv_path, model_type_value,
+                                               test_func, param_str, result,
+                                               logger, compute_capability)
+    except (OSError, csv.Error, UnicodeError) as error:
+        if logger:
+            logger.warning("Baseline promotion failed for [%s] at %s: %s",
+                           param_str, csv_path, error)
+        return []
+
+
+def _promote_baseline_if_better(
+        csv_path: str,
+        model_type_value: str,
+        test_func: str,
+        param_str: str,
+        result: Dict,
+        logger=None,
+        compute_capability: Optional[int] = None) -> List[str]:
     """Replace baseline cells where the current run is >1% better.
 
     Gated by the ``PROMOTE_BASELINE`` env var; no-op otherwise. Direction is
@@ -394,7 +554,8 @@ def promote_baseline_if_better(csv_path: str,
 
     metrics: Dict[str, float] = {}
     metrics.update(map_accuracy_result_to_csv(result))
-    metrics.update(parse_perf_from_output(result.get('output', '')))
+    metrics.update(
+        parse_perf_from_output(result.get('output', ''), compute_capability))
     if not metrics:
         return []
 
@@ -448,8 +609,7 @@ def promote_baseline_if_better(csv_path: str,
     if not promoted:
         return []
 
-    with open(csv_path, 'w', encoding='utf-8') as f:
-        f.write(content[:body_start] + ''.join(new_rows))
+    _atomic_write_baseline(csv_path, content[:body_start] + ''.join(new_rows))
 
     # Invalidate the singleton so subsequent reads see the updated CSV.
     global _baseline_csv_path
@@ -461,83 +621,73 @@ def promote_baseline_if_better(csv_path: str,
     return promoted
 
 
-def save_to_baseline(csv_path: str, model_type_value: str, test_func: str,
-                     param_str: str, result: Dict) -> None:
-    """Append current result to baseline CSV when no prior baseline exists.
-
-    All entries for the same section share a single column header (union of
-    all columns ever seen).  Entries that lack a column simply leave it empty.
-    """
-    metrics: Dict[str, float] = {}
-    metrics.update(map_accuracy_result_to_csv(result))
-    metrics.update(parse_perf_from_output(result.get('output', '')))
-
+def save_to_baseline(csv_path: str,
+                     model_type_value: str,
+                     test_func: str,
+                     param_str: str,
+                     result: Dict,
+                     compute_capability: Optional[int] = None) -> bool:
+    """Fill absent baseline cells while preserving existing measurements."""
+    if (not result.get('success', False) or result.get('threshold_failure')
+            or result.get('baseline_regressions')):
+        return False
+    metrics = dict(map_accuracy_result_to_csv(result))
+    metrics.update(
+        parse_perf_from_output(result.get('output', ''), compute_capability))
+    metrics = {
+        key: value
+        for key, value in metrics.items()
+        if isinstance(value, (int, float)) and math.isfinite(value)
+    }
     if not metrics:
-        return
+        return False
 
     case_name = _build_case_name(model_type_value, test_func, param_str)
-    new_entry = {'Case Name': case_name, **metrics}
-
-    # The column header line is prefixed with '#' so the parser can identify
-    # it without a separate section-name row: e.g. "#Case Name,rouge_1,..."
-    HEADER_PREFIX = '#Case Name'
-
-    if os.path.isfile(csv_path) and os.path.getsize(csv_path) > 0:
-        with open(csv_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        # Find the existing header line.
-        header_line_start = content.find(HEADER_PREFIX)
-        if header_line_start != -1:
-            header_line_end = content.find('\n', header_line_start)
-            existing_cols = next(
-                csv.reader(
-                    io.StringIO(content[header_line_start +
-                                        1:header_line_end])))
-
-            # Union of columns (existing order + new ones appended).
-            new_cols = [
-                c for c in sorted(metrics.keys()) if c not in existing_cols
-            ]
-            all_cols = existing_cols + new_cols
-
-            # Re-serialise all data rows with expanded columns.
-            data_rows = ''
-            for raw in content[header_line_end + 1:].splitlines():
-                if not raw.strip() or raw.startswith('#'):
-                    continue
-                old_row = next(csv.reader(io.StringIO(raw)))
-                old_map = {
-                    existing_cols[i]: old_row[i]
-                    for i in range(min(len(existing_cols), len(old_row)))
-                }
-                data_rows += _serialise_row(all_cols, old_map)
-
-            data_rows += _serialise_row(all_cols, new_entry)
-
-            new_header = '#' + ','.join(all_cols) + '\n'
-            # Replace everything from the header line onward.
-            content = content[:header_line_start] + new_header + data_rows
+    csv_path = os.path.abspath(csv_path)
+    directory = os.path.dirname(csv_path)
+    os.makedirs(directory, exist_ok=True)
+    with _baseline_lock(csv_path + '.lock', timeout=60):
+        if os.path.isfile(csv_path):
+            with open(csv_path, encoding='utf-8') as handle:
+                lines = handle.readlines()
         else:
-            # No header yet — write header + first row.
-            all_cols = ['Case Name'] + sorted(metrics.keys())
-            new_header = '#' + ','.join(all_cols) + '\n'
-            content = content + new_header + _serialise_row(
-                all_cols, new_entry)
+            lines = []
+        columns = []
+        entries = []
+        comments = []
+        for line in lines:
+            if line.startswith('#Case Name'):
+                columns = next(csv.reader([line[1:]]))
+            elif columns and line.strip() and not line.startswith('#'):
+                entries.append(dict(zip(columns, next(csv.reader([line])))))
+            else:
+                comments.append(line)
+        matches = [row for row in entries if row.get('Case Name') == case_name]
+        existing = matches[-1] if matches else {'Case Name': case_name}
+        additions = {
+            key: value
+            for key, value in metrics.items()
+            if not str(existing.get(key, '')).strip()
+        }
+        if not additions:
+            return False
+        updated = {**existing, **additions}
+        entries = [row for row in entries if row.get('Case Name') != case_name]
+        entries.append(updated)
+        columns = ['Case Name'] + sorted(set().union(*(row.keys()
+                                                       for row in entries)) -
+                                         {'Case Name'})
+        content = ''.join(comments)
+        if content and not content.endswith('\n'):
+            content += '\n'
+        content += '#' + ','.join(columns) + '\n'
+        content += ''.join(_serialise_row(columns, row) for row in entries)
+        _atomic_write_baseline(csv_path, content)
 
-        with open(csv_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-    else:
-        os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
-        all_cols = ['Case Name'] + sorted(metrics.keys())
-        with open(csv_path, 'w', encoding='utf-8') as f:
-            f.write('#' + ','.join(all_cols) + '\n' +
-                    _serialise_row(all_cols, new_entry))
-
-    # Invalidate the singleton so get_baseline() reloads the updated CSV on
-    # the next call (e.g. a later test in the same pytest session).
     global _baseline_csv_path
     _baseline_csv_path = None
+
+    return True
 
 
 _baseline_instance: Optional[BaselineData] = None

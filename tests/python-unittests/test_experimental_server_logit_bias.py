@@ -19,18 +19,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from experimental.server.runtime.engine import (_MAX_LOGIT_BIAS_TOKENS, LLM,
-                                                CompletionOutput,
-                                                SamplingParams,
-                                                _normalize_logit_bias)
-from experimental.server.runtime.engine_layout import BundleLayout, EngineType
+from tensorrt_edgellm.server.runtime.engine import (_MAX_LOGIT_BIAS_TOKENS,
+                                                    LLM, CompletionOutput,
+                                                    SamplingParams,
+                                                    _normalize_logit_bias)
+from tensorrt_edgellm.server.runtime.engine_layout import (BundleLayout,
+                                                           EngineType)
 
 _INT32_MAX = 2**31 - 1
 
 
 def _create_app(llm):
-    from experimental.server.api.app import create_app
-    from experimental.server.runtime.engine_client import EngineClient
+    from tensorrt_edgellm.server.api.app import create_app
+    from tensorrt_edgellm.server.runtime.engine_client import EngineClient
 
     return create_app(EngineClient(llm))
 

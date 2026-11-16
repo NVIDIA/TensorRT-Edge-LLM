@@ -74,14 +74,16 @@ import cutlass
 import cutlass.cute as cute
 import cutlass.utils as utils
 from cutlass import Float16, Float32, Int32, Uint32
+from cutedsl_utils import aot_placeholders
 
 from common import (
     ceil_div,
     export_compiled_kernel,
+    make_lock_placeholder,
+    make_row_major_2d_placeholder,
     mark_lock_1d,
     mark_row_major_2d,
     parse_comma_separated_ints,
-    repacked_rows,
 )
 from int4_dequant import _dequant_int4_word
 
@@ -178,6 +180,7 @@ class Int4Fp16GemmAmpere:
         mC: cute.Tensor,
         mWorkspace: cute.Tensor,
         mLocks: cute.Tensor,
+        group_size: Int32,
         swizzle: Int32,
         stream: cuda.CUstream,
     ) -> None:
@@ -283,6 +286,7 @@ class Int4Fp16GemmAmpere:
             tiled_copy_A,
             tiled_copy_C,
             tiled_mma,
+            group_size,
             swizzle,
         ).launch(
             grid=(cute.size(grid_dim[0]), cute.size(grid_dim[1]), self.split_k),
@@ -308,6 +312,7 @@ class Int4Fp16GemmAmpere:
         tiled_copy_A: cute.TiledCopy,
         tiled_copy_C: cute.TiledCopy,
         tiled_mma: cute.TiledMma,
+        group_size: Int32,
         swizzle: Int32,
     ) -> None:
         tidx, _, _ = cute.arch.thread_idx()
@@ -417,7 +422,8 @@ class Int4Fp16GemmAmpere:
 
         # Prologue: cp.async A, stage scales, and keep biased INT4 B packed in sB.
         self._load_scale_tile(
-            mScales, sScale, tidx, block_n_idx, residual_k, k_tile_index, 0, mA.shape[1], mC.shape[1]
+            mScales, sScale, tidx, block_n_idx, residual_k, k_tile_index, 0,
+            mA.shape[1], mC.shape[1], group_size
         )
         for k in range(tApA.shape[2]):
             if cute.elem_less(cutlass.Int32(-1), tAcA[0, 0, k, 0][1]):
@@ -446,6 +452,7 @@ class Int4Fp16GemmAmpere:
                 stage,
                 mA.shape[1],
                 mC.shape[1],
+                group_size,
             )
             cute.copy(
                 tiled_copy_A,
@@ -548,6 +555,7 @@ class Int4Fp16GemmAmpere:
                             smem_pipe_write,
                             mA.shape[1],
                             mC.shape[1],
+                            group_size,
                         )
                         cute.copy(
                             tiled_copy_A,
@@ -831,6 +839,7 @@ class Int4Fp16GemmAmpere:
         stage: Int32,
         k_extent: Int32,
         n_extent: Int32,
+        group_size: Int32,
     ) -> None:
         # Stage scales with cp.async, exactly like A and B, instead of a
         # synchronous global->register->shared round-trip.  Scales are fp16
@@ -866,7 +875,7 @@ class Int4Fp16GemmAmpere:
                     for sub in range(self.groups_per_tile):
                         scale_row = (
                             tile_k + Int32(sub * self.group_size)
-                        ) // Int32(self.group_size)
+                        ) // group_size
                         gS = cute.make_tensor(
                             cute.domain_offset(
                                 (scale_row, global_n0), mScales
@@ -976,21 +985,6 @@ class Int4Fp16GemmAmpere:
         return cute.make_tiled_copy_tv(atom_copy, thread_layout, value_layout)
 
 
-# ---------------------------------------------------------------------------
-# Standalone test + AOT export harness (CuPy-only export path; the reference
-# check additionally uses Torch via int4_reference).
-# ---------------------------------------------------------------------------
-def _build_export_tensors(M, N, K, group_size, bM, bN, bK):
-    """Zero CuPy tensors for the AOT trace (no Torch dependency)."""
-    a_cp = cp.zeros((M, K), dtype=cp.float16)
-    qw_cp = cp.zeros((repacked_rows(N, K, bN, bK), 128), dtype=cp.uint32)
-    scales_cp = cp.zeros((ceil_div(K, group_size), N), dtype=cp.float16)
-    c_cp = cp.zeros((M, N), dtype=cp.float16)
-    n_tiles = max(ceil_div(M, bM) * ceil_div(N, bN), 1)
-    locks_cp = cp.zeros(n_tiles, dtype=cp.int32)
-    return a_cp, qw_cp, scales_cp, c_cp, locks_cp
-
-
 def run(
     mnk: Tuple[int, int, int],
     cta_tiler_mnk: Tuple[int, int, int] = (16, 128, 64),
@@ -1027,7 +1021,7 @@ def run(
             f"split_k={split_k} must divide ceil(K/{bK})={k_tile_count} "
             f"(K={K}); split_k=1 always works."
         )
-    if cp.cuda.runtime.getDeviceCount() == 0:
+    if not export_only and cp.cuda.runtime.getDeviceCount() == 0:
         raise RuntimeError("GPU is required.")
 
     print(f"{_tag} INT4 W4A16 FP16: M={M}, N={N}, K={K}, group_size={group_size}")
@@ -1045,25 +1039,30 @@ def run(
         split_k=split_k,
         serial_split_k=True,
     )
-    current_stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    current_stream = (
+        aot_placeholders.make_stream()
+        if export_only
+        else cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    )
+    group_size_i32 = cutlass.Int32(group_size)
     swizzle_i32 = cutlass.Int32(swizzle)
 
     if export_only:
-        a_cp, qw_cp, scales_cp, c_cp, locks_cp = _build_export_tensors(
-            M, N, K, group_size, bM, bN, bK
-        )
-        mA = mark_row_major_2d(a_cp)
-        mQW = mark_row_major_2d(qw_cp)
-        mScales = mark_row_major_2d(scales_cp)
-        mC = mark_row_major_2d(c_cp)
-        mLocks = mark_lock_1d(locks_cp)
+        mA = make_row_major_2d_placeholder(cutlass.Float16)
+        mQW = make_row_major_2d_placeholder(cutlass.Uint32)
+        mScales = make_row_major_2d_placeholder(cutlass.Float16)
+        mC = make_row_major_2d_placeholder(cutlass.Float16)
+        mLocks = make_lock_placeholder()
 
-        compile_opts = ("--gpu-arch " + gpu_arch) if gpu_arch else None
+        compile_opts = aot_placeholders.compile_options(
+            ("--gpu-arch " + gpu_arch) if gpu_arch else ""
+        )
         print(f"{_tag} Compiling kernel (gpu_arch={gpu_arch or 'default'})...")
         t0 = time.time()
         compiled = cute.compile(
-            kernel, mA, mQW, mScales, mC, mC, mLocks, swizzle_i32, current_stream,
-            **(dict(options=compile_opts) if compile_opts else {}),
+            kernel, mA, mQW, mScales, mC, mC, mLocks, group_size_i32,
+            swizzle_i32, current_stream,
+            options=compile_opts,
         )
         print(f"{_tag} Compilation time: {time.time() - t0:.4f}s")
         export_compiled_kernel(
@@ -1108,12 +1107,14 @@ def run(
     print(f"{_tag} Compiling kernel...")
     t0 = time.time()
     compiled = cute.compile(
-        kernel, mA, mQW, mScales, mC, mC, mLocks, swizzle_i32, current_stream
+        kernel, mA, mQW, mScales, mC, mC, mLocks, group_size_i32,
+        swizzle_i32, current_stream
     )
     print(f"{_tag} Compilation time: {time.time() - t0:.4f}s")
 
     if not skip_ref_check:
-        compiled(mA, mQW, mScales, mC, mC, mLocks, swizzle_i32, current_stream)
+        compiled(mA, mQW, mScales, mC, mC, mLocks, group_size_i32,
+                 swizzle_i32, current_stream)
         torch.cuda.synchronize()
         diff = (c_t.to(torch.float32) - ref.to(torch.float32)).abs()
         max_abs = diff.max().item()
@@ -1133,11 +1134,13 @@ def run(
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     for _ in range(max(warmup_iterations, 0)):
-        compiled(mA, mQW, mScales, mC, mC, mLocks, swizzle_i32, current_stream)
+        compiled(mA, mQW, mScales, mC, mC, mLocks, group_size_i32,
+                 swizzle_i32, current_stream)
     torch.cuda.synchronize()
     start.record()
     for _ in range(max(iterations, 1)):
-        compiled(mA, mQW, mScales, mC, mC, mLocks, swizzle_i32, current_stream)
+        compiled(mA, mQW, mScales, mC, mC, mLocks, group_size_i32,
+                 swizzle_i32, current_stream)
     end.record()
     torch.cuda.synchronize()
     avg_time_us = start.elapsed_time(end) / max(iterations, 1) * 1e3

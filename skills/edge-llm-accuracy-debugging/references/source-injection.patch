@@ -1,0 +1,874 @@
+diff --git a/cpp/CMakeLists.txt b/cpp/CMakeLists.txt
+index 75b080d4..18e5431f 100644
+--- a/cpp/CMakeLists.txt
++++ b/cpp/CMakeLists.txt
+@@ -70,6 +70,7 @@ file(GLOB_RECURSE KERNELS_CU_SRCS "kernels/*.cu")
+ list(FILTER KERNELS_CU_SRCS EXCLUDE REGEX
+      "marlin_moe_wna16/(ops|sm80_kernel_float16_u4_float16)\\.cu$")
+ file(GLOB_RECURSE SAMPLER_CU_SRCS "sampler/*.cu")
++file(GLOB_RECURSE DEBUG_CPP_SRCS "debug/*.cpp")
+ file(GLOB_RECURSE MULTIMODAL_CPP_SRCS "multimodal/*.cpp")
+ file(GLOB_RECURSE RUNTIME_CPP_SRCS "runtime/*.cpp")
+ file(GLOB_RECURSE PROFILER_CPP_SRCS "profiling/*.cpp")
+@@ -94,6 +95,7 @@ add_library(
+   ${KERNELS_CPP_SRCS}
+   ${KERNELS_CU_SRCS}
+   ${SAMPLER_CU_SRCS}
++  ${DEBUG_CPP_SRCS}
+   ${MULTIMODAL_CPP_SRCS}
+   ${RUNTIME_CPP_SRCS}
+   ${PROFILER_CPP_SRCS})
+diff --git a/cpp/builder/llmBuilder.cpp b/cpp/builder/llmBuilder.cpp
+index 0c18a04d..787caf6e 100644
+--- a/cpp/builder/llmBuilder.cpp
++++ b/cpp/builder/llmBuilder.cpp
+@@ -93,6 +93,26 @@ bool LLMBuilder::build()
+ 
+     LOG_DEBUG("Builder config created. Setting up optimization profiles...");
+ 
++    // Mark all unfused tensors as debug tensors when requested.
++    // This bakes debug-tensor annotations into the engine so the runtime
++    // DebugTensorDumper can intercept intermediate activations via
++    // IExecutionContext::setDebugListener() + setUnfusedTensorsDebugState().
++    // Must be called after ONNX parsing and before buildSerializedNetwork().
++    // markUnfusedTensorsAsDebugTensors() / IDebugListener require TRT >= 10.12.
++#ifdef SUPPORTS_DEBUG_TENSOR
++    if (mBuilderConfig.debugTensors)
++    {
++        if (network->markUnfusedTensorsAsDebugTensors())
++        {
++            LOG_INFO("Debug tensors enabled: unfused intermediate tensors will be observable at runtime.");
++        }
++        else
++        {
++            LOG_WARNING("markUnfusedTensorsAsDebugTensors() returned false; debug tensor dumping may be incomplete.");
++        }
++    }
++#endif // SUPPORTS_DEBUG_TENSOR
++
+     // Setup optimization profiles
+     if (!setupLLMOptimizationProfiles(*builder.get(), *config.get(), *network.get()))
+     {
+diff --git a/cpp/builder/llmBuilder.h b/cpp/builder/llmBuilder.h
+index a1b06edd..f6935bb6 100644
+--- a/cpp/builder/llmBuilder.h
++++ b/cpp/builder/llmBuilder.h
+@@ -45,6 +45,15 @@ struct LLMBuilderConfig
+     int64_t maxVerifyTreeSize{60}; //!< Maximum length of input_ids passed into Eagle base model for tree verification
+     int64_t maxDraftTreeSize{60};  //!< Maximum length of input_ids passed into Eagle draft model for draft generation
+     bool useTrtNativeOps{false};   //!< Whether to use TensorRT native operations instead of custom plugin
++    //! Mark all unfused intermediate tensors as debug tensors at build time.
++    //! When set, the engine embeds debug-tensor annotations so that a runtime
++    //! IDebugListener (DebugTensorDumper) can intercept every intermediate
++    //! activation.  Has no effect on model accuracy or engine output; incurs a
++    //! small increase in engine file size.
++    //! @see INetworkDefinition::markUnfusedTensorsAsDebugTensors()
++    //! @see LLMEngineRunner::enableTensorDump()
++    //! @note Requires TRT >= 10.12; has no effect on earlier versions.
++    bool debugTensors{false};
+ 
+     //! Convert configuration to JSON format for serialization.
+     //! @return JSON object containing all configuration parameters
+@@ -58,6 +67,7 @@ struct LLMBuilderConfig
+         json["max_lora_rank"] = maxLoraRank;
+         json["max_kv_cache_capacity"] = maxKVCacheCapacity;
+         json["trt_native_ops"] = useTrtNativeOps;
++        json["debug_tensors"] = debugTensors;
+         // Only include Eagle-specific fields when Eagle is enabled
+         if (eagleBase)
+         {
+diff --git a/cpp/builder/visualBuilder.cpp b/cpp/builder/visualBuilder.cpp
+index 877bd778..f2dbd91c 100644
+--- a/cpp/builder/visualBuilder.cpp
++++ b/cpp/builder/visualBuilder.cpp
+@@ -67,6 +67,22 @@ bool VisualBuilder::build()
+     // Print network information
+     LOG_DEBUG("%s", printNetworkInfo(network.get(), "Visual").c_str());
+ 
++    // Mark unfused tensors as debug tensors (required for runtime --dumpMultimodalTensors).
++    // markUnfusedTensorsAsDebugTensors() / IDebugListener require TRT >= 10.12.
++#ifdef SUPPORTS_DEBUG_TENSOR
++    if (mBuilderConfig.debugTensors)
++    {
++        if (network->markUnfusedTensorsAsDebugTensors())
++        {
++            LOG_INFO("Debug tensors marked successfully");
++        }
++        else
++        {
++            LOG_WARNING("markUnfusedTensorsAsDebugTensors() returned false");
++        }
++    }
++#endif // SUPPORTS_DEBUG_TENSOR
++
+     // Create builder config
+     auto config = createBuilderConfig(builder.get());
+     if (!config)
+diff --git a/cpp/builder/visualBuilder.h b/cpp/builder/visualBuilder.h
+index 972500e9..5dab1469 100644
+--- a/cpp/builder/visualBuilder.h
++++ b/cpp/builder/visualBuilder.h
+@@ -40,6 +40,8 @@ struct VisualBuilderConfig
+     int64_t minImageTokens{4};           //!< Minimum number of image tokens in a batch
+     int64_t maxImageTokens{1024};        //!< Maximum number of image tokens in a batch
+     int64_t maxImageTokensPerImage{512}; //!< Maximum number of image tokens per image
++    //! @note Requires TRT >= 10.12; has no effect on earlier versions.
++    bool debugTensors{false}; //!< Mark all unfused tensors as debug tensors (needed for --dumpMultimodalTensors)
+ 
+     //! Convert configuration to JSON format for serialization.
+     //! @return JSON object containing all configuration parameters
+diff --git a/cpp/common/trtUtils.h b/cpp/common/trtUtils.h
+index 0825f2c2..63309e07 100644
+--- a/cpp/common/trtUtils.h
++++ b/cpp/common/trtUtils.h
+@@ -20,6 +20,13 @@
+ #include "logger.h"
+ #include "stringUtils.h"
+ #include <NvInfer.h>
++#include <NvInferVersion.h>
++
++// IDebugListener, markUnfusedTensorsAsDebugTensors, and setUnfusedTensorsDebugState
++// were introduced in TensorRT 10.12. Define SUPPORTS_DEBUG_TENSOR when available.
++#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 12)
++#define SUPPORTS_DEBUG_TENSOR
++#endif
+ #include <dlfcn.h>
+ #include <memory>
+ #include <optional>
+diff --git a/cpp/multimodal/audioRunner.cpp b/cpp/multimodal/audioRunner.cpp
+index 353d52ab..9ba34832 100644
+--- a/cpp/multimodal/audioRunner.cpp
++++ b/cpp/multimodal/audioRunner.cpp
+@@ -30,6 +30,7 @@
+ #include <fstream>
+ #include <nlohmann/json.hpp>
+ #include <stdexcept>
++#include <string>
+ 
+ using Json = nlohmann::json;
+ 
+@@ -359,6 +360,7 @@ bool Qwen3OmniAudioRunner::preprocessAudio(std::vector<rt::audioUtils::AudioData
+     }
+ 
+     // Process each audio clip
++    int32_t audioChunkIndex = 0;
+     for (auto const& audio : audioBuffers)
+     {
+         rt::Tensor melSpec;
+@@ -482,11 +484,24 @@ bool Qwen3OmniAudioRunner::preprocessAudio(std::vector<rt::audioUtils::AudioData
+         {
+             TIME_STAGE(metrics::StageNames::kAUDIO_ENCODER, stream);
+ 
++#ifdef SUPPORTS_DEBUG_TENSOR
++            if (mDebugTensorDumper)
++            {
++                mDebugTensorDumper->beginStep("audio_chunk_" + std::to_string(audioChunkIndex++));
++            }
++#endif // SUPPORTS_DEBUG_TENSOR
+             if (!mAudioContext->enqueueV3(stream))
+             {
+                 LOG_ERROR("Audio encoder inference failed");
+                 return false;
+             }
++#ifdef SUPPORTS_DEBUG_TENSOR
++            if (mDebugTensorDumper)
++            {
++                CUDA_CHECK(cudaStreamSynchronize(stream));
++                mDebugTensorDumper->flush(stream);
++            }
++#endif // SUPPORTS_DEBUG_TENSOR
+         }
+ 
+         LOG_DEBUG("Audio encoder inference completed");
+@@ -504,6 +519,29 @@ bool Qwen3OmniAudioRunner::infer([[maybe_unused]] cudaStream_t stream)
+     return true;
+ }
+ 
++#ifdef SUPPORTS_DEBUG_TENSOR
++void Qwen3OmniAudioRunner::enableTensorDump(std::filesystem::path const& outputDir)
++{
++    if (!mAudioContext)
++    {
++        LOG_WARNING("No audio execution context — tensor dump not enabled");
++        return;
++    }
++    mDebugTensorDumper = std::make_unique<DebugTensorDumper>(outputDir);
++    if (!mAudioContext->setDebugListener(mDebugTensorDumper.get()))
++    {
++        LOG_WARNING("setDebugListener() failed; debug callbacks will not fire.");
++    }
++    if (!mAudioContext->setUnfusedTensorsDebugState(true))
++    {
++        LOG_WARNING(
++            "setUnfusedTensorsDebugState(true) failed; "
++            "ensure the engine was built with --debugTensors.");
++    }
++    LOG_INFO("Audio encoder tensor dumping enabled → %s", outputDir.string().c_str());
++}
++#endif // SUPPORTS_DEBUG_TENSOR
++
+ rt::Tensor& Qwen3OmniAudioRunner::getOutputEmbedding()
+ {
+     return mAudioEmbedding;
+diff --git a/cpp/multimodal/audioRunner.h b/cpp/multimodal/audioRunner.h
+index 3acc985d..30f5411a 100644
+--- a/cpp/multimodal/audioRunner.h
++++ b/cpp/multimodal/audioRunner.h
+@@ -73,6 +73,19 @@ public:
+     //! \return True if inference succeeded, false otherwise
+     bool infer(cudaStream_t stream) override;
+ 
++    /*!
++     * @brief Enable intermediate tensor dumping for the audio encoder.
++     *
++     * Overrides the base class to attach the debug listener to mAudioContext
++     * (the audio encoder context) rather than mContext (the unused visual context).
++     * The audio engine must have been built with --debugTensors.
++     *
++     * @param outputDir Directory where per-chunk safetensors files are written.
++     */
++#ifdef SUPPORTS_DEBUG_TENSOR
++    void enableTensorDump(std::filesystem::path const& outputDir) override;
++#endif // SUPPORTS_DEBUG_TENSOR
++
+     //! \brief Validate and load configuration from JSON file
+     //! \param[in] engineDir Path to engine directory
+     //! \return True if configuration is valid and loaded successfully, false otherwise
+diff --git a/cpp/multimodal/internViTRunner.cpp b/cpp/multimodal/internViTRunner.cpp
+index 650fb8d2..005fd86c 100644
+--- a/cpp/multimodal/internViTRunner.cpp
++++ b/cpp/multimodal/internViTRunner.cpp
+@@ -371,7 +371,20 @@ bool InternViTRunner::infer(cudaStream_t stream) noexcept
+             return false;
+         }
+ 
++#ifdef SUPPORTS_DEBUG_TENSOR
++        if (mDebugTensorDumper)
++        {
++            mDebugTensorDumper->beginStep("vision");
++        }
++#endif // SUPPORTS_DEBUG_TENSOR
+         bool enqueueStatus = mContext->enqueueV3(stream);
++#ifdef SUPPORTS_DEBUG_TENSOR
++        if (mDebugTensorDumper)
++        {
++            CUDA_CHECK(cudaStreamSynchronize(stream));
++            mDebugTensorDumper->flush(stream);
++        }
++#endif // SUPPORTS_DEBUG_TENSOR
+         if (!enqueueStatus)
+         {
+             LOG_ERROR("InternViTRunner::infer(): Failed to enqueue engine.");
+diff --git a/cpp/multimodal/multimodalRunner.cpp b/cpp/multimodal/multimodalRunner.cpp
+index 473d978f..7893d4c3 100644
+--- a/cpp/multimodal/multimodalRunner.cpp
++++ b/cpp/multimodal/multimodalRunner.cpp
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include "multimodalRunner.h"
++#include "common/logger.h"
+ #include "common/mmapReader.h"
+ #include "multimodal/audioRunner.h"
+ #include "multimodal/internViTRunner.h"
+@@ -152,6 +153,29 @@ rt::OptionalInputTensors MultimodalRunner::getDeepstackFeatures()
+     return {};
+ }
+ 
++#ifdef SUPPORTS_DEBUG_TENSOR
++void MultimodalRunner::enableTensorDump(std::filesystem::path const& outputDir)
++{
++    if (!mContext)
++    {
++        LOG_WARNING("No visual execution context — tensor dump not enabled");
++        return;
++    }
++    mDebugTensorDumper = std::make_unique<DebugTensorDumper>(outputDir);
++    if (!mContext->setDebugListener(mDebugTensorDumper.get()))
++    {
++        LOG_WARNING("setDebugListener() failed; debug callbacks will not fire.");
++    }
++    if (!mContext->setUnfusedTensorsDebugState(true))
++    {
++        LOG_WARNING(
++            "setUnfusedTensorsDebugState(true) failed; "
++            "ensure the engine was built with --debugTensors.");
++    }
++    LOG_INFO("Visual encoder tensor dumping enabled → %s", outputDir.string().c_str());
++}
++#endif // SUPPORTS_DEBUG_TENSOR
++
+ bool MultimodalRunner::preprocessSystemPrompt([[maybe_unused]] std::string const& systemPrompt,
+     [[maybe_unused]] tokenizer::Tokenizer const* tokenizer, [[maybe_unused]] rt::Tensor& ropeRotaryCosSinDevice,
+     [[maybe_unused]] cudaStream_t stream)
+diff --git a/cpp/multimodal/multimodalRunner.h b/cpp/multimodal/multimodalRunner.h
+index f94a7b18..ae3ff31b 100644
+--- a/cpp/multimodal/multimodalRunner.h
++++ b/cpp/multimodal/multimodalRunner.h
+@@ -19,6 +19,7 @@
+ 
+ #include "common/tensor.h"
+ #include "common/trtUtils.h"
++#include "debug/debugTensorDumper.h"
+ #include "modelTypes.h"
+ #include "profiling/metrics.h"
+ #include "runtime/imageUtils.h"
+@@ -159,6 +160,22 @@ public:
+         return mMultimodalMetrics;
+     }
+ 
++    /*!
++     * @brief Enable intermediate tensor dumping for this multimodal encoder.
++     *
++     * Attaches a DebugTensorDumper to the encoder's execution context and
++     * activates TensorRT's unfused-tensor debug callbacks.  The engine must
++     * have been built with INetworkDefinition::markUnfusedTensorsAsDebugTensors().
++     *
++     * Each encoder inference call (infer()) will produce one safetensors file
++     * per enqueueV3 call in @p outputDir.
++     *
++     * @param outputDir Directory where per-step safetensors files are written.
++     */
++#ifdef SUPPORTS_DEBUG_TENSOR
++    virtual void enableTensorDump(std::filesystem::path const& outputDir);
++#endif // SUPPORTS_DEBUG_TENSOR
++
+ protected:
+     multimodal::ModelType mModelType;                      //!< Model type identifier
+     std::unique_ptr<nvinfer1::IRuntime> mRuntime;          //!< TensorRT runtime
+@@ -166,6 +183,9 @@ protected:
+     std::unique_ptr<nvinfer1::IExecutionContext> mContext; //!< Execution context
+     rt::Tensor mOutputEmbedding;                           //!< Output embeddings
+     metrics::MultimodalMetrics mMultimodalMetrics;         //!< Performance metrics
++#ifdef SUPPORTS_DEBUG_TENSOR
++    std::unique_ptr<DebugTensorDumper> mDebugTensorDumper; //!< Optional debug tensor dumper (null = disabled)
++#endif                                                     // SUPPORTS_DEBUG_TENSOR
+ };
+ 
+ } // namespace rt
+diff --git a/cpp/multimodal/phi4mmViTRunner.cpp b/cpp/multimodal/phi4mmViTRunner.cpp
+index 0dd64685..612d6b4d 100644
+--- a/cpp/multimodal/phi4mmViTRunner.cpp
++++ b/cpp/multimodal/phi4mmViTRunner.cpp
+@@ -477,7 +477,20 @@ bool Phi4MMViTRunner::infer(cudaStream_t stream)
+             return false;
+         }
+ 
++#ifdef SUPPORTS_DEBUG_TENSOR
++        if (mDebugTensorDumper)
++        {
++            mDebugTensorDumper->beginStep("vision");
++        }
++#endif // SUPPORTS_DEBUG_TENSOR
+         bool const enqueueStatus = mContext->enqueueV3(stream);
++#ifdef SUPPORTS_DEBUG_TENSOR
++        if (mDebugTensorDumper)
++        {
++            CUDA_CHECK(cudaStreamSynchronize(stream));
++            mDebugTensorDumper->flush(stream);
++        }
++#endif // SUPPORTS_DEBUG_TENSOR
+ 
+         // Transform raw ViT tokens on GPU in one batched kernel (Phi4MM HD transform)
+         // Flatten all images across batches
+diff --git a/cpp/multimodal/qwenViTRunner.cpp b/cpp/multimodal/qwenViTRunner.cpp
+index f8a8330f..9aff7c2b 100644
+--- a/cpp/multimodal/qwenViTRunner.cpp
++++ b/cpp/multimodal/qwenViTRunner.cpp
+@@ -847,7 +847,20 @@ bool QwenViTRunner::infer(cudaStream_t stream) noexcept
+             return false;
+         }
+ 
++#ifdef SUPPORTS_DEBUG_TENSOR
++        if (mDebugTensorDumper)
++        {
++            mDebugTensorDumper->beginStep("vision");
++        }
++#endif // SUPPORTS_DEBUG_TENSOR
+         bool enqueueStatus = mContext->enqueueV3(stream);
++#ifdef SUPPORTS_DEBUG_TENSOR
++        if (mDebugTensorDumper)
++        {
++            CUDA_CHECK(cudaStreamSynchronize(stream));
++            mDebugTensorDumper->flush(stream);
++        }
++#endif // SUPPORTS_DEBUG_TENSOR
+         if (!enqueueStatus)
+         {
+             LOG_ERROR("QwenViTRunner::infer(): Failed to enqueue engine.");
+diff --git a/cpp/runtime/llmEngineRunner.cpp b/cpp/runtime/llmEngineRunner.cpp
+index 234fbae9..d39edce3 100644
+--- a/cpp/runtime/llmEngineRunner.cpp
++++ b/cpp/runtime/llmEngineRunner.cpp
+@@ -391,6 +391,32 @@ int64_t LLMEngineRunner::getRequiredContextMemorySize() const
+     return mEngine->getDeviceMemorySizeV2();
+ }
+ 
++#ifdef SUPPORTS_DEBUG_TENSOR
++void LLMEngineRunner::enableTensorDump(std::filesystem::path const& outputDir)
++{
++    mDebugTensorDumper = std::make_unique<DebugTensorDumper>(outputDir);
++
++    // Attach the listener to the execution context.
++    if (!mTRTExecutionContext->setDebugListener(mDebugTensorDumper.get()))
++    {
++        LOG_WARNING("[TensorDump] setDebugListener() failed; debug callbacks will not fire.");
++        return;
++    }
++
++    // Activate debug state for all unfused tensors marked at build time.
++    if (!mTRTExecutionContext->setUnfusedTensorsDebugState(true))
++    {
++        LOG_WARNING(
++            "[TensorDump] setUnfusedTensorsDebugState(true) failed; "
++            "ensure the engine was built with LLMBuilderConfig::debugTensors=true.");
++        return;
++    }
++
++    LOG_INFO("[TensorDump] Intermediate tensor dumping enabled → %s", outputDir.string().c_str());
++    LOG_INFO("[TensorDump] NOTE: CUDA graph launch is bypassed while dumping is active.");
++}
++#endif // SUPPORTS_DEBUG_TENSOR
++
+ bool LLMEngineRunner::setContextMemory(rt::Tensor& sharedContextMemory)
+ {
+     int64_t const requiredSize = getRequiredContextMemorySize();
+@@ -1224,6 +1250,12 @@ bool LLMEngineRunner::executePrefillStep(rt::Tensor const& inputsEmbeds, rt::Ten
+     }
+ 
+     // launch the engine execution.
++#ifdef SUPPORTS_DEBUG_TENSOR
++    if (mDebugTensorDumper)
++    {
++        mDebugTensorDumper->beginStep("prefill");
++    }
++#endif // SUPPORTS_DEBUG_TENSOR
+     bool executeStatus{true};
+     executeStatus &= mTRTExecutionContext->enqueueV3(stream);
+     if (!executeStatus)
+@@ -1231,6 +1263,13 @@ bool LLMEngineRunner::executePrefillStep(rt::Tensor const& inputsEmbeds, rt::Ten
+         LOG_ERROR("executePrefill(): Failed on TensorRT prefill stage enqueueV3() call.");
+         return false;
+     }
++#ifdef SUPPORTS_DEBUG_TENSOR
++    if (mDebugTensorDumper)
++    {
++        CUDA_CHECK(cudaStreamSynchronize(stream));
++        mDebugTensorDumper->flush(stream);
++    }
++#endif // SUPPORTS_DEBUG_TENSOR
+     // Prefill operation has completed, commit the new contents with KVCache.
+     mKVCache.commitSequenceLength(mSequenceContextLengths, stream);
+ 
+@@ -1393,8 +1432,14 @@ bool LLMEngineRunner::executeVanillaDecodingStep(rt::Tensor const& inputsEmbeds,
+     }
+ 
+     // Launch cuda graph if available for this request, otherwise proceed with normal TensorRT engine execution step.
++    // CUDA graph is bypassed when debug tensor dumping is active because graph-launched kernels do not
++    // trigger the IDebugListener callbacks.
+     auto const graphHash = decodingKey(inputsEmbeds, outputLogits, mActiveLoraWeightsName);
++#ifdef SUPPORTS_DEBUG_TENSOR
++    if (!mDebugTensorDumper && mCudaGraphs.find(graphHash) != mCudaGraphs.end())
++#else  // SUPPORTS_DEBUG_TENSOR
+     if (mCudaGraphs.find(graphHash) != mCudaGraphs.end())
++#endif // SUPPORTS_DEBUG_TENSOR
+     {
+         LOG_DEBUG("Use pre-captured CUDA graph for vanilla decoding step.");
+         cudaGraphExec_t graphExec = mCudaGraphs[graphHash].second;
+@@ -1411,14 +1456,27 @@ bool LLMEngineRunner::executeVanillaDecodingStep(rt::Tensor const& inputsEmbeds,
+             throw std::runtime_error("Failed to set optimization profile to the engine");
+         }
+ 
++#ifdef SUPPORTS_DEBUG_TENSOR
++        if (!mDebugTensorDumper)
++        {
++            LOG_INFO("Vanilla decoding step CUDA graph not captured.");
++        }
++#else  // SUPPORTS_DEBUG_TENSOR
+         LOG_INFO("Vanilla decoding step CUDA graph not captured.");
++#endif // SUPPORTS_DEBUG_TENSOR
+         if (!vanillaDecodingStepBindTensors(inputsEmbeds, outputLogits, outputHiddenStates, activeBatchSize))
+         {
+             LOG_ERROR("Failed to bind tensors.");
+             return false;
+         }
+ 
+-        // launch the engine execution.
++#ifdef SUPPORTS_DEBUG_TENSOR
++        if (mDebugTensorDumper)
++        {
++            mDebugTensorDumper->beginStep("decode");
++        }
++#endif // SUPPORTS_DEBUG_TENSOR
++       // launch the engine execution.
+         bool executeStatus{true};
+         executeStatus &= mTRTExecutionContext->enqueueV3(stream);
+         if (!executeStatus)
+@@ -1426,6 +1484,13 @@ bool LLMEngineRunner::executeVanillaDecodingStep(rt::Tensor const& inputsEmbeds,
+             LOG_ERROR("Failed on TensorRT decode stage enqueueV3() call.");
+             return false;
+         }
++#ifdef SUPPORTS_DEBUG_TENSOR
++        if (mDebugTensorDumper)
++        {
++            CUDA_CHECK(cudaStreamSynchronize(stream));
++            mDebugTensorDumper->flush(stream);
++        }
++#endif // SUPPORTS_DEBUG_TENSOR
+     }
+ 
+     // Completed decoding step, commit the KVCache length of this run.
+@@ -1677,6 +1742,16 @@ bool LLMEngineRunner::executeEagleBaseTreeDecodingStep(rt::Tensor const& baseTre
+ bool LLMEngineRunner::captureVanillaDecodingCudaGraph(rt::Tensor const& inputsEmbeds, rt::Tensor& outputLogits,
+     std::string const& loraWeightsPath, cudaStream_t stream, rt::OptionalOutputTensor outputHiddenStates)
+ {
++    // CUDA graphs are incompatible with IDebugListener: graph-captured kernels do not fire debug callbacks.
++    // When tensor dumping is active, skip capture entirely; executeVanillaDecodingStep will use enqueueV3.
++#ifdef SUPPORTS_DEBUG_TENSOR
++    if (mDebugTensorDumper)
++    {
++        LOG_INFO("[TensorDump] Skipping CUDA graph capture (debug tensor dumping is active).");
++        return true;
++    }
++#endif // SUPPORTS_DEBUG_TENSOR
++
+     bool setOptimizationProfileStatus{true};
+     setOptimizationProfileStatus
+         &= mTRTExecutionContext->setOptimizationProfileAsync(kGENERATION_PROFILE_INDEX, stream);
+diff --git a/cpp/runtime/llmEngineRunner.h b/cpp/runtime/llmEngineRunner.h
+index 1411a519..5e536f4b 100644
+--- a/cpp/runtime/llmEngineRunner.h
++++ b/cpp/runtime/llmEngineRunner.h
+@@ -19,12 +19,14 @@
+ 
+ #include "common/hashUtils.h"
+ #include "common/tensor.h"
++#include "debug/debugTensorDumper.h"
+ #include "runtime/linearKVCache.h"
+ #include "runtime/llmRuntimeUtils.h"
+ 
+ #include <NvInferRuntime.h>
+ #include <cuda_runtime.h>
+ #include <filesystem>
++#include <memory>
+ #include <nlohmann/json.hpp>
+ #include <optional>
+ #include <unordered_map>
+@@ -246,11 +248,38 @@ public:
+     //! Key to uniquely identify a captured CUDA graph for the base model verification step
+     using BaseGraphKey = std::tuple<int64_t, uintptr_t, uintptr_t, uintptr_t, std::string>;
+ 
++// IDebugListener / markUnfusedTensorsAsDebugTensors / setUnfusedTensorsDebugState require TRT >= 10.12.
++#ifdef SUPPORTS_DEBUG_TENSOR
++    /*!
++     * @brief Enable intermediate tensor dumping for debugging.
++     *
++     * Attaches a DebugTensorDumper to the execution context so every unfused
++     * intermediate tensor is intercepted, logged, and saved to safetensors
++     * files.  The engine must have been built with
++     * LLMBuilderConfig::debugTensors == true (i.e.
++     * INetworkDefinition::markUnfusedTensorsAsDebugTensors() was called at
++     * build time); otherwise no debug tensors will be emitted.
++     *
++     * When active, CUDA graph launch is bypassed and enqueueV3 is used
++     * directly for every step so that the debug callbacks fire.
++     *
++     * @param outputDir Directory for output safetensors files (created if
++     *                  missing).
++     */
++    void enableTensorDump(std::filesystem::path const& outputDir);
++#endif // SUPPORTS_DEBUG_TENSOR
++
+ private:
+     std::unique_ptr<nvinfer1::IRuntime> mRuntime;                      //!< TensorRT runtime
+     std::unique_ptr<nvinfer1::ICudaEngine> mEngine;                    //!< TensorRT engine
+     std::unique_ptr<nvinfer1::IExecutionContext> mTRTExecutionContext; //!< Prefill and Generation execution context
+ 
++#ifdef SUPPORTS_DEBUG_TENSOR
++    //! Debug tensor dumper. Non-null when enableTensorDump() has been called.
++    //! When set, CUDA graph launch is bypassed so debug callbacks fire on every step.
++    std::unique_ptr<DebugTensorDumper> mDebugTensorDumper{nullptr};
++#endif // SUPPORTS_DEBUG_TENSOR
++
+     //! Holds the CUDA graph captured for the decoding step. Each CUDA graph is associated with a unique key value
+     //! which denote the input/output shapes and other execution properties like LoRA weights.
+     hash_utils::HashMap<DecodingGraphKey, std::pair<cudaGraph_t, cudaGraphExec_t>> mCudaGraphs;
+diff --git a/cpp/runtime/llmInferenceRuntime.h b/cpp/runtime/llmInferenceRuntime.h
+index f8927e45..7318de46 100644
+--- a/cpp/runtime/llmInferenceRuntime.h
++++ b/cpp/runtime/llmInferenceRuntime.h
+@@ -24,6 +24,7 @@
+ #include "runtime/llmEngineRunner.h"
+ #include "runtime/llmRuntimeUtils.h"
+ #include "tokenizer/tokenizer.h"
++#include <filesystem>
+ #include <memory>
+ #include <string>
+ #include <unordered_map>
+@@ -107,6 +108,40 @@ public:
+         return mGenerationMetrics;
+     }
+ 
++#ifdef SUPPORTS_DEBUG_TENSOR
++    /*! \brief Enable intermediate tensor dumping for the LLM engine.
++     *
++     *  Calls LLMEngineRunner::enableTensorDump() with the given directory.
++     *  The engine must have been built with LLMBuilderConfig::debugTensors == true.
++     *  @param outputDir Directory for safetensors output files.
++     */
++    void enableTensorDump(std::filesystem::path const& outputDir)
++    {
++        mLLMEngineRunner->enableTensorDump(outputDir);
++    }
++
++    /*! \brief Enable intermediate tensor dumping for the multimodal encoder(s).
++     *
++     *  Calls MultimodalRunner::enableTensorDump() on whichever encoder is active
++     *  (vision runner, audio runner, or both).  The multimodal engine(s) must have
++     *  been built with --debugTensors.  Each encoder inference call produces one
++     *  safetensors file per enqueueV3 invocation under @p outputDir.
++     *
++     *  @param outputDir Directory for safetensors output files.
++     */
++    void enableMultimodalTensorDump(std::filesystem::path const& outputDir)
++    {
++        if (mVisionRunner)
++        {
++            mVisionRunner->enableTensorDump(outputDir);
++        }
++        if (mAudioRunner)
++        {
++            mAudioRunner->enableTensorDump(outputDir);
++        }
++    }
++#endif // SUPPORTS_DEBUG_TENSOR
++
+     /*! \brief Get multimodal metrics (returns empty metrics if no multimodal runner)
+      *  \return Multimodal metrics, or empty metrics if no multimodal runner is available
+      */
+diff --git a/examples/llm/llm_build.cpp b/examples/llm/llm_build.cpp
+index 9fd5ad55..7b7ee8d8 100644
+--- a/examples/llm/llm_build.cpp
++++ b/examples/llm/llm_build.cpp
+@@ -42,7 +42,8 @@ enum LLMBuildOptionId : int
+     EAGLE_DRAFT = 709,
+     EAGLE_BASE = 710,
+     MAX_VERIFY_TREE_SIZE = 711,
+-    MAX_DRAFT_TREE_SIZE = 712
++    MAX_DRAFT_TREE_SIZE = 712,
++    DEBUG_TENSORS = 713
+ };
+ 
+ struct LLMBuildArgs
+@@ -59,6 +60,7 @@ struct LLMBuildArgs
+     bool eagleBase{false};
+     int64_t maxVerifyTreeSize{60};
+     int64_t maxDraftTreeSize{60};
++    bool debugTensors{false};
+ };
+ 
+ void printUsage(char const* programName)
+@@ -90,6 +92,8 @@ void printUsage(char const* programName)
+               << std::endl;
+     std::cerr << "  --maxDraftTreeSize        Maximum input_ids tokens passed into Eagle draft model for draft "
+                  "generation. Default = 60"
++              << std::endl;
++    std::cerr << "  --debugTensors            Mark all unfused intermediate tensors as debug tensors at build time."
+               << std::endl
+               << std::endl;
+ }
+@@ -107,7 +111,8 @@ bool parseLLMBuildArgs(LLMBuildArgs& args, int argc, char* argv[])
+         {"eagleDraft", no_argument, 0, LLMBuildOptionId::EAGLE_DRAFT},
+         {"eagleBase", no_argument, 0, LLMBuildOptionId::EAGLE_BASE},
+         {"maxVerifyTreeSize", required_argument, 0, LLMBuildOptionId::MAX_VERIFY_TREE_SIZE},
+-        {"maxDraftTreeSize", required_argument, 0, LLMBuildOptionId::MAX_DRAFT_TREE_SIZE}, {0, 0, 0, 0}};
++        {"maxDraftTreeSize", required_argument, 0, LLMBuildOptionId::MAX_DRAFT_TREE_SIZE},
++        {"debugTensors", no_argument, 0, LLMBuildOptionId::DEBUG_TENSORS}, {0, 0, 0, 0}};
+ 
+     int opt;
+     while ((opt = getopt_long(argc, argv, "", buildOptions, nullptr)) != -1)
+@@ -176,6 +181,7 @@ bool parseLLMBuildArgs(LLMBuildArgs& args, int argc, char* argv[])
+                 args.maxDraftTreeSize = std::stoi(optarg);
+             }
+             break;
++        case LLMBuildOptionId::DEBUG_TENSORS: args.debugTensors = true; break;
+         default: LOG_ERROR("Invalid Argument %c is %s.", opt, optarg); return false;
+         }
+     }
+@@ -226,6 +232,7 @@ int main(int argc, char** argv)
+     config.eagleBase = args.eagleBase;
+     config.maxVerifyTreeSize = args.maxVerifyTreeSize;
+     config.maxDraftTreeSize = args.maxDraftTreeSize;
++    config.debugTensors = args.debugTensors;
+ 
+     // Create and run the builder
+     builder::LLMBuilder llmBuilder(args.onnxDir, args.engineDir, config);
+diff --git a/examples/llm/llm_inference.cpp b/examples/llm/llm_inference.cpp
+index 5631aac9..8b95c0e4 100644
+--- a/examples/llm/llm_inference.cpp
++++ b/examples/llm/llm_inference.cpp
+@@ -60,7 +60,9 @@ enum LLMInferenceOptionId : int
+     EAGLE_DRAFT_STEP = 912,
+     EAGLE_VERIFY_TREE_SIZE = 913,
+     BATCH_SIZE = 914,
+-    MAX_GENERATE_LENGTH = 915
++    MAX_GENERATE_LENGTH = 915,
++    DUMP_TENSORS = 916,
++    DUMP_MULTIMODAL_TENSORS = 917
+ };
+ 
+ // Struct to hold Eagle-specific arguments for speculative decoding
+@@ -98,6 +100,8 @@ struct LLMInferenceArgs
+     // For other sampling parameters (temperature, top_p, top_k), please specify them in the input JSON file
+     int32_t batchSize{-1};         // -1 means use value from input file
+     int64_t maxGenerateLength{-1}; // -1 means use value from input file
++    std::string dumpTensorsDir{""};
++    std::string dumpMultimodalTensorsDir{""};
+     EagleArgs eagleArgs;
+ };
+ 
+@@ -109,7 +113,7 @@ void printUsage(char const* programName)
+                  "[--dumpProfile] [--profileOutputFile=<path to profile output file>] [--warmup=<number>] [--debug] "
+                  "[--dumpOutput] [--batchSize=<number>] [--maxGenerateLength=<number>] [--eagle] "
+                  "[--eagleDraftTopK=<number>] [--eagleDraftStep=<number>] "
+-                 "[--eagleVerifyTreeSize=<number>]"
++                 "[--eagleVerifyTreeSize=<number>] [--dumpTensors=<dir>] [--dumpMultimodalTensors=<dir>]"
+               << std::endl;
+     std::cerr << "Options:" << std::endl;
+     std::cerr << "  --help                    Display this help message" << std::endl;
+@@ -133,6 +137,13 @@ void printUsage(char const* programName)
+     std::cerr << "                            Each step extends the draft tree by one more level" << std::endl;
+     std::cerr << "  --eagleVerifyTreeSize     Number of tokens for base model verification (default: 60)" << std::endl;
+     std::cerr << "                            Total draft tree size: 1 + topK + (step-1) * topK^2" << std::endl;
++    std::cerr << "  --dumpTensors             Directory to dump intermediate LLM tensors as safetensors files (requires"
++              << std::endl;
++    std::cerr << "                            engine built with --debugTensors; disables CUDA graph capture)"
++              << std::endl;
++    std::cerr << "  --dumpMultimodalTensors   Directory to dump intermediate multimodal encoder tensors (vision/audio)."
++              << std::endl;
++    std::cerr << "                            Requires the multimodal engine built with --debugTensors." << std::endl;
+ }
+ 
+ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
+@@ -152,7 +163,9 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
+         {"eagleDraftStep", required_argument, 0, LLMInferenceOptionId::EAGLE_DRAFT_STEP},
+         {"eagleVerifyTreeSize", required_argument, 0, LLMInferenceOptionId::EAGLE_VERIFY_TREE_SIZE},
+         {"batchSize", required_argument, 0, LLMInferenceOptionId::BATCH_SIZE},
+-        {"maxGenerateLength", required_argument, 0, LLMInferenceOptionId::MAX_GENERATE_LENGTH}, {0, 0, 0, 0}};
++        {"maxGenerateLength", required_argument, 0, LLMInferenceOptionId::MAX_GENERATE_LENGTH},
++        {"dumpTensors", required_argument, 0, LLMInferenceOptionId::DUMP_TENSORS},
++        {"dumpMultimodalTensors", required_argument, 0, LLMInferenceOptionId::DUMP_MULTIMODAL_TENSORS}, {0, 0, 0, 0}};
+ 
+     int opt;
+     while ((opt = getopt_long(argc, argv, "", inferenceOptions, nullptr)) != -1)
+@@ -265,6 +278,28 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
+                 return false;
+             }
+             break;
++        case LLMInferenceOptionId::DUMP_TENSORS:
++            if (optarg)
++            {
++                args.dumpTensorsDir = optarg;
++            }
++            else
++            {
++                LOG_ERROR("--dumpTensors requires a directory path argument.");
++                return false;
++            }
++            break;
++        case LLMInferenceOptionId::DUMP_MULTIMODAL_TENSORS:
++            if (optarg)
++            {
++                args.dumpMultimodalTensorsDir = optarg;
++            }
++            else
++            {
++                LOG_ERROR("--dumpMultimodalTensors requires a directory path argument.");
++                return false;
++            }
++            break;
+         default: return false;
+         }
+     }
+@@ -714,6 +749,22 @@ int main(int argc, char* argv[])
+             LOG_ERROR("Failed to initialize LLMInferenceRuntime: %s", e.what());
+             return EXIT_FAILURE;
+         }
++#ifdef SUPPORTS_DEBUG_TENSOR
++        if (!args.dumpTensorsDir.empty())
++        {
++            std::filesystem::path dumpDir{args.dumpTensorsDir};
++            std::filesystem::create_directories(dumpDir);
++            llmInferenceRuntime->enableTensorDump(dumpDir);
++            LOG_INFO("Intermediate LLM tensor dumping enabled in %s", args.dumpTensorsDir.c_str());
++        }
++        if (!args.dumpMultimodalTensorsDir.empty())
++        {
++            std::filesystem::path dumpDir{args.dumpMultimodalTensorsDir};
++            std::filesystem::create_directories(dumpDir);
++            llmInferenceRuntime->enableMultimodalTensorDump(dumpDir);
++            LOG_INFO("Intermediate multimodal tensor dumping enabled in %s", args.dumpMultimodalTensorsDir.c_str());
++        }
++#endif // SUPPORTS_DEBUG_TENSOR
+         if (!llmInferenceRuntime->captureDecodingCUDAGraph(stream))
+         {
+             LOG_WARNING("Failed to capture CUDA graph for decoding usage, proceeding with normal engine execution.");
+diff --git a/examples/multimodal/visual_build.cpp b/examples/multimodal/visual_build.cpp
+index 6b40cd92..ee951750 100644
+--- a/examples/multimodal/visual_build.cpp
++++ b/examples/multimodal/visual_build.cpp
+@@ -36,7 +36,8 @@ enum VLMBuildOptionId : int
+     DEBUG = 604,
+     MIN_IMAGE_TOKENS = 605,
+     MAX_IMAGE_TOKENS = 606,
+-    MAX_IMAGE_TOKENS_PER_IMAGE = 607
++    MAX_IMAGE_TOKENS_PER_IMAGE = 607,
++    DEBUG_TENSORS = 608
+ };
+ 
+ struct ViTBuildArgs
+@@ -45,6 +46,7 @@ struct ViTBuildArgs
+     std::string engineDir;
+     bool help{false};
+     bool debug{false};
++    bool debugTensors{false};
+     int64_t minImageTokens{4};
+     int64_t maxImageTokens{1024};
+     int64_t maxImageTokensPerImage{512};
+@@ -63,7 +65,9 @@ void printUsage(char const* programName)
+         << std::endl;
+     std::cerr << "  --engineDir          Base output directory for multimodal engines. Required." << std::endl;
+     std::cerr << "                       Note: Visual engine will be saved to <engineDir>/visual/" << std::endl;
+-    std::cerr << "  --debug              Use debug mode, which outputs tensors." << std::endl;
++    std::cerr << "  --debug              Use debug mode, which enables verbose TRT logging." << std::endl;
++    std::cerr << "  --debugTensors       Mark all unfused tensors as debug tensors (required for" << std::endl;
++    std::cerr << "                       runtime --dumpMultimodalTensors; slows down engine build)." << std::endl;
+     std::cerr << "  --minImageTokens     Minimum image tokens. Default = 4" << std::endl;
+     std::cerr << "  --maxImageTokens     Maximum image tokens. Default = 1024" << std::endl;
+     std::cerr << "  --maxImageTokensPerImage     Maximum image tokens per image. Default = 512" << std::endl;
+@@ -77,7 +81,8 @@ bool parseViTBuildArgs(ViTBuildArgs& args, int argc, char* argv[])
+         {"debug", no_argument, 0, VLMBuildOptionId::DEBUG},
+         {"minImageTokens", required_argument, 0, VLMBuildOptionId::MIN_IMAGE_TOKENS},
+         {"maxImageTokens", required_argument, 0, VLMBuildOptionId::MAX_IMAGE_TOKENS},
+-        {"maxImageTokensPerImage", required_argument, 0, VLMBuildOptionId::MAX_IMAGE_TOKENS_PER_IMAGE}, {0, 0, 0, 0}};
++        {"maxImageTokensPerImage", required_argument, 0, VLMBuildOptionId::MAX_IMAGE_TOKENS_PER_IMAGE},
++        {"debugTensors", no_argument, 0, VLMBuildOptionId::DEBUG_TENSORS}, {0, 0, 0, 0}};
+ 
+     int opt;
+     while ((opt = getopt_long(argc, argv, "", vitOptions, nullptr)) != -1)
+@@ -108,6 +113,7 @@ bool parseViTBuildArgs(ViTBuildArgs& args, int argc, char* argv[])
+             }
+             break;
+         case VLMBuildOptionId::DEBUG: args.debug = true; break;
++        case VLMBuildOptionId::DEBUG_TENSORS: args.debugTensors = true; break;
+         case VLMBuildOptionId::MIN_IMAGE_TOKENS:
+             if (optarg)
+             {
+@@ -180,6 +186,7 @@ int main(int argc, char** argv)
+     config.minImageTokens = args.minImageTokens;
+     config.maxImageTokens = args.maxImageTokens;
+     config.maxImageTokensPerImage = args.maxImageTokensPerImage;
++    config.debugTensors = args.debugTensors;
+ 
+     std::string actualEngineDir = args.engineDir + "/visual";
+ 

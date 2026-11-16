@@ -18,10 +18,7 @@ set -euxo pipefail
 
 : "${EDGELLM_HOME:=/opt/TensorRT-Edge-LLM}"
 : "${TRT_PACKAGE_DIR:=/usr}"
-: "${CUDA_CTK_VERSION:=13.0}"
-: "${CMAKE_TOOLCHAIN_FILE:=cmake/aarch64_linux_toolchain.cmake}"
 : "${EMBEDDED_TARGET:=jetson-thor}"
-: "${ENABLE_CUTE_DSL:=ALL}"
 : "${CUTE_DSL_ARTIFACT_TAG:=sm_110}"
 : "${CUTE_DSL_PREBUILT_TARBALL:=}"
 : "${CUDA_CUBIN_ARCH:=sm_110a}"
@@ -35,17 +32,10 @@ require_arg() {
     fi
 }
 
-require_arg CUDA_CTK_VERSION
 require_arg EMBEDDED_TARGET
-require_arg ENABLE_CUTE_DSL
 
 if [[ "${EMBEDDED_TARGET}" != "jetson-thor" ]]; then
     echo "The experimental Dockerfile currently supports only EMBEDDED_TARGET=jetson-thor." >&2
-    exit 1
-fi
-
-if [[ "${ENABLE_CUTE_DSL^^}" == "OFF" ]]; then
-    echo "TensorRT Edge-LLM Thor builds require CuTe DSL; use ENABLE_CUTE_DSL=ALL." >&2
     exit 1
 fi
 
@@ -79,7 +69,11 @@ done
 artifact_arch="aarch64"
 artifact_root="cpp/kernels/cuteDSLArtifact/${artifact_arch}"
 artifact_dir="${artifact_root}/${CUTE_DSL_ARTIFACT_TAG}"
-cuda_major="${CUDA_CTK_VERSION%%.*}"
+cuda_major="$(nvcc --version | sed -n 's/.*release \([0-9][0-9]*\)\..*/\1/p')"
+if [[ -z "${cuda_major}" ]]; then
+    echo "Unable to detect the CUDA Toolkit major version from nvcc." >&2
+    exit 1
+fi
 prebuilt_tarball="${CUTE_DSL_PREBUILT_TARBALL:-kernelSrcs/cuteDSLPrebuilt/cutedsl_${artifact_arch}_${CUTE_DSL_ARTIFACT_TAG}_cuda${cuda_major}.tar.gz}"
 
 if [[ ! -f "${artifact_dir}/metadata.json" || ! -f "${artifact_dir}/libcutedsl_${artifact_arch}.a" ]]; then
@@ -121,9 +115,9 @@ else
 fi
 
 "${PIP_INSTALL[@]}" --upgrade 'setuptools<82' wheel
-"${PIP_INSTALL[@]}" -e ".[server,server-tools,native-build]"
+"${PIP_INSTALL[@]}" -e ".[builder,runtime]"
 
-pybind11_dir="$(python3 -m pybind11 --cmakedir)"
+nanobind_dir="$(python3 -m nanobind --cmake_dir)"
 cmake_args=(
     -S .
     -B build
@@ -131,15 +125,9 @@ cmake_args=(
     -DCMAKE_BUILD_TYPE=Release
     -DBUILD_PYTHON_BINDINGS=ON
     -DTRT_PACKAGE_DIR="${TRT_PACKAGE_DIR}"
-    -Dpybind11_DIR="${pybind11_dir}"
-    -DCUDA_CTK_VERSION="${CUDA_CTK_VERSION}"
-    -DENABLE_CUTE_DSL="${ENABLE_CUTE_DSL}"
+    -Dnanobind_DIR="${nanobind_dir}"
     -DCUTE_DSL_ARTIFACT_TAG="${CUTE_DSL_ARTIFACT_TAG}"
 )
-
-if [[ -n "${CMAKE_TOOLCHAIN_FILE}" ]]; then
-    cmake_args+=("-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}")
-fi
 
 if [[ -n "${EMBEDDED_TARGET}" ]]; then
     cmake_args+=("-DEMBEDDED_TARGET=${EMBEDDED_TARGET}")
@@ -148,5 +136,5 @@ fi
 cmake "${cmake_args[@]}"
 cmake --build build --target NvInfer_edgellm_plugin _edgellm_runtime --parallel "${MAX_JOBS:-$(nproc)}"
 
-test -f build/libNvInfer_edgellm_plugin.so
-test -n "$(find build/pybind -maxdepth 1 -name '*_edgellm_runtime*.so' -print -quit)"
+test -f build/lib/libNvInfer_edgellm_plugin.so
+test -n "$(find build/lib -maxdepth 1 -name '*_edgellm_runtime*.so' -print -quit)"

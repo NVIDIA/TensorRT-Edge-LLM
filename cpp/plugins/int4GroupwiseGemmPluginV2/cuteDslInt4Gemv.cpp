@@ -20,18 +20,18 @@
 #include "cuteDslInt4Gemv.h"
 #include "common/cudaUtils.h"
 
-// The AOT-generated headers use cudaLibrary_t (CUDA 12.8+ runtime). On CUDA < 12.8
-// the build defines TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT; route it to the driver type.
+// CUDA 12.0-12.7 AOT headers use cudaLibrary_t, which the runtime does not
+// declare until 12.8. CUDA 11.4 headers use CUmodule, and CUlibrary does not exist.
 #include <cuda.h>
 #if defined(TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT)
 #include <cuda_runtime.h>
-#if CUDA_VERSION < 12800
+#if CUDA_VERSION >= 12000 && CUDA_VERSION < 12080
 typedef CUlibrary cudaLibrary_t;
 static inline cudaError_t cudaLibraryUnload(cudaLibrary_t lib)
 {
     return static_cast<cudaError_t>(cuLibraryUnload(lib));
 }
-#endif
+#endif // CUDA_VERSION >= 12000 && CUDA_VERSION < 12080
 #endif
 
 #include "cutedsl_all.h"
@@ -66,8 +66,6 @@ INT4_FP16_GEMV_VARIANTS(DECL_MODULE)
 bool gLoaded = false;
 std::mutex gLoadMutex;
 
-// GEMV group size is baked at 128 (matches build_cutedsl.py); scale rows = ceil(K/128).
-constexpr int32_t kGemvGroupSize = 128;
 constexpr int32_t kBN = 128; // fragment N-block (shared with the GEMM)
 constexpr int32_t kBK = 64;  // fragment K-tile
 } // namespace
@@ -111,14 +109,14 @@ bool cuteDslInt4GemvLoadModules()
     } while (0)
 
 int32_t cuteDslInt4GemvLaunch(int32_t M, void const* A, void const* fragW, void const* scales, void* Out, int32_t N,
-    int32_t K, cudaStream_t stream)
+    int32_t K, int32_t groupSize, cudaStream_t stream)
 {
-    if (!gLoaded)
+    if (!gLoaded || groupSize < kBK || groupSize % kBK != 0 || K % groupSize != 0)
     {
         return -1;
     }
     int32_t const qwRows = divUp(N, kBN) * divUp(K, kBK) * (kBK / 16) * (kBN / 64);
-    int32_t const scaleRows = divUp(K, kGemvGroupSize);
+    int32_t const scaleRows = divUp(K, groupSize);
 #define DISPATCH(prefix, VM)                                                                                           \
     if (M == (VM))                                                                                                     \
     {                                                                                                                  \
@@ -130,7 +128,7 @@ int32_t cuteDslInt4GemvLaunch(int32_t M, void const* A, void const* fragW, void 
         SET_2D(tS, scales, scaleRows, N);                                                                              \
         prefix##_Tensor_mOut_t tOut{};                                                                                 \
         SET_2D(tOut, Out, M, N);                                                                                       \
-        return cute_dsl_##prefix##_wrapper(&g_##prefix, &tA, &tW, &tS, &tOut, stream);                                 \
+        return cute_dsl_##prefix##_wrapper(&g_##prefix, &tA, &tW, &tS, &tOut, groupSize, stream);                      \
     }
     INT4_FP16_GEMV_VARIANTS(DISPATCH)
 #undef DISPATCH

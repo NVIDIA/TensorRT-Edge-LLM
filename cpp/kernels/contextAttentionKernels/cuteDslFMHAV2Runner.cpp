@@ -15,6 +15,11 @@
  * limitations under the License.
  */
 
+#if defined(_MSC_VER)
+// MSVC requires this before <cmath> exposes M_LOG2E.
+#define _USE_MATH_DEFINES
+#endif
+
 #include "cuteDslFMHAV2Runner.h"
 
 #if defined(CUTE_DSL_FMHA_ENABLED)
@@ -23,6 +28,7 @@
 #include "common/checkMacros.h"
 #include "common/cudaUtils.h"
 #include "common/logger.h"
+#include "common/pagedKvTypes.h"
 #include "cuteDslFmhaParams.h"
 #include "cuteDslTensorDescriptors.h"
 
@@ -52,10 +58,29 @@ detail::LazyKernelModule<fmha_v2_d64_sw_paged_Kernel_Module_t> CuteDslFMHAV2Runn
 detail::LazyKernelModule<fmha_v2_d128_sw_paged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d128SwPaged{};
 detail::LazyKernelModule<fmha_v2_d256_sw_paged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d256SwPaged{};
 detail::LazyKernelModule<fmha_v2_d512_sw_paged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d512SwPaged{};
+detail::LazyKernelModule<fmha_v2_d256_vision_paged_ragged_Kernel_Module_t>
+    CuteDslFMHAV2Runner::sLLM_d256VisionPagedRagged{};
+detail::LazyKernelModule<fmha_v2_d512_vision_paged_ragged_Kernel_Module_t>
+    CuteDslFMHAV2Runner::sLLM_d512VisionPagedRagged{};
+#if CUDA_VERSION >= 12000
+detail::LazyKernelModule<fmha_v2_d128_non_causal_paged_two_pool_Kernel_Module_t>
+    CuteDslFMHAV2Runner::sLLM_d128NonCausalPagedTwoPool{};
+detail::LazyKernelModule<fmha_v2_d128_non_causal_paged_two_pool_fp8_Kernel_Module_t>
+    CuteDslFMHAV2Runner::sLLM_d128NonCausalPagedTwoPoolFp8{};
+#endif // CUDA_VERSION >= 12000
+detail::LazyKernelModule<fmha_v2_d64_paged_ragged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d64PagedRagged{};
+detail::LazyKernelModule<fmha_v2_d128_paged_ragged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d128PagedRagged{};
+detail::LazyKernelModule<fmha_v2_d256_paged_ragged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d256PagedRagged{};
+detail::LazyKernelModule<fmha_v2_d512_paged_ragged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d512PagedRagged{};
+detail::LazyKernelModule<fmha_v2_d64_sw_paged_ragged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d64SwPagedRagged{};
+detail::LazyKernelModule<fmha_v2_d128_sw_paged_ragged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d128SwPagedRagged{};
+detail::LazyKernelModule<fmha_v2_d256_sw_paged_ragged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d256SwPagedRagged{};
+detail::LazyKernelModule<fmha_v2_d512_sw_paged_ragged_Kernel_Module_t> CuteDslFMHAV2Runner::sLLM_d512SwPagedRagged{};
 
 detail::LazyKernelModule<fmha_v2_vit_d64_Kernel_Module_t> CuteDslFMHAV2Runner::sViT_d64{};
 detail::LazyKernelModule<fmha_v2_vit_d72_Kernel_Module_t> CuteDslFMHAV2Runner::sViT_d72{};
 detail::LazyKernelModule<fmha_v2_vit_d80_Kernel_Module_t> CuteDslFMHAV2Runner::sViT_d80{};
+detail::LazyKernelModule<fmha_v2_vit_d96_Kernel_Module_t> CuteDslFMHAV2Runner::sViT_d96{};
 detail::LazyKernelModule<fmha_v2_vit_d128_Kernel_Module_t> CuteDslFMHAV2Runner::sViT_d128{};
 
 namespace
@@ -64,7 +89,8 @@ namespace
 bool isFMHAV2SM(int32_t smVersion)
 {
     return smVersion == 80 || smVersion == 86 || smVersion == 87 || smVersion == 89 || smVersion == 90
-        || smVersion == 100 || smVersion == 101 || smVersion == 110 || smVersion == 120 || smVersion == 121;
+        || smVersion == 100 || smVersion == 101 || smVersion == 103 || smVersion == 110 || smVersion == 120
+        || smVersion == 121;
 }
 
 bool isFMHAV2PagedLlmHeadSize(int32_t headSize)
@@ -85,12 +111,52 @@ bool preflightVariant(detail::LazyKernelModule<Module>& state, char const* modul
     return detail::ensureModuleLoaded<moduleLoader, moduleUnloader>(state, moduleName, stream);
 }
 
+//! Skip-softmax (BLASST) lives inside the causal native-paged kernels: the scale table is a trailing kernel
+//! argument and every sequence whose lookup yields no S, or S >= seqlen_kv, runs dense inside the kernel. A batch
+//! without a usable table (none bound, or a sliding-window layer, which the skip path does not cover) is therefore
+//! handed the one-row table {0, 0}, which resolves to dense for every sequence.
+struct SkipSoftmaxScaleTable
+{
+    int32_t const* data;
+    int32_t len;
+};
+
+SkipSoftmaxScaleTable resolveSkipSoftmaxScaleTable(
+    int32_t const* skipSoftmaxScaleTable, int32_t skipSoftmaxScaleTableLen, bool useSlidingWindow)
+{
+    bool const tableBound = skipSoftmaxScaleTable != nullptr && skipSoftmaxScaleTableLen >= 2;
+#if CUDA_VERSION < 12000
+    // The CUDA 11 prebuilt artifact predates the skip-softmax path (its paged wrappers take no table).
+    (void) useSlidingWindow;
+    static bool sWarned = false;
+    if (tableBound && !sWarned)
+    {
+        LOG_WARNING("FMHA-v2 native paged FMHA: the CUDA 11 artifact has no skip-softmax path; running dense.");
+        sWarned = true;
+    }
+    return {nullptr, 0};
+#else
+    if (tableBound && !useSlidingWindow)
+    {
+        return {skipSoftmaxScaleTable, skipSoftmaxScaleTableLen};
+    }
+    static int32_t const* const sDenseTable = []() {
+        int32_t const kDenseRow[2] = {0, 0};
+        int32_t* table = nullptr;
+        CUDA_CHECK(cudaMalloc(&table, sizeof(kDenseRow)));
+        CUDA_CHECK(cudaMemcpy(table, kDenseRow, sizeof(kDenseRow), cudaMemcpyHostToDevice));
+        return static_cast<int32_t const*>(table);
+    }();
+    return {sDenseTable, 2};
+#endif
+}
+
 } // namespace
 
 bool CuteDslFMHAV2Runner::canImplement(int32_t numQHeads, int32_t numKVHeads, int32_t headSize, int32_t smVersion,
-    nvinfer1::DataType dataType, CuteDslFMHAV2MaskType maskType)
+    trt_edgellm::DataType dataType, CuteDslFMHAV2MaskType maskType)
 {
-    if (!isFMHAV2SM(smVersion) || dataType != nvinfer1::DataType::kHALF || numQHeads <= 0 || numKVHeads <= 0
+    if (!isFMHAV2SM(smVersion) || dataType != trt_edgellm::DataType::kHALF || numQHeads <= 0 || numKVHeads <= 0
         || numQHeads < numKVHeads || numQHeads % numKVHeads != 0)
     {
         return false;
@@ -102,15 +168,16 @@ bool CuteDslFMHAV2Runner::canImplement(int32_t numQHeads, int32_t numKVHeads, in
     case CuteDslFMHAV2MaskType::kSLIDING_CAUSAL:
         return headSize == 64 || headSize == 128 || headSize == 256 || headSize == 512;
     case CuteDslFMHAV2MaskType::kVISION_BLOCK: return headSize == 256 || headSize == 512;
-    case CuteDslFMHAV2MaskType::kPADDING: return headSize == 256;
+    // D512 padding runs on the vision-block variant with full-KV intervals.
+    case CuteDslFMHAV2MaskType::kPADDING: return headSize == 256 || headSize == 512;
     }
     return false;
 }
 
 bool CuteDslFMHAV2Runner::canImplementPaged(int32_t numQHeads, int32_t numKVHeads, int32_t headSize, int32_t smVersion,
-    nvinfer1::DataType dataType, CuteDslFMHAV2MaskType maskType)
+    trt_edgellm::DataType dataType, CuteDslFMHAV2MaskType maskType)
 {
-    if (!isFMHAV2SM(smVersion) || !isFMHAV2PagedLlmHeadSize(headSize) || dataType != nvinfer1::DataType::kHALF
+    if (!isFMHAV2SM(smVersion) || !isFMHAV2PagedLlmHeadSize(headSize) || dataType != trt_edgellm::DataType::kHALF
         || numQHeads <= 0 || numKVHeads <= 0 || numQHeads < numKVHeads || numQHeads % numKVHeads != 0)
     {
         return false;
@@ -126,10 +193,21 @@ bool CuteDslFMHAV2Runner::canImplementPaged(int32_t numQHeads, int32_t numKVHead
     return false;
 }
 
-bool CuteDslFMHAV2Runner::canImplementViT(int32_t headSize, int32_t smVersion, nvinfer1::DataType dataType)
+bool CuteDslFMHAV2Runner::canImplementPagedRagged(int32_t numQHeads, int32_t numKVHeads, int32_t headSize,
+    int32_t smVersion, trt_edgellm::DataType dataType, CuteDslFMHAV2MaskType maskType)
 {
-    return isFMHAV2SM(smVersion) && dataType == nvinfer1::DataType::kHALF
-        && (headSize == 64 || headSize == 72 || headSize == 80 || headSize == 128);
+    if (maskType == CuteDslFMHAV2MaskType::kVISION_BLOCK)
+    {
+        return (headSize == 256 || headSize == 512)
+            && canImplementPaged(numQHeads, numKVHeads, headSize, smVersion, dataType, CuteDslFMHAV2MaskType::kCAUSAL);
+    }
+    return canImplementPaged(numQHeads, numKVHeads, headSize, smVersion, dataType, maskType);
+}
+
+bool CuteDslFMHAV2Runner::canImplementViT(int32_t headSize, int32_t smVersion, trt_edgellm::DataType dataType)
+{
+    return isFMHAV2SM(smVersion) && dataType == trt_edgellm::DataType::kHALF
+        && (headSize == 64 || headSize == 72 || headSize == 80 || headSize == 96 || headSize == 128);
 }
 
 bool CuteDslFMHAV2Runner::preflightLlm(cudaStream_t stream, int32_t slidingWindowSize)
@@ -173,8 +251,12 @@ bool CuteDslFMHAV2Runner::preflightLlm(cudaStream_t stream, int32_t slidingWindo
     }
 }
 
-bool CuteDslFMHAV2Runner::preflightPaged(cudaStream_t stream, int32_t slidingWindowSize)
+bool CuteDslFMHAV2Runner::preflightPaged(cudaStream_t stream, int32_t slidingWindowSize,
+    int32_t const* skipSoftmaxScaleTable, int32_t skipSoftmaxScaleTableLen)
 {
+    // The table only selects a threshold inside the kernel; the variant is the same one dense prefills use.
+    (void) skipSoftmaxScaleTable;
+    (void) skipSoftmaxScaleTableLen;
     bool const useSlidingWindow = slidingWindowSize < INT_MAX;
 
     switch (mHeadDim)
@@ -214,11 +296,92 @@ bool CuteDslFMHAV2Runner::preflightPaged(cudaStream_t stream, int32_t slidingWin
     }
 }
 
+bool CuteDslFMHAV2Runner::preflightPagedTwoPoolNonCausal(cudaStream_t stream, bool fp8Prefix)
+{
+#if CUDA_VERSION < 12000
+    // The CUDA 11 prebuilt artifact does not contain the two-pool kernels.
+    (void) stream;
+    (void) fp8Prefix;
+    return false;
+#else
+    if (mHeadDim != 128)
+    {
+        return false;
+    }
+    if (fp8Prefix)
+    {
+        return preflightVariant<fmha_v2_d128_non_causal_paged_two_pool_fp8_Kernel_Module_Load,
+            fmha_v2_d128_non_causal_paged_two_pool_fp8_Kernel_Module_Unload>(
+            sLLM_d128NonCausalPagedTwoPoolFp8, "fmha_v2_d128_non_causal_paged_two_pool_fp8", stream);
+    }
+    return preflightVariant<fmha_v2_d128_non_causal_paged_two_pool_Kernel_Module_Load,
+        fmha_v2_d128_non_causal_paged_two_pool_Kernel_Module_Unload>(
+        sLLM_d128NonCausalPagedTwoPool, "fmha_v2_d128_non_causal_paged_two_pool", stream);
+#endif // CUDA_VERSION < 12000
+}
+
+bool CuteDslFMHAV2Runner::preflightPagedRagged(cudaStream_t stream, int32_t slidingWindowSize, bool useBidirectional)
+{
+    if (useBidirectional)
+    {
+        if (mHeadDim == 256)
+        {
+            return preflightVariant<fmha_v2_d256_vision_paged_ragged_Kernel_Module_Load,
+                fmha_v2_d256_vision_paged_ragged_Kernel_Module_Unload>(
+                sLLM_d256VisionPagedRagged, "fmha_v2_d256_vision_paged_ragged", stream);
+        }
+        if (mHeadDim == 512)
+        {
+            return preflightVariant<fmha_v2_d512_vision_paged_ragged_Kernel_Module_Load,
+                fmha_v2_d512_vision_paged_ragged_Kernel_Module_Unload>(
+                sLLM_d512VisionPagedRagged, "fmha_v2_d512_vision_paged_ragged", stream);
+        }
+        return false;
+    }
+    bool const useSlidingWindow = slidingWindowSize < INT_MAX;
+    switch (mHeadDim)
+    {
+    case 64:
+        return useSlidingWindow ? preflightVariant<fmha_v2_d64_sw_paged_ragged_Kernel_Module_Load,
+                                      fmha_v2_d64_sw_paged_ragged_Kernel_Module_Unload>(
+                                      sLLM_d64SwPagedRagged, "fmha_v2_d64_sw_paged_ragged", stream)
+                                : preflightVariant<fmha_v2_d64_paged_ragged_Kernel_Module_Load,
+                                      fmha_v2_d64_paged_ragged_Kernel_Module_Unload>(
+                                      sLLM_d64PagedRagged, "fmha_v2_d64_paged_ragged", stream);
+    case 128:
+        return useSlidingWindow ? preflightVariant<fmha_v2_d128_sw_paged_ragged_Kernel_Module_Load,
+                                      fmha_v2_d128_sw_paged_ragged_Kernel_Module_Unload>(
+                                      sLLM_d128SwPagedRagged, "fmha_v2_d128_sw_paged_ragged", stream)
+                                : preflightVariant<fmha_v2_d128_paged_ragged_Kernel_Module_Load,
+                                      fmha_v2_d128_paged_ragged_Kernel_Module_Unload>(
+                                      sLLM_d128PagedRagged, "fmha_v2_d128_paged_ragged", stream);
+    case 256:
+        return useSlidingWindow ? preflightVariant<fmha_v2_d256_sw_paged_ragged_Kernel_Module_Load,
+                                      fmha_v2_d256_sw_paged_ragged_Kernel_Module_Unload>(
+                                      sLLM_d256SwPagedRagged, "fmha_v2_d256_sw_paged_ragged", stream)
+                                : preflightVariant<fmha_v2_d256_paged_ragged_Kernel_Module_Load,
+                                      fmha_v2_d256_paged_ragged_Kernel_Module_Unload>(
+                                      sLLM_d256PagedRagged, "fmha_v2_d256_paged_ragged", stream);
+    case 512:
+        return useSlidingWindow ? preflightVariant<fmha_v2_d512_sw_paged_ragged_Kernel_Module_Load,
+                                      fmha_v2_d512_sw_paged_ragged_Kernel_Module_Unload>(
+                                      sLLM_d512SwPagedRagged, "fmha_v2_d512_sw_paged_ragged", stream)
+                                : preflightVariant<fmha_v2_d512_paged_ragged_Kernel_Module_Load,
+                                      fmha_v2_d512_paged_ragged_Kernel_Module_Unload>(
+                                      sLLM_d512PagedRagged, "fmha_v2_d512_paged_ragged", stream);
+    default: LOG_ERROR("FMHA-v2 native ragged paged FMHA: unsupported head_dim=%d.", mHeadDim); return false;
+    }
+}
+
 bool CuteDslFMHAV2Runner::preflightPadding(cudaStream_t stream)
 {
+    if (mHeadDim == 512)
+    {
+        return preflightVisionBlock(stream);
+    }
     if (mHeadDim != 256)
     {
-        LOG_ERROR("FMHA-v2 CuTe DSL padding FMHA requires head_dim=256.");
+        LOG_ERROR("FMHA-v2 CuTe DSL padding FMHA requires head_dim=256 or head_dim=512.");
         return false;
     }
     return preflightVariant<fmha_v2_d256_padding_Kernel_Module_Load, fmha_v2_d256_padding_Kernel_Module_Unload>(
@@ -253,6 +416,9 @@ bool CuteDslFMHAV2Runner::preflightViT(cudaStream_t stream)
     case 80:
         return preflightVariant<fmha_v2_vit_d80_Kernel_Module_Load, fmha_v2_vit_d80_Kernel_Module_Unload>(
             sViT_d80, "fmha_v2_vit_d80", stream);
+    case 96:
+        return preflightVariant<fmha_v2_vit_d96_Kernel_Module_Load, fmha_v2_vit_d96_Kernel_Module_Unload>(
+            sViT_d96, "fmha_v2_vit_d96", stream);
     case 128:
         return preflightVariant<fmha_v2_vit_d128_Kernel_Module_Load, fmha_v2_vit_d128_Kernel_Module_Unload>(
             sViT_d128, "fmha_v2_vit_d128", stream);
@@ -378,27 +544,32 @@ int32_t callFmhaV2Bidirectional(detail::LazyKernelModule<WrapperArgT<0, decltype
         = makeCuSeqLenTensor<WrapperArgT<5, decltype(cuteDslKernelWrapper)>>(params.cuKVSeqLens, params.batchSize + 1);
 
     // The per-query block ranges are packed [B, S_q], unlike the Q/K/V/O descriptors above.
-    auto blockBeginTensor = makePackedTensor<WrapperArgT<6, decltype(cuteDslKernelWrapper)>>(
-        params.blockBegin, {params.batchSize, params.seqLenQ});
-    auto blockEndTensor = makePackedTensor<WrapperArgT<7, decltype(cuteDslKernelWrapper)>>(
-        params.blockEnd, {params.batchSize, params.seqLenQ});
+    auto bidirectionalBlockBeginTensor = makePackedTensor<WrapperArgT<6, decltype(cuteDslKernelWrapper)>>(
+        params.bidirectionalBlockBegin, {params.batchSize, params.seqLenQ});
+    auto bidirectionalBlockEndTensor = makePackedTensor<WrapperArgT<7, decltype(cuteDslKernelWrapper)>>(
+        params.bidirectionalBlockEnd, {params.batchSize, params.seqLenQ});
 
-    return cuteDslKernelWrapper(&module, &qTensor, &kTensor, &vTensor, &oTensor, &cumSeqlenK, &blockBeginTensor,
-        &blockEndTensor, params.windowSizeLeft, params.attentionScale, params.scaleQ, params.scaleK, params.scaleV,
-        params.invScaleO, getDeviceMultiProcessorCount(), params.stream);
+    return cuteDslKernelWrapper(&module, &qTensor, &kTensor, &vTensor, &oTensor, &cumSeqlenK,
+        &bidirectionalBlockBeginTensor, &bidirectionalBlockEndTensor, params.windowSizeLeft, params.attentionScale,
+        params.scaleQ, params.scaleK, params.scaleV, params.invScaleO, getDeviceMultiProcessorCount(), params.stream);
 }
 
-//! Launch an FMHA-v2 LLM variant directly against the Edge-LLM NHD paged KV pool.
+//! Launch an FMHA-v2 LLM variant directly against the Edge-LLM NHD paged KV pool. The causal paged kernels carry
+//! the skip-softmax (BLASST) path and one extra trailing tensor after stream, the Int32[2N] skip_softmax_scale_table
+//! — detected here by wrapper arity at compile time (the CUDA 11 prebuilt artifact and the sliding-window kernels
+//! take none). Unlike the optimized kernel there is no actual-KV-length tensor: the v2 cum_seqlen_k is never
+//! padded, so the kernel looks the table up by it directly.
 //! @tparam cuteDslKernelWrapper Generated CuTe DSL kernel wrapper function. Its signature supplies the module
 //! and tensor descriptor types at compile time.
 template <auto cuteDslKernelWrapper, auto moduleLoader, auto moduleUnloader>
 int32_t callFmhaV2Paged(detail::LazyKernelModule<WrapperArgT<0, decltype(cuteDslKernelWrapper)>>& state,
     char const* moduleName, LlmFmhaPagedParams const& params)
 {
-    static_assert(WrapperArity<decltype(cuteDslKernelWrapper)>::value == 11,
+    constexpr std::size_t kWrapperArity = WrapperArity<decltype(cuteDslKernelWrapper)>::value;
+    static_assert(kWrapperArity == 11 || kWrapperArity == 12 || kWrapperArity == 15,
         "callFmhaV2Paged: not an FMHA-v2 paged LLM wrapper (module, q_tensor, kv_cache_pool, "
         "kv_cache_page_list, o_tensor, cum_seqlen_q, cum_seqlen_k, window_size_left, attention_scale, sm_count, "
-        "stream).");
+        "stream [, skip_softmax_scale_table | scale_k, scale_v, action_pool, action_pages]).");
 
     if (!detail::ensureModuleLoaded<moduleLoader, moduleUnloader>(state, moduleName, params.stream))
     {
@@ -425,8 +596,84 @@ int32_t callFmhaV2Paged(detail::LazyKernelModule<WrapperArgT<0, decltype(cuteDsl
     auto cumSeqlenK
         = makeCuSeqLenTensor<WrapperArgT<6, decltype(cuteDslKernelWrapper)>>(params.cuKVSeqLens, params.batchSize + 1);
 
-    return cuteDslKernelWrapper(&module, &qTensor, &kvPoolTensor, &pageListTensor, &oTensor, &cumSeqlenQ, &cumSeqlenK,
-        params.windowSizeLeft, params.attentionScale, getDeviceMultiProcessorCount(), params.stream);
+    if constexpr (kWrapperArity == 15)
+    {
+        auto actionPool = makeStridedTensor<WrapperArgT<13, decltype(cuteDslKernelWrapper)>>(params.actionPoolPtr,
+            {params.numActionFlatPages, params.numKVHeads, params.tokensPerPage, params.headDim},
+            {static_cast<int64_t>(params.tokensPerPage) * params.numKVHeads * params.headDim,
+                static_cast<int64_t>(params.headDim), static_cast<int64_t>(params.numKVHeads) * params.headDim});
+        auto actionPages = makePackedTensor<WrapperArgT<14, decltype(cuteDslKernelWrapper)>>(
+            params.actionPageList, {params.batchSize, 2, params.maxActionPagesPerSeq});
+        return cuteDslKernelWrapper(&module, &qTensor, &kvPoolTensor, &pageListTensor, &oTensor, &cumSeqlenQ,
+            &cumSeqlenK, params.windowSizeLeft, params.attentionScale, getDeviceMultiProcessorCount(), params.stream,
+            params.scaleK, params.scaleV, &actionPool, &actionPages);
+    }
+    else if constexpr (kWrapperArity == 12)
+    {
+        auto skipSoftmaxScaleTable = makeCuSeqLenTensor<WrapperArgT<11, decltype(cuteDslKernelWrapper)>>(
+            params.skipSoftmaxScaleTable, params.skipSoftmaxScaleTableLen);
+        return cuteDslKernelWrapper(&module, &qTensor, &kvPoolTensor, &pageListTensor, &oTensor, &cumSeqlenQ,
+            &cumSeqlenK, params.windowSizeLeft, params.attentionScale, getDeviceMultiProcessorCount(), params.stream,
+            &skipSoftmaxScaleTable);
+    }
+    else
+    {
+        return cuteDslKernelWrapper(&module, &qTensor, &kvPoolTensor, &pageListTensor, &oTensor, &cumSeqlenQ,
+            &cumSeqlenK, params.windowSizeLeft, params.attentionScale, getDeviceMultiProcessorCount(), params.stream);
+    }
+}
+
+//! Launch a packed-Q/O FMHA-v2 LLM variant directly against the Edge-LLM NHD paged KV pool.
+template <auto cuteDslKernelWrapper, auto moduleLoader, auto moduleUnloader>
+int32_t callFmhaV2PagedRagged(detail::LazyKernelModule<WrapperArgT<0, decltype(cuteDslKernelWrapper)>>& state,
+    char const* moduleName, FmhaV2RaggedPagedParams const& params)
+{
+    constexpr std::size_t kARITY = WrapperArity<decltype(cuteDslKernelWrapper)>::value;
+    static_assert(kARITY == 14 || kARITY == 16,
+        "callFmhaV2PagedRagged: not an FMHA-v2 ragged paged wrapper (module, q_tensor, kv_cache_pool, "
+        "kv_cache_page_list, o_tensor, cum_seqlen_q, cum_seqlen_k, attention_sinks, enable_attention_sink, "
+        "max_seqlen_q, window_size_left, attention_scale, sm_count, stream [, block_begin, block_end]).");
+
+    if (!detail::ensureModuleLoaded<moduleLoader, moduleUnloader>(state, moduleName, params.stream))
+    {
+        return -1;
+    }
+    auto& module = state.module;
+
+    auto qTensor = makeShTensor<WrapperArgT<1, decltype(cuteDslKernelWrapper)>>(
+        params.qPtr, params.totalQSeqLen, params.numQHeads, params.headDim);
+    auto kvPoolTensor = makeStridedTensor<WrapperArgT<2, decltype(cuteDslKernelWrapper)>>(params.pagedKVPoolPtr,
+        {params.numPages, params.numKVHeads, params.tokensPerPage, params.headDim},
+        {static_cast<int64_t>(params.tokensPerPage) * params.numKVHeads * params.headDim,
+            static_cast<int64_t>(params.headDim), static_cast<int64_t>(params.numKVHeads) * params.headDim});
+    auto pageListTensor = makePackedTensor<WrapperArgT<3, decltype(cuteDslKernelWrapper)>>(
+        params.kvCachePageList, {params.batchSize, 2, params.maxPagesPerSeq});
+    auto oTensor = makeShTensor<WrapperArgT<4, decltype(cuteDslKernelWrapper)>>(
+        params.oPtr, params.totalQSeqLen, params.numQHeads, params.headDim);
+    auto cumSeqlenQ
+        = makeCuSeqLenTensor<WrapperArgT<5, decltype(cuteDslKernelWrapper)>>(params.cuQSeqLens, params.batchSize + 1);
+    auto cumSeqlenK
+        = makeCuSeqLenTensor<WrapperArgT<6, decltype(cuteDslKernelWrapper)>>(params.cuKVSeqLens, params.batchSize + 1);
+    auto attentionSinks = WrapperArgT<7, decltype(cuteDslKernelWrapper)>{};
+    attentionSinks.data = const_cast<float*>(params.attentionSinks);
+
+    if constexpr (kARITY == 16)
+    {
+        auto bidirectionalBlockBegin = makeCuSeqLenTensor<WrapperArgT<14, decltype(cuteDslKernelWrapper)>>(
+            params.bidirectionalBlockBegin, params.totalQSeqLen);
+        auto bidirectionalBlockEnd = makeCuSeqLenTensor<WrapperArgT<15, decltype(cuteDslKernelWrapper)>>(
+            params.bidirectionalBlockEnd, params.totalQSeqLen);
+        return cuteDslKernelWrapper(&module, &qTensor, &kvPoolTensor, &pageListTensor, &oTensor, &cumSeqlenQ,
+            &cumSeqlenK, &attentionSinks, static_cast<int32_t>(params.attentionSinks != nullptr), params.maxQSeqLen,
+            params.windowSizeLeft, params.attentionScale, getDeviceMultiProcessorCount(), params.stream,
+            &bidirectionalBlockBegin, &bidirectionalBlockEnd);
+    }
+    else
+    {
+        return cuteDslKernelWrapper(&module, &qTensor, &kvPoolTensor, &pageListTensor, &oTensor, &cumSeqlenQ,
+            &cumSeqlenK, &attentionSinks, static_cast<int32_t>(params.attentionSinks != nullptr), params.maxQSeqLen,
+            params.windowSizeLeft, params.attentionScale, getDeviceMultiProcessorCount(), params.stream);
+    }
 }
 
 //! Launch an FMHA-v2 ViT variant over packed varlen [total_S, H, D] Q/K/V.
@@ -543,7 +790,8 @@ bool CuteDslFMHAV2Runner::run(void const* qPtr, void const* kPtr, void const* vP
 
 bool CuteDslFMHAV2Runner::runPaged(void const* qPtr, void const* pagedKVPoolPtr, int32_t const* kvCachePageList,
     void* oPtr, int32_t const* cuQSeqLens, int32_t const* cuKVSeqLens, int32_t numFlatPages, int32_t maxPagesPerSeq,
-    int32_t tokensPerPage, cudaStream_t stream, float attentionScale, int32_t slidingWindowSize)
+    int32_t tokensPerPage, cudaStream_t stream, float attentionScale, int32_t slidingWindowSize,
+    int32_t const* skipSoftmaxScaleTable, int32_t skipSoftmaxScaleTableLen)
 {
     check::check(qPtr != nullptr, "FMHA-v2 native paged FMHA qPtr must not be null.");
     check::check(pagedKVPoolPtr != nullptr, "FMHA-v2 native paged FMHA KV pool must not be null.");
@@ -565,6 +813,10 @@ bool CuteDslFMHAV2Runner::runPaged(void const* qPtr, void const* pagedKVPoolPtr,
         "FMHA-v2 native paged FMHA slidingWindowSize must be non-negative or INT_MAX.");
     bool const useSlidingWindow = slidingWindowSize < INT_MAX;
     validateAttentionScale(attentionScale);
+    check::check(skipSoftmaxScaleTableLen >= 0 && skipSoftmaxScaleTableLen % 2 == 0,
+        "FMHA-v2 native paged FMHA skip-softmax scale table must hold whole (seqlen_bin, S) pairs.");
+    SkipSoftmaxScaleTable const scaleTable
+        = resolveSkipSoftmaxScaleTable(skipSoftmaxScaleTable, skipSoftmaxScaleTableLen, useSlidingWindow);
     int32_t constexpr kNO_LIMIT = 1 << 30;
 
     LlmFmhaPagedParams params{};
@@ -584,6 +836,8 @@ bool CuteDslFMHAV2Runner::runPaged(void const* qPtr, void const* pagedKVPoolPtr,
     params.tokensPerPage = tokensPerPage;
     params.windowSizeLeft = useSlidingWindow ? slidingWindowSize : kNO_LIMIT;
     params.attentionScale = attentionScale;
+    params.skipSoftmaxScaleTable = scaleTable.data;
+    params.skipSoftmaxScaleTableLen = scaleTable.len;
     params.stream = stream;
 
     int32_t ret = -1;
@@ -633,12 +887,142 @@ bool CuteDslFMHAV2Runner::runPaged(void const* qPtr, void const* pagedKVPoolPtr,
     return ret == 0;
 }
 
-bool CuteDslFMHAV2Runner::runPadding(void const* qPtr, void const* kPtr, void const* vPtr, void* oPtr,
-    int32_t const* cuQSeqLens, int32_t const* cuKVSeqLens, cudaStream_t stream, float attentionScale)
+bool CuteDslFMHAV2Runner::runPagedRagged(PagedRaggedParams const& inputs)
 {
+    check::check(inputs.qPtr != nullptr, "FMHA-v2 ragged paged FMHA qPtr must not be null.");
+    check::check(inputs.pagedKVPoolPtr != nullptr, "FMHA-v2 ragged paged FMHA KV pool must not be null.");
+    check::check(inputs.kvCachePageList != nullptr, "FMHA-v2 ragged paged FMHA page list must not be null.");
+    check::check(inputs.oPtr != nullptr, "FMHA-v2 ragged paged FMHA oPtr must not be null.");
+    check::check(inputs.cuQSeqLens != nullptr, "FMHA-v2 ragged paged FMHA cuQSeqLens must not be null.");
+    check::check(inputs.cuKVSeqLens != nullptr, "FMHA-v2 ragged paged FMHA cuKVSeqLens must not be null.");
+    check::check(mBatchSize > 0 && mNumHeadsQ > 0 && mNumHeadsKV > 0,
+        "FMHA-v2 ragged paged FMHA requires positive batch and head extents.");
+    check::check(inputs.totalQSeqLen > 0 && inputs.maxQSeqLen > 0,
+        "FMHA-v2 ragged paged FMHA requires positive packed Q extents.");
+    check::check(mNumHeadsQ >= mNumHeadsKV && mNumHeadsQ % mNumHeadsKV == 0,
+        "FMHA-v2 ragged paged FMHA requires Q heads to be divisible by KV heads.");
+    check::check(inputs.numFlatPages > 0 && inputs.numFlatPages % 2 == 0 && inputs.maxPagesPerSeq > 0,
+        "FMHA-v2 ragged paged FMHA requires an even positive flattened page count and maxPagesPerSeq.");
+    check::check(inputs.tokensPerPage == 128,
+        "FMHA-v2 ragged paged FMHA requires tokensPerPage == 128 because one K/V tile maps to one page.");
+    check::check(mKVSeqLen == inputs.maxPagesPerSeq * inputs.tokensPerPage,
+        "FMHA-v2 ragged paged FMHA runner capacity must equal maxPagesPerSeq * tokensPerPage.");
+    check::check(inputs.slidingWindowSize >= 0 || inputs.slidingWindowSize == INT_MAX,
+        "FMHA-v2 ragged paged FMHA slidingWindowSize must be non-negative or INT_MAX.");
+    if ((inputs.bidirectionalBlockBegin == nullptr) != (inputs.bidirectionalBlockEnd == nullptr)
+        || (inputs.bidirectionalBlockBegin != nullptr && mHeadDim != 256 && mHeadDim != 512))
+    {
+        LOG_ERROR("FMHA-v2 ragged vision-block attention requires both ranges and head_dim=256 or 512.");
+        return false;
+    }
+    validateAttentionScale(inputs.attentionScale);
+
+    constexpr int32_t kNoLimit = 1 << 30;
+    bool const useSlidingWindow = inputs.slidingWindowSize < INT_MAX;
+
+    FmhaV2RaggedPagedParams params{};
+    params.bidirectionalBlockBegin = inputs.bidirectionalBlockBegin;
+    params.bidirectionalBlockEnd = inputs.bidirectionalBlockEnd;
+    params.qPtr = inputs.qPtr;
+    params.pagedKVPoolPtr = inputs.pagedKVPoolPtr;
+    params.kvCachePageList = inputs.kvCachePageList;
+    params.oPtr = inputs.oPtr;
+    params.cuQSeqLens = inputs.cuQSeqLens;
+    params.cuKVSeqLens = inputs.cuKVSeqLens;
+    params.totalQSeqLen = inputs.totalQSeqLen;
+    params.maxQSeqLen = inputs.maxQSeqLen;
+    params.batchSize = mBatchSize;
+    params.numQHeads = mNumHeadsQ;
+    params.numKVHeads = mNumHeadsKV;
+    params.headDim = mHeadDim;
+    params.numPages = inputs.numFlatPages;
+    params.maxPagesPerSeq = inputs.maxPagesPerSeq;
+    params.tokensPerPage = inputs.tokensPerPage;
+    params.windowSizeLeft = useSlidingWindow ? inputs.slidingWindowSize : kNoLimit;
+    params.attentionScale = inputs.attentionScale;
+    params.attentionSinks = inputs.attentionSinks;
+    params.stream = inputs.stream;
+
+    int32_t ret{-1};
+    if (inputs.bidirectionalBlockBegin != nullptr)
+    {
+        ret = mHeadDim == 256 ? callFmhaV2PagedRagged<cute_dsl_fmha_v2_d256_vision_paged_ragged_wrapper,
+                                    fmha_v2_d256_vision_paged_ragged_Kernel_Module_Load,
+                                    fmha_v2_d256_vision_paged_ragged_Kernel_Module_Unload>(
+                                    sLLM_d256VisionPagedRagged, "fmha_v2_d256_vision_paged_ragged", params)
+                              : callFmhaV2PagedRagged<cute_dsl_fmha_v2_d512_vision_paged_ragged_wrapper,
+                                    fmha_v2_d512_vision_paged_ragged_Kernel_Module_Load,
+                                    fmha_v2_d512_vision_paged_ragged_Kernel_Module_Unload>(
+                                    sLLM_d512VisionPagedRagged, "fmha_v2_d512_vision_paged_ragged", params);
+    }
+    else
+    {
+        switch (mHeadDim)
+        {
+        case 64:
+            ret = useSlidingWindow
+                ? callFmhaV2PagedRagged<cute_dsl_fmha_v2_d64_sw_paged_ragged_wrapper,
+                      fmha_v2_d64_sw_paged_ragged_Kernel_Module_Load, fmha_v2_d64_sw_paged_ragged_Kernel_Module_Unload>(
+                      sLLM_d64SwPagedRagged, "fmha_v2_d64_sw_paged_ragged", params)
+                : callFmhaV2PagedRagged<cute_dsl_fmha_v2_d64_paged_ragged_wrapper,
+                      fmha_v2_d64_paged_ragged_Kernel_Module_Load, fmha_v2_d64_paged_ragged_Kernel_Module_Unload>(
+                      sLLM_d64PagedRagged, "fmha_v2_d64_paged_ragged", params);
+            break;
+        case 128:
+            ret = useSlidingWindow
+                ? callFmhaV2PagedRagged<cute_dsl_fmha_v2_d128_sw_paged_ragged_wrapper,
+                      fmha_v2_d128_sw_paged_ragged_Kernel_Module_Load,
+                      fmha_v2_d128_sw_paged_ragged_Kernel_Module_Unload>(
+                      sLLM_d128SwPagedRagged, "fmha_v2_d128_sw_paged_ragged", params)
+                : callFmhaV2PagedRagged<cute_dsl_fmha_v2_d128_paged_ragged_wrapper,
+                      fmha_v2_d128_paged_ragged_Kernel_Module_Load, fmha_v2_d128_paged_ragged_Kernel_Module_Unload>(
+                      sLLM_d128PagedRagged, "fmha_v2_d128_paged_ragged", params);
+            break;
+        case 256:
+            ret = useSlidingWindow
+                ? callFmhaV2PagedRagged<cute_dsl_fmha_v2_d256_sw_paged_ragged_wrapper,
+                      fmha_v2_d256_sw_paged_ragged_Kernel_Module_Load,
+                      fmha_v2_d256_sw_paged_ragged_Kernel_Module_Unload>(
+                      sLLM_d256SwPagedRagged, "fmha_v2_d256_sw_paged_ragged", params)
+                : callFmhaV2PagedRagged<cute_dsl_fmha_v2_d256_paged_ragged_wrapper,
+                      fmha_v2_d256_paged_ragged_Kernel_Module_Load, fmha_v2_d256_paged_ragged_Kernel_Module_Unload>(
+                      sLLM_d256PagedRagged, "fmha_v2_d256_paged_ragged", params);
+            break;
+        case 512:
+            ret = useSlidingWindow
+                ? callFmhaV2PagedRagged<cute_dsl_fmha_v2_d512_sw_paged_ragged_wrapper,
+                      fmha_v2_d512_sw_paged_ragged_Kernel_Module_Load,
+                      fmha_v2_d512_sw_paged_ragged_Kernel_Module_Unload>(
+                      sLLM_d512SwPagedRagged, "fmha_v2_d512_sw_paged_ragged", params)
+                : callFmhaV2PagedRagged<cute_dsl_fmha_v2_d512_paged_ragged_wrapper,
+                      fmha_v2_d512_paged_ragged_Kernel_Module_Load, fmha_v2_d512_paged_ragged_Kernel_Module_Unload>(
+                      sLLM_d512PagedRagged, "fmha_v2_d512_paged_ragged", params);
+            break;
+        default: LOG_ERROR("FMHA-v2 native ragged paged FMHA: unsupported head_dim=%d.", mHeadDim); return false;
+        }
+    }
+
+    if (ret != 0)
+    {
+        LOG_ERROR("FMHA-v2 native ragged paged FMHA kernel (d=%d, sw=%s) failed with error code: %d", mHeadDim,
+            useSlidingWindow ? "true" : "false", ret);
+    }
+    return ret == 0;
+}
+
+bool CuteDslFMHAV2Runner::runPadding(void const* qPtr, void const* kPtr, void const* vPtr, void* oPtr,
+    int32_t const* cuQSeqLens, int32_t const* cuKVSeqLens, cudaStream_t stream, float attentionScale,
+    int32_t const* bidirectionalBlockBegin, int32_t const* bidirectionalBlockEnd)
+{
+    if (mHeadDim == 512)
+    {
+        // Intervals from launchBuildPaddingBlockRanges(); keys past cuKVSeqLens are zero-filled.
+        return runVisionBlock(qPtr, kPtr, vPtr, oPtr, cuKVSeqLens, bidirectionalBlockBegin, bidirectionalBlockEnd,
+            stream, attentionScale, -1);
+    }
     if (mHeadDim != 256)
     {
-        LOG_ERROR("FMHA-v2 CuTe DSL padding FMHA requires head_dim=256.");
+        LOG_ERROR("FMHA-v2 CuTe DSL padding FMHA requires head_dim=256 or head_dim=512.");
         return false;
     }
 
@@ -682,17 +1066,18 @@ bool CuteDslFMHAV2Runner::runPadding(void const* qPtr, void const* kPtr, void co
 }
 
 bool CuteDslFMHAV2Runner::runVisionBlock(void const* qPtr, void const* kPtr, void const* vPtr, void* oPtr,
-    int32_t const* cuKVSeqLens, int32_t const* blockBegin, int32_t const* blockEnd, cudaStream_t stream,
-    float attentionScale, int32_t slidingWindowSize)
+    int32_t const* cuKVSeqLens, int32_t const* bidirectionalBlockBegin, int32_t const* bidirectionalBlockEnd,
+    cudaStream_t stream, float attentionScale, int32_t slidingWindowSize)
 {
     if (mHeadDim != 256 && mHeadDim != 512)
     {
         LOG_ERROR("FMHA-v2 CuTe DSL bidirectional FMHA requires head_dim=256 or head_dim=512; got %d.", mHeadDim);
         return false;
     }
-    if (blockBegin == nullptr || blockEnd == nullptr)
+    if (bidirectionalBlockBegin == nullptr || bidirectionalBlockEnd == nullptr)
     {
-        LOG_ERROR("FMHA-v2 CuTe DSL bidirectional FMHA requires both blockBegin and blockEnd.");
+        LOG_ERROR(
+            "FMHA-v2 CuTe DSL bidirectional FMHA requires both bidirectionalBlockBegin and bidirectionalBlockEnd.");
         return false;
     }
 
@@ -721,8 +1106,8 @@ bool CuteDslFMHAV2Runner::runVisionBlock(void const* qPtr, void const* kPtr, voi
     params.scaleV = 1.0F;
     params.invScaleO = 1.0F;
     params.stream = stream;
-    params.blockBegin = blockBegin;
-    params.blockEnd = blockEnd;
+    params.bidirectionalBlockBegin = bidirectionalBlockBegin;
+    params.bidirectionalBlockEnd = bidirectionalBlockEnd;
 
     int32_t const ret = mHeadDim == 512
         ? callFmhaV2Bidirectional<cute_dsl_fmha_v2_d512_bidirectional_wrapper,
@@ -777,6 +1162,10 @@ bool CuteDslFMHAV2Runner::run(void const* qPtr, void const* kPtr, void const* vP
         ret = callFmhaV2Vit<cute_dsl_fmha_v2_vit_d80_wrapper, fmha_v2_vit_d80_Kernel_Module_Load,
             fmha_v2_vit_d80_Kernel_Module_Unload>(sViT_d80, "fmha_v2_vit_d80", params);
         break;
+    case 96:
+        ret = callFmhaV2Vit<cute_dsl_fmha_v2_vit_d96_wrapper, fmha_v2_vit_d96_Kernel_Module_Load,
+            fmha_v2_vit_d96_Kernel_Module_Unload>(sViT_d96, "fmha_v2_vit_d96", params);
+        break;
     case 128:
         ret = callFmhaV2Vit<cute_dsl_fmha_v2_vit_d128_wrapper, fmha_v2_vit_d128_Kernel_Module_Load,
             fmha_v2_vit_d128_Kernel_Module_Unload>(sViT_d128, "fmha_v2_vit_d128", params);
@@ -791,6 +1180,75 @@ bool CuteDslFMHAV2Runner::run(void const* qPtr, void const* kPtr, void const* vP
     return ret == 0;
 }
 
+bool CuteDslFMHAV2Runner::runPagedTwoPoolNonCausal(void const* qPtr, void const* prefixPool, int32_t const* prefixPages,
+    void const* actionPool, int32_t const* actionPages, void* oPtr, int32_t const* cuQSeqLens,
+    int32_t const* cuKVSeqLens, int32_t numPrefixFlatPages, int32_t maxPrefixPagesPerSeq, int32_t numActionFlatPages,
+    int32_t maxActionPagesPerSeq, cudaStream_t stream, float attentionScale, bool fp8Prefix, float kScale, float vScale)
+{
+#if CUDA_VERSION < 12000
+    (void) qPtr;
+    (void) prefixPool;
+    (void) prefixPages;
+    (void) actionPool;
+    (void) actionPages;
+    (void) oPtr;
+    (void) cuQSeqLens;
+    (void) cuKVSeqLens;
+    (void) numPrefixFlatPages;
+    (void) maxPrefixPagesPerSeq;
+    (void) numActionFlatPages;
+    (void) maxActionPagesPerSeq;
+    (void) stream;
+    (void) attentionScale;
+    (void) fp8Prefix;
+    (void) kScale;
+    (void) vScale;
+    return false;
+#else
+    check::check(
+        mHeadDim == 128 && mNumHeadsQ % mNumHeadsKV == 0, "Two-pool attention requires D128 and integral GQA.");
+    check::check(std::isfinite(kScale) && kScale > 0 && std::isfinite(vScale) && vScale > 0,
+        "Prefix KV scales must be finite and positive.");
+    LlmFmhaPagedParams params{};
+    params.qPtr = qPtr;
+    params.pagedKVPoolPtr = prefixPool;
+    params.kvCachePageList = prefixPages;
+    params.actionPoolPtr = actionPool;
+    params.actionPageList = actionPages;
+    params.numActionFlatPages = numActionFlatPages;
+    params.maxActionPagesPerSeq = maxActionPagesPerSeq;
+    params.oPtr = oPtr;
+    params.cuQSeqLens = cuQSeqLens;
+    params.cuKVSeqLens = cuKVSeqLens;
+    params.batchSize = mBatchSize;
+    params.seqLenQ = mSeqLenQ;
+    params.numQHeads = mNumHeadsQ;
+    params.numKVHeads = mNumHeadsKV;
+    params.headDim = mHeadDim;
+    params.numPages = numPrefixFlatPages;
+    params.maxPagesPerSeq = maxPrefixPagesPerSeq;
+    params.tokensPerPage = rt::kTOKENS_PER_PAGE;
+    params.windowSizeLeft = INT_MAX;
+    params.attentionScale = attentionScale;
+    params.scaleK = kScale;
+    params.scaleV = vScale;
+    params.stream = stream;
+    if (fp8Prefix)
+    {
+        return callFmhaV2Paged<cute_dsl_fmha_v2_d128_non_causal_paged_two_pool_fp8_wrapper,
+                   fmha_v2_d128_non_causal_paged_two_pool_fp8_Kernel_Module_Load,
+                   fmha_v2_d128_non_causal_paged_two_pool_fp8_Kernel_Module_Unload>(
+                   sLLM_d128NonCausalPagedTwoPoolFp8, "fmha_v2_d128_non_causal_paged_two_pool_fp8", params)
+            == 0;
+    }
+    return callFmhaV2Paged<cute_dsl_fmha_v2_d128_non_causal_paged_two_pool_wrapper,
+               fmha_v2_d128_non_causal_paged_two_pool_Kernel_Module_Load,
+               fmha_v2_d128_non_causal_paged_two_pool_Kernel_Module_Unload>(
+               sLLM_d128NonCausalPagedTwoPool, "fmha_v2_d128_non_causal_paged_two_pool", params)
+        == 0;
+#endif // CUDA_VERSION < 12000
+}
+
 } // namespace trt_edgellm
 
 #else
@@ -801,18 +1259,24 @@ namespace trt_edgellm
 
 CuteDslFMHAV2Runner::CuteDslFMHAV2Runner(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, bool) {}
 
-bool CuteDslFMHAV2Runner::canImplement(int32_t, int32_t, int32_t, int32_t, nvinfer1::DataType, CuteDslFMHAV2MaskType)
+bool CuteDslFMHAV2Runner::canImplement(int32_t, int32_t, int32_t, int32_t, trt_edgellm::DataType, CuteDslFMHAV2MaskType)
 {
     return false;
 }
 
 bool CuteDslFMHAV2Runner::canImplementPaged(
-    int32_t, int32_t, int32_t, int32_t, nvinfer1::DataType, CuteDslFMHAV2MaskType)
+    int32_t, int32_t, int32_t, int32_t, trt_edgellm::DataType, CuteDslFMHAV2MaskType)
 {
     return false;
 }
 
-bool CuteDslFMHAV2Runner::canImplementViT(int32_t, int32_t, nvinfer1::DataType)
+bool CuteDslFMHAV2Runner::canImplementPagedRagged(
+    int32_t, int32_t, int32_t, int32_t, trt_edgellm::DataType, CuteDslFMHAV2MaskType)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::canImplementViT(int32_t, int32_t, trt_edgellm::DataType)
 {
     return false;
 }
@@ -822,7 +1286,17 @@ bool CuteDslFMHAV2Runner::preflightLlm(cudaStream_t, int32_t)
     return false;
 }
 
-bool CuteDslFMHAV2Runner::preflightPaged(cudaStream_t, int32_t)
+bool CuteDslFMHAV2Runner::preflightPaged(cudaStream_t, int32_t, int32_t const*, int32_t)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::preflightPagedTwoPoolNonCausal(cudaStream_t, bool)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::preflightPagedRagged(cudaStream_t, int32_t, bool)
 {
     return false;
 }
@@ -849,13 +1323,18 @@ bool CuteDslFMHAV2Runner::run(
 }
 
 bool CuteDslFMHAV2Runner::runPaged(void const*, void const*, int32_t const*, void*, int32_t const*, int32_t const*,
-    int32_t, int32_t, int32_t, cudaStream_t, float, int32_t)
+    int32_t, int32_t, int32_t, cudaStream_t, float, int32_t, int32_t const*, int32_t)
 {
     return false;
 }
 
-bool CuteDslFMHAV2Runner::runPadding(
-    void const*, void const*, void const*, void*, int32_t const*, int32_t const*, cudaStream_t, float)
+bool CuteDslFMHAV2Runner::runPagedRagged(PagedRaggedParams const&)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::runPadding(void const*, void const*, void const*, void*, int32_t const*, int32_t const*,
+    cudaStream_t, float, int32_t const*, int32_t const*)
 {
     return false;
 }
@@ -868,6 +1347,13 @@ bool CuteDslFMHAV2Runner::runVisionBlock(void const*, void const*, void const*, 
 
 bool CuteDslFMHAV2Runner::run(
     void const*, void const*, void const*, void*, int32_t const*, int32_t, int32_t, int32_t, cudaStream_t, float)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::runPagedTwoPoolNonCausal(void const*, void const*, int32_t const*, void const*,
+    int32_t const*, void*, int32_t const*, int32_t const*, int32_t, int32_t, int32_t, int32_t, cudaStream_t, float,
+    bool, float, float)
 {
     return false;
 }

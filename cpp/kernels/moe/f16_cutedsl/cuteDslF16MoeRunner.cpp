@@ -21,6 +21,7 @@
 
 #include "common/cudaUtils.h"
 #include "common/logger.h"
+#include "kernels/cuteDslModuleLoader.h"
 #include "kernels/moe/f16MoeSupportKernels.h"
 
 #include <algorithm>
@@ -52,10 +53,9 @@ namespace
 
 constexpr int32_t kACT_SWIGLU{2};
 constexpr int32_t kACT_RELU2{4};
-#if !defined(CUTE_DSL_F16_MOE_ARTIFACT_SM)
+#if !defined(CUTE_DSL_F16_MOE_ARTIFACT_SM) && !defined(CUTE_DSL_F16_MOE_MULTI_ARCH_ENABLED)
 #error "CUTE_DSL_F16_MOE_ARTIFACT_SM must identify the linked target artifact"
 #endif
-constexpr int32_t kARTIFACT_SM{CUTE_DSL_F16_MOE_ARTIFACT_SM};
 constexpr size_t kDEVICE_ALIGNMENT{256};
 constexpr int32_t kMAX_PERSISTENT_BLOCKS{256};
 constexpr int32_t kTENSORMAPS_PER_BLOCK{3};
@@ -63,6 +63,8 @@ constexpr int32_t kBYTES_PER_TENSORMAP{128};
 constexpr size_t kPROBLEM_SHAPE_VALUES_PER_EXPERT{4};
 constexpr size_t kSTRIDE_VALUES_PER_EXPERT{6};
 constexpr size_t kADDRESS_VALUES_PER_EXPERT{3};
+
+constexpr std::initializer_list<int32_t> kARTIFACT_SMS{CUTE_DSL_F16_MOE_ARTIFACT_SMS};
 
 size_t alignUp(size_t value, size_t alignment)
 {
@@ -216,8 +218,8 @@ bool CuteDslF16MoeRunner::canImplement(int32_t hiddenSize, int32_t moeInterSize,
 #if defined(CUTE_DSL_F16_MOE_BLACKWELL_GEFORCE_ENABLED)
     architectureAvailable = architectureAvailable || isBlackwellGeforceSm(smVersion);
 #endif
-    return architectureAvailable && smVersion == kARTIFACT_SM && isSupportedNumExperts(numExperts) && topK > 0
-        && topK <= kMaxTopK && hiddenSize > 0 && hiddenSize % kHiddenSizeAlignment == 0 && moeInterSize > 0
+    return architectureAvailable && detail::isArtifactSm(smVersion, kARTIFACT_SMS) && isSupportedNumExperts(numExperts)
+        && topK > 0 && topK <= kMaxTopK && hiddenSize > 0 && hiddenSize % kHiddenSizeAlignment == 0 && moeInterSize > 0
         && moeInterSize % kInterSizeAlignment == 0 && fc1N <= std::numeric_limits<int32_t>::max()
         && fc1N % kFc1NAlignment == 0 && (activationType == kACT_SWIGLU || activationType == kACT_RELU2);
 }
@@ -247,9 +249,9 @@ CuteDslF16MoeRunner::Variant CuteDslF16MoeRunner::selectVariant(int32_t smVersio
 
 bool CuteDslF16MoeRunner::ensureKernelModules(int32_t smVersion, cudaStream_t stream) noexcept
 {
-    if (smVersion != kARTIFACT_SM)
+    if (!detail::isArtifactSm(smVersion, kARTIFACT_SMS))
     {
-        LOG_ERROR("CuteDslF16MoeRunner: linked SM%d artifact cannot execute on SM%d", kARTIFACT_SM, smVersion);
+        LOG_ERROR("CuteDslF16MoeRunner: linked artifact cannot execute on SM%d", smVersion);
         return false;
     }
     switch (selectVariant(smVersion))

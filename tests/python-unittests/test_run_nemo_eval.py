@@ -61,8 +61,7 @@ def test_make_eval_cmd_uses_existing_server_url():
         temperature=0.0,
         top_p=1.0,
         limit_samples=10,
-        evaluator_overrides={},
-        extra_overrides="",
+        extra_overrides='config.params.extra.args="--labels a,b"',
     )
     model_url = "http://localhost:8000/v1/chat/completions"
 
@@ -70,11 +69,14 @@ def test_make_eval_cmd_uses_existing_server_url():
 
     assert cmd[cmd.index("--model_url") + 1] == model_url
     assert cmd[cmd.index("--model_type") + 1] == "chat"
+    assert 'config.params.extra.args="--labels a,b"' in cmd[
+        cmd.index("--overrides") + 1]
 
 
 def test_make_server_cmd_matches_modular_server_cli():
     args = argparse.Namespace(
-        model="Qwen/Qwen2.5-0.5B-Instruct",
+        model="Qwen/Qwen3.5-0.8B",
+        model_id="Qwen/Qwen3.5-0.8B",
         cache_dir="/tmp/engine-cache",
         host="127.0.0.1",
         max_input_len=2048,
@@ -88,12 +90,14 @@ def test_make_server_cmd_matches_modular_server_cli():
     assert cmd == [
         sys.executable,
         "-m",
-        "experimental.server",
-        "Qwen/Qwen2.5-0.5B-Instruct",
+        "tensorrt_edgellm.server",
+        "Qwen/Qwen3.5-0.8B",
         "--host",
         "127.0.0.1",
         "--port",
         "8765",
+        "--served-model-name",
+        "Qwen/Qwen3.5-0.8B",
         "--speculative-config",
         '{"method":"mtp","num_speculative_tokens":3}',
         "--cache-dir",
@@ -108,7 +112,8 @@ def test_make_server_cmd_matches_modular_server_cli():
 
 
 def test_parse_args_defaults_to_local_server(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["run_nemo_eval.py"])
+    monkeypatch.setattr(sys, "argv",
+                        ["run_nemo_eval.py", "--eval-type", "mmlu"])
 
     args = run_nemo_eval.parse_args()
 

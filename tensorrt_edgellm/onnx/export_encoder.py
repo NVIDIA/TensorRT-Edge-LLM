@@ -53,8 +53,10 @@ import torch
 import torch.nn as nn
 
 from .dynamo_translations import build_custom_translation_table
-from .export import (_OPSET_VERSION, _fix_initializer_dtypes,
-                     _fix_nvfp4_weight_dtype, _permissive_inline_opset,
+from .export import (_OPSET_VERSION, _encode_fp8_kv_cache_as_int8,
+                     _fix_initializer_dtypes, _fix_nvfp4_weight_dtype,
+                     _permissive_inline_opset,
+                     _strip_attention_plugin_optional_inputs,
                      _strip_onnxscript_internal_attrs,
                      setup_fp8_qkv_scales_for_export)
 
@@ -76,6 +78,7 @@ __all__ = [
 _NEMOTRON_OMNI_MODEL_TYPES: frozenset[str] = frozenset([
     "NemotronH_Nano_VL_V2",
     "NemotronH_Nano_Omni_Reasoning_V3",
+    "nemotron_h_omni",
 ])
 
 # Maps model_type → internal family name
@@ -90,6 +93,7 @@ _VISUAL_REGISTRY: dict[str, str] = {
     "qwen3_omni_next": "qwen3_omni_next",
     "qwen3_5": "qwen3_5",
     "qwen3_5_moe": "qwen3_5",
+    "qwen4_exp": "qwen4_exp",
     "qwen2_5_vl": "qwen2_5_vl",
     "internvl_chat": "internvl3",
     "internvl": "internvl3_5",
@@ -99,9 +103,15 @@ _VISUAL_REGISTRY: dict[str, str] = {
     "gemma4_unified": "gemma4_unified",
     "NemotronH_Nano_VL_V2": "nemotron_omni",
     "NemotronH_Nano_Omni_Reasoning_V3": "nemotron_omni",
+    "nemotron_h_omni": "nemotron_omni",
     # Cosmos3-Edge reasoner: SigLIP2 packed-patch ViT + Qwen3-VL-style
     # PatchMerger, exported on the qwen3_vl visual ONNX I/O contract.
     "cosmos3_edge": "cosmos3_reasoner",
+    # Muse-Glimmer: Linear patch embed + learned
+    # interpolated position table, alternating window/full attention with 2D
+    # interleaved RoPE, pixel_shuffle merge + adapter/projection.
+    "muse_glimmer": "muse_glimmer",
+    "muse_glimmer_vision": "muse_glimmer",
 }
 
 # Maps family → dotted module path inside tensorrt_edgellm
@@ -114,6 +124,8 @@ _VISUAL_FAMILY_MODULE: dict[str, str] = {
     "tensorrt_edgellm.models.qwen3_omni_next.modeling_qwen3_omni_next_visual",
     "qwen3_5":
     "tensorrt_edgellm.models.qwen3_5.modeling_qwen3_5_visual",
+    "qwen4_exp":
+    "tensorrt_edgellm.models.qwen4_exp.modeling_qwen4_exp_visual",
     "qwen2_5_vl":
     "tensorrt_edgellm.models.qwen2_5_vl.modeling_qwen2_5_vl_visual",
     "internvl3":
@@ -130,6 +142,8 @@ _VISUAL_FAMILY_MODULE: dict[str, str] = {
     "tensorrt_edgellm.models.nemotron_omni.modeling_nemotron_omni_visual",
     "cosmos3_reasoner":
     "tensorrt_edgellm.models.cosmos3_reasoner.modeling_cosmos3_reasoner_visual",
+    "muse_glimmer":
+    "tensorrt_edgellm.models.muse_glimmer.modeling_muse_glimmer_visual",
 }
 
 # Maps family → build function name in that module
@@ -138,6 +152,7 @@ _VISUAL_FAMILY_BUILD_FN: dict[str, str] = {
     "qwen3_omni": "build_qwen3_omni_visual",
     "qwen3_omni_next": "build_qwen3_omni_next_visual",
     "qwen3_5": "build_qwen3_5_visual",
+    "qwen4_exp": "build_qwen4_exp_visual",
     "qwen2_5_vl": "build_qwen25_vl_visual",
     "internvl3": "build_internvl_visual",
     "internvl3_5": "build_internvl3_5_visual",
@@ -146,6 +161,7 @@ _VISUAL_FAMILY_BUILD_FN: dict[str, str] = {
     "gemma4_unified": "build_gemma4_unified_visual",
     "nemotron_omni": "build_nemotron_omni_visual",
     "cosmos3_reasoner": "build_cosmos3_reasoner_visual",
+    "muse_glimmer": "build_muse_glimmer_visual",
 }
 
 # ---------------------------------------------------------------------------
@@ -190,17 +206,17 @@ def _get_visual_config(model_type: str, config: dict) -> dict:
     """Extract visual encoder sub-config from the full model config."""
     if model_type in ("qwen3_vl", "qwen3_omni", "qwen3_omni_moe",
                       "qwen3_omni_next", "qwen3_5", "qwen3_5_moe",
-                      "qwen2_5_vl"):
+                      "qwen2_5_vl", "qwen4_exp"):
         # Qwen3-Omni (dense + MoE) / Qwen3-Next Omni store vision_config nested under
         # thinker_config; other Qwen VL variants keep it at the root.
         return (config.get("vision_config")
                 or config.get("thinker_config", {}).get("vision_config")
                 or config)
     if (model_type in ("internvl", "internvl_chat", "gemma4", "gemma4_unified",
-                       "cosmos3_edge")
+                       "cosmos3_edge", "muse_glimmer", "muse_glimmer_vision")
             or model_type in _NEMOTRON_OMNI_MODEL_TYPES):
-        # InternVL / Gemma4 / Nemotron-Omni / Cosmos3-Edge need the full
-        # config (vision + text + projection/runtime fields).
+        # InternVL / Gemma4 / Nemotron-Omni / Cosmos3-Edge / Muse-Glimmer need
+        # the full config (vision + text + projection/runtime fields).
         return config
     if model_type in ("phi4mm", "phi4_multimodal"):
         # Phi-4mm visual config is hardcoded (not in config.json).
@@ -506,6 +522,7 @@ def export_action_onnx(
     config: "ActionConfig",
     max_kv_cache_capacity: int,
     dtype: torch.dtype = torch.float16,
+    tp_size: int = 1,
 ) -> None:
     """Export Alpamayo action expert (one flow-matching step) to ONNX.
 
@@ -516,6 +533,7 @@ def export_action_onnx(
         config:      :class:`~config.ActionConfig` with expert hyperparameters.
         max_kv_cache_capacity: Fixed KV cache capacity (must match LLM engine).
         dtype:       Weight dtype (default ``float16``).
+        tp_size:     LLM tensor parallel size; TP>1 uses dense action inputs.
     """
     device = "cpu"
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -523,7 +541,7 @@ def export_action_onnx(
     from ..models.alpamayo.modeling_alpamayo_action import \
         build_alpamayo_1_action
     logger.info("Building Alpamayo action expert ...")
-    model = build_alpamayo_1_action(config, weights, dtype)
+    model = build_alpamayo_1_action(config, weights, dtype, tp_size=tp_size)
     model = model.to(device)
     model.eval()
 
@@ -532,6 +550,11 @@ def export_action_onnx(
 
     _run_dynamo_export(model, dynamo_inputs, output_path, onnx_input_names,
                        output_names, dynamic_shapes)
+    if tp_size == 1:
+        _strip_attention_plugin_optional_inputs(output_path)
+        from ..models.ops import nvfp4_a16_export_target_sm
+        if nvfp4_a16_export_target_sm() in (80, 86, 87):
+            _encode_fp8_kv_cache_as_int8(output_path)
 
 
 def write_action_config(config: "ActionConfig", max_kv_cache_capacity: int,
@@ -562,6 +585,8 @@ def write_action_config(config: "ActionConfig", max_kv_cache_capacity: int,
             "max_kv_cache_capacity": max_kv_cache_capacity,
         },
     }
+    if config.kv_cache_scales is not None:
+        cfg_out["kv_cache_scales"] = config.kv_cache_scales
     path = os.path.join(out_dir, "config.json")
     with open(path, "w") as f:
         json.dump(cfg_out, f, indent=2)

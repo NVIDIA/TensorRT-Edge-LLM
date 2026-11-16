@@ -42,7 +42,7 @@ import torch
 import torch.nn as nn
 from safetensors import safe_open
 
-from ..config import Mapping
+from ..config import QUANT_INT4_GPTQ, QUANT_INT8_GPTQ, Mapping
 from ..models.linear import LinearBase, TPMode
 from .fused_weights import split_fused_moe_experts
 from .repacking import apply_all_repacking
@@ -62,6 +62,47 @@ def _splits_unchanged(attr_suffix: str, tensor: torch.Tensor) -> bool:
     dimension, so both halves take the same tensor.
     """
     return attr_suffix in _FUSED_INPUT_CHANNEL_ATTRS or tensor.dim() == 0
+
+
+def _normalize_compressed_nvfp4_tensor(
+        key: str, tensor: torch.Tensor) -> Tuple[str, torch.Tensor]:
+    """Translate compressed-tensors NVFP4 names and scale conventions."""
+    suffix_map = {
+        ".weight_packed": ".weight",
+        ".weight_global_scale": ".weight_scale_2",
+        ".input_global_scale": ".input_scale",
+    }
+    for source_suffix, target_suffix in suffix_map.items():
+        if not key.endswith(source_suffix):
+            continue
+        key = key[:-len(source_suffix)] + target_suffix
+        if source_suffix != ".weight_packed":
+            value = tensor.to(torch.float32)
+            if torch.any(value == 0):
+                raise ValueError(
+                    f"compressed-tensors NVFP4 scale {key!r} contains zero")
+            tensor = value.reciprocal()
+        break
+    return key, tensor
+
+
+def _normalize_compressed_gptq_tensor(
+        key: str, tensor: torch.Tensor) -> Tuple[str, torch.Tensor]:
+    """Translate output-major compressed-tensors GPTQ payloads."""
+    suffix_map = {
+        ".weight_packed": ".qweight",
+        ".weight_zero_point": ".qzeros",
+        ".weight_scale": ".scales",
+        ".weight_g_idx": ".g_idx",
+    }
+    for source_suffix, target_suffix in suffix_map.items():
+        if not key.endswith(source_suffix):
+            continue
+        key = key[:-len(source_suffix)] + target_suffix
+        if source_suffix != ".weight_g_idx" and tensor.dim() == 2:
+            tensor = tensor.t().contiguous()
+        break
+    return key, tensor
 
 
 def _is_awq_prepacked_weight(tensor: torch.Tensor, attr_suffix: str,
@@ -135,6 +176,12 @@ def load_weights(
                     Must match ``ModelConfig.mapping`` used to build *model*.
     """
     mapping = mapping or Mapping()
+    quant = getattr(getattr(model, "config", None), "quant", None)
+    normalize_compressed_nvfp4 = bool(
+        getattr(quant, "uses_nvfp4_weights", False))
+    normalize_compressed_gptq = bool(
+        getattr(quant, "quant_type", None) in (QUANT_INT4_GPTQ,
+                                               QUANT_INT8_GPTQ))
     shard_map = _build_shard_map(model_dir)
     # Group keys by shard path to open each shard only once
     path_to_keys: Dict[str, list] = {}
@@ -165,15 +212,29 @@ def load_weights(
     for shard_path, keys in path_to_keys.items():
         if shard_path.endswith(".bin"):
             # PyTorch pickle shard -- load all at once, then iterate keys.
+            load_options = {}
+            if device == "cpu" and getattr(getattr(model, "config", None),
+                                           "ple_enabled", False):
+                load_options["mmap"] = True
             bin_state = torch.load(shard_path,
                                    map_location=device,
-                                   weights_only=True)
+                                   weights_only=True,
+                                   **load_options)
+            key_set = set(keys)
             for key in keys:
                 tensor = bin_state.get(key)
                 if tensor is None:
                     logger.debug("Key not found in .bin shard: %s", key)
                     skipped += 1
                     continue
+                if (key.endswith(".weight_scale_inv")
+                        and key[:-len("_scale_inv")] in key_set
+                        and tensor.dtype != torch.uint8):
+                    continue
+                folded = _fold_fp8_block_scales(key, tensor, bin_state.get,
+                                                key_set)
+                if folded is not None:
+                    tensor = folded
                 mapped_key = _apply_prefix(key)
                 if mapped_key is None:
                     skipped += 1
@@ -183,6 +244,12 @@ def load_weights(
                     if mapped_key is None:
                         skipped += 1
                         continue
+                if normalize_compressed_nvfp4:
+                    mapped_key, tensor = _normalize_compressed_nvfp4_tensor(
+                        mapped_key, tensor)
+                elif normalize_compressed_gptq:
+                    mapped_key, tensor = _normalize_compressed_gptq_tensor(
+                        mapped_key, tensor)
                 if _set_tensor(model, mapped_key, tensor, mapping=mapping):
                     loaded += 1
                 elif _try_split_fused_tensor(model,
@@ -194,9 +261,9 @@ def load_weights(
                     logger.debug("Key not found in model: %s", key)
                     skipped += 1
         else:
+            key_set = set(keys)
             with safe_open(shard_path, framework="pt", device=device) as f:
                 for key in keys:
-                    tensor = f.get_tensor(key)
                     mapped_key = _apply_prefix(key)
                     if mapped_key is None:
                         skipped += 1
@@ -206,6 +273,21 @@ def load_weights(
                         if mapped_key is None:
                             skipped += 1
                             continue
+                    tensor = f.get_tensor(key)
+                    if (key.endswith(".weight_scale_inv")
+                            and key[:-len("_scale_inv")] in key_set
+                            and tensor.dtype != torch.uint8):
+                        continue
+                    folded = _fold_fp8_block_scales(key, tensor, f.get_tensor,
+                                                    key_set)
+                    if folded is not None:
+                        tensor = folded
+                    if normalize_compressed_nvfp4:
+                        mapped_key, tensor = _normalize_compressed_nvfp4_tensor(
+                            mapped_key, tensor)
+                    elif normalize_compressed_gptq:
+                        mapped_key, tensor = _normalize_compressed_gptq_tensor(
+                            mapped_key, tensor)
                     if _set_tensor(model, mapped_key, tensor, mapping=mapping):
                         loaded += 1
                     elif _try_split_fused_tensor(model,
@@ -438,30 +520,108 @@ def load_weight_shard(tensor: torch.Tensor,
     return tensor[tuple(idx)].contiguous()
 
 
+def _load_segmented_weight_shard(
+        tensor: torch.Tensor,
+        dim: int,
+        local_segment_sizes: Tuple[int, ...],
+        mapping: Optional[Mapping] = None) -> torch.Tensor:
+    """Shard concatenated logical segments independently along *dim*.
+
+    ``local_segment_sizes`` describes one rank's width for each segment. This
+    is needed for tensors such as GDN's packed ``[Q | K | V]`` projection:
+    taking one contiguous shard of the whole tensor would mix segment tails
+    from one rank with segment heads from another.
+    """
+    mapping = mapping or Mapping()
+    tp_size, tp_rank = mapping.tp_size, mapping.tp_rank
+    if tp_size <= 1:
+        return tensor
+
+    shape = tensor.get_shape() if hasattr(tensor,
+                                          "get_shape") else tensor.shape
+    full_segment_sizes = tuple(size * tp_size for size in local_segment_sizes)
+    if shape[dim] != sum(full_segment_sizes):
+        raise ValueError(
+            f"Segmented TP shard: dim-{dim} {shape[dim]} does not match "
+            f"full segment sizes {full_segment_sizes}")
+
+    shards = []
+    segment_offset = 0
+    for local_size, full_size in zip(local_segment_sizes, full_segment_sizes):
+        idx = [slice(None)] * len(shape)
+        start = segment_offset + tp_rank * local_size
+        idx[dim] = slice(start, start + local_size)
+        shards.append(tensor[tuple(idx)])
+        segment_offset += full_size
+    return torch.cat(shards, dim=dim).contiguous()
+
+
 def _shard_for_module(module: nn.Module,
                       attr: str,
                       tensor: torch.Tensor,
                       mapping: Optional[Mapping] = None) -> torch.Tensor:
     """Slice *tensor* to the per-rank shard declared by *module* for *attr*.
 
-    Dispatches on :meth:`LinearBase.tp_split_dim` so each Linear subclass
-    owns its TP rule. The loader stays uniform across quant formats.
-    Wraps the shared :func:`load_weight_shard` primitive.
+    Dispatches on a module's ``tp_split_dim`` method so the owning module
+    declares its TP rule. Linear layers inherit the default method from
+    :class:`LinearBase`; structured non-linear buffers may declare the same
+    interface. The loader stays uniform across quant formats.
     """
     mapping = mapping or Mapping()
     if mapping.tp_size == 1:
         return tensor
 
-    dim = module.tp_split_dim(attr) if isinstance(module, LinearBase) else None
+    split_dim = getattr(module, "tp_split_dim", None)
+    dim = split_dim(attr) if callable(split_dim) else None
     tp_mode = getattr(module, "tp_mode", TPMode.REPLICATED)
     if dim is None:
-        if tp_mode != TPMode.REPLICATED and tensor.dim() >= 2:
+        if (isinstance(module, LinearBase) and tp_mode != TPMode.REPLICATED
+                and tensor.dim() >= 2):
             raise NotImplementedError(
                 f"TP sharding not declared for {type(module).__name__}.{attr} "
                 f"under tp_mode={tp_mode!r}.")
         return tensor
 
+    segment_sizes = getattr(module, "tp_split_sizes", None)
+    if segment_sizes is not None:
+        return _load_segmented_weight_shard(tensor,
+                                            dim,
+                                            tuple(segment_sizes),
+                                            mapping=mapping)
     return load_weight_shard(tensor, dim, mapping=mapping)
+
+
+def _fold_fp8_block_scales(key: str, tensor: torch.Tensor,
+                           get_tensor: Callable[[str], torch.Tensor],
+                           keys: set) -> Optional[torch.Tensor]:
+    """Dequantize a block-scaled FP8 weight; ``None`` for anything else.
+
+    The graph has no block-scaled FP8 form, so ``X.weight`` (E4M3) with an
+    ``X.weight_scale_inv`` block table becomes a dense FP16 weight here.
+    """
+    if tensor.dtype != torch.float8_e4m3fn or not key.endswith(".weight"):
+        return None
+    scale_key = key + "_scale_inv"
+    if scale_key not in keys:
+        return None
+    scale = get_tensor(scale_key)
+    # MXFP8 stores E8M0 exponent bytes, not floating-point block multipliers.
+    if scale.dtype == torch.uint8:
+        return None
+    scale = scale.to(torch.float32)
+    if scale.dim() != 2:
+        raise ValueError(f"{scale_key}: block scale must be rank-2, got "
+                         f"{tuple(scale.shape)}")
+    rows, cols = tensor.shape
+    block = -(-rows // scale.shape[0])
+    if -(-cols // scale.shape[1]) != block:
+        raise ValueError(
+            f"{key}: weight {tuple(tensor.shape)} does not tile "
+            f"into scale {tuple(scale.shape)} with one block size")
+    scale = scale.repeat_interleave(block,
+                                    0).repeat_interleave(block,
+                                                         1)[:rows, :cols]
+    return (tensor.to(torch.float32) * scale).to(torch.float16)
 
 
 def _set_tensor(model: nn.Module,

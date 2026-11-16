@@ -10,9 +10,12 @@ Phi-4-Multimodal requires merging its vision LoRA adapter into the base model be
 
 ## Step 1: Merge, Quantize, and Export (x86 Host)
 
+Install the `quantize,export` extras from a [published wheel](../getting_started/installation.md#optional-python-dependencies)
+or the source checkout. The later C++ engine-build and inference steps require
+the source workflow.
+
 ```bash
 cd /path/to/TensorRT-Edge-LLM
-pip3 install ".[tools]"
 
 export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
 export MODEL_NAME=Phi-4-multimodal-instruct
@@ -27,20 +30,20 @@ git clone https://huggingface.co/microsoft/Phi-4-multimodal-instruct $HF_MODEL_D
 git -C $HF_MODEL_DIR lfs pull
 
 # Merge vision LoRA adapter into base model
-tensorrt-edgellm-merge-lora \
-  --model_dir $HF_MODEL_DIR \
-  --lora_dir $HF_MODEL_DIR/vision-lora \
-  --output_dir $MODEL_DIR/merged
+trtedge merge-lora \
+  --model-dir $HF_MODEL_DIR \
+  --lora-dir $HF_MODEL_DIR/vision-lora \
+  --output-dir $MODEL_DIR/merged
 
 # Quantize merged model
-tensorrt-edgellm-quantize llm \
-  --model_dir $MODEL_DIR/merged \
-  --output_dir $MODEL_DIR/quantized \
+trtedge quantize llm \
+  --model-dir $MODEL_DIR/merged \
+  --output-dir $MODEL_DIR/quantized \
   --quantization nvfp4 \
-  --lm_head_quantization nvfp4
+  --lm-head-quantization nvfp4
 
 # Export language model and visual encoder
-tensorrt-edgellm-export \
+trtedge export \
   $MODEL_DIR/quantized \
   $MODEL_DIR/onnx
 ```
@@ -61,20 +64,20 @@ export MODEL_NAME=Phi-4-multimodal-instruct
 cd /path/to/TensorRT-Edge-LLM
 
 # Build language model engine
-./build/examples/llm/llm_build \
-  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/llm \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
-  --maxBatchSize 1 \
-  --maxInputLen 1536 \
-  --maxKVCacheCapacity 2048
+./build/bin/llm_build \
+  --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/llm \
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
+  --max-batch-size 1 \
+  --max-input-len 1536 \
+  --max-kv-cache-capacity 2048
 
 # Build visual encoder engine
-./build/examples/multimodal/visual_build \
-  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/visual \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
-  --minImageTokens 256 \
-  --maxImageTokens 1024 \
-  --maxImageTokensPerImage 512
+./build/bin/visual_build \
+  --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/visual \
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --min-image-tokens 256 \
+  --max-image-tokens 1024 \
+  --max-image-tokens-per-image 512
 ```
 
 ## Step 4: Run Inference (Thor Device)
@@ -82,9 +85,9 @@ cd /path/to/TensorRT-Edge-LLM
 ```bash
 cd /path/to/TensorRT-Edge-LLM
 
-./build/examples/llm/llm_inference \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
-  --multimodalEngineDir $WORKSPACE_DIR/$MODEL_NAME/engines/visual \
-  --inputFile $WORKSPACE_DIR/input.json \
-  --outputFile $WORKSPACE_DIR/output.json
+./build/bin/llm_inference \
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
+  --multimodal-engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/visual \
+  --input-file $WORKSPACE_DIR/input.json \
+  --output-file $WORKSPACE_DIR/output.json
 ```

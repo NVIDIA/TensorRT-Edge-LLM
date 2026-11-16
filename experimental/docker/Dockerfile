@@ -9,14 +9,11 @@
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:26.04-py3
 FROM ${BASE_IMAGE}
 
-ARG CUDA_CTK_VERSION=13.0 \
-    TRT_PACKAGE_DIR=/usr \
-    CMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
-    EMBEDDED_TARGET=jetson-thor \
-    ENABLE_CUTE_DSL=ALL \
-    CUTE_DSL_ARTIFACT_TAG=sm_110 \
-    CUDA_CUBIN_ARCH=sm_110a \
-    MAX_JOBS
+ARG TRT_PACKAGE_DIR=/usr
+ARG EMBEDDED_TARGET=jetson-thor
+ARG CUTE_DSL_ARTIFACT_TAG=sm_110
+ARG CUDA_CUBIN_ARCH=sm_110a
+ARG MAX_JOBS
 
 ENV EDGELLM_HOME=/opt/TensorRT-Edge-LLM \
     EDGELLM_WORKSPACE=/data/edgellm \
@@ -25,10 +22,8 @@ ENV EDGELLM_HOME=/opt/TensorRT-Edge-LLM \
     HF_HOME=/data/models/huggingface \
     HF_HUB_CACHE=/data/models/huggingface/hub \
     TRANSFORMERS_CACHE=/data/models/huggingface \
-    CUDA_CTK_VERSION=${CUDA_CTK_VERSION} \
     TRT_PACKAGE_DIR=${TRT_PACKAGE_DIR} \
     EMBEDDED_TARGET=${EMBEDDED_TARGET} \
-    ENABLE_CUTE_DSL=${ENABLE_CUTE_DSL} \
     CUTE_DSL_ARTIFACT_TAG=${CUTE_DSL_ARTIFACT_TAG} \
     CUDA_CUBIN_ARCH=${CUDA_CUBIN_ARCH}
 
@@ -48,9 +43,9 @@ WORKDIR ${EDGELLM_HOME}
 
 RUN experimental/docker/build.sh
 
-ENV EDGELLM_PLUGIN_PATH=/opt/TensorRT-Edge-LLM/build/libNvInfer_edgellm_plugin.so \
-    PYTHONPATH=/opt/TensorRT-Edge-LLM:/opt/TensorRT-Edge-LLM/build/pybind \
-    LD_LIBRARY_PATH=/opt/TensorRT-Edge-LLM/build:/opt/TensorRT-Edge-LLM/build/pybind:${TRT_PACKAGE_DIR}/lib:${TRT_PACKAGE_DIR}/lib64:/usr/local/cuda/lib64:/usr/local/cuda/targets/sbsa-linux/lib:/usr/local/cuda/targets/aarch64-linux/lib:${LD_LIBRARY_PATH}
+ENV EDGELLM_PLUGIN_PATH=/opt/TensorRT-Edge-LLM/build/lib/libNvInfer_edgellm_plugin.so \
+    PYTHONPATH=/opt/TensorRT-Edge-LLM:/opt/TensorRT-Edge-LLM/build/lib \
+    LD_LIBRARY_PATH=/opt/TensorRT-Edge-LLM/build/lib:${TRT_PACKAGE_DIR}/lib:${TRT_PACKAGE_DIR}/lib64:/usr/local/cuda/lib64:/usr/local/cuda/targets/sbsa-linux/lib:/usr/local/cuda/targets/aarch64-linux/lib:${LD_LIBRARY_PATH}
 
 WORKDIR /opt/TensorRT-Edge-LLM
 EXPOSE 8000

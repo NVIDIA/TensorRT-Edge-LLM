@@ -23,6 +23,7 @@
 
 #include "gdnTreeChunkKernels.h"
 
+#include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "kernels/speculative/mtpStateScatterKernels.h"
 
@@ -38,7 +39,12 @@ namespace
 {
 
 // Problem shape (fixed by the GDN plugin contract).
-constexpr int32_t kTILE_K{128};                            // head dim (dk = dv); also the h0 state edge (128x128)
+constexpr int32_t kTILE_K{128}; // head dim (dk = dv); also the h0 state edge (128x128)
+// Extra elements in each shared WMMA row. Keep zero to stay within the SM121
+// dynamic shared-memory limit; prep WMMA operands use a tile-local K swizzle.
+constexpr int32_t kPREP_WMMA_SMEM_PAD{0};
+// Leading dimension of the shared WMMA operands.
+constexpr int32_t kPREP_WMMA_SMEM_STRIDE{kTILE_K + kPREP_WMMA_SMEM_PAD};
 constexpr int32_t kN_MAX{kGDN_TREE_CHUNK_MAX_NODES};       // static tree-size cap: smem M/Attn tiles and the prep
                                                            // block are laid out [kN_MAX][...] so offsets/strides are
                                                            // N-independent
@@ -50,6 +56,28 @@ constexpr int32_t kV_SPLIT{4};                // apply kernel: v/output columns 
                                               // (batch, hv) — the per-column forward substitution is the serial
                                               // bottleneck, so splitting columns raises occupancy
 constexpr int32_t kVCOLS{kTILE_K / kV_SPLIT}; // output columns owned by one v-split CTA
+// Threads in one independent output-tile warp.
+constexpr int32_t kAPPLY_WARP_THREADS{32};
+// V tiles processed in parallel by one CTA.
+constexpr int32_t kAPPLY_WARPS_PER_BLOCK{2};
+// CTA size.
+constexpr int32_t kAPPLY_THREADS{kAPPLY_WARPS_PER_BLOCK * kAPPLY_WARP_THREADS};
+// CTAs that partition the 128 V columns.
+constexpr int32_t kAPPLY_V_SPLIT{4};
+// Output columns assigned to one warp.
+constexpr int32_t kAPPLY_VCOLS{kTILE_K / (kAPPLY_V_SPLIT * kAPPLY_WARPS_PER_BLOCK)};
+// Largest N represented by one WMMA tile.
+constexpr int32_t kAPPLY_WMMA_MAX_N{16};
+
+__host__ __device__ inline int32_t prepWmmaSwizzleK(int32_t k)
+{
+    return (k & ~15) | ((k & 15) ^ 8);
+}
+
+__host__ __device__ inline int32_t prepWmmaSwizzleKHalf2(int32_t kHalf2)
+{
+    return prepWmmaSwizzleK(2 * kHalf2) / 2;
+}
 
 // Verify -> replay handoff cell. The chunk-form verify is stateless (reads
 // h0 only), so for each tree node it stashes just the quantities the replay
@@ -98,8 +126,8 @@ __host__ __device__ inline StashOffsets stashOffsets(int32_t h, int32_t hv)
 // "valid" node whose ancestor chain passes through a padding node would get
 // a truncated mask that stops there instead of at the root. Correctness
 // therefore relies on the DDTree build contract — trees are prefix-closed
-// and padding nodes are never referenced as a parent — which
-// buildDDTreeKernel guarantees. maxDepth only bounds the walk against
+// and padding nodes are never referenced as a parent — which the
+// DDTree build guarantees. maxDepth only bounds the walk against
 // malformed (cyclic) input.
 //
 // Inputs:
@@ -107,19 +135,14 @@ __host__ __device__ inline StashOffsets stashOffsets(int32_t h, int32_t hv)
 // Outputs:
 //   masksOut [batch, numNodes, kMASK_WORDS] uint32 — inclusive ancestor
 //     bitmask per node; bit j of mask[b][n] = node j is on n's root path
-__global__ void buildAncestorMasksKernel(
-    int32_t const* parentIds, uint32_t* masksOut, int32_t numNodes, int32_t maxDepth)
+__device__ __forceinline__ void buildAncestorMask(
+    int32_t const* parents, int32_t node, int32_t maxDepth, uint32_t (&words)[kMASK_WORDS])
 {
-    int32_t const batchIdx = blockIdx.x;
-    int32_t const node = threadIdx.x;
-    if (node >= numNodes)
+#pragma unroll
+    for (int32_t w = 0; w < kMASK_WORDS; ++w)
     {
-        return;
+        words[w] = 0u;
     }
-
-    uint32_t words[kMASK_WORDS] = {};
-    int32_t const* parents = parentIds + static_cast<int64_t>(batchIdx) * numNodes;
-
     bool const valid = (node == 0) ? (parents[0] < 0) : (parents[node] >= 0 && parents[node] < node);
     if (valid)
     {
@@ -130,6 +153,20 @@ __global__ void buildAncestorMasksKernel(
             iter = parents[iter];
         }
     }
+}
+
+__global__ void buildAncestorMasksKernel(
+    int32_t const* parentIds, uint32_t* masksOut, int32_t numNodes, int32_t maxDepth)
+{
+    int32_t const batchIdx = blockIdx.x;
+    int32_t const node = threadIdx.x;
+    if (node >= numNodes)
+    {
+        return;
+    }
+
+    uint32_t words[kMASK_WORDS];
+    buildAncestorMask(parentIds + static_cast<int64_t>(batchIdx) * numNodes, node, maxDepth, words);
 
     uint32_t* out = masksOut + (static_cast<int64_t>(batchIdx) * numNodes + node) * kMASK_WORDS;
 #pragma unroll
@@ -150,66 +187,71 @@ constexpr int32_t kPREP_INVK{kPREP_BETA + kN_MAX};  // [kN_MAX] f32
 constexpr int32_t kPREP_INVQ{kPREP_INVK + kN_MAX};  // [kN_MAX] f32
 constexpr int32_t kPREP_DEPTH{kPREP_INVQ + kN_MAX}; // [kN_MAX] i32 + maxDepth i32
 
-// Verify scratch lives in the unused tail of each intermediate-states batch
-// row (past the last stash cell) — it must NOT live in the plugin workspace:
-// engine plans serialize the workspace requirement at build time, so growing
-// it without rebuilding engines causes out-of-bounds writes. Row-tail layout
-// (all 256B-aligned):
-//   [stash cells][KS/QS: hv x 2 x kN_MAX x kTILE_K f32][prep: hv x PREP_WORDS f32]
-// The launcher validates capacity and refuses to launch on overflow.
-__host__ __device__ inline size_t gdnTreeKsQsBaseBytes(StashOffsets const& so)
+// Replay cells occupy the first numNodes entries of each intermediate row.
+// KS/QS reserve WMMA-padded rows; prep matrices retain their fixed word strides.
+__host__ __device__ inline size_t gdnTreeKsQsBaseBytes(StashOffsets const& so, int32_t numNodes)
 {
-    return (static_cast<size_t>(kN_MAX) * so.nodeBytes + 255) & ~static_cast<size_t>(255);
+    return (static_cast<size_t>(numNodes) * so.nodeBytes + 255) & ~static_cast<size_t>(255);
 }
 
-__host__ __device__ inline size_t gdnTreePrepBaseBytes(StashOffsets const& so, int32_t hv)
+__host__ __device__ inline size_t gdnTreePrepBaseBytes(StashOffsets const& so, int32_t hv, int32_t numNodes)
 {
-    return gdnTreeKsQsBaseBytes(so) + static_cast<size_t>(hv) * 2 * kN_MAX * kTILE_K * sizeof(float);
+    int32_t const paddedNodes = (numNodes + 15) & ~15;
+    return gdnTreeKsQsBaseBytes(so, numNodes) + static_cast<size_t>(hv) * 2 * paddedNodes * kTILE_K * sizeof(float);
 }
 
-__host__ __device__ inline size_t gdnTreeScratchEndBytes(StashOffsets const& so, int32_t hv)
+__host__ __device__ inline size_t gdnTreeScratchEndBytes(StashOffsets const& so, int32_t hv, int32_t numNodes)
 {
-    return gdnTreePrepBaseBytes(so, hv) + static_cast<size_t>(hv) * kGDN_TREE_CHUNK_PREP_WORDS * sizeof(float);
+    return gdnTreePrepBaseBytes(so, hv, numNodes)
+        + static_cast<size_t>(hv) * kGDN_TREE_CHUNK_PREP_WORDS * sizeof(float);
 }
 
-// Prep/apply split: Phases 1-3 (q/k load, gates, norms, cumlog/depth, replay stash,
-// M/Attn dual masked GEMM) are independent of the v-split, so they used to be
-// computed redundantly by all kV_SPLIT CTAs. The prep kernel now runs them
-// once per (batch, hv-head) and exports M/Attn + per-node vectors to the
-// intermediate-states row tail (see gdnTreePrepBaseBytes); the apply kernel
-// (one CTA per (batch, hv, v-quarter)) consumes them for Phases 4a-c.
-__global__ void __launch_bounds__(kNUM_THREADS) treeVerifyChunkPrepKernel(__half const* __restrict__ q,
-    __half const* __restrict__ k, __half const* __restrict__ v, __half const* __restrict__ a,
-    __half const* __restrict__ b, float const* __restrict__ A_log, __half const* __restrict__ dt_bias,
-    uint32_t const* __restrict__ masks, char* __restrict__ stash, size_t stashBatchStrideBytes,
-    float const* __restrict__ h0, int32_t numNodes, int32_t H, int32_t HV, float scale, int32_t useQKL2Norm)
+//! Shared-memory views used by the verify phases common to the split prep kernel and the fused kernel.
+struct VerifyPrepSmem
 {
-    using namespace nvcuda;
+    __half* sK;         // [nPad][K] fp16, swizzled WMMA rows
+    __half* sQ;         // [nPad][K] fp16, swizzled WMMA rows
+    __half* sH0h;       // [K][K] fp16, swizzled WMMA rows
+    float* sM;          // [N][N]
+    float* sCum;        // [N]
+    float* sGamma;      // [N]
+    float* sLogG;       // [N]
+    float* sBeta;       // [N]
+    float* sInvK;       // [N]
+    float* sInvQ;       // [N]
+    uint32_t* sMask;    // [N][kMASK_WORDS], filled by the caller before the call
+    int32_t* sDepth;    // [N]
+    int32_t* sMaxDepth; // single int
+};
 
-    int32_t const stateIdx = blockIdx.x;
-    int32_t const iN = stateIdx / HV;
-    int32_t const iHv = stateIdx % HV;
+//! Phases 1-3 of the chunk-form verify for one (batch, hv-head): q/k and h0 staging, gates and norms, cumulative
+//! log-decay and depth, the replay stash, and the M / Attn pair products. attnSink(n, j, value) receives every
+//! Attn[n][j] for n, j < N. Ends with a block barrier.
+template <typename AttnSink>
+__device__ __forceinline__ void verifyPrepPhases(VerifyPrepSmem const& sm, AttnSink attnSink,
+    __half const* __restrict__ q, __half const* __restrict__ k, __half const* __restrict__ v,
+    __half const* __restrict__ a, __half const* __restrict__ b, float const* __restrict__ A_log,
+    __half const* __restrict__ dt_bias, char* __restrict__ stash, size_t stashBatchStrideBytes,
+    float const* __restrict__ h0, int32_t const* __restrict__ stateIndices, int32_t statePoolRows, int32_t iN,
+    int32_t iHv, int32_t N, int32_t H, int32_t HV, float scale, int32_t useQKL2Norm)
+{
     int32_t const iH = iHv / (HV / H);
     int32_t const tid = threadIdx.x;
-    int32_t const N = numNodes;
+    __half* sK = sm.sK;
+    __half* sQ = sm.sQ;
+    __half* sH0h = sm.sH0h;
+    float* sM = sm.sM;
+    float* sCum = sm.sCum;
+    float* sGamma = sm.sGamma;
+    float* sLogG = sm.sLogG;
+    float* sBeta = sm.sBeta;
+    float* sInvK = sm.sInvK;
+    float* sInvQ = sm.sInvQ;
+    uint32_t* sMask = sm.sMask;
+    int32_t* sDepth = sm.sDepth;
+    int32_t* sMaxDepth = sm.sMaxDepth;
 
-    extern __shared__ char smemRaw[];
-    __half* sK = reinterpret_cast<__half*>(smemRaw);                // [N][K]
-    __half* sQ = sK + kN_MAX * kTILE_K;                             // [N][K]
-    __half* sH0h = sQ + kN_MAX * kTILE_K;                           // [K][K] fp16 (KS/QS GEMM B)
-    float* sM = reinterpret_cast<float*>(sH0h + kTILE_K * kTILE_K); // [N][N]
-    float* sAttn = sM + kN_MAX * kN_MAX;                            // [N][N]
-    float* sCum = sAttn + kN_MAX * kN_MAX;
-    float* sGamma = sCum + kN_MAX;
-    float* sLogG = sGamma + kN_MAX;
-    float* sBeta = sLogG + kN_MAX;
-    float* sInvK = sBeta + kN_MAX;
-    float* sInvQ = sInvK + kN_MAX;
-    uint32_t* sMask = reinterpret_cast<uint32_t*>(sInvQ + kN_MAX);
-    int32_t* sDepth = reinterpret_cast<int32_t*>(sMask + kN_MAX * kMASK_WORDS); // [N] tree depth per node
-    int32_t* sMaxDepth = sDepth + kN_MAX;                                       // single int
-
-    // ---- Phase 1: vectorized q/k load, gates, norms, masks ----------------
+    // ---- Phase 1: vectorized q/k load, gates, norms -------------------------
     {
         __half2 const* qg = reinterpret_cast<__half2 const*>(q + (static_cast<int64_t>(iN) * N * H + iH) * kTILE_K);
         __half2 const* kg = reinterpret_cast<__half2 const*>(k + (static_cast<int64_t>(iN) * N * H + iH) * kTILE_K);
@@ -220,18 +262,27 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeVerifyChunkPrepKernel(__half
         {
             int32_t const n = idx / (kTILE_K / 2);
             int32_t const kk = idx % (kTILE_K / 2);
-            sK2[n * kTILE_K / 2 + kk] = kg[static_cast<int64_t>(n) * rowStrideH2 + kk];
-            sQ2[n * kTILE_K / 2 + kk] = qg[static_cast<int64_t>(n) * rowStrideH2 + kk];
+            int32_t const swizzledK = prepWmmaSwizzleKHalf2(kk);
+            sK2[n * kPREP_WMMA_SMEM_STRIDE / 2 + swizzledK] = kg[static_cast<int64_t>(n) * rowStrideH2 + kk];
+            sQ2[n * kPREP_WMMA_SMEM_STRIDE / 2 + swizzledK] = qg[static_cast<int64_t>(n) * rowStrideH2 + kk];
         }
     }
-    if (tid < N * kMASK_WORDS)
+    // Full h0 tile [K][K] as fp16, read straight from the resident row: B operand of the KS/QS GEMM.
     {
-        sMask[tid] = masks[(static_cast<int64_t>(iN) * N) * kMASK_WORDS + tid];
-    }
-    // Full h0 tile [K][K] as fp16: B operand of the KS/QS GEMM below.
-    for (int32_t idx = tid; idx < kTILE_K * kTILE_K; idx += kNUM_THREADS)
-    {
-        sH0h[idx] = __float2half(h0[(static_cast<int64_t>(iN) * HV + iHv) * kTILE_K * kTILE_K + idx]);
+        int32_t const residentRow = stateIndices == nullptr ? iN : stateIndices[iN];
+        bool const validRow = residentRow >= 0 && residentRow < statePoolRows;
+        float4 const* h0Tile = reinterpret_cast<float4 const*>(
+            h0 + (static_cast<int64_t>(validRow ? residentRow : 0) * HV + iHv) * kTILE_K * kTILE_K);
+#pragma unroll 4
+        for (int32_t idx4 = tid; idx4 < kTILE_K * kTILE_K / 4; idx4 += kNUM_THREADS)
+        {
+            float4 const f = validRow ? __ldg(h0Tile + idx4) : make_float4(0.f, 0.f, 0.f, 0.f);
+            int32_t const row = idx4 / (kTILE_K / 4);
+            int32_t const col = (idx4 % (kTILE_K / 4)) * 4;
+            __half2* dst = reinterpret_cast<__half2*>(sH0h + prepWmmaSwizzleK(row) * kPREP_WMMA_SMEM_STRIDE + col);
+            dst[0] = __floats2half2_rn(f.x, f.y);
+            dst[1] = __floats2half2_rn(f.z, f.w);
+        }
     }
     __syncthreads();
 
@@ -243,8 +294,8 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeVerifyChunkPrepKernel(__half
         float const sp = (x > 20.f) ? x : log1pf(expf(x));
         sLogG[tid] = -expf(A_log[iHv]) * sp;
         sBeta[tid] = 1.f / (1.f + expf(-bv));
-        __half2 const* k2 = reinterpret_cast<__half2 const*>(sK + tid * kTILE_K);
-        __half2 const* q2 = reinterpret_cast<__half2 const*>(sQ + tid * kTILE_K);
+        __half2 const* k2 = reinterpret_cast<__half2 const*>(sK + tid * kPREP_WMMA_SMEM_STRIDE);
+        __half2 const* q2 = reinterpret_cast<__half2 const*>(sQ + tid * kPREP_WMMA_SMEM_STRIDE);
         float sk2 = 0.f;
         float sq2 = 0.f;
         for (int32_t kk = 0; kk < kTILE_K / 2; ++kk)
@@ -291,27 +342,26 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeVerifyChunkPrepKernel(__half
     {
         StashOffsets const so = stashOffsets(H, HV);
         char* nodeBase = stash + static_cast<size_t>(iN) * stashBatchStrideBytes;
-        for (int32_t n = 0; n < N; ++n)
+        bool const ownsKHead = iHv % (HV / H) == 0;
+        // All (node, element) pairs at once so the v loads of different nodes are in flight together.
+        for (int32_t idx = tid; idx < N * kTILE_K; idx += kNUM_THREADS)
         {
+            int32_t const n = idx / kTILE_K;
+            int32_t const kk = idx % kTILE_K;
             char* cell = nodeBase + static_cast<size_t>(n) * so.nodeBytes;
-            if (iHv % (HV / H) == 0)
+            if (ownsKHead)
             {
-                float* kDst = reinterpret_cast<float*>(cell + so.kNorm) + static_cast<size_t>(iH) * kTILE_K;
-                for (int32_t kk = tid; kk < kTILE_K; kk += kNUM_THREADS)
-                {
-                    kDst[kk] = __half2float(sK[n * kTILE_K + kk]) * sInvK[n];
-                }
+                reinterpret_cast<float*>(cell + so.kNorm)[static_cast<size_t>(iH) * kTILE_K + kk]
+                    = __half2float(sK[n * kPREP_WMMA_SMEM_STRIDE + prepWmmaSwizzleK(kk)]) * sInvK[n];
             }
-            if (tid == 0)
-            {
-                reinterpret_cast<float*>(cell + so.g)[iHv] = expf(sLogG[n]);
-                reinterpret_cast<float*>(cell + so.beta)[iHv] = sBeta[n];
-            }
-            __half* vDst = reinterpret_cast<__half*>(cell + so.v) + static_cast<size_t>(iHv) * kTILE_K;
-            for (int32_t vv = tid; vv < kTILE_K; vv += kNUM_THREADS)
-            {
-                vDst[vv] = v[(static_cast<int64_t>(iN) * N + n) * HV * kTILE_K + iHv * kTILE_K + vv];
-            }
+            reinterpret_cast<__half*>(cell + so.v)[static_cast<size_t>(iHv) * kTILE_K + kk]
+                = v[(static_cast<int64_t>(iN) * N + n) * HV * kTILE_K + iHv * kTILE_K + kk];
+        }
+        if (tid < N)
+        {
+            char* cell = nodeBase + static_cast<size_t>(tid) * so.nodeBytes;
+            reinterpret_cast<float*>(cell + so.g)[iHv] = expf(sLogG[tid]);
+            reinterpret_cast<float*>(cell + so.beta)[iHv] = sBeta[tid];
         }
     }
 
@@ -326,9 +376,9 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeVerifyChunkPrepKernel(__half
         if (bit)
         {
             float const d = expf(sCum[n] - sCum[j]);
-            __half2 const* kn = reinterpret_cast<__half2 const*>(sK + n * kTILE_K);
-            __half2 const* qn = reinterpret_cast<__half2 const*>(sQ + n * kTILE_K);
-            __half2 const* kj = reinterpret_cast<__half2 const*>(sK + j * kTILE_K);
+            __half2 const* kn = reinterpret_cast<__half2 const*>(sK + n * kPREP_WMMA_SMEM_STRIDE);
+            __half2 const* qn = reinterpret_cast<__half2 const*>(sQ + n * kPREP_WMMA_SMEM_STRIDE);
+            __half2 const* kj = reinterpret_cast<__half2 const*>(sK + j * kPREP_WMMA_SMEM_STRIDE);
             float kkDot = 0.f;
             float qkDot = 0.f;
 #pragma unroll 8
@@ -345,21 +395,68 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeVerifyChunkPrepKernel(__half
             mm = (j == n) ? 0.f : sBeta[n] * d * kkDot;
             at = d * qkDot;
         }
-        sM[n * kN_MAX + j] = mm;
-        sAttn[n * kN_MAX + j] = at;
+        sM[pair] = mm;
+        attnSink(n, j, at);
     }
     __syncthreads();
+}
+
+// Split path, used where the fused kernel does not fit in shared memory: the prep kernel runs Phases 1-3 once per
+// (batch, hv-head) and exports M/Attn, the per-node vectors and KS/QS to the intermediate-states row tail (see
+// gdnTreePrepBaseBytes); the apply kernel (one CTA per (batch, hv, v-quarter)) consumes them for Phases 4a-c.
+__global__ void __launch_bounds__(kNUM_THREADS)
+    treeVerifyChunkPrepKernel(__half const* __restrict__ q, __half const* __restrict__ k, __half const* __restrict__ v,
+        __half const* __restrict__ a, __half const* __restrict__ b, float const* __restrict__ A_log,
+        __half const* __restrict__ dt_bias, uint32_t const* __restrict__ masks, char* __restrict__ stash,
+        size_t stashBatchStrideBytes, float const* __restrict__ h0, int32_t const* __restrict__ stateIndices,
+        int32_t statePoolRows, int32_t numNodes, int32_t H, int32_t HV, float scale, int32_t useQKL2Norm)
+{
+    using namespace nvcuda;
+
+    int32_t const stateIdx = blockIdx.x;
+    int32_t const iN = stateIdx / HV;
+    int32_t const iHv = stateIdx % HV;
+    int32_t const tid = threadIdx.x;
+    int32_t const N = numNodes;
+    int32_t const nPad = (N + 15) & ~15;
+
+    extern __shared__ char smemRaw[];
+    __half* sK = reinterpret_cast<__half*>(smemRaw);                               // [N][K], padded WMMA rows
+    __half* sQ = sK + nPad * kPREP_WMMA_SMEM_STRIDE;                               // [N][K], padded WMMA rows
+    __half* sH0h = sQ + nPad * kPREP_WMMA_SMEM_STRIDE;                             // [K][K] fp16, padded WMMA rows
+    float* sM = reinterpret_cast<float*>(sH0h + kTILE_K * kPREP_WMMA_SMEM_STRIDE); // [N][N]
+    float* sAttn = sM + N * N;                                                     // [N][N]
+    float* sCum = sAttn + N * N;
+    float* sGamma = sCum + N;
+    float* sLogG = sGamma + N;
+    float* sBeta = sLogG + N;
+    float* sInvK = sBeta + N;
+    float* sInvQ = sInvK + N;
+    uint32_t* sMask = reinterpret_cast<uint32_t*>(sInvQ + N);
+    int32_t* sDepth = reinterpret_cast<int32_t*>(sMask + N * kMASK_WORDS); // [N] tree depth per node
+    int32_t* sMaxDepth = sDepth + N;                                       // single int
+
+    if (tid < N * kMASK_WORDS)
+    {
+        sMask[tid] = masks[(static_cast<int64_t>(iN) * N) * kMASK_WORDS + tid];
+    }
+    VerifyPrepSmem const sm{sK, sQ, sH0h, sM, sCum, sGamma, sLogG, sBeta, sInvK, sInvQ, sMask, sDepth, sMaxDepth};
+    verifyPrepPhases(
+        sm, [&](int32_t n, int32_t j, float at) { sAttn[n * N + j] = at; }, q, k, v, a, b, A_log, dt_bias, stash,
+        stashBatchStrideBytes, h0, stateIndices, statePoolRows, iN, iHv, N, H, HV, scale, useQKL2Norm);
 
     // ---- Export prep block for the apply kernel ----------------------------
     {
         StashOffsets const soKq = stashOffsets(H, HV);
         char* rowTail = stash + static_cast<size_t>(iN) * stashBatchStrideBytes;
-        float* blk = reinterpret_cast<float*>(rowTail + gdnTreePrepBaseBytes(soKq, HV))
+        float* blk = reinterpret_cast<float*>(rowTail + gdnTreePrepBaseBytes(soKq, HV, N))
             + static_cast<size_t>(iHv) * kGDN_TREE_CHUNK_PREP_WORDS;
-        for (int32_t idx = tid; idx < N * kN_MAX; idx += kNUM_THREADS)
+        for (int32_t idx = tid; idx < N * N; idx += kNUM_THREADS)
         {
-            blk[kPREP_M + idx] = sM[idx];
-            blk[kPREP_ATTN + idx] = sAttn[idx];
+            int32_t const n = idx / N;
+            int32_t const j = idx % N;
+            blk[kPREP_M + n * kN_MAX + j] = sM[idx];
+            blk[kPREP_ATTN + n * kN_MAX + j] = sAttn[idx];
         }
         int32_t* blkI = reinterpret_cast<int32_t*>(blk + kPREP_DEPTH);
         if (tid < N)
@@ -381,10 +478,9 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeVerifyChunkPrepKernel(__half
         // KS/QS staging area in the intermediate-states row. Rows in
         // [N, nPad) are garbage and are never read by apply (all consumers
         // guard on n < N).
-        float* ksOut = reinterpret_cast<float*>(rowTail + gdnTreeKsQsBaseBytes(soKq))
-            + static_cast<size_t>(iHv) * (2 * kN_MAX * kTILE_K);
-        float* qsOut = ksOut + kN_MAX * kTILE_K;
-        int32_t const nPad = (N + 15) & ~15;
+        float* ksOut = reinterpret_cast<float*>(rowTail + gdnTreeKsQsBaseBytes(soKq, N))
+            + static_cast<size_t>(iHv) * (2 * nPad * kTILE_K);
+        float* qsOut = ksOut + nPad * kTILE_K;
         int32_t const warp = tid / 32;
         constexpr int32_t kColTiles = kTILE_K / 16; // 8
         int32_t const numTiles = (nPad / 16) * kColTiles;
@@ -392,25 +488,30 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeVerifyChunkPrepKernel(__half
         {
             int32_t const rowTile = tile / kColTiles;
             int32_t const colTile = tile % kColTiles;
-            wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> aK;
-            wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> aQ;
+            wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a;
             wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::row_major> bf;
-            wmma::fragment<wmma::accumulator, 16, 16, 16, float> accK;
-            wmma::fragment<wmma::accumulator, 16, 16, 16, float> accQ;
-            wmma::fill_fragment(accK, 0.f);
-            wmma::fill_fragment(accQ, 0.f);
+            wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
+            wmma::fill_fragment(acc, 0.f);
             for (int32_t kt = 0; kt < kTILE_K / 16; ++kt)
             {
-                wmma::load_matrix_sync(bf, sH0h + (kt * 16) * kTILE_K + colTile * 16, kTILE_K);
-                wmma::load_matrix_sync(aK, sK + (rowTile * 16) * kTILE_K + kt * 16, kTILE_K);
-                wmma::mma_sync(accK, aK, bf, accK);
-                wmma::load_matrix_sync(aQ, sQ + (rowTile * 16) * kTILE_K + kt * 16, kTILE_K);
-                wmma::mma_sync(accQ, aQ, bf, accQ);
+                wmma::load_matrix_sync(
+                    bf, sH0h + (kt * 16) * kPREP_WMMA_SMEM_STRIDE + colTile * 16, kPREP_WMMA_SMEM_STRIDE);
+                wmma::load_matrix_sync(
+                    a, sK + (rowTile * 16) * kPREP_WMMA_SMEM_STRIDE + kt * 16, kPREP_WMMA_SMEM_STRIDE);
+                wmma::mma_sync(acc, a, bf, acc);
             }
-            wmma::store_matrix_sync(
-                ksOut + (rowTile * 16) * kTILE_K + colTile * 16, accK, kTILE_K, wmma::mem_row_major);
-            wmma::store_matrix_sync(
-                qsOut + (rowTile * 16) * kTILE_K + colTile * 16, accQ, kTILE_K, wmma::mem_row_major);
+            wmma::store_matrix_sync(ksOut + (rowTile * 16) * kTILE_K + colTile * 16, acc, kTILE_K, wmma::mem_row_major);
+
+            wmma::fill_fragment(acc, 0.f);
+            for (int32_t kt = 0; kt < kTILE_K / 16; ++kt)
+            {
+                wmma::load_matrix_sync(
+                    bf, sH0h + (kt * 16) * kPREP_WMMA_SMEM_STRIDE + colTile * 16, kPREP_WMMA_SMEM_STRIDE);
+                wmma::load_matrix_sync(
+                    a, sQ + (rowTile * 16) * kPREP_WMMA_SMEM_STRIDE + kt * 16, kPREP_WMMA_SMEM_STRIDE);
+                wmma::mma_sync(acc, a, bf, acc);
+            }
+            wmma::store_matrix_sync(qsOut + (rowTile * 16) * kTILE_K + colTile * 16, acc, kTILE_K, wmma::mem_row_major);
         }
     }
 }
@@ -465,7 +566,7 @@ __global__ void __launch_bounds__(kNUM_THREADS)
     {
         StashOffsets const soKq = stashOffsets(H, HV);
         char const* rowTail = stash + static_cast<size_t>(iN) * stashBatchStrideBytes;
-        float const* blk = reinterpret_cast<float const*>(rowTail + gdnTreePrepBaseBytes(soKq, HV))
+        float const* blk = reinterpret_cast<float const*>(rowTail + gdnTreePrepBaseBytes(soKq, HV, N))
             + static_cast<size_t>(iHv) * kGDN_TREE_CHUNK_PREP_WORDS;
         for (int32_t idx = tid; idx < N * kN_MAX; idx += kNUM_THREADS)
         {
@@ -475,9 +576,9 @@ __global__ void __launch_bounds__(kNUM_THREADS)
             int32_t const j = idx % kN_MAX;
             sAttnH[idx] = (j < N) ? __float2half(blk[kPREP_ATTN + idx]) : __half(0);
         }
-        float const* ksIn = reinterpret_cast<float const*>(rowTail + gdnTreeKsQsBaseBytes(soKq))
-            + static_cast<size_t>(iHv) * (2 * kN_MAX * kTILE_K);
-        float const* qsIn = ksIn + kN_MAX * kTILE_K;
+        float const* ksIn = reinterpret_cast<float const*>(rowTail + gdnTreeKsQsBaseBytes(soKq, N))
+            + static_cast<size_t>(iHv) * (2 * nPad * kTILE_K);
+        float const* qsIn = ksIn + nPad * kTILE_K;
         for (int32_t idx = tid; idx < N * kVCOLS; idx += kNUM_THREADS)
         {
             int32_t const n = idx / kVCOLS;
@@ -528,9 +629,9 @@ __global__ void __launch_bounds__(kNUM_THREADS)
     // R[n] = B[n] - sum_j M[n][j]*R[j]. M[n][j] is nonzero only for strict
     // ancestors j (depth[j] < depth[n]), so nodes at the same depth are
     // independent: process one depth level per round with the whole block
-    // (was: 32 threads x N serial steps). In-place sB updates are safe within
-    // a round because same-depth entries are multiplied by an exact 0 in M.
-    // The j-ascending pairwise accumulation matches the serial version for
+    // (was: 32 threads x N serial steps). Only completed, shallower levels
+    // are read so the in-place sB updates do not race within a round. The
+    // j-ascending pairwise accumulation matches the serial version for
     // bit-identical results.
     {
         int32_t const maxDepth = *sMaxDepth;
@@ -550,10 +651,16 @@ __global__ void __launch_bounds__(kNUM_THREADS)
                 int32_t j = 0;
                 for (; j + 1 < n; j += 2)
                 {
-                    a0 += Mrow[j] * sB[j * kVCOLS + col];
-                    a1 += Mrow[j + 1] * sB[(j + 1) * kVCOLS + col];
+                    if (sDepth[j] < d)
+                    {
+                        a0 += Mrow[j] * sB[j * kVCOLS + col];
+                    }
+                    if (sDepth[j + 1] < d)
+                    {
+                        a1 += Mrow[j + 1] * sB[(j + 1) * kVCOLS + col];
+                    }
                 }
-                if (j < n)
+                if (j < n && sDepth[j] < d)
                 {
                     a0 += Mrow[j] * sB[j * kVCOLS + col];
                 }
@@ -564,7 +671,6 @@ __global__ void __launch_bounds__(kNUM_THREADS)
             __syncthreads();
         }
     }
-    __syncthreads();
 
     // ---- Phase 4c: O' = Attn @ R on tensor cores ---------------------------
     {
@@ -601,6 +707,367 @@ __global__ void __launch_bounds__(kNUM_THREADS)
     }
 }
 
+// Each warp owns one 16-column output tile. Node order is topological, so a
+// lane only consumes values that the same lane produced for earlier nodes.
+// The two warps share immutable apply metadata, then proceed independently.
+__global__ void __launch_bounds__(kAPPLY_THREADS) treeVerifyChunkApplyWarpKernel(__half const* __restrict__ v,
+    uint32_t const* __restrict__ masks, __half* __restrict__ o, char const* __restrict__ stash,
+    size_t stashBatchStrideBytes, int32_t numNodes, int32_t H, int32_t HV)
+{
+    using namespace nvcuda;
+
+    int32_t const split = blockIdx.x % kAPPLY_V_SPLIT;
+    int32_t const stateIdx = blockIdx.x / kAPPLY_V_SPLIT;
+    int32_t const iN = stateIdx / HV;
+    int32_t const iHv = stateIdx % HV;
+    int32_t const tid = threadIdx.x;
+    int32_t const warp = tid / kAPPLY_WARP_THREADS;
+    int32_t const lane = tid % kAPPLY_WARP_THREADS;
+    int32_t const N = numNodes;
+    int32_t const vBase = (split * kAPPLY_WARPS_PER_BLOCK + warp) * kAPPLY_VCOLS;
+    int32_t const nPad = (N + 15) & ~15;
+    size_t const sMBytes = (static_cast<size_t>(N) * N * sizeof(float) + 31) & ~static_cast<size_t>(31);
+
+    extern __shared__ char smemRaw[];
+    float* sM = reinterpret_cast<float*>(smemRaw);                 // [N][N]
+    __half* sAttnH = reinterpret_cast<__half*>(smemRaw + sMBytes); // [nPad][nPad]
+    float* sBBase = reinterpret_cast<float*>(sAttnH + nPad * nPad);
+    float* sQSBase = sBBase + kAPPLY_WARPS_PER_BLOCK * N * kAPPLY_VCOLS;
+    __half* sRhBase = reinterpret_cast<__half*>(sQSBase + kAPPLY_WARPS_PER_BLOCK * N * kAPPLY_VCOLS);
+    float* sOtBase = reinterpret_cast<float*>(sRhBase + kAPPLY_WARPS_PER_BLOCK * nPad * kAPPLY_VCOLS);
+    float* sB = sBBase + warp * N * kAPPLY_VCOLS;
+    float* sQS = sQSBase + warp * N * kAPPLY_VCOLS;
+    __half* sRh = sRhBase + warp * nPad * kAPPLY_VCOLS;
+    float* sOt = sOtBase + warp * nPad * kAPPLY_VCOLS;
+    float* sGamma = sOtBase + kAPPLY_WARPS_PER_BLOCK * nPad * kAPPLY_VCOLS;
+    float* sBeta = sGamma + N;
+    float* sInvK = sBeta + N;
+    float* sInvQ = sInvK + N;
+    uint32_t* sMask = reinterpret_cast<uint32_t*>(sInvQ + N);
+
+    // Both warps consume this metadata; per-warp V panels start after the barrier.
+    if (tid < N * kMASK_WORDS)
+    {
+        sMask[tid] = masks[(static_cast<int64_t>(iN) * N) * kMASK_WORDS + tid];
+    }
+
+    StashOffsets const soKq = stashOffsets(H, HV);
+    char const* rowTail = stash + static_cast<size_t>(iN) * stashBatchStrideBytes;
+    float const* blk = reinterpret_cast<float const*>(rowTail + gdnTreePrepBaseBytes(soKq, HV, N))
+        + static_cast<size_t>(iHv) * kGDN_TREE_CHUNK_PREP_WORDS;
+    for (int32_t idx = tid; idx < N * N; idx += kAPPLY_THREADS)
+    {
+        int32_t const n = idx / N;
+        int32_t const j = idx % N;
+        sM[idx] = blk[kPREP_M + n * kN_MAX + j];
+    }
+    for (int32_t idx = tid; idx < nPad * nPad; idx += kAPPLY_THREADS)
+    {
+        int32_t const n = idx / nPad;
+        int32_t const j = idx % nPad;
+        sAttnH[idx] = (n < N && j < N) ? __float2half(blk[kPREP_ATTN + n * kN_MAX + j]) : __half(0);
+    }
+
+    for (int32_t idx = tid; idx < N; idx += kAPPLY_THREADS)
+    {
+        sGamma[idx] = blk[kPREP_GAMMA + idx];
+        sBeta[idx] = blk[kPREP_BETA + idx];
+        sInvK[idx] = blk[kPREP_INVK + idx];
+        sInvQ[idx] = blk[kPREP_INVQ + idx];
+    }
+    __syncthreads();
+
+    // Each warp independently loads one 16-column V tile for every tree node.
+    float const* ksIn = reinterpret_cast<float const*>(rowTail + gdnTreeKsQsBaseBytes(soKq, N))
+        + static_cast<size_t>(iHv) * (2 * nPad * kTILE_K);
+    float const* qsIn = ksIn + nPad * kTILE_K;
+    for (int32_t idx = lane; idx < N * kAPPLY_VCOLS; idx += kAPPLY_WARP_THREADS)
+    {
+        int32_t const n = idx / kAPPLY_VCOLS;
+        int32_t const vv = idx % kAPPLY_VCOLS;
+        sB[idx] = ksIn[n * kTILE_K + vBase + vv];
+        sQS[idx] = qsIn[n * kTILE_K + vBase + vv];
+    }
+    for (int32_t idx = lane; idx < nPad * kAPPLY_VCOLS; idx += kAPPLY_WARP_THREADS)
+    {
+        sRh[idx] = __half(0);
+    }
+    __syncwarp();
+
+    // Form the normalized right-hand side of the forward substitution.
+    for (int32_t idx = lane; idx < N * kAPPLY_VCOLS; idx += kAPPLY_WARP_THREADS)
+    {
+        int32_t const n = idx / kAPPLY_VCOLS;
+        int32_t const vv = idx % kAPPLY_VCOLS;
+        float const ks = sInvK[n] * sB[idx];
+        float const vraw
+            = __half2float(v[(static_cast<int64_t>(iN) * N + n) * HV * kTILE_K + iHv * kTILE_K + vBase + vv]);
+        float const bVal = sBeta[n] * (vraw - sGamma[n] * ks);
+        sB[idx] = bVal;
+        sQS[idx] *= sInvQ[n];
+    }
+    __syncwarp();
+
+    // Parent indices are topological, so each lane can solve its V column in node order.
+    if (lane < kAPPLY_VCOLS)
+    {
+        for (int32_t n = 0; n < N; ++n)
+        {
+            float const* Mrow = sM + n * N;
+            float a0 = 0.f;
+            float a1 = 0.f;
+            int32_t j = 0;
+            for (; j + 1 < n; j += 2)
+            {
+                a0 += Mrow[j] * sB[j * kAPPLY_VCOLS + lane];
+                a1 += Mrow[j + 1] * sB[(j + 1) * kAPPLY_VCOLS + lane];
+            }
+            if (j < n)
+            {
+                a0 += Mrow[j] * sB[j * kAPPLY_VCOLS + lane];
+            }
+            float const rVal = sB[n * kAPPLY_VCOLS + lane] - (a0 + a1);
+            sB[n * kAPPLY_VCOLS + lane] = rVal;
+            sRh[n * kAPPLY_VCOLS + lane] = __float2half(rVal);
+        }
+    }
+    __syncwarp();
+
+    // N<=16 occupies a single WMMA tile; each warp multiplies its private R tile.
+    wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a;
+    wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::row_major> b;
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
+    wmma::fill_fragment(acc, 0.f);
+    wmma::load_matrix_sync(a, sAttnH, nPad);
+    wmma::load_matrix_sync(b, sRh, kAPPLY_VCOLS);
+    wmma::mma_sync(acc, a, b, acc);
+    wmma::store_matrix_sync(sOt, acc, kAPPLY_VCOLS, wmma::mem_row_major);
+    __syncwarp();
+
+    for (int32_t idx = lane; idx < N * kAPPLY_VCOLS; idx += kAPPLY_WARP_THREADS)
+    {
+        int32_t const n = idx / kAPPLY_VCOLS;
+        bool const valid = ((sMask[n * kMASK_WORDS + n / 32] >> (n % 32)) & 1u) != 0u;
+        float const val = valid ? (sGamma[n] * sQS[idx] + sOt[idx]) : 0.f;
+        o[(static_cast<int64_t>(iN) * N + n) * HV * kTILE_K + iHv * kTILE_K + vBase + idx % kAPPLY_VCOLS]
+            = __float2half(val);
+    }
+}
+
+// Largest number of KS/QS accumulator tiles one warp of the fused kernel holds: 2 operands x 4 row tiles x
+// 8 column tiles over 8 warps at N = 64.
+constexpr int32_t kFUSED_MAX_TILES_PER_WARP{2 * (kN_MAX / 16) * (kTILE_K / 16) / (kNUM_THREADS / 32)};
+
+//! Bytes of the fused kernel's staging union: [sH0h | sK | sQ] during Phases 1-3 and the KS/QS GEMM, then
+//! [sR | sQS | sRh] for the apply phases.
+__host__ __device__ inline size_t fusedUnionBytes(int32_t numNodes)
+{
+    size_t const nPad = static_cast<size_t>((numNodes + 15) & ~15);
+    size_t const prepBytes = (kTILE_K + 2 * nPad) * kPREP_WMMA_SMEM_STRIDE * sizeof(__half);
+    size_t const applyBytes = 2 * nPad * kTILE_K * sizeof(float) + nPad * kTILE_K * sizeof(__half);
+    return prepBytes > applyBytes ? prepBytes : applyBytes;
+}
+
+//! Dynamic shared memory of treeVerifyChunkFusedKernel; buffers are laid out in this order.
+__host__ __device__ inline size_t fusedSmemBytes(int32_t numNodes)
+{
+    size_t const n = static_cast<size_t>(numNodes);
+    size_t const nPad = static_cast<size_t>((numNodes + 15) & ~15);
+    return fusedUnionBytes(numNodes)         // staging union
+        + nPad * nPad * sizeof(__half)       // sAttnH
+        + n * n * sizeof(float)              // sM
+        + 6 * n * sizeof(float)              // cum, gamma, logG, beta, invK, invQ
+        + n * kMASK_WORDS * sizeof(uint32_t) // sMask
+        + (n + 1) * sizeof(int32_t);         // sDepth + sMaxDepth
+}
+
+// Fused verify: one CTA per (batch, hv-head) builds the ancestor masks and runs Phases 1-3 and the apply phases with
+// KS/QS, M and Attn kept in shared memory. The arithmetic and its order match the split prep + apply kernels: KS/QS
+// and Attn @ R use the same m16n16k16 tiles and K-tile order, and the forward substitution keeps the j-ascending
+// even/odd partial sums (one lane each) while skipping non-ancestor terms, whose M entries are exact zeros. Outputs
+// and the replay stash are therefore bitwise equal to the split path for finite inputs.
+__global__ void __launch_bounds__(kNUM_THREADS) treeVerifyChunkFusedKernel(__half const* __restrict__ q,
+    __half const* __restrict__ k, __half const* __restrict__ v, __half const* __restrict__ a,
+    __half const* __restrict__ b, float const* __restrict__ A_log, __half const* __restrict__ dt_bias,
+    int32_t const* __restrict__ parentIds, __half* __restrict__ o, char* __restrict__ stash,
+    size_t stashBatchStrideBytes, float const* __restrict__ h0, int32_t const* __restrict__ stateIndices,
+    int32_t statePoolRows, int32_t numNodes, int32_t H, int32_t HV, float scale, int32_t useQKL2Norm)
+{
+    using namespace nvcuda;
+
+    int32_t const iN = blockIdx.x / HV;
+    int32_t const iHv = blockIdx.x % HV;
+    int32_t const tid = threadIdx.x;
+    int32_t const warp = tid / 32;
+    int32_t const N = numNodes;
+    int32_t const nPad = (N + 15) & ~15;
+    constexpr int32_t kC = kTILE_K;
+
+    extern __shared__ __align__(32) char smemRaw[];
+    __half* sH0h = reinterpret_cast<__half*>(smemRaw);
+    __half* sK = sH0h + kTILE_K * kPREP_WMMA_SMEM_STRIDE;
+    __half* sQ = sK + nPad * kPREP_WMMA_SMEM_STRIDE;
+    // Apply-phase views of the same union, valid once the KS/QS GEMM has consumed sH0h, sK and sQ.
+    float* sR = reinterpret_cast<float*>(smemRaw);                            // [nPad][kC]: KS -> B -> R -> O'
+    float* sQS = sR + nPad * kC;                                              // [nPad][kC]
+    __half* sRh = reinterpret_cast<__half*>(sQS + nPad * kC);                 // [nPad][kC]
+    __half* sAttnH = reinterpret_cast<__half*>(smemRaw + fusedUnionBytes(N)); // [nPad][nPad], zero-padded
+    float* sM = reinterpret_cast<float*>(sAttnH + nPad * nPad);               // [N][N]
+    float* sCum = sM + N * N;
+    float* sGamma = sCum + N;
+    float* sLogG = sGamma + N;
+    float* sBeta = sLogG + N;
+    float* sInvK = sBeta + N;
+    float* sInvQ = sInvK + N;
+    uint32_t* sMask = reinterpret_cast<uint32_t*>(sInvQ + N);
+    int32_t* sDepth = reinterpret_cast<int32_t*>(sMask + N * kMASK_WORDS);
+    int32_t* sMaxDepth = sDepth + N;
+
+    if (tid < N)
+    {
+        uint32_t words[kMASK_WORDS];
+        buildAncestorMask(parentIds + static_cast<int64_t>(iN) * N, tid, N, words);
+#pragma unroll
+        for (int32_t w = 0; w < kMASK_WORDS; ++w)
+        {
+            sMask[tid * kMASK_WORDS + w] = words[w];
+        }
+    }
+    for (int32_t idx = tid; idx < nPad * nPad; idx += kNUM_THREADS)
+    {
+        sAttnH[idx] = __half(0);
+    }
+    VerifyPrepSmem const sm{sK, sQ, sH0h, sM, sCum, sGamma, sLogG, sBeta, sInvK, sInvQ, sMask, sDepth, sMaxDepth};
+    verifyPrepPhases(
+        sm, [&](int32_t n, int32_t j, float at) { sAttnH[n * nPad + j] = __float2half(at); }, q, k, v, a, b, A_log,
+        dt_bias, stash, stashBatchStrideBytes, h0, stateIndices, statePoolRows, iN, iHv, N, H, HV, scale, useQKL2Norm);
+
+    // Raw KS / QS = [K | Q] x H0, held in registers until every warp is done reading the union.
+    {
+        constexpr int32_t kColTiles = kTILE_K / 16;
+        int32_t const tilesPerOperand = (nPad / 16) * kColTiles;
+        wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[kFUSED_MAX_TILES_PER_WARP];
+#pragma unroll
+        for (int32_t t = 0; t < kFUSED_MAX_TILES_PER_WARP; ++t)
+        {
+            int32_t const job = warp + t * (kNUM_THREADS / 32);
+            if (job < 2 * tilesPerOperand)
+            {
+                bool const isQ = job >= tilesPerOperand;
+                int32_t const tile = isQ ? job - tilesPerOperand : job;
+                __half const* aRows = (isQ ? sQ : sK) + ((tile / kColTiles) * 16) * kPREP_WMMA_SMEM_STRIDE;
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> af;
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::row_major> bf;
+                wmma::fill_fragment(acc[t], 0.f);
+                for (int32_t kt = 0; kt < kTILE_K / 16; ++kt)
+                {
+                    wmma::load_matrix_sync(bf, sH0h + (kt * 16) * kPREP_WMMA_SMEM_STRIDE + (tile % kColTiles) * 16,
+                        kPREP_WMMA_SMEM_STRIDE);
+                    wmma::load_matrix_sync(af, aRows + kt * 16, kPREP_WMMA_SMEM_STRIDE);
+                    wmma::mma_sync(acc[t], af, bf, acc[t]);
+                }
+            }
+        }
+        __syncthreads();
+#pragma unroll
+        for (int32_t t = 0; t < kFUSED_MAX_TILES_PER_WARP; ++t)
+        {
+            int32_t const job = warp + t * (kNUM_THREADS / 32);
+            if (job < 2 * tilesPerOperand)
+            {
+                bool const isQ = job >= tilesPerOperand;
+                int32_t const tile = isQ ? job - tilesPerOperand : job;
+                wmma::store_matrix_sync((isQ ? sQS : sR) + ((tile / kColTiles) * 16) * kC + (tile % kColTiles) * 16,
+                    acc[t], kC, wmma::mem_row_major);
+            }
+        }
+    }
+    __syncthreads();
+
+    // Normalized right-hand side B and scaled QS.
+    for (int32_t idx = tid; idx < N * kC; idx += kNUM_THREADS)
+    {
+        int32_t const n = idx / kC;
+        int32_t const vv = idx % kC;
+        float const ks = sInvK[n] * sR[idx];
+        float const vraw = __half2float(v[(static_cast<int64_t>(iN) * N + n) * HV * kTILE_K + iHv * kTILE_K + vv]);
+        float const bVal = sBeta[n] * (vraw - sGamma[n] * ks);
+        sR[idx] = bVal;
+        sRh[idx] = __float2half(bVal);
+        sQS[idx] *= sInvQ[n];
+    }
+    for (int32_t idx = N * kC + tid; idx < nPad * kC; idx += kNUM_THREADS)
+    {
+        sRh[idx] = __half(0);
+    }
+    __syncthreads();
+
+    // Forward substitution R[n] = B[n] - (a0 + a1) with a0 / a1 the even / odd ancestor terms in ascending j. Two
+    // adjacent lanes own one column: the even lane forms a0, the odd lane a1.
+    {
+        int32_t const col = tid >> 1;
+        int32_t const parity = tid & 1;
+        for (int32_t n = 1; n < N; ++n)
+        {
+            float const* Mrow = sM + n * N;
+            uint32_t const* maskRow = sMask + n * kMASK_WORDS;
+            float part = 0.f;
+            for (int32_t j = parity; j < n; j += 2)
+            {
+                if ((maskRow[j / 32] >> (j % 32)) & 1u)
+                {
+                    part += Mrow[j] * sR[j * kC + col];
+                }
+            }
+            float const other = __shfl_xor_sync(0xffffffffu, part, 1);
+            float const a0 = parity == 0 ? part : other;
+            float const a1 = parity == 0 ? other : part;
+            float const rVal = sR[n * kC + col] - (a0 + a1);
+            __syncwarp();
+            if (parity == 0)
+            {
+                sR[n * kC + col] = rVal;
+                sRh[n * kC + col] = __float2half(rVal);
+            }
+            __syncwarp();
+        }
+    }
+    __syncthreads();
+
+    // O' = Attn @ R. R is staged in sRh, so the fp32 rows of sR hold O' from here on.
+    {
+        constexpr int32_t kColTiles = kC / 16;
+        int32_t const numTiles = (nPad / 16) * kColTiles;
+        for (int32_t tile = warp; tile < numTiles; tile += kNUM_THREADS / 32)
+        {
+            int32_t const rowTile = tile / kColTiles;
+            int32_t const colTile = tile % kColTiles;
+            wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> af;
+            wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::row_major> bf;
+            wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
+            wmma::fill_fragment(acc, 0.f);
+            for (int32_t kt = 0; kt < nPad / 16; ++kt)
+            {
+                wmma::load_matrix_sync(af, sAttnH + (rowTile * 16) * nPad + kt * 16, nPad);
+                wmma::load_matrix_sync(bf, sRh + (kt * 16) * kC + colTile * 16, kC);
+                wmma::mma_sync(acc, af, bf, acc);
+            }
+            __syncwarp();
+            wmma::store_matrix_sync(sR + (rowTile * 16) * kC + colTile * 16, acc, kC, wmma::mem_row_major);
+        }
+    }
+    __syncthreads();
+
+    for (int32_t idx = tid; idx < N * kC; idx += kNUM_THREADS)
+    {
+        int32_t const n = idx / kC;
+        int32_t const vv = idx % kC;
+        bool const valid = ((sMask[n * kMASK_WORDS + n / 32] >> (n % 32)) & 1u) != 0u;
+        float const val = valid ? (sGamma[n] * sQS[idx] + sR[idx]) : 0.f;
+        o[(static_cast<int64_t>(iN) * N + n) * HV * kTILE_K + iHv * kTILE_K + vv] = __float2half(val);
+    }
+}
+
 // Batched replay commit: one launch covers all recurrent layers.
 // Grid = numLayers x batch x hv (z-major on layer via blockIdx.y not needed;
 // flat decode). Per (layer, batch, hv-head) the state tile is SMEM-resident
@@ -619,29 +1086,58 @@ __global__ void __launch_bounds__(kNUM_THREADS)
 //      writeback.
 __global__ void __launch_bounds__(kNUM_THREADS) treeReplayCommitBatchedKernel(MtpLayerInfo const* __restrict__ infos,
     size_t stashBatchStrideBytes, int32_t const* __restrict__ acceptedIndices,
-    int32_t const* __restrict__ acceptLengths, int32_t maxAcceptLen, int32_t numNodes, int32_t H, int32_t HV)
+    int32_t const* __restrict__ acceptLengths, int32_t const* __restrict__ stateIndices, int32_t residentPoolRows,
+    int32_t maxAcceptLen, int32_t numNodes, int32_t H, int32_t HV)
 {
     constexpr int32_t kTILE_V{32};
-    constexpr int32_t kNUM_V_TILES{kTILE_K / kTILE_V}; // 4
+    constexpr int32_t kV_PANEL{4};                       // columns rotated together in shared-memory V tiles
+    constexpr int32_t kNUM_V_PANELS{kTILE_V / kV_PANEL}; // panels in one V tile
+    constexpr int32_t kNUM_V_TILES{kTILE_K / kTILE_V};   // 4
     constexpr int32_t kNUM_STAGES{2};
 
     int32_t const layer = blockIdx.y;
     int32_t const stateIdx = blockIdx.x;
     int32_t const iN = stateIdx / HV;
+    int32_t const residentIdx = stateIndices[iN];
+    if (residentIdx < 0 || residentIdx >= residentPoolRows)
+    {
+        return;
+    }
     int32_t const iHv = stateIdx % HV;
     int32_t const iH = iHv / (HV / H);
     int32_t const tid = threadIdx.x;
-    int32_t const L = min(acceptLengths[iN], min(maxAcceptLen, kGDN_TREE_CHUNK_MAX_ACCEPT));
+
+    // Every CTA for a sequence must reject the same malformed path before touching its resident
+    // state. A declared length outside the carrier capacity is invalid rather than truncatable.
+    __shared__ int32_t acceptedPathLength;
+    if (tid == 0)
+    {
+        int32_t const length = acceptLengths[iN];
+        bool valid = length >= 0 && length <= maxAcceptLen && length <= kGDN_TREE_CHUNK_MAX_ACCEPT;
+        for (int32_t i = 0; valid && i < length; ++i)
+        {
+            int32_t const node
+                = acceptedIndices == nullptr ? i : acceptedIndices[static_cast<int64_t>(iN) * maxAcceptLen + i];
+            valid = node >= 0 && node < numNodes;
+        }
+        acceptedPathLength = valid ? length : -1;
+    }
+    __syncthreads();
+    if (acceptedPathLength < 0)
+    {
+        return;
+    }
+    int32_t const L = acceptedPathLength;
 
     float* h0 = static_cast<float*>(infos[layer].recurrentDst);
     char const* stash = static_cast<char const*>(infos[layer].recurrentSrc);
 
     // Double-buffered h-tile (32KB), k/g/beta from stash (8KB), v pre-cache (4KB).
-    __shared__ float sH[kNUM_STAGES][kTILE_K * kTILE_V];          // 2×16KB = 32KB
-    __shared__ float sKvec[kGDN_TREE_CHUNK_MAX_ACCEPT * kTILE_K]; // 8KB
-    __shared__ float sG[kGDN_TREE_CHUNK_MAX_ACCEPT];
-    __shared__ float sBetaS[kGDN_TREE_CHUNK_MAX_ACCEPT];
-    __shared__ __half sV[kGDN_TREE_CHUNK_MAX_ACCEPT * kTILE_K]; // 4KB — v pre-cache
+    __shared__ __align__(16) float sH[kNUM_STAGES][kTILE_K * kTILE_V]; // 2×16KB = 32KB
+    __shared__ __align__(16) float sKvec[kGDN_TREE_CHUNK_MAX_ACCEPT * kTILE_K];
+    __shared__ __align__(16) float sG[kGDN_TREE_CHUNK_MAX_ACCEPT];
+    __shared__ __align__(16) float sBetaS[kGDN_TREE_CHUNK_MAX_ACCEPT];
+    __shared__ __align__(16) __half sV[kGDN_TREE_CHUNK_MAX_ACCEPT * kTILE_K];
 
     StashOffsets const so = stashOffsets(H, HV);
     char const* nodeBase = stash + static_cast<size_t>(iN) * stashBatchStrideBytes;
@@ -649,7 +1145,8 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeReplayCommitBatchedKernel(Mt
     // ---- Phase 1: pre-load k/g/beta/v for all L accepted steps from stash --
     for (int32_t i = 0; i < L; ++i)
     {
-        int32_t const node = acceptedIndices[static_cast<int64_t>(iN) * maxAcceptLen + i];
+        int32_t const node
+            = acceptedIndices == nullptr ? i : acceptedIndices[static_cast<int64_t>(iN) * maxAcceptLen + i];
         char const* cell = nodeBase + static_cast<size_t>(node) * so.nodeBytes;
 
         float const* kSrc = reinterpret_cast<float const*>(cell + so.kNorm) + static_cast<size_t>(iH) * kTILE_K;
@@ -687,8 +1184,8 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeReplayCommitBatchedKernel(Mt
         {                                                                                                              \
             int32_t const _kk = _i4 / _kV4;                                                                            \
             int32_t const _v4 = (_i4 % _kV4) * 4;                                                                      \
-            float const* _src                                                                                          \
-                = h0 + ((static_cast<int64_t>(iN) * HV + iHv) * kTILE_K + _kk) * kTILE_K + (vt_) * kTILE_V + _v4;      \
+            float const* _src = h0 + ((static_cast<int64_t>(residentIdx) * HV + iHv) * kTILE_K + _kk) * kTILE_K        \
+                + (vt_) * kTILE_V + _v4;                                                                               \
             uint32_t _dst = __cvta_generic_to_shared(&sH[(stage_)][_kk * kTILE_V + _v4]);                              \
             asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(_dst), "l"(_src));                          \
         }                                                                                                              \
@@ -714,6 +1211,18 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeReplayCommitBatchedKernel(Mt
         if (nextVt < kNUM_V_TILES)
             REPLAY_ISSUE_LOAD(nextVt % kNUM_STAGES, nextVt);
 
+        // Rotate each row's four-column panels in place. A warp owns each
+        // row during the rotation, so all old values are read before writes.
+        for (int32_t kk = warp; kk < kTILE_K; kk += kNUM_THREADS / 32)
+        {
+            float const h = sH[stage][kk * kTILE_V + lane];
+            __syncwarp();
+            int32_t const hPanel = (kk + lane / kV_PANEL) % kNUM_V_PANELS;
+            sH[stage][kk * kTILE_V + hPanel * kV_PANEL + lane % kV_PANEL] = h;
+            __syncwarp();
+        }
+        __syncthreads();
+
         // ---- L accepted steps, entirely in SMEM (overlaps next-tile load) ---
         // No block barriers inside this loop. Each warp exclusively owns
         // sH columns 4*warp .. 4*warp+3 (vIdx = warp*4 + vLocal), the h
@@ -729,8 +1238,10 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeReplayCommitBatchedKernel(Mt
             for (int32_t it = 0; it < kTILE_K / 8; ++it)
             {
                 int32_t const kk = it * 8 + kLocal;
-                float const hg = sH[stage][kk * kTILE_V + vIdx] * g;
-                sH[stage][kk * kTILE_V + vIdx] = hg;
+                int32_t const hPanel = (kk + vIdx / kV_PANEL) % kNUM_V_PANELS;
+                int32_t const hOffset = kk * kTILE_V + hPanel * kV_PANEL + vLocal;
+                float const hg = sH[stage][hOffset] * g;
+                sH[stage][hOffset] = hg;
                 sumHk += hg * sKvec[i * kTILE_K + kk];
             }
 #pragma unroll
@@ -745,7 +1256,9 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeReplayCommitBatchedKernel(Mt
             for (int32_t it = 0; it < kTILE_K / 8; ++it)
             {
                 int32_t const kk = it * 8 + kLocal;
-                sH[stage][kk * kTILE_V + vIdx] += sKvec[i * kTILE_K + kk] * vNew;
+                int32_t const hPanel = (kk + vIdx / kV_PANEL) % kNUM_V_PANELS;
+                int32_t const hOffset = kk * kTILE_V + hPanel * kV_PANEL + vLocal;
+                sH[stage][hOffset] += sKvec[i * kTILE_K + kk] * vNew;
             }
         }
 
@@ -757,9 +1270,10 @@ __global__ void __launch_bounds__(kNUM_THREADS) treeReplayCommitBatchedKernel(Mt
         {
             int32_t const kk = i4 / (kTILE_V / 4);
             int32_t const v4 = (i4 % (kTILE_V / 4)) * 4;
+            int32_t const hPanel = (kk + v4 / kV_PANEL) % kNUM_V_PANELS;
             *reinterpret_cast<float4*>(
-                &h0[((static_cast<int64_t>(iN) * HV + iHv) * kTILE_K + kk) * kTILE_K + vt * kTILE_V + v4])
-                = *reinterpret_cast<float4 const*>(&sH[stage][kk * kTILE_V + v4]);
+                &h0[((static_cast<int64_t>(residentIdx) * HV + iHv) * kTILE_K + kk) * kTILE_K + vt * kTILE_V + v4])
+                = *reinterpret_cast<float4 const*>(&sH[stage][kk * kTILE_V + hPanel * kV_PANEL]);
         }
         // No barrier here: the next iteration's post-cp.async __syncthreads
         // orders this writeback before any thread's prefetch can overwrite
@@ -776,6 +1290,28 @@ bool gdnTreeChunkVerifyEnabled(int32_t treeSize)
     return treeSize <= kGDN_TREE_CHUNK_MAX_NODES;
 }
 
+size_t gdnTreeVerifyRowBytes(int32_t h, int32_t hv, int32_t numNodes)
+{
+    StashOffsets const so = stashOffsets(h, hv);
+    size_t const usedBytes = gdnTreeVerifyFusedFits(numNodes) ? gdnTreeKsQsBaseBytes(so, numNodes)
+                                                              : gdnTreeScratchEndBytes(so, hv, numNodes);
+    return (usedBytes + 255) & ~static_cast<size_t>(255);
+}
+
+rt::Coords gdnTreeVerifyStashShape(
+    bool fp32State, int32_t convDim, int32_t maxBatch, int32_t maxNodes, int32_t hv, int32_t dk, int32_t dv)
+{
+    int32_t const h = (convDim / kTILE_K - hv) / 2;
+    bool const chunkForm = fp32State && dk == kTILE_K && dv == kTILE_K && hv > 0 && h > 0 && hv % h == 0
+        && (2 * h + hv) * kTILE_K == convDim;
+    if (!chunkForm)
+    {
+        return {maxBatch, maxNodes, hv, dk, dv};
+    }
+    return {maxBatch, maxNodes,
+        static_cast<int64_t>(divUp(gdnTreeVerifyRowBytes(h, hv, maxNodes), sizeof(float) * maxNodes))};
+}
+
 // Launch error tracer: logs which launch failed and returns the error so the
 // caller can propagate it. Call immediately after a launch — cudaGetLastError()
 // also clears the sticky error, so callers must detect failure via the return
@@ -790,6 +1326,18 @@ inline cudaError_t gdnTreeTraceLaunch(char const* tag)
     return e;
 }
 
+//! Raises kernel's dynamic shared memory limit to bytes; logs and returns the error when the device refuses.
+template <typename Kernel>
+cudaError_t gdnTreeSetDynamicSmem(Kernel kernel, size_t bytes, char const* tag)
+{
+    cudaError_t const e = cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
+    if (e != cudaSuccess)
+    {
+        LOG_ERROR("gdnTreeChunk: cudaFuncSetAttribute(%s, %zu) failed: %s", tag, bytes, cudaGetErrorString(e));
+    }
+    return e;
+}
+
 cudaError_t gdnTreeBuildAncestorMasks(int32_t const* parentIds, uint32_t* masksOut, int32_t batch, int32_t numNodes,
     int32_t maxDepth, cudaStream_t stream)
 {
@@ -797,39 +1345,87 @@ cudaError_t gdnTreeBuildAncestorMasks(int32_t const* parentIds, uint32_t* masksO
     return gdnTreeTraceLaunch("buildAncestorMasks");
 }
 
-cudaError_t gdnTreeVerifyChunk(float const* h0, __half const* q, __half const* k, __half const* v, __half const* a,
-    __half const* b, float const* A_log, __half const* dt_bias, uint32_t const* masks, __half* o, void* stash,
-    size_t stashBatchStrideBytes, int32_t batch, int32_t numNodes, int32_t h, int32_t hv, float scale, bool useQKL2Norm,
-    cudaStream_t stream)
+bool gdnTreeVerifyFusedFits(int32_t numNodes)
 {
-    size_t const smemPrep = 2 * kN_MAX * kTILE_K * sizeof(__half) // sK, sQ
-        + kTILE_K * kTILE_K * sizeof(__half)                      // sH0h (fp16, KS/QS GEMM)
-        + 2 * kN_MAX * kN_MAX * sizeof(float)                     // sM, sAttn
-        + 6 * kN_MAX * sizeof(float)                              // scalars
-        + kN_MAX * kMASK_WORDS * sizeof(uint32_t)                 // sMask
-        + (kN_MAX + 1) * sizeof(int32_t);                         // sDepth + sMaxDepth
-    size_t const smemApply = kN_MAX * kN_MAX * sizeof(float)      // sM (fp32, 4b)
-        + kN_MAX * kN_MAX * sizeof(__half)                        // sAttnH (fp16, 4c)
-        + 2 * kN_MAX * kVCOLS * sizeof(float)                     // sB, sQS
-        + kN_MAX * kVCOLS * sizeof(__half)                        // sRh (fp16, 4c)
-        + kN_MAX * kVCOLS * sizeof(float)                         // sOt (4c staging)
-        + 4 * kN_MAX * sizeof(float)                              // gamma/beta/invK/invQ
-        + kN_MAX * kMASK_WORDS * sizeof(uint32_t)                 // sMask
-        + (kN_MAX + 1) * sizeof(int32_t);                         // sDepth + sMaxDepth
-    cudaError_t attrErr
-        = cudaFuncSetAttribute(treeVerifyChunkPrepKernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smemPrep);
-    if (attrErr != cudaSuccess)
+    return fusedSmemBytes(numNodes) <= static_cast<size_t>(getMaxSharedMemoryPerBlockOptin());
+}
+
+cudaError_t gdnTreeVerifyChunk(float const* h0, int32_t const* stateIndices, int32_t statePoolRows, __half const* q,
+    __half const* k, __half const* v, __half const* a, __half const* b, float const* A_log, __half const* dt_bias,
+    int32_t const* parentIds, uint32_t* masks, __half* o, void* stash, size_t stashBatchStrideBytes, int32_t batch,
+    int32_t numNodes, int32_t h, int32_t hv, float scale, bool useQKL2Norm, cudaStream_t stream, GdnTreeVerifyPath path)
+{
+    if (numNodes < 1 || numNodes > kGDN_TREE_CHUNK_MAX_NODES)
     {
-        LOG_ERROR(
-            "gdnTreeChunk: cudaFuncSetAttribute(verifyPrep, %zu) failed: %s", smemPrep, cudaGetErrorString(attrErr));
-        return attrErr;
+        return cudaErrorInvalidValue;
     }
-    attrErr = cudaFuncSetAttribute(treeVerifyChunkApplyKernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smemApply);
-    if (attrErr != cudaSuccess)
+    int32_t const poolRows = stateIndices == nullptr ? batch : statePoolRows;
+    bool const fused
+        = path == GdnTreeVerifyPath::kFused || (path == GdnTreeVerifyPath::kAuto && gdnTreeVerifyFusedFits(numNodes));
+    if (fused)
     {
-        LOG_ERROR(
-            "gdnTreeChunk: cudaFuncSetAttribute(verifyApply, %zu) failed: %s", smemApply, cudaGetErrorString(attrErr));
-        return attrErr;
+        size_t const stashEnd = static_cast<size_t>(numNodes) * stashOffsets(h, hv).nodeBytes;
+        if (stashEnd > stashBatchStrideBytes)
+        {
+            LOG_ERROR(
+                "gdnTreeChunk: replay stash (%zu B) exceeds the intermediate row stride (%zu B); refusing to launch",
+                stashEnd, stashBatchStrideBytes);
+            return cudaErrorInvalidValue;
+        }
+        size_t const smemFused = fusedSmemBytes(numNodes);
+        if (cudaError_t const e = gdnTreeSetDynamicSmem(treeVerifyChunkFusedKernel, smemFused, "verifyFused");
+            e != cudaSuccess)
+        {
+            return e;
+        }
+        treeVerifyChunkFusedKernel<<<batch * hv, kNUM_THREADS, smemFused, stream>>>(q, k, v, a, b, A_log, dt_bias,
+            parentIds, o, static_cast<char*>(stash), stashBatchStrideBytes, h0, stateIndices, poolRows, numNodes, h, hv,
+            scale, useQKL2Norm ? 1 : 0);
+        return gdnTreeTraceLaunch("treeVerifyChunkFused");
+    }
+
+    if (cudaError_t const e = gdnTreeBuildAncestorMasks(parentIds, masks, batch, numNodes, numNodes, stream);
+        e != cudaSuccess)
+    {
+        return e;
+    }
+    int32_t const nPad = (numNodes + 15) & ~15;
+    size_t const smemPrep = 2 * static_cast<size_t>(nPad) * kPREP_WMMA_SMEM_STRIDE * sizeof(__half) // sK, sQ
+        + kTILE_K * kPREP_WMMA_SMEM_STRIDE * sizeof(__half)              // sH0h (fp16, KS/QS GEMM)
+        + 2 * static_cast<size_t>(numNodes) * numNodes * sizeof(float)   // sM, sAttn
+        + 6 * static_cast<size_t>(numNodes) * sizeof(float)              // scalars
+        + static_cast<size_t>(numNodes) * kMASK_WORDS * sizeof(uint32_t) // sMask
+        + (static_cast<size_t>(numNodes) + 1) * sizeof(int32_t);         // sDepth + sMaxDepth
+    size_t const smemApply = kN_MAX * kN_MAX * sizeof(float)             // sM (fp32, 4b)
+        + kN_MAX * kN_MAX * sizeof(__half)                               // sAttnH (fp16, 4c)
+        + 2 * kN_MAX * kVCOLS * sizeof(float)                            // sB, sQS
+        + kN_MAX * kVCOLS * sizeof(__half)                               // sRh (fp16, 4c)
+        + kN_MAX * kVCOLS * sizeof(float)                                // sOt (4c staging)
+        + 4 * kN_MAX * sizeof(float)                                     // gamma/beta/invK/invQ
+        + kN_MAX * kMASK_WORDS * sizeof(uint32_t)                        // sMask
+        + (kN_MAX + 1) * sizeof(int32_t);                                // sDepth + sMaxDepth
+    size_t const smemApplyWarp
+        = ((static_cast<size_t>(numNodes) * numNodes * sizeof(float) + 31) & ~static_cast<size_t>(31)) // sM
+        + static_cast<size_t>(nPad) * nPad * sizeof(__half)                                            // sAttnH
+        + 2 * kAPPLY_WARPS_PER_BLOCK * static_cast<size_t>(numNodes) * kAPPLY_VCOLS * sizeof(float)    // sB, sQS
+        + kAPPLY_WARPS_PER_BLOCK * static_cast<size_t>(nPad) * kAPPLY_VCOLS * sizeof(__half)           // sRh
+        + kAPPLY_WARPS_PER_BLOCK * static_cast<size_t>(nPad) * kAPPLY_VCOLS * sizeof(float)            // sOt
+        + 4 * static_cast<size_t>(numNodes) * sizeof(float)                                            // node scalars
+        + static_cast<size_t>(numNodes) * kMASK_WORDS * sizeof(uint32_t);                              // sMask
+    if (cudaError_t const e = gdnTreeSetDynamicSmem(treeVerifyChunkPrepKernel, smemPrep, "verifyPrep");
+        e != cudaSuccess)
+    {
+        return e;
+    }
+    if (cudaError_t const e = gdnTreeSetDynamicSmem(treeVerifyChunkApplyKernel, smemApply, "verifyApply");
+        e != cudaSuccess)
+    {
+        return e;
+    }
+    if (cudaError_t const e = gdnTreeSetDynamicSmem(treeVerifyChunkApplyWarpKernel, smemApplyWarp, "verifyApplyWarp");
+        e != cudaSuccess)
+    {
+        return e;
     }
     // KS/QS + prep staging must fit in the unused tail of each
     // intermediate-states batch row (past the last stash cell). Refuse to
@@ -837,7 +1433,7 @@ cudaError_t gdnTreeVerifyChunk(float const* h0, __half const* q, __half const* k
     // batch row (or whatever follows the buffer).
     {
         StashOffsets const so = stashOffsets(h, hv);
-        size_t const scratchEnd = gdnTreeScratchEndBytes(so, hv);
+        size_t const scratchEnd = gdnTreeScratchEndBytes(so, hv, numNodes);
         if (scratchEnd > stashBatchStrideBytes)
         {
             LOG_ERROR(
@@ -848,19 +1444,29 @@ cudaError_t gdnTreeVerifyChunk(float const* h0, __half const* q, __half const* k
         }
     }
     treeVerifyChunkPrepKernel<<<batch * hv, kNUM_THREADS, smemPrep, stream>>>(q, k, v, a, b, A_log, dt_bias, masks,
-        static_cast<char*>(stash), stashBatchStrideBytes, h0, numNodes, h, hv, scale, useQKL2Norm ? 1 : 0);
+        static_cast<char*>(stash), stashBatchStrideBytes, h0, stateIndices, poolRows, numNodes, h, hv, scale,
+        useQKL2Norm ? 1 : 0);
     if (cudaError_t const e = gdnTreeTraceLaunch("treeVerifyChunkPrep"); e != cudaSuccess)
     {
         return e;
     }
-    treeVerifyChunkApplyKernel<<<batch * hv * kV_SPLIT, kNUM_THREADS, smemApply, stream>>>(
-        v, masks, o, static_cast<char const*>(stash), stashBatchStrideBytes, numNodes, h, hv);
+    if (numNodes <= kAPPLY_WMMA_MAX_N)
+    {
+        treeVerifyChunkApplyWarpKernel<<<batch * hv * kAPPLY_V_SPLIT, kAPPLY_THREADS, smemApplyWarp, stream>>>(
+            v, masks, o, static_cast<char const*>(stash), stashBatchStrideBytes, numNodes, h, hv);
+    }
+    else
+    {
+        treeVerifyChunkApplyKernel<<<batch * hv * kV_SPLIT, kNUM_THREADS, smemApply, stream>>>(
+            v, masks, o, static_cast<char const*>(stash), stashBatchStrideBytes, numNodes, h, hv);
+    }
     return gdnTreeTraceLaunch("treeVerifyChunkApply");
 }
 
 cudaError_t gdnTreeReplayCommitBatched(MtpLayerInfo const* deviceLayerInfos, int32_t numLayers,
-    size_t stashBatchStrideBytes, int32_t const* acceptedIndices, int32_t const* acceptLengths, int32_t batch,
-    int32_t maxAcceptLen, int32_t numNodes, int32_t h, int32_t hv, cudaStream_t stream)
+    size_t stashBatchStrideBytes, int32_t const* acceptedIndices, int32_t const* acceptLengths,
+    int32_t const* stateIndices, int32_t batch, int32_t residentPoolRows, int32_t maxAcceptLen, int32_t numNodes,
+    int32_t h, int32_t hv, cudaStream_t stream)
 {
     static bool const kTimeCommit = (std::getenv("EDGELLM_GDN_TIME_COMMIT") != nullptr);
     static int64_t sCallCount = 0;
@@ -874,8 +1480,8 @@ cudaError_t gdnTreeReplayCommitBatched(MtpLayerInfo const* deviceLayerInfos, int
     }
 
     dim3 const grid(batch * hv, numLayers);
-    treeReplayCommitBatchedKernel<<<grid, kNUM_THREADS, 0, stream>>>(
-        deviceLayerInfos, stashBatchStrideBytes, acceptedIndices, acceptLengths, maxAcceptLen, numNodes, h, hv);
+    treeReplayCommitBatchedKernel<<<grid, kNUM_THREADS, 0, stream>>>(deviceLayerInfos, stashBatchStrideBytes,
+        acceptedIndices, acceptLengths, stateIndices, residentPoolRows, maxAcceptLen, numNodes, h, hv);
     cudaError_t const launchErr = gdnTreeTraceLaunch("treeReplayCommitBatched");
 
     if (kTimeCommit)

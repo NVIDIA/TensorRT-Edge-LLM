@@ -30,6 +30,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -48,6 +49,16 @@ inline int32_t fragmentRows(int32_t N, int32_t K)
     return divUp(N, 128) * divUp(K, 64) * 8;
 }
 
+inline int64_t leadingVolume(Dims const& dims)
+{
+    int64_t volume{1};
+    for (int32_t i = 0; i < dims.nbDims - 1; ++i)
+    {
+        volume *= dims.d[i];
+    }
+    return volume;
+}
+
 #ifdef CUTE_DSL_INT4_FP16_GEMM_ENABLED
 inline int64_t computeMaxLockWorkspaceBytes(
     DynamicPluginTensorDesc const* inputs, int32_t nbInputs, int32_t N, int32_t K)
@@ -61,7 +72,7 @@ inline int64_t computeMaxLockWorkspaceBytes(
     {
         return 0;
     }
-    int64_t const mMax = static_cast<int64_t>(mx.d[0]) * mx.d[1];
+    int64_t const mMax = leadingVolume(mx);
     if (mMax <= 0)
     {
         return 0;
@@ -201,10 +212,16 @@ int32_t Int4GroupwiseGemmPluginV2::getOutputShapes(DimsExprs const* inputs, [[ma
     {
         assert(nbInputs == 3);
         assert(nbOutputs == 1);
-        outputs[0].nbDims = 3;
-        outputs[0].d[0] = inputs[0].d[0];
-        outputs[0].d[1] = inputs[0].d[1];
-        outputs[0].d[2] = exprBuilder.constant(mGemmN);
+        if (inputs[0].nbDims != 2 && inputs[0].nbDims != 3)
+        {
+            return -1;
+        }
+        outputs[0].nbDims = inputs[0].nbDims;
+        for (int32_t i = 0; i < inputs[0].nbDims - 1; ++i)
+        {
+            outputs[0].d[i] = inputs[0].d[i];
+        }
+        outputs[0].d[inputs[0].nbDims - 1] = exprBuilder.constant(mGemmN);
         return 0;
     }
     catch (std::exception const& e)
@@ -229,8 +246,9 @@ bool Int4GroupwiseGemmPluginV2::supportsFormatCombination(int32_t pos, DynamicPl
         {
             status &= tensorDesc.type == DataType::kHALF;
             status &= tensorDesc.format == PluginFormat::kLINEAR;
-            status &= tensorDesc.dims.nbDims == 3;
-            status &= tensorDesc.dims.d[2] == mGemmK;
+            bool const supportedRank = tensorDesc.dims.nbDims == 2 || tensorDesc.dims.nbDims == 3;
+            status &= supportedRank;
+            status &= supportedRank && tensorDesc.dims.d[tensorDesc.dims.nbDims - 1] == mGemmK;
             break;
         }
         case 1:
@@ -256,8 +274,9 @@ bool Int4GroupwiseGemmPluginV2::supportsFormatCombination(int32_t pos, DynamicPl
         {
             status &= tensorDesc.type == DataType::kHALF;
             status &= tensorDesc.format == PluginFormat::kLINEAR;
-            status &= tensorDesc.dims.nbDims == 3;
-            status &= tensorDesc.dims.d[2] == mGemmN;
+            bool const supportedRank = tensorDesc.dims.nbDims == 2 || tensorDesc.dims.nbDims == 3;
+            status &= supportedRank;
+            status &= supportedRank && tensorDesc.dims.d[tensorDesc.dims.nbDims - 1] == mGemmN;
             break;
         }
         default: break;
@@ -273,7 +292,7 @@ bool Int4GroupwiseGemmPluginV2::supportsFormatCombination(int32_t pos, DynamicPl
 int32_t Int4GroupwiseGemmPluginV2::configurePlugin(DynamicPluginTensorDesc const* in, int32_t nbInputs,
     DynamicPluginTensorDesc const* /* out */, int32_t /* nbOutputs */) noexcept
 {
-    // Capture the profile's optimum token count M (= batch*seq of activation input[0]).
+    // Capture the profile's optimum flattened row count M.
     // TensorRT autotunes at this representative shape, so it is the right M for the
     // CTA-tile pruning heuristic in getValidTactics/getNbTactics.
     if (nbInputs >= 1)
@@ -281,7 +300,7 @@ int32_t Int4GroupwiseGemmPluginV2::configurePlugin(DynamicPluginTensorDesc const
         auto const& opt = in[0].opt;
         if (opt.nbDims >= 2)
         {
-            int64_t const m = static_cast<int64_t>(opt.d[0]) * opt.d[1];
+            int64_t const m = leadingVolume(opt);
             mAutotuneM = (m > 0) ? static_cast<int32_t>(m) : 0;
         }
     }
@@ -349,13 +368,17 @@ int32_t Int4GroupwiseGemmPluginV2::enqueue(PluginTensorDesc const* inputDesc, Pl
     try
     {
         auto const& inputDesc0 = inputDesc[0];
-        [[maybe_unused]] int32_t const M = inputDesc0.dims.d[0] * inputDesc0.dims.d[1];
+        [[maybe_unused]] int32_t const M = static_cast<int32_t>(leadingVolume(inputDesc0.dims));
 
 #ifdef CUTE_DSL_INT4_FP16_GEMM_ENABLED
         // Fragment-layout contract for BOTH the GEMV and GEMM paths: input[1]
         // stores ceil(N/128) N tiles and K/64 K tiles. Both kernels predicate
         // the final N tile and require a complete K tile.
         if (mGemmN <= 0 || mGemmK <= 0 || mGemmK % 64 != 0)
+        {
+            return -1;
+        }
+        if (mGroupSize < 64 || mGroupSize % 64 != 0 || mGemmK % mGroupSize != 0)
         {
             return -1;
         }
@@ -369,7 +392,8 @@ int32_t Int4GroupwiseGemmPluginV2::enqueue(PluginTensorDesc const* inputDesc, Pl
         constexpr int32_t kGemvDispatchMaxM = 4;
         if (M >= 1 && M <= kGemvDispatchMaxM && cuteDslInt4GemvSupported(M) && cuteDslInt4GemvLoadModules())
         {
-            return cuteDslInt4GemvLaunch(M, inputs[0], inputs[1], inputs[2], outputs[0], mGemmN, mGemmK, stream);
+            return cuteDslInt4GemvLaunch(
+                M, inputs[0], inputs[1], inputs[2], outputs[0], mGemmN, mGemmK, mGroupSize, stream);
         }
 #endif
 
@@ -406,7 +430,7 @@ int32_t Int4GroupwiseGemmPluginV2::enqueue(PluginTensorDesc const* inputDesc, Pl
         // input[1] is the fragment-layout weight buffer (INT8 bytes of the uint32
         // words); pass it straight through as mQW -- no repack, no cache.
         return cuteDslInt4GemmLaunch(v, inputs[0], inputs[1], inputs[2], outputs[0],
-            (v.splitK > 1) ? mLockWorkspace : nullptr, M, mGemmN, mGemmK, /*swizzle=*/1, stream);
+            (v.splitK > 1) ? mLockWorkspace : nullptr, M, mGemmN, mGemmK, mGroupSize, /*swizzle=*/1, stream);
 #else
         return -1;
 #endif

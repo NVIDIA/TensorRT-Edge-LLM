@@ -28,19 +28,9 @@ namespace rt
 namespace
 {
 
-using FnvValue = __uint128_t;
-
-// 128-bit Fowler-Noll-Vo (FNV-1a) starts from the standard offset basis and consumes one byte at a time:
-//     state = (state XOR byte) * FNV_prime modulo 2^128.
-// Unsigned 128-bit overflow supplies the modulo operation. Integers below are serialized least-significant byte first,
-// and field tags plus presence markers make the byte stream unambiguous. FNV-1a is deterministic and inexpensive but
-// is not collision-resistant; BlockHash equality has no secondary token comparison in this layer.
-constexpr uint64_t kFNV_OFFSET_HI = 0x6C62272E07BB0142ULL;
-constexpr uint64_t kFNV_OFFSET_LO = 0x62B821756295C58DULL;
-constexpr FnvValue kFNV_OFFSET = (static_cast<FnvValue>(kFNV_OFFSET_HI) << 64U) | static_cast<FnvValue>(kFNV_OFFSET_LO);
-constexpr FnvValue kFNV_PRIME
-    = (static_cast<FnvValue>(1) << 88U) | (static_cast<FnvValue>(1) << 8U) | static_cast<FnvValue>(0x3B);
-
+// Integers are serialized least-significant byte first, and field tags plus presence markers make the byte stream
+// unambiguous. FNV-1a is deterministic and inexpensive but is not collision-resistant; BlockHash equality has no
+// secondary token comparison in this layer.
 enum class Tag : uint8_t
 {
     kParent = 1,
@@ -60,15 +50,8 @@ enum class Tag : uint8_t
     kIsolationDigest,
     kAbsent,
     kPresent,
-    kOpaqueIdentity,
-    kMediaToken,
+    kMediaToken = 19, // 18 is the opaque-identity tag (common/identityHash.cpp).
 };
-
-void fnvByte(FnvValue& state, uint8_t value) noexcept
-{
-    state ^= static_cast<FnvValue>(value);
-    state *= kFNV_PRIME;
-}
 
 void fnvTag(FnvValue& state, Tag tag) noexcept
 {
@@ -89,16 +72,6 @@ void fnvU32(FnvValue& state, uint32_t value) noexcept
 void fnvI32(FnvValue& state, int32_t value) noexcept
 {
     fnvU32(state, static_cast<uint32_t>(value));
-}
-
-void fnvU64(FnvValue& state, uint64_t value) noexcept
-{
-    constexpr size_t kBYTE_COUNT = sizeof(value);
-    constexpr size_t kBITS_PER_BYTE = 8U;
-    for (size_t index = 0; index < kBYTE_COUNT; ++index)
-    {
-        fnvByte(state, static_cast<uint8_t>(value >> (kBITS_PER_BYTE * index)));
-    }
 }
 
 void fnvHash(FnvValue& state, Hash128 const& hash) noexcept
@@ -122,25 +95,7 @@ void fnvOptionalHash(FnvValue& state, Tag tag, std::optional<Hash128> const& has
     }
 }
 
-BlockHash finishHash(FnvValue state) noexcept
-{
-    constexpr size_t kHALF_WIDTH = 64U;
-    return BlockHash{static_cast<uint64_t>(state >> kHALF_WIDTH), static_cast<uint64_t>(state)};
-}
-
 } // namespace
-
-Hash128 hashOpaqueIdentity(std::string_view bytes)
-{
-    FnvValue state = kFNV_OFFSET;
-    fnvTag(state, Tag::kOpaqueIdentity);
-    fnvU64(state, static_cast<uint64_t>(bytes.size()));
-    for (char const value : bytes)
-    {
-        fnvByte(state, static_cast<uint8_t>(value));
-    }
-    return finishHash(state);
-}
 
 BlockHash hashBlock(BlockHash parent, int32_t const* tokens, size_t count, BlockKeyExtras const& extras,
     Hash128 const* perPositionMediaHash)

@@ -39,15 +39,20 @@ deps beyond the standard library + Pillow (image decode) are required.
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import io
 import json
 import logging
 import os
+import queue
 import subprocess
 import tempfile
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import numpy as np
 
 logger = logging.getLogger("cosmos3.robolab.server")
 
@@ -56,7 +61,10 @@ RAW_ACTION_DIM = 8
 
 
 class Cosmos3PolicyBackend:
-    """Runs the Edge-LLM Cosmos3 policy CLI and returns the JSON action dict."""
+    """Runs the Edge-LLM Cosmos3 policy worker and returns one action chunk."""
+
+    _READY_PREFIX = "@@EDGELLM_READY "
+    _RESPONSE_PREFIX = "@@EDGELLM_RESPONSE "
 
     def __init__(
         self,
@@ -64,18 +72,176 @@ class Cosmos3PolicyBackend:
         engine_dir: str,
         domain: str = "droid_lerobot",
         steps: int = 4,
+        guidance: float = 3.0,
+        viewpoint: str = "concat_view",
+        action_chunk_size: int = ACTION_CHUNK_SIZE,
+        seed: int = 0,
+        deterministic_seed: bool = False,
         extra_env: dict | None = None,
+        persistent: bool = True,
+        worker_timeout_s: float = 300.0,
     ) -> None:
         self.binary = binary
         self.engine_dir = engine_dir
         self.domain = domain
         self.steps = steps
+        self.guidance = guidance
+        self.viewpoint = viewpoint
+        self.action_chunk_size = action_chunk_size
         self.extra_env = extra_env or {}
+        self.persistent = persistent
+        if worker_timeout_s <= 0:
+            raise ValueError("worker_timeout_s must be positive")
+        self.worker_timeout_s = worker_timeout_s
+        self.seed = seed
+        self.deterministic_seed = deterministic_seed
+        # Match cosmos-framework's RoboLab server: --seed initializes one
+        # NumPy generator and each request draws a new diffusion seed.
+        self._rng = np.random.default_rng(seed)
+        self._rng_lock = threading.Lock()
+        self._worker_lock = threading.Lock()
+        self._worker: subprocess.Popen[str] | None = None
+        self._worker_messages: queue.Queue[str | None] | None = None
+        self._worker_reader: threading.Thread | None = None
         if not os.path.isfile(binary):
             raise FileNotFoundError(
                 f"cosmos3_policy_inference binary not found: {binary}")
         if not os.path.isdir(engine_dir):
             raise FileNotFoundError(f"engine dir not found: {engine_dir}")
+        self._validate_engine_contract()
+        if self.persistent:
+            self._start_worker()
+            atexit.register(self.close)
+
+    def _base_command(self) -> list[str]:
+        return [
+            self.binary,
+            "--engineDir",
+            self.engine_dir,
+            "--domain",
+            self.domain,
+            "--steps",
+            str(self.steps),
+            "--seed",
+            str(self.seed),
+            "--guidance",
+            str(self.guidance),
+            "--viewPoint",
+            self.viewpoint,
+            "--action-chunk-size",
+            str(self.action_chunk_size),
+        ]
+
+    def _read_worker_message(self, prefix: str) -> dict:
+        if self._worker is None or self._worker_messages is None:
+            raise RuntimeError("Cosmos3 policy worker is not running")
+        deadline = time.monotonic() + self.worker_timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Cosmos3 policy worker timed out waiting for {prefix.strip()} "
+                    f"after {self.worker_timeout_s:g}s")
+            try:
+                line = self._worker_messages.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise TimeoutError(
+                    f"Cosmos3 policy worker timed out waiting for {prefix.strip()} "
+                    f"after {self.worker_timeout_s:g}s") from exc
+            if line is None:
+                code = self._worker.poll()
+                raise RuntimeError(
+                    f"Cosmos3 policy worker exited before {prefix.strip()} (rc={code})"
+                )
+            if line.startswith(prefix):
+                return json.loads(line[len(prefix):])
+            logger.debug("policy worker: %s", line.rstrip())
+
+    @staticmethod
+    def _collect_worker_output(worker: subprocess.Popen[str],
+                               messages: queue.Queue[str | None]) -> None:
+        assert worker.stdout is not None
+        for line in worker.stdout:
+            messages.put(line)
+        messages.put(None)
+
+    def _start_worker(self) -> None:
+        env = dict(os.environ)
+        env.update(self.extra_env)
+        self._worker = subprocess.Popen(
+            [*self._base_command(), "--request-stream"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+        self._worker_messages = queue.Queue()
+        self._worker_reader = threading.Thread(
+            target=self._collect_worker_output,
+            args=(self._worker, self._worker_messages),
+            daemon=True,
+        )
+        self._worker_reader.start()
+        try:
+            self._read_worker_message(self._READY_PREFIX)
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        worker, self._worker = self._worker, None
+        reader, self._worker_reader = self._worker_reader, None
+        self._worker_messages = None
+        if worker is None:
+            return
+        if worker.stdin is not None:
+            try:
+                worker.stdin.close()
+            except BrokenPipeError:
+                pass
+        try:
+            worker.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            worker.terminate()
+            try:
+                worker.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                worker.kill()
+                worker.wait()
+        if reader is not None:
+            reader.join(timeout=1)
+
+    def _restart_worker(self) -> None:
+        self.close()
+        self._start_worker()
+
+    def _validate_engine_contract(self) -> None:
+        """Fail before serving if the engine was built for another recipe."""
+        config_path = os.path.join(self.engine_dir, "gen", "config.json")
+        with open(config_path) as fh:
+            config = json.load(fh)
+        chunk = int(config["action_chunk_size"])
+        fps = float(config["fps"])
+        raw_action_dim = int(config["raw_action_dim"])
+        state_rows = int(config.get("state_rows", 0))
+        use_state = bool(config.get("use_state", False))
+        action_offset = int(config["action_start_frame_offset"])
+        if chunk != self.action_chunk_size:
+            raise ValueError(
+                f"engine action_chunk_size={chunk}, expected {self.action_chunk_size}"
+            )
+        if abs(fps - 15.0) > 1e-6:
+            raise ValueError(f"engine fps={fps}, expected 15")
+        if (raw_action_dim != RAW_ACTION_DIM or state_rows != 1
+                or not use_state or action_offset != 0):
+            raise ValueError(
+                "Policy-DROID engine must have raw_action_dim=8, use_state=true, "
+                "one clean state row, and action_start_frame_offset=0; got "
+                f"raw_action_dim={raw_action_dim}, use_state={use_state}, "
+                f"state_rows={state_rows}, action_start_frame_offset={action_offset}"
+            )
 
     def _decode_image_to_png(self, image_field, tmpdir: str) -> str:
         """Materialize the request image to a PNG path.
@@ -122,11 +288,21 @@ class Cosmos3PolicyBackend:
             raise ValueError("request missing 'instruction'")
         domain = request.get("domain", self.domain)
         steps = int(request.get("steps", self.steps))
+        state = request.get("state")
+        if not isinstance(state, list) or len(state) != RAW_ACTION_DIM:
+            raise ValueError("request 'state' must contain 8 values")
+        if request.get("seed") is not None:
+            seed = int(request["seed"])
+        elif self.deterministic_seed:
+            seed = self.seed
+        else:
+            with self._rng_lock:
+                seed = int(self._rng.integers(0, 2**31))
         with tempfile.TemporaryDirectory() as tmpdir:
             image_path = self._decode_image_to_png(request["image"], tmpdir)
             out_path = os.path.join(tmpdir, "action.json")
             cmd = [
-                self.binary,
+                *self._base_command(),
                 "--image",
                 image_path,
                 "--prompt",
@@ -135,23 +311,72 @@ class Cosmos3PolicyBackend:
                 domain,
                 "--steps",
                 str(steps),
-                "--engineDir",
-                self.engine_dir,
+                "--seed",
+                str(seed),
+                "--warmup",
+                "0",
+                "--iters",
+                "1",
+                "--state",
+                ",".join(str(float(value)) for value in state),
                 "--output",
                 out_path,
             ]
-            env = dict(os.environ)
-            env.update(self.extra_env)
             t0 = time.perf_counter()
-            proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            if self.persistent:
+                payload = {
+                    "image": image_path,
+                    "prompt": instruction,
+                    "state": state,
+                    "output": out_path,
+                    "domain": domain,
+                    "steps": steps,
+                    "seed": seed,
+                    "guidance": self.guidance,
+                    "viewpoint": self.viewpoint,
+                }
+                with self._worker_lock:
+                    try:
+                        if self._worker is None or self._worker.stdin is None:
+                            raise RuntimeError(
+                                "Cosmos3 policy worker is not running")
+                        self._worker.stdin.write(json.dumps(payload) + "\n")
+                        self._worker.stdin.flush()
+                        response = self._read_worker_message(
+                            self._RESPONSE_PREFIX)
+                    except Exception:
+                        logger.exception(
+                            "policy worker failed; restarting it for the next request"
+                        )
+                        try:
+                            self._restart_worker()
+                        except Exception:
+                            logger.exception("policy worker restart failed")
+                        raise
+                if not response.get("ok"):
+                    raise RuntimeError("cosmos3_policy_inference failed: "
+                                       f"{response.get('error', response)}")
+            else:
+                env = dict(os.environ)
+                env.update(self.extra_env)
+                proc = subprocess.run(cmd,
+                                      capture_output=True,
+                                      text=True,
+                                      check=False,
+                                      timeout=self.worker_timeout_s,
+                                      env=env)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        f"cosmos3_policy_inference failed (rc={proc.returncode}):\n"
+                        f"{proc.stderr[-2000:]}")
             latency = time.perf_counter() - t0
-            if proc.returncode != 0 or not os.path.isfile(out_path):
+            if not os.path.isfile(out_path):
                 raise RuntimeError(
-                    f"cosmos3_policy_inference failed (rc={proc.returncode}):\n"
-                    f"{proc.stderr[-2000:]}")
+                    "cosmos3_policy_inference did not write its action output")
             with open(out_path) as fh:
                 result = json.load(fh)
         result.setdefault("meta", {})["server_latency_s"] = latency
+        result["meta"]["seed"] = seed
         return result
 
 
@@ -187,6 +412,8 @@ class _Handler(BaseHTTPRequestHandler):
                     "action_shape": [ACTION_CHUNK_SIZE, RAW_ACTION_DIM],
                     "domain": self.server.backend.domain,
                     "num_inference_steps": self.server.backend.steps,
+                    "guidance": self.server.backend.guidance,
+                    "viewpoint": self.server.backend.viewpoint,
                 },
             )
         else:
@@ -251,10 +478,27 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--domain", default="droid_lerobot")
     ap.add_argument("--steps", type=int, default=4)
+    ap.add_argument("--guidance", type=float, default=3.0)
+    ap.add_argument("--viewpoint", default="concat_view")
+    ap.add_argument("--action-chunk-size", type=int, default=ACTION_CHUNK_SIZE)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--worker-timeout", type=float, default=300.0)
+    ap.add_argument("--deterministic-seed",
+                    action="store_true",
+                    help="reuse --seed for every request instead of advancing "
+                    "the request RNG")
     args = ap.parse_args()
 
-    backend = Cosmos3PolicyBackend(args.binary, args.engine_dir, args.domain,
-                                   args.steps)
+    backend = Cosmos3PolicyBackend(args.binary,
+                                   args.engine_dir,
+                                   args.domain,
+                                   args.steps,
+                                   args.guidance,
+                                   args.viewpoint,
+                                   args.action_chunk_size,
+                                   args.seed,
+                                   args.deterministic_seed,
+                                   worker_timeout_s=args.worker_timeout)
     httpd = serve(backend, args.host, args.port)
     try:
         httpd.serve_forever()

@@ -39,6 +39,7 @@ struct InternViTConfig
     int64_t patchSizeW{0};                                    //!< Patch width in pixels
     int64_t blockImageSizeH{0};                               //!< Block image height
     int64_t blockImageSizeW{0};                               //!< Block image width
+    int64_t tokensPerBlock{0};                                //!< Tokens one tile contributes after pixel shuffle
     int32_t vocabSize{0};                                     //!< Vocabulary size
     int32_t imageTokenId{0};                                  //!< Token ID for image placeholder
     int32_t imgStartTokenId{151665};                          //!< Token ID for <img> tag
@@ -59,10 +60,11 @@ public:
     //! \brief Constructor for InternViTRunner
     //! \param[in] engineDir Directory containing the TensorRT engine files
     //! \param[in] stream CUDA stream for execution
+    //! \param[in] checkpointDir HF checkpoint directory used by runtime weight loading
     //! \throws std::runtime_error if engineDir does not contain valid engine files
     //! \throws std::runtime_error if buffer allocation fails
     //! \throws std::runtime_error if a CUDA error occurs
-    InternViTRunner(std::string const& engineDir, cudaStream_t stream);
+    InternViTRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
 
     ~InternViTRunner() noexcept = default;
 
@@ -131,12 +133,9 @@ private:
 
     InternViTConfig mConfig;             //!< InternViT configuration
     rt::Tensor mVitInput{};              //!< Vision encoder input tensor
-    rt::Tensor mImageMean{};             //!< Image mean tensor
-    rt::Tensor mImageStd{};              //!< Image standard deviation tensor
-    rt::Tensor mImageDevice{};           //!< Device image buffer (resized image)
-    rt::Tensor mNormalizedImageDevice{}; //!< Temporary normalized image buffer
-    rt::Tensor mRawImageDevice{};        //!< Raw (pre-resize) image device buffer for the GPU resize path
-    rt::Tensor mResizeTmpDevice{};       //!< Float scratch (horizontal pass) for the GPU resize
+    std::array<float, 3> mImageMean{};   //!< Per-channel normalisation mean, RGB
+    std::array<float, 3> mImageStd{};    //!< Per-channel normalisation standard deviation, RGB
+    rt::Tensor mNormalizedImageDevice{}; //!< Preprocessed frame, [1, H, W, 3] HALF
 };
 
 } // namespace rt

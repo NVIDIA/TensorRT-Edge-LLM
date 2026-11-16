@@ -18,7 +18,7 @@ export ENGINE_DIR=$HOME/tensorrt-edgellm-workspace/Cosmos3-Edge/engines
 ### 1. Export the Policy on CPU
 
 ```bash
-tensorrt-edgellm-export \
+trtedge export \
   "$POLICY_CHECKPOINT" \
   "$ONNX_DIR" \
   --task policy
@@ -27,20 +27,20 @@ tensorrt-edgellm-export \
 ### 2. Build All Policy Engines
 
 ```bash
-./build/experimental_models/cosmos3/examples/cosmos3_policy_build \
-  --onnxDir "$ONNX_DIR" \
-  --engineDir "$ENGINE_DIR"
+./build/bin/cosmos3_policy_build \
+  --onnx-dir "$ONNX_DIR" \
+  --engine-dir "$ENGINE_DIR"
 ```
 
-Use `--maxBatchSize N` when the runtime must accept more than one prompt.
+Use `--max-batch-size N` when the runtime must accept more than one prompt.
 
 ### 3. Run the Policy
 
 For one observation image:
 
 ```bash
-./build/experimental_models/cosmos3/examples/cosmos3_policy_inference \
-  --engineDir "$ENGINE_DIR" \
+./build/bin/cosmos3_policy_inference \
+  --engine-dir "$ENGINE_DIR" \
   --image observation.png \
   --prompt "Pick up the banana and place it in the bowl." \
   --output action.json
@@ -62,7 +62,7 @@ denoise-step count and `--seed` controls deterministic initial noise.
 ### 1. Export the Reasoner on CPU
 
 ```bash
-tensorrt-edgellm-export \
+trtedge export \
   "$REASONING_CHECKPOINT" \
   "$ONNX_DIR/reasoning" \
   --task reasoning
@@ -71,29 +71,64 @@ tensorrt-edgellm-export \
 ### 2. Build the LLM and Visual Engines
 
 ```bash
-./build/examples/llm/llm_build \
-  --onnxDir "$ONNX_DIR/reasoning/llm" \
-  --engineDir "$ENGINE_DIR/reasoning" \
-  --maxInputLen 2048 \
-  --maxKVCacheCapacity 4096
+./build/bin/llm_build \
+  --onnx-dir "$ONNX_DIR/reasoning/llm" \
+  --engine-dir "$ENGINE_DIR/reasoning" \
+  --max-input-len 2048 \
+  --max-kv-cache-capacity 4096
 
-./build/examples/multimodal/visual_build \
-  --onnxDir "$ONNX_DIR/reasoning/visual" \
-  --engineDir "$ENGINE_DIR/reasoning"
+./build/bin/visual_build \
+  --onnx-dir "$ONNX_DIR/reasoning/visual" \
+  --engine-dir "$ENGINE_DIR/reasoning"
 ```
 
 ### 3. Run Reasoning
 
-Create an input file using the standard
+For image reasoning, create an input file using the standard
 [image message format](../../format/input-format.md#message-fields), then run:
 
 ```bash
-./build/examples/llm/llm_inference \
-  --engineDir "$ENGINE_DIR/reasoning" \
-  --multimodalEngineDir "$ENGINE_DIR/reasoning" \
-  --inputFile input.json \
-  --outputFile output.json
+./build/bin/llm_inference \
+  --engine-dir "$ENGINE_DIR/reasoning" \
+  --multimodal-engine-dir "$ENGINE_DIR/reasoning" \
+  --input-file input.json \
+  --output-file output.json
 ```
+
+For native video-file input, launch the OpenAI-compatible server:
+
+```bash
+trtedge serve "$REASONING_CHECKPOINT" \
+  --cache-dir "$HOME/tensorrt-edgellm-workspace/cache" \
+  --max-image-tokens 4096 \
+  --max-image-tokens-per-image 4096 \
+  --allowed-local-media-path /data/media
+```
+
+Then send the video itself, rather than converting it to image content blocks:
+
+```bash
+curl -s http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "nvidia/Cosmos3-Edge",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {
+          "type": "video_url",
+          "video_url": {"url": "file:///data/media/example.mp4"},
+          "fps": 2.0
+        },
+        {"type": "text", "text": "Describe the actions in this video."}
+      ]
+    }],
+    "max_tokens": 256
+  }'
+```
+
+The server decodes and samples the clip to the visual engine profile and keeps
+it as one video input through the native runtime.
 
 See the [Cosmos3 model guide](../../../developer_guide/models/cosmos3.md) for
 the component contracts and implementation details.

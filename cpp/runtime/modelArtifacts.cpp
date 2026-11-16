@@ -20,12 +20,15 @@
 #include "common/checkMacros.h"
 #include "common/logger.h"
 #include "common/safetensorsUtils.h"
+#include "runtime/config/deploymentOptions.h"
 #include "runtime/config/llmEngineConfig.h"
 #include "runtime/decoding/decoderUtils.h"
+#include "runtime/exec/rtxRuntimeCache.h"
 
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -35,85 +38,6 @@ namespace rt
 {
 namespace
 {
-
-bool needsCachedBlockDraftDDTreeHybridBindings(DeploymentConfig const& deployment)
-{
-    return deployment.specConfig.has_value() && isCachedBlockDraftMode(deployment.specDecodeMode())
-        && deployment.specConfig->draftingTopK > 1 && deployment.base.numLinearAttnLayers > 0;
-}
-
-void validateCachedBlockDraftTreeMetadataBindings(
-    DeploymentConfig const& deployment, EngineExecutor const& baseExecutor)
-{
-    if (!deployment.specConfig.has_value() || !isCachedBlockDraftMode(deployment.specDecodeMode()))
-    {
-        return;
-    }
-
-    char const* modeName = deployment.specDecodeMode() == SpecDecodeMode::kJetSpec ? "JetSpec" : "DFlash";
-    char const* treeBaseFlag
-        = deployment.specDecodeMode() == SpecDecodeMode::kJetSpec ? "--jetspec-tree-base" : "--dflash-tree-base";
-    char const* linearBaseFlag
-        = deployment.specDecodeMode() == SpecDecodeMode::kJetSpec ? "--jetspec-base" : "--dflash-base";
-
-    bool const hasTreeParentIds = baseExecutor.hasIOTensor(binding_names::kTreeParentIds);
-    bool const hasTreeDepths = baseExecutor.hasIOTensor(binding_names::kTreeDepths);
-    bool const hasTreeMetadata = hasTreeParentIds || hasTreeDepths;
-    bool const usesDDTree = deployment.specConfig->draftingTopK > 1;
-    if (hasTreeMetadata)
-    {
-        ELLM_CHECK(hasTreeParentIds && hasTreeDepths,
-            std::string(modeName) + " tree-base engine must expose both INT32 tree metadata bindings '"
-                + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths + "'.");
-        ELLM_CHECK(baseExecutor.getBindingDataType(binding_names::kTreeParentIds) == nvinfer1::DataType::kINT32
-                && baseExecutor.getBindingDataType(binding_names::kTreeDepths) == nvinfer1::DataType::kINT32,
-            std::string(modeName) + " tree-base engine tree metadata bindings must be INT32: '"
-                + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths + "'.");
-        ELLM_CHECK(usesDDTree,
-            std::string(modeName) + " base engine was exported with " + treeBaseFlag
-                + ", but runtime is configured for linear mode because specDraftTopK=1. "
-                  "Use --specDraftTopK > 1 for DDTree, or re-export the base model with "
-                + linearBaseFlag + ".");
-    }
-
-    if (!needsCachedBlockDraftDDTreeHybridBindings(deployment))
-    {
-        return;
-    }
-
-    ELLM_CHECK(hasTreeParentIds && hasTreeDepths,
-        std::string(modeName) + " DDTree hybrid base engine requires INT32 tree metadata bindings '"
-            + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths
-            + "'. Re-export the base model with " + treeBaseFlag + ", then rebuild spec_base.engine.");
-}
-
-void validateMtpTreeMetadataBindings(DeploymentConfig const& deployment, EngineExecutor const& baseExecutor)
-{
-    if (!deployment.specConfig.has_value() || deployment.specDecodeMode() != SpecDecodeMode::kMTP
-        || deployment.base.numLinearAttnLayers == 0)
-    {
-        return;
-    }
-
-    bool const hasTreeParentIds = baseExecutor.hasIOTensor(binding_names::kTreeParentIds);
-    bool const hasTreeDepths = baseExecutor.hasIOTensor(binding_names::kTreeDepths);
-    bool const usesDDTree = deployment.specConfig->draftingTopK > 1;
-    ELLM_CHECK(hasTreeParentIds == hasTreeDepths,
-        std::string("MTP tree-base engine must expose both INT32 tree metadata bindings '")
-            + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths + "'.");
-    if (hasTreeParentIds)
-    {
-        ELLM_CHECK(baseExecutor.getBindingDataType(binding_names::kTreeParentIds) == nvinfer1::DataType::kINT32
-                && baseExecutor.getBindingDataType(binding_names::kTreeDepths) == nvinfer1::DataType::kINT32,
-            std::string("MTP tree-base engine tree metadata bindings must be INT32: '") + binding_names::kTreeParentIds
-                + "' and '" + binding_names::kTreeDepths + "'.");
-    }
-    ELLM_CHECK(usesDDTree == hasTreeParentIds,
-        usesDDTree ? "Hybrid MTP DDTree requires a tree-base engine. Rebuild with --tree-base before using "
-                     "--specDraftTopK > 1."
-                   : "Hybrid MTP base engine was built with --tree-base, but runtime is configured for linear MTP. "
-                     "Use --specDraftTopK > 1, or rebuild without --tree-base.");
-}
 
 //! Load the reduced-vocab mapping table and check it describes the vocab the base engine was built for.
 Tensor loadVocabMap(std::filesystem::path const& engineDir, LLMEngineConfig const& baseConfig, cudaStream_t stream)
@@ -132,7 +56,7 @@ Tensor loadVocabMap(std::filesystem::path const& engineDir, LLMEngineConfig cons
     check::check(vocabMapTensors[0].getShape().getNumDims() == 1, "vocab_map tensor should be 1D");
     check::check(vocabMapTensors[0].getShape()[0] == baseConfig.reducedVocabSize,
         "vocab_map tensor length should match base model reduced vocab size");
-    check::check(vocabMapTensors[0].getDataType() == nvinfer1::DataType::kINT32, "vocab_map tensor should be INT32");
+    check::check(vocabMapTensors[0].getDataType() == trt_edgellm::DataType::kINT32, "vocab_map tensor should be INT32");
     LOG_INFO("Base model vocabulary mapping table successfully loaded.");
     return std::move(vocabMapTensors[0]);
 }
@@ -158,9 +82,67 @@ std::unique_ptr<tokenizer::Tokenizer> loadTokenizer(
 
 } // namespace
 
+void validateRecurrentVerifyMetadataBindings(DeploymentConfig const& deployment, EngineExecutor const& baseExecutor)
+{
+    if (!deployment.specConfig.has_value() || deployment.base.numLinearAttnLayers == 0)
+    {
+        return;
+    }
+    ELLM_CHECK(
+        baseExecutor.hasIOTensor(binding_names::kTreeParentIds) && baseExecutor.hasIOTensor(binding_names::kTreeDepths),
+        "Recurrent verify engine must expose both INT32 tree metadata bindings; re-export and rebuild the artifact");
+    ELLM_CHECK(baseExecutor.getBindingDataType(binding_names::kTreeParentIds) == trt_edgellm::DataType::kINT32
+            && baseExecutor.getBindingDataType(binding_names::kTreeDepths) == trt_edgellm::DataType::kINT32,
+        "Recurrent verify engine tree metadata bindings must be INT32");
+    ELLM_CHECK(baseExecutor.hasIOTensor(binding_names::kSpecVerifyLayout),
+        "Recurrent verify engine requires spec_verify_layout; re-export and rebuild the artifact");
+    ELLM_CHECK(baseExecutor.getBindingDataType(binding_names::kSpecVerifyLayout) == trt_edgellm::DataType::kINT32,
+        "Recurrent verify engine spec_verify_layout must be INT32");
+}
+
+void ModelArtifacts::validateDeploymentOptions(DeploymentOptions const& options) const
+{
+    ELLM_CHECK(!options.offloadEmbedding || embedding.table.getDeviceType() == DeviceType::kCPU,
+        "--offloadEmbedding requires a host-backed embedding artifact; checkpoint-only embeddings are not offloaded.");
+    auto const normalizePath = [](std::filesystem::path const& path) {
+        auto const normalized = std::filesystem::absolute(path).lexically_normal();
+        return normalized.filename().empty() ? normalized.parent_path() : normalized;
+    };
+    auto const checkPath = [&normalizePath](std::filesystem::path const& requested, std::filesystem::path const& loaded,
+                               char const* name) {
+        ELLM_CHECK(requested.empty() || (!loaded.empty() && normalizePath(requested) == normalizePath(loaded)),
+            std::string("Injected ") + name + " conflicts with the source already loaded in ModelArtifacts.");
+    };
+    checkPath(options.checkpointDir, checkpointDir, "checkpointDir");
+    checkPath(options.draftCheckpointDir, draftCheckpointDir, "draftCheckpointDir");
+    if (options.runtimeCachePath)
+    {
+        ELLM_CHECK(deployment.runtimeCachePath.has_value(),
+            "Injected runtimeCachePath cannot replace the cache of an already-loaded executor.");
+        checkPath(*options.runtimeCachePath, *deployment.runtimeCachePath, "runtimeCachePath");
+    }
+    if (!options.draftingConfig)
+    {
+        return;
+    }
+    ELLM_CHECK(deployment.specConfig.has_value(), "Injected draftingConfig requires speculative ModelArtifacts.");
+    ELLM_CHECK(deployment.draft.has_value(), "Injected draftingConfig requires a draft engine configuration.");
+    auto const requested = resolveSpecDecodeDraftingConfig(deployment.base, *deployment.draft, *options.draftingConfig);
+    auto const resolved = *deployment.draftingConfig();
+    ELLM_CHECK(std::tie(requested.draftTopK, requested.draftingStep, requested.proposalTokens, requested.verifyTokens,
+                   requested.dsparkSchedulerMode, requested.dsparkConfidenceThreshold, requested.dsparkMinProposalLen,
+                   requested.dsparkMaxProposalLen, requested.dsparkW2Backend)
+            == std::tie(resolved.draftTopK, resolved.draftingStep, resolved.proposalTokens, resolved.verifyTokens,
+                resolved.dsparkSchedulerMode, resolved.dsparkConfidenceThreshold, resolved.dsparkMinProposalLen,
+                resolved.dsparkMaxProposalLen, resolved.dsparkW2Backend),
+        "Injected draftingConfig conflicts with the resolved ModelArtifacts deployment.");
+}
+
 ModelArtifacts ModelArtifacts::loadFromEngineDir(std::filesystem::path const& engineDir,
     std::optional<SpecDecodeDraftingConfig> const& draftingConfig, std::filesystem::path const& checkpointDir,
-    std::filesystem::path const& draftCheckpointDir, cudaStream_t stream)
+    std::filesystem::path const& draftCheckpointDir, bool contextReuseEnabled, cudaStream_t stream,
+    std::optional<std::filesystem::path> const& runtimeCachePath, bool offloadEmbedding,
+    std::function<void()> const& checkCancelled)
 {
     ModelArtifacts artifacts;
     artifacts.checkpointDir = checkpointDir;
@@ -170,22 +152,26 @@ ModelArtifacts ModelArtifacts::loadFromEngineDir(std::filesystem::path const& en
         = draftingConfig.has_value() ? engineDir / "base_config.json" : engineDir / "config.json";
 
     // Finish checkpoint reads and weight conversion before any engine can run.
-    artifacts.weights.load(engineDir, baseConfigPath, stream, artifacts.checkpointDir);
+    artifacts.weights.load(
+        engineDir, baseConfigPath, stream, artifacts.checkpointDir, {}, std::nullopt, std::nullopt, checkCancelled);
     if (auto embedding = artifacts.weights.takeEmbedding())
     {
         artifacts.embedding.table = std::move(*embedding);
     }
     else
     {
-        artifacts.embedding = loadEmbeddingTable(engineDir / "embedding.safetensors", stream);
+        artifacts.embedding = loadEmbeddingTable(engineDir / "embedding.safetensors", stream, offloadEmbedding);
     }
-    artifacts.pleEmbedding = artifacts.weights.takePleEmbedding();
 
     std::optional<std::filesystem::path> const draftConfigPath = draftingConfig.has_value()
         ? std::optional<std::filesystem::path>{engineDir / "draft_config.json"}
         : std::nullopt;
 
     artifacts.deployment = createDeploymentConfig(baseConfigPath, draftConfigPath, draftingConfig);
+    // EngineExecutor captures the active KV-pool geometry in its tensor registry.
+    // Select the immutable runtime policy before constructing that registry.
+    artifacts.deployment.selectSwaKVCacheMode(contextReuseEnabled);
+    artifacts.deployment.runtimeCachePath = runtimeCachePath;
     if (draftingConfig.has_value() && artifacts.deployment.specDecodeMode() == SpecDecodeMode::kMTP)
     {
         ELLM_CHECK(artifacts.draftCheckpointDir.empty(),
@@ -197,13 +183,19 @@ ModelArtifacts ModelArtifacts::loadFromEngineDir(std::filesystem::path const& en
         ? engineDir / "spec_base.engine"
         : (artifacts.deployment.base.isDiffusionBackbone ? engineDir / "dllm.engine" : engineDir / "llm.engine");
 
+    std::shared_ptr<RtxRuntimeCache> runtimeCache;
+#if IS_TRT_RTX
+    runtimeCache = RtxRuntimeCache::create(baseEnginePath, artifacts.deployment.runtimeCachePath);
+#endif
+
     try
     {
         std::optional<int32_t> const specDecodeBaseOutputHiddenDim = artifacts.deployment.specConfig.has_value()
             ? std::optional<int32_t>{artifacts.deployment.specConfig->baseOutputHiddenDim}
             : std::nullopt;
         artifacts.baseExecutor
-            = EngineExecutor::createForLLM(baseEnginePath, artifacts.deployment.base, specDecodeBaseOutputHiddenDim);
+            = EngineExecutor::createForLLM(baseEnginePath, artifacts.deployment.base, specDecodeBaseOutputHiddenDim,
+                runtimeCache, EngineRefitOptions{artifacts.weights.takeRefitWeights(), stream});
     }
     catch (std::exception const& e)
     {
@@ -214,24 +206,25 @@ ModelArtifacts ModelArtifacts::loadFromEngineDir(std::filesystem::path const& en
 
     artifacts.weights.validateAgainstEngine(*artifacts.baseExecutor, "base");
     validateAgainstEngine(artifacts.deployment.base, *artifacts.baseExecutor, "base");
-    validateCachedBlockDraftTreeMetadataBindings(artifacts.deployment, *artifacts.baseExecutor);
-    validateMtpTreeMetadataBindings(artifacts.deployment, *artifacts.baseExecutor);
+    validateRecurrentVerifyMetadataBindings(artifacts.deployment, *artifacts.baseExecutor);
 
     // Validate the draft engine ABI before its sidecar geometry is used to allocate physical cache resources.
     if (draftingConfig.has_value())
     {
-        artifacts.draftExecutor = decoder_utils::loadDraftEngine(engineDir, artifacts.deployment);
         std::filesystem::path const draftConfig = engineDir / "draft_config.json";
         if (artifacts.deployment.specDecodeMode() == SpecDecodeMode::kMTP)
         {
             // Native MTP draft weights ship inside the base checkpoint, so there is no separate target to fall back to.
-            artifacts.draftWeights.load(engineDir, draftConfig, stream, artifacts.checkpointDir);
+            artifacts.draftWeights.load(engineDir, draftConfig, stream, artifacts.checkpointDir, {}, std::nullopt,
+                std::nullopt, checkCancelled);
         }
         else
         {
-            artifacts.draftWeights.load(
-                engineDir, draftConfig, stream, artifacts.draftCheckpointDir, artifacts.checkpointDir);
+            artifacts.draftWeights.load(engineDir, draftConfig, stream, artifacts.draftCheckpointDir,
+                artifacts.checkpointDir, std::nullopt, std::nullopt, checkCancelled);
         }
+        artifacts.draftExecutor = decoder_utils::loadDraftEngine(engineDir, artifacts.deployment, runtimeCache,
+            EngineRefitOptions{artifacts.draftWeights.takeRefitWeights(), stream});
         // Name the mode in the label. Loading moved here from the decoders, and each of them used to pass its own
         // ("dflash_draft", "dspark_draft", ...); one call site would otherwise report every mismatch as plain "draft"
         // and leave the reader to work out which speculative mode produced it.

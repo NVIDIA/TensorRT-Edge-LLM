@@ -4,7 +4,7 @@
     "top_p": 1.0,
     "top_k": 1,
     "num_logprobs": 1,
-    "max_generate_length": 2,
+    "max_generate_length": 5,
     "apply_chat_template": false,
     "add_generation_prompt": false,
     "context_cache_commit_policy": "prefill_state_only",

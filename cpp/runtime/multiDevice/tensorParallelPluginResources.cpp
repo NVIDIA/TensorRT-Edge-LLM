@@ -77,7 +77,6 @@ TensorParallelPluginResources::TensorParallelPluginResources(TensorParallelPlugi
     mRuntimeCollectives = ncclResources->runtimeCollectives();
     ELLM_CHECK(mRuntimeCollectives != nullptr, "NCCL path did not provide runtime collective resources.");
     mAllReducePaths.push_back(std::move(ncclResources));
-
 }
 
 TensorParallelPluginResources::~TensorParallelPluginResources() noexcept = default;

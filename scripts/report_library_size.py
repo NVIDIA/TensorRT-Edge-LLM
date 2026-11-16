@@ -41,15 +41,15 @@ _FATBIN_SECTIONS = (".nv_fatbin", "__nv_relfatbin", ".nvFatBinSegment")
 
 # Artifacts reported for every build, relative to the build directory.
 _ARTIFACTS = (
-    "libNvInfer_edgellm_plugin.so.1.0",
-    "cpp/libedgellmCore.a",
-    "cpp/libedgellmKernels.a",
-    "cpp/libedgellmBuilder.a",
-    "examples/llm/llm_build",
-    "examples/llm/llm_inference",
-    "examples/llm/llm_stream",
-    "examples/llm/llm_bench",
-    "unittests/unitTestRuntime",
+    "lib/libNvInfer_edgellm_plugin.so.1.0",
+    "lib/libedgellmCore.a",
+    "lib/libedgellmKernels.a",
+    "lib/libedgellmBuilder.a",
+    "bin/llm_build",
+    "bin/llm_inference",
+    "bin/llm_stream",
+    "bin/llm_bench",
+    "bin/unitTests/unitTestRuntime",
 )
 
 

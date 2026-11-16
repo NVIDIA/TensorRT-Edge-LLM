@@ -46,6 +46,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .policy_geometry import (DEFAULT_ACTION_CHUNK_SIZE, DEFAULT_DOMAIN,
+                              DEFAULT_DOMAIN_ID, DEFAULT_FPS,
+                              DEFAULT_RAW_ACTION_DIM,
+                              TEMPORAL_COMPRESSION_FACTOR)
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,7 +71,9 @@ class Cosmos3GenConfig:
     latent_channel: int = 48
     latent_patch_size: int = 2
     max_action_dim: int = 64
-    action_chunk_size: int = 16
+    action_chunk_size: int = DEFAULT_ACTION_CHUNK_SIZE
+    raw_action_dim: int = DEFAULT_RAW_ACTION_DIM
+    state_rows: int = 0
     num_embodiment_domains: int = 32
 
     # Timestep embedder.
@@ -74,17 +81,14 @@ class Cosmos3GenConfig:
     timestep_max_period: int = 10000
     timestep_scale: float = 0.001
 
-    # Export-time OPT latent grid (video latent is [B, C, t, h, w]).  The graph
-    # is dynamic in t/h/w; this is only the optimization profile point.  The
-    # canonical policy request (one image, num_frames=17, fps=5) denoises
-    # t=5, h=34, w=46 -> 17x23 = 1955 video tokens (+16 action tokens).
-    # (step0 video-only warmup is t=1,32,32.)
+    # Video latent grid [t, h, w]; the graph is dynamic in t only, so h and w
+    # are baked into the exported model.
     latent_t: int = 5
     latent_h: int = 34
     latent_w: int = 46
 
     # Embodiment domain baked into action_proj_in / action_proj_out at export.
-    domain_id: int = 8
+    domain_id: int = DEFAULT_DOMAIN_ID
 
     @property
     def patch_latent_dim(self) -> int:
@@ -106,7 +110,11 @@ class Cosmos3GenConfig:
 
     @property
     def num_gen_tokens(self) -> int:
-        return self.num_video_tokens + self.action_chunk_size
+        return self.num_video_tokens + self.action_token_count
+
+    @property
+    def action_token_count(self) -> int:
+        return self.action_chunk_size + self.state_rows
 
 
 class RMSNorm(nn.Module):
@@ -315,24 +323,26 @@ class Cosmos3Gen(nn.Module):
         self.norm_moe_gen = RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps)
 
     # -- patchify / unpatchify (reference transformer_cosmos3.patchify) ------
-    # Dynamic in t/h/w; assumes h, w are multiples of latent_patch_size (true for
-    # the policy grids: 32, 34, 46 with p=2 — no padding needed).
     def _patchify(self, latents: torch.Tensor) -> torch.Tensor:
-        b, c, t, h, w = latents.shape
+        b, c, t, _, _ = latents.shape
         p = self.cfg.latent_patch_size
-        hp, wp = h // p, w // p
+        hp, wp = self.cfg.hp, self.cfg.wp
+        pad_h = hp * p - self.cfg.latent_h
+        pad_w = wp * p - self.cfg.latent_w
+        if pad_h or pad_w:
+            latents = F.pad(latents, (0, pad_w, 0, pad_h))
         x = latents.reshape(b, c, t, hp, p, wp, p)
         x = x.permute(0, 2, 3, 5, 4, 6, 1)  # [B, t, hp, wp, p, p, C]
         return x.reshape(b, t * hp * wp, p * p * c)
 
-    def _unpatchify(self, tokens: torch.Tensor, t: int, h: int,
-                    w: int) -> torch.Tensor:
+    def _unpatchify(self, tokens: torch.Tensor, t: int) -> torch.Tensor:
         b = tokens.shape[0]
         p, c = self.cfg.latent_patch_size, self.cfg.latent_channel
-        hp, wp = h // p, w // p
+        hp, wp = self.cfg.hp, self.cfg.wp
         x = tokens.reshape(b, t, hp, wp, p, p, c)
         x = x.permute(0, 6, 1, 2, 4, 3, 5)  # [B, C, t, hp, p, wp, p]
-        return x.reshape(b, c, t, hp * p, wp * p)
+        x = x.reshape(b, c, t, hp * p, wp * p)
+        return x[:, :, :, :self.cfg.latent_h, :self.cfg.latent_w]
 
     def forward(
         self,
@@ -353,7 +363,7 @@ class Cosmos3Gen(nn.Module):
 
         video_latent = video_latent.to(io_type)
         action_latent = action_latent.to(io_type)
-        _, _, t_lat, h_lat, w_lat = video_latent.shape
+        t_lat = video_latent.shape[2]
 
         # Video tokens.
         video_tokens = self.proj_in(self._patchify(video_latent))
@@ -390,8 +400,8 @@ class Cosmos3Gen(nn.Module):
         video_part = hidden[:, :s_video, :]
         action_part = hidden[:, s_video:, :]
 
-        video_pred = self._unpatchify(self.proj_out(video_part), t_lat, h_lat,
-                                      w_lat).to(torch.float32)
+        video_pred = self._unpatchify(self.proj_out(video_part),
+                                      t_lat).to(torch.float32)
         action_pred = (torch.matmul(action_part, self.action_out_weight) +
                        self.action_out_bias).to(torch.float32)
         return video_pred, action_pred
@@ -414,7 +424,7 @@ class Cosmos3Gen(nn.Module):
                                    device=device,
                                    dtype=torch.float32)
         action_latent = torch.randn(b,
-                                    cfg.action_chunk_size,
+                                    cfg.action_token_count,
                                     cfg.max_action_dim,
                                     device=device,
                                     dtype=torch.float32)
@@ -426,7 +436,7 @@ class Cosmos3Gen(nn.Module):
                                       device=device,
                                       dtype=torch.float32)
         action_noisy_mask = torch.ones(b,
-                                       cfg.action_chunk_size,
+                                       cfg.action_token_count,
                                        1,
                                        device=device,
                                        dtype=torch.float32)
@@ -461,7 +471,7 @@ class Cosmos3Gen(nn.Module):
             "token_noisy_mask",
             "action_noisy_mask",
             "rope_rotary_cos_sin",
-            "attention_pos_id",
+            "attention_position_ids",
         ] + [f"und_k_layer{i:02d}"
              for i in range(n)] + [f"und_v_layer{i:02d}" for i in range(n)])
         output_names = ["video_pred", "action_pred"]
@@ -471,16 +481,12 @@ class Cosmos3Gen(nn.Module):
         action = torch.export.Dim("action_len", min=0, max=4096)
         gen = torch.export.Dim("gen_len", min=1, max=262144)
         vtok = torch.export.Dim("video_tokens", min=1, max=262144)
-        # Latent grid is dynamic: t, h, w each free (h/w multiples of patch size).
+        # Temporal extent is dynamic; the engine profile owns a fixed spatial grid.
         lt = torch.export.Dim("latent_t", min=1, max=256)
-        lh = torch.export.Dim("latent_h", min=2, max=512)
-        lw = torch.export.Dim("latent_w", min=2, max=512)
         dynamic_shapes = (
             {
                 0: batch,
-                2: lt,
-                3: lh,
-                4: lw
+                2: lt
             },  # video_latent [B,C,t,h,w]
             {
                 0: batch,
@@ -603,24 +609,10 @@ def build_cosmos3_gen(cfg: Cosmos3GenConfig, weights: dict,
 # Component contract (consumed by the experimental Cosmos3 builder/runtime)
 # ---------------------------------------------------------------------------
 
-# Canonical policy request: one input image, num_frames=17, fps=5, and an
-# action chunk of [16, 8] (16 future action timesteps, 8 values each). The 17
-# generated frames are the rollout for the chunk, not a 17-frame input video.
-ACTION_CHUNK_SIZE = 16
-DEFAULT_NUM_FRAMES = 17
-DEFAULT_FPS = 5.0
-# Wan VAE temporal compression (one leading conditioning frame, then 4x).
-TEMPORAL_COMPRESSION_FACTOR = 4
 # Largest video-subsample factor the GEN engine's dynamic profile must admit. The
 # regular request (vsf=1) is the profile opt/max; the vsf-reduced request is the
 # profile min. See _latent_t_for_subsample.
 DEFAULT_MAX_VIDEO_SUBSAMPLE_FACTOR = 4
-# droid_lerobot raw action head: 3 position + 6D rotation + gripper = 10 dims
-# (the 8-value DROID control action is derived downstream by converting the 6D
-# rotation to Euler angles). Dims >= raw_action_dim are zeroed padding.
-DEFAULT_RAW_ACTION_DIM = 10
-DEFAULT_DOMAIN = "droid_lerobot"
-DEFAULT_DOMAIN_ID = 8
 DEFAULT_NUM_INFERENCE_STEPS = 4
 DEFAULT_FLOW_SHIFT = 5.0
 
@@ -628,14 +620,20 @@ DEFAULT_FLOW_SHIFT = 5.0
 def gen_config_from_transformer(
         tcfg: dict,
         action_chunk_size: "int | None" = None,
-        num_frames: "int | None" = None) -> Cosmos3GenConfig:
+        num_frames: "int | None" = None,
+        raw_action_dim: int = DEFAULT_RAW_ACTION_DIM,
+        state_rows: int = 0,
+        latent_height: "int | None" = None,
+        latent_width: "int | None" = None,
+        domain_id: "int | None" = None) -> Cosmos3GenConfig:
     """Build the GEN config object from a Cosmos3 transformer config.
 
     ``action_chunk_size`` / ``num_frames`` are request-time parameters (the
     canonical policy request uses 16 / 17); ``num_frames`` sets the temporal
     latent extent ``latent_t = (num_frames - 1) // 4 + 1``.
     """
-    if num_frames is not None and (num_frames - 1) % 4 != 0:
+    if num_frames is not None and (num_frames -
+                                   1) % TEMPORAL_COMPRESSION_FACTOR != 0:
         raise ValueError(
             f"num_frames must be 4k+1 (got {num_frames}); the VAE compresses "
             "time 4x with a single leading conditioning frame.")
@@ -655,12 +653,19 @@ def gen_config_from_transformer(
         max_action_dim=tcfg.get("max_action_dim", 64),
         num_embodiment_domains=tcfg.get("num_embodiment_domains", 32),
         timestep_scale=tcfg.get("timestep_scale", 0.001),
-        action_chunk_size=(action_chunk_size
-                           if action_chunk_size is not None else tcfg.get(
-                               "action_chunk_size", ACTION_CHUNK_SIZE)),
-        latent_t=((num_frames - 1) // 4 +
+        action_chunk_size=(action_chunk_size if action_chunk_size is not None
+                           else tcfg.get("action_chunk_size",
+                                         DEFAULT_ACTION_CHUNK_SIZE)),
+        raw_action_dim=raw_action_dim,
+        state_rows=state_rows,
+        latent_t=((num_frames - 1) // TEMPORAL_COMPRESSION_FACTOR +
                   1 if num_frames is not None else Cosmos3GenConfig.latent_t),
-        domain_id=tcfg.get("domain_id", DEFAULT_DOMAIN_ID),
+        latent_h=(latent_height
+                  if latent_height is not None else Cosmos3GenConfig.latent_h),
+        latent_w=(latent_width
+                  if latent_width is not None else Cosmos3GenConfig.latent_w),
+        domain_id=(domain_id if domain_id is not None else tcfg.get(
+            "domain_id", DEFAULT_DOMAIN_ID)),
     )
 
 
@@ -683,6 +688,7 @@ def make_gen_config(
         tcfg: dict,
         max_und_len: int,
         fps: float = DEFAULT_FPS,
+        domain: "str | None" = DEFAULT_DOMAIN,
         max_video_subsample_factor: int = DEFAULT_MAX_VIDEO_SUBSAMPLE_FACTOR,
         min_action_chunk: "int | None" = None,
         max_action_chunk: "int | None" = None) -> dict:
@@ -697,13 +703,16 @@ def make_gen_config(
     # chunk (cfg.action_chunk_size) is the opt point, so the regular request stays
     # the optimization target. Defaults keep min == opt == max = the canonical
     # chunk (action axis fixed, behavior identical) unless the caller widens it.
-    action_len = cfg.action_chunk_size
-    max_action = max(
-        action_len,
-        max_action_chunk if max_action_chunk is not None else action_len)
-    min_action = min(
-        action_len,
-        min_action_chunk if min_action_chunk is not None else action_len)
+    action_chunk = cfg.action_chunk_size
+    max_action_chunk = max(
+        action_chunk,
+        max_action_chunk if max_action_chunk is not None else action_chunk)
+    min_action_chunk = min(
+        action_chunk,
+        min_action_chunk if min_action_chunk is not None else action_chunk)
+    action_len = cfg.action_token_count
+    min_action = min_action_chunk + cfg.state_rows
+    max_action = max_action_chunk + cfg.state_rows
     opt_und = min(32, max_und_len)
 
     # The video-token sequence axis is DYNAMIC: the regular request (vsf=1,
@@ -712,7 +721,7 @@ def make_gen_config(
     # engine then serves any request whose video-token count lies in [min, max];
     # the runtime binds the per-request temporal extent (Cosmos3PolicyRunner).
     min_latent_t = min(
-        _latent_t_for_subsample(action_len, max_video_subsample_factor),
+        _latent_t_for_subsample(action_chunk, max_video_subsample_factor),
         cfg.latent_t)
     min_v_tok = min_latent_t * cfg.hp * cfg.wp
     # GEN sequence = video tokens + action tokens; both axes vary, so the gen-len
@@ -747,7 +756,7 @@ def make_gen_config(
         _range([1, min_action, 1], [1, action_len, 1], [1, max_action, 1]),
         "rope_rotary_cos_sin":
         _range([1, min_g_tok, hd], [1, opt_g_tok, hd], [1, max_g_tok, hd]),
-        "attention_pos_id":
+        "attention_position_ids":
         _range([1, min_g_tok], [1, opt_g_tok], [1, max_g_tok]),
     }
     for i in range(cfg.num_hidden_layers):
@@ -804,10 +813,14 @@ def make_gen_config(
         "latent_patch_size": cfg.latent_patch_size,
         "num_video_tokens": cfg.num_video_tokens,
         "action_chunk_size": cfg.action_chunk_size,
-        "raw_action_dim": DEFAULT_RAW_ACTION_DIM,
+        "action_token_count": cfg.action_token_count,
+        "state_rows": cfg.state_rows,
+        "history_length": cfg.state_rows,
+        "use_state": cfg.state_rows > 0,
+        "raw_action_dim": cfg.raw_action_dim,
         "max_action_dim": cfg.max_action_dim,
         "num_embodiment_domains": cfg.num_embodiment_domains,
-        "domain": DEFAULT_DOMAIN,
+        "domain": domain,
         "domain_id": cfg.domain_id,
         "timestep_scale": cfg.timestep_scale,
         "num_inference_steps": DEFAULT_NUM_INFERENCE_STEPS,
@@ -815,11 +828,11 @@ def make_gen_config(
         "video_latent_frames": cfg.latent_t,
         "min_video_latent_frames": min_latent_t,
         "max_video_subsample_factor": max_video_subsample_factor,
-        "min_action_chunk_size": min_action,
-        "max_action_chunk_size": max_action,
+        "min_action_chunk_size": min_action_chunk,
+        "max_action_chunk_size": max_action_chunk,
         "fps": float(fps),
         "base_fps": 24.0,
-        "temporal_compression_factor": 4,
+        "temporal_compression_factor": TEMPORAL_COMPRESSION_FACTOR,
         "temporal_modality_margin": 15000,
-        "action_start_frame_offset": 1,
+        "action_start_frame_offset": 0 if cfg.state_rows else 1,
     }

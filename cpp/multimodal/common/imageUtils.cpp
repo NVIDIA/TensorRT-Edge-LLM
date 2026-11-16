@@ -92,7 +92,7 @@ std::vector<std::pair<int64_t, int64_t>> getAllSupportedAspectRatios(int64_t min
  * @brief Choose target resize (H, W) for InternVL/Phi-4-multimodal style vision frontends.
  *
  * Given an input image (height, width) and the allowed token range, this function:
- * 1) Converts token bounds to tile bounds (each tile produces 256 tokens; we also add a thumbnail, so subtract 1).
+ * 1) Converts token bounds to tile bounds (using `tokensPerBlock`; we also add a thumbnail, so subtract 1).
  * 2) Enumerates candidate aspect-ratio grids (tw, th) within [minTiles, maxTiles].
  * 3) Picks the grid whose aspect ratio tw/th is closest to the original width/height.
  * 4) Tie-breaker: if two grids are equally close by ratio, prefer the one whose pixel capacity
@@ -103,12 +103,13 @@ std::vector<std::pair<int64_t, int64_t>> getAllSupportedAspectRatios(int64_t min
  * Note: This version uses floating-point for readability; near-ties are rare in practice.
  */
 std::tuple<int64_t, int64_t> computeBestBlockGridForResize(int64_t height, int64_t width,
-    int64_t minImageTokensPerImage, int64_t maxImageTokensPerImage, int64_t blockImageSizeH, int64_t blockImageSizeW)
+    int64_t minImageTokensPerImage, int64_t maxImageTokensPerImage, int64_t blockImageSizeH, int64_t blockImageSizeW,
+    int64_t tokensPerBlock)
 {
     // -1 to reserve space for a potential thumbnail (always added for Phi4MM; skipped for single-block images in
     // InternVL)
-    int64_t const minImageTiles = std::max<int64_t>(1, minImageTokensPerImage / 256 - 1);
-    int64_t const maxImageTiles = std::max<int64_t>(1, maxImageTokensPerImage / 256 - 1);
+    int64_t const minImageTiles = std::max<int64_t>(1, minImageTokensPerImage / tokensPerBlock - 1);
+    int64_t const maxImageTiles = std::max<int64_t>(1, maxImageTokensPerImage / tokensPerBlock - 1);
     auto const targetRatios = getAllSupportedAspectRatios(minImageTiles, maxImageTiles);
     double const aspectRatio = static_cast<double>(width) / static_cast<double>(height);
     int64_t const area = width * height;

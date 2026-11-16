@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,9 +19,37 @@
 
 import cutlass
 import cutlass.cute as cute
-import cutlass.utils as utils
 
 from cutlass.cute.typing import Int32, Boolean
+
+
+class GdnWorkTileInfo:
+    """Work-tile state supporting GDN's nested ``(m, 0, (b, h))`` coordinate."""
+
+    def __init__(self, tile_idx: cute.Coord, is_valid_tile: Boolean):
+        self._tile_idx = tile_idx
+        self._is_valid_tile = Boolean(is_valid_tile)
+
+    def __extract_mlir_values__(self):
+        tile_values = cutlass.extract_mlir_values(self._tile_idx)
+        self._tile_value_count = len(tile_values)
+        return tile_values + cutlass.extract_mlir_values(self._is_valid_tile)
+
+    def __new_from_mlir_values__(self, values):
+        tile_values = values[:self._tile_value_count]
+        valid_values = values[self._tile_value_count:]
+        tile_idx = cutlass.new_from_mlir_values(self._tile_idx, tile_values)
+        is_valid_tile = cutlass.new_from_mlir_values(
+            self._is_valid_tile, valid_values)
+        return GdnWorkTileInfo(tile_idx, is_valid_tile)
+
+    @property
+    def is_valid_tile(self):
+        return self._is_valid_tile
+
+    @property
+    def tile_idx(self):
+        return self._tile_idx
 
 
 class GdnStaticTileSchedulerParams:
@@ -124,7 +152,7 @@ class GdnStaticTileScheduler:
     ) -> Boolean:
         return current_idx * q_tiler < seqlen_q
 
-    def get_current_work(self, *, loc=None, ip=None) -> utils.WorkTileInfo:
+    def get_current_work(self, *, loc=None, ip=None) -> GdnWorkTileInfo:
         is_valid = (
             self._current_work_linear_idx < self._num_blocks
             if self._is_persistent
@@ -146,7 +174,7 @@ class GdnStaticTileScheduler:
             (blk_coord[1], blk_coord[2]),
         )
 
-        return utils.WorkTileInfo(cur_tile_coord, is_valid)
+        return GdnWorkTileInfo(cur_tile_coord, is_valid)
 
     def initial_work_tile_info(self, *, loc=None, ip=None):
         return self.get_current_work(loc=loc, ip=ip)
@@ -157,20 +185,37 @@ class GdnStaticTileScheduler:
         self._is_first_block = False
 
     def __extract_mlir_values__(self):
-        values = cutlass.extract_mlir_values(self._params)
-        values.extend(cutlass.extract_mlir_values(self._current_work_linear_idx))
-        values.extend(cutlass.extract_mlir_values(self._blk_coord))
-        values.extend(cutlass.extract_mlir_values(self._grid_shape))
+        values = []
+        self._value_counts = []
+        for obj in (
+            self._params,
+            self._current_work_linear_idx,
+            self._blk_coord,
+            self._grid_shape,
+        ):
+            obj_values = cutlass.extract_mlir_values(obj)
+            values.extend(obj_values)
+            self._value_counts.append(len(obj_values))
         return values
 
     def __new_from_mlir_values__(self, values):
-        assert len(values) == 10
-        new_params = cutlass.new_from_mlir_values(self._params, values[0:3])
-        new_current_work_linear_idx = cutlass.new_from_mlir_values(
-            self._current_work_linear_idx, [values[3]]
-        )
-        new_blk_coord = cutlass.new_from_mlir_values(self._blk_coord, values[4:7])
-        new_grid_shape = cutlass.new_from_mlir_values(self._grid_shape, values[7:])
+        reconstructed = []
+        start = 0
+        for obj, value_count in zip(
+            (
+                self._params,
+                self._current_work_linear_idx,
+                self._blk_coord,
+                self._grid_shape,
+            ),
+            self._value_counts,
+            strict=True,
+        ):
+            reconstructed.append(
+                cutlass.new_from_mlir_values(
+                    obj, values[start:start + value_count]))
+            start += value_count
+        new_params, new_current_work_linear_idx, new_blk_coord, new_grid_shape = reconstructed
         return GdnStaticTileScheduler(
             new_params,
             new_current_work_linear_idx,

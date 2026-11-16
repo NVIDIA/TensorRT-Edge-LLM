@@ -16,7 +16,13 @@
 real activations (a plain ``model(input_ids=...)`` never hits CP, leaving
 its input_quantizer amax un-initialised → degenerate FP8 scales).
 Dispatches by ``has_thinker``: Omni runs Thinker + projection → Talker;
-Qwen3-TTS feeds Talker's token embeddings directly.
+Qwen3-TTS has no Thinker and projects its own text embeddings instead.
+
+The two families keep their codec tokens in the same place but their text
+tokens in different ones, so the paths are not interchangeable:
+``talker.get_input_embeddings()`` is the *codec* table in both, while
+Qwen3-TTS holds text in a separate ``get_text_embeddings()`` that must be
+resized by ``text_projection``.
 """
 
 from __future__ import annotations
@@ -109,17 +115,24 @@ def _talker_inputs_from_thinker(model, input_ids, talker_cfg, accept_layer,
 
 
 def _talker_inputs_from_text(model, input_ids):
-    """Qwen3-TTS path: Talker consumes its own token embeddings directly (no Thinker)."""
+    """Qwen3-TTS path: text ids -> text embedding -> ``text_projection``.
+
+    ``get_input_embeddings()`` on the TTS Talker is the codec table
+    (``vocab_size`` rows), so feeding it text-vocabulary ids indexes out of
+    bounds. Text lives in ``get_text_embeddings()`` (``text_vocab_size``
+    rows, ``text_hidden_size`` wide) and ``text_projection`` resizes it to
+    the Talker hidden size, mirroring the reference ``generate``.
+    """
     talker = model.talker
-    talker_embed = talker.get_input_embeddings()
-    return talker_embed(input_ids).to(talker.dtype)
+    text_embed = talker.get_text_embeddings()
+    return talker.text_projection(text_embed(input_ids).to(talker.dtype))
 
 
 def qwen3_cp_calibration_loop(model, dataloader, num_cp_samples: int = 64):
     """Drive Talker → CodePredictor calibration.
 
-    Per batch: build Talker inputs (Thinker+projection for Omni, embed_tokens
-    for Qwen3-TTS), Talker prefill, then ``cp.generate`` for
+    Per batch: build Talker inputs (Thinker+projection for Omni,
+    text_projection for Qwen3-TTS), Talker prefill, then ``cp.generate`` for
     ``num_code_groups - 1`` steps so every per-codebook lm_head sees real
     activations (matches the production inference call).  ``num_cp_samples``
     caps the batches actually processed; 64 typically suffices for stable
@@ -133,7 +146,6 @@ def qwen3_cp_calibration_loop(model, dataloader, num_cp_samples: int = 64):
     talker_cfg = model.config.talker_config
     cp_cfg = talker_cfg.code_predictor_config
     accept_layer = getattr(talker_cfg, "accept_hidden_layer", 14)
-    talker_vocab = talker_cfg.text_config.vocab_size
     num_code_groups = cp_cfg.num_code_groups
     # Match the production generate() call (modeling_qwen3_omni.py
     # ``code_predictor.generate(max_new_tokens=num_code_groups - 1)``).
@@ -177,7 +189,9 @@ def qwen3_cp_calibration_loop(model, dataloader, num_cp_samples: int = 64):
 
         # 3. Talker prefill — pass position_ids directly to skip
         # ``get_rope_index`` (which on Qwen3-Omni needs ``talker_input_ids``
-        # + ``image_grid_thw``).  For TTS the same shape works.
+        # + ``image_grid_thw``).  The TTS Talker recomputes them from
+        # ``attention_mask`` anyway, which for an all-ones mask is the same
+        # ``arange``.
         position_ids = torch.arange(seq_len,
                                     device=device).view(1, 1, -1).expand(
                                         3, bsz, -1).contiguous()
@@ -202,7 +216,12 @@ def qwen3_cp_calibration_loop(model, dataloader, num_cp_samples: int = 64):
         # 4. Drive CP through prefill + (num_code_groups - 2) generation
         # steps.  ``cp.generate`` walks every lm_head / codec_embedding
         # internally via ``_update_model_kwargs_for_generation``.
-        random_token = torch.randint(0, talker_vocab, (bsz, 1), device=device)
+        # Bound the seed token by the codec table itself: Qwen3-Omni nests the
+        # Talker decoder config (whose ``vocab_size`` is the codec vocab) under
+        # ``text_config``, while Qwen3-TTS keeps a flat codec ``vocab_size``.
+        random_token = torch.randint(0,
+                                     talker_embed.num_embeddings, (bsz, 1),
+                                     device=device)
         last_token_embed = talker_embed(random_token).to(talker.dtype)
         cp_inputs = torch.cat([talker_last_hidden, last_token_embed], dim=1)
         with torch.no_grad():

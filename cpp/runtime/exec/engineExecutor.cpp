@@ -21,15 +21,55 @@
 #include "common/checkMacros.h"
 #include "common/hashUtils.h"
 #include "common/logger.h"
+#include "common/trtInterop.h"
 #include "common/trtUtils.h"
+#include "profiling/nvtx_wrapper.h"
 #include "runtime/exec/registryBuilder.h"
+#include "runtime/exec/rtxRuntimeCache.h"
+#include <cstdint>
+#include <set>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace trt_edgellm
 {
 namespace rt
 {
+bool validateRaggedInferenceDims(
+    InferenceDims const& dims, int32_t profileIndex, bool allowSelectBeyondPhysicalTokens) noexcept
+{
+    bool const compact = dims.executionPhaseLen == static_cast<int64_t>(ExecutionPhase::kMixedPrefillDecode);
+    if (dims.batch <= 0 || dims.seqLen <= 0 || (!compact && dims.seqLen % dims.batch != 0)
+        || dims.queryOffsetLen != dims.batch + 1 || dims.selectLen <= 0
+        || (!allowSelectBeyondPhysicalTokens && dims.selectLen > dims.seqLen) || dims.attnMaskSeqLen != dims.seqLen
+        || !isExecutionPhaseExtent(dims.executionPhaseLen)
+        || !isSpecVerifyLayoutExtentValid(static_cast<ExecutionPhase>(dims.executionPhaseLen), dims.specVerifyLayoutLen)
+        || dims.contextSequenceCount < 0 || dims.contextSequenceCount > dims.batch)
+    {
+        return false;
+    }
+    if (compact)
+    {
+        // Every sequence owns at least one row and decode sequences own exactly one, so T >= N is T_p >= Np.
+        if (dims.seqLen < dims.batch || dims.selectLen > dims.batch
+            || profileIndex != compactStepProfileIndex(dims.contextSequenceCount))
+        {
+            return false;
+        }
+        return dims.contextSequenceCount > 0 || dims.seqLen == dims.batch;
+    }
+    auto const phase = static_cast<ExecutionPhase>(dims.executionPhaseLen);
+    bool const contextPhase = phase == ExecutionPhase::kContextPrefill || phase == ExecutionPhase::kContextChunk;
+    if (dims.contextSequenceCount != (contextPhase ? dims.batch : 0))
+    {
+        return false;
+    }
+    constexpr int32_t kDecodeProfile = 1;
+    bool const vanillaDecode = phase == ExecutionPhase::kAutoregressiveDecode;
+    return profileIndex != kDecodeProfile || !vanillaDecode || dims.seqLen == dims.batch;
+}
+
 namespace
 {
 bool engineHasIOTensor(nvinfer1::ICudaEngine const& engine, char const* tensorName)
@@ -84,7 +124,8 @@ public:
      *
      * @throws std::runtime_error On I/O or deserialization failure
      */
-    TrtEngineExecutor(std::filesystem::path const& enginePath, TensorRegistry registry);
+    TrtEngineExecutor(std::filesystem::path const& enginePath, TensorRegistry registry,
+        std::shared_ptr<RtxRuntimeCache> runtimeCache, EngineRefitOptions refit = {});
 
     //! @brief Destructor -- destroys all captured CUDA graphs.
     ~TrtEngineExecutor() noexcept override;
@@ -97,19 +138,48 @@ public:
     int32_t getNumIOTensors() const override;
     char const* getIOTensorName(int32_t index) const override;
     bool hasIOTensor(char const* name) const override;
-    nvinfer1::DataType getBindingDataType(char const* name) const override;
+    trt_edgellm::DataType getBindingDataType(char const* name) const override;
     nvinfer1::Dims getProfileShape(
         char const* name, int32_t profileIndex, nvinfer1::OptProfileSelector selector) const override;
-    void setProfiler(nvinfer1::IProfiler* profiler) noexcept override;
+    nvinfer1::Dims getTensorShape(char const* name) const override;
     nvinfer1::ICudaEngine const& getEngine() const noexcept override;
+    uint64_t graphLaunches() const noexcept override
+    {
+        return mGraphLaunches;
+    }
+    bool dedicateCompactContext(int32_t profileIndex, cudaStream_t stream) override;
+    bool dedicateContextChunkContext(int32_t profileIndex, cudaStream_t stream) override;
+    void setContextChunkRouting(bool enabled) override;
 
 private:
+    //! Create the dedicated context on @p profileIndex, or report whether the existing one is on it.
+    bool ensureDedicatedContext(int32_t profileIndex, cudaStream_t stream, char const* purpose);
+
     AuxStreamSet mAuxStreams{};
+    AuxStreamSet mDedicatedAuxStreams{};
     std::unique_ptr<nvinfer1::IRuntime> mRuntime;
     std::unique_ptr<nvinfer1::ICudaEngine> mEngine;
+#if IS_TRT_RTX
+    //! The config and shared cache outlive the context that JITs kernels into them.
+    std::shared_ptr<RtxRuntimeCache> mRuntimeCache;
+    std::unique_ptr<nvinfer1::IRuntimeConfig> mRuntimeConfig;
+#endif
+    //! Original context; it serves every step except the phase-8 steps routed to mDedicatedContext.
     std::unique_ptr<nvinfer1::IExecutionContext> mContext;
+    std::unique_ptr<nvinfer1::IExecutionContext> mDedicatedContext;
     TensorRegistry mRegistry;
+    std::string mNvtxName;
+    //! Profile currently selected on mContext.
     int32_t mCurrentProfileIndex{-1};
+    int32_t mDedicatedProfileIndex{-1};
+    //! Set while a ScopedContextChunkRouting is alive: phase-2 context chunks of mDedicatedProfileIndex run on the
+    //! dedicated context.
+    bool mRouteContextChunks{false};
+    //! Context and profile of the last prepare(); execute() and captureGraph() act on them.
+    nvinfer1::IExecutionContext* mActiveContext{nullptr};
+    int32_t mActiveProfileIndex{-1};
+    void* mContextMemory{nullptr};
+    size_t mContextMemoryBytes{0};
 
     //! A captured CUDA graph together with its binding snapshot for verification.
     struct CapturedGraph
@@ -119,62 +189,199 @@ private:
         BindingSnapshot snapshot;
     };
 
-    //! Graph cache keyed by a hash of all binding addresses + shapes.
+    //! Graph cache keyed by a hash of the context, profile, and all binding addresses + shapes.
     std::unordered_map<size_t, CapturedGraph> mGraphs;
+    //! (context, profile) pairs that own at least one captured graph; execute() looks up only those.
+    std::set<std::pair<nvinfer1::IExecutionContext const*, int32_t>> mGraphScopes;
+    uint64_t mGraphLaunches{0};
 
-    //! Hash the current binding addresses and shapes into a single key.
-    size_t computeBindingHash() const;
+    std::unique_ptr<nvinfer1::IExecutionContext> createContext();
+
+    //! Hash a binding snapshot of the active context into a graph-cache key.
+    size_t graphKey(BindingSnapshot const& snapshot) const;
 
     //! Build a full snapshot of the current binding state.
     BindingSnapshot snapshotBindings() const;
 };
 
-TrtEngineExecutor::TrtEngineExecutor(std::filesystem::path const& enginePath, TensorRegistry registry)
+TrtEngineExecutor::TrtEngineExecutor(std::filesystem::path const& enginePath, TensorRegistry registry,
+    [[maybe_unused]] std::shared_ptr<RtxRuntimeCache> runtimeCache, EngineRefitOptions refit)
     : mRegistry(std::move(registry))
+    , mNvtxName(enginePath.filename().string())
 {
     LOG_INFO("loading engine file: %s", enginePath.string().c_str());
 
-    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
     ELLM_CHECK(mRuntime != nullptr, "failed to create TRT IRuntime");
 
     mEngine = deserializeCudaEngineFromFile(*mRuntime, enginePath);
+    refitEngineIfNeeded(*mEngine, std::move(refit));
 
-    // Use USER_MANAGED allocation so context memory can be shared across runners.
-    mContext = std::unique_ptr<nvinfer1::IExecutionContext>(
-        mEngine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
+#if IS_TRT_RTX
+    mRuntimeCache = std::move(runtimeCache);
+    if (mRuntimeCache != nullptr)
+    {
+        mRuntimeConfig = mRuntimeCache->createConfig(*mEngine);
+    }
+#endif
+    mContext = createContext();
     ELLM_CHECK(mContext != nullptr, "failed to create execution context");
+    mActiveContext = mContext.get();
 
     setNonBlockingAuxStreams(mContext.get(), mEngine.get(), mAuxStreams);
 
     auto registerOptionalTreeMetadata = [&](char const* name) {
         if (engineHasInputTensor(*mEngine, name) && !mRegistry.contains(name))
         {
-            mRegistry.addTensor({name, TensorIO::kInput, nvinfer1::DataType::kINT32,
-                {sym(&InferenceDims::batch), sym(&InferenceDims::attnMaskSeqLen)}});
+            mRegistry.addTensor(
+                {name, TensorIO::kInput, trt_edgellm::DataType::kINT32, {sym(&InferenceDims::attnMaskSeqLen)}});
         }
     };
     registerOptionalTreeMetadata(binding_names::kTreeParentIds);
     registerOptionalTreeMetadata(binding_names::kTreeDepths);
-
-    if (engineHasInputTensor(*mEngine, binding_names::kSkipSoftmaxScale)
-        && !mRegistry.contains(binding_names::kSkipSoftmaxScale))
+    if (engineHasInputTensor(*mEngine, binding_names::kValidTreeCounts)
+        && !mRegistry.contains(binding_names::kValidTreeCounts))
     {
-        mRegistry.addTensor({binding_names::kSkipSoftmaxScale, TensorIO::kInput, nvinfer1::DataType::kINT8,
-            {sym(&InferenceDims::skipSoftmaxScaleLen)}});
+        mRegistry.addTensor({binding_names::kValidTreeCounts, TensorIO::kInput, trt_edgellm::DataType::kINT32,
+            {sym(&InferenceDims::batch)}});
+    }
+
+    if (engineHasInputTensor(*mEngine, binding_names::kSkipSoftmaxPrefillScale)
+        && !mRegistry.contains(binding_names::kSkipSoftmaxPrefillScale))
+    {
+        mRegistry.addTensor({binding_names::kSkipSoftmaxPrefillScale, TensorIO::kInput, trt_edgellm::DataType::kINT32,
+            {sym(&InferenceDims::skipSoftmaxPrefillScaleLen)}});
+    }
+    if (engineHasInputTensor(*mEngine, binding_names::kSkipSoftmaxDecodeScale)
+        && !mRegistry.contains(binding_names::kSkipSoftmaxDecodeScale))
+    {
+        mRegistry.addTensor({binding_names::kSkipSoftmaxDecodeScale, TensorIO::kInput, trt_edgellm::DataType::kINT32,
+            {sym(&InferenceDims::skipSoftmaxDecodeScaleLen)}});
+    }
+    if (engineHasInputTensor(*mEngine, binding_names::kSpecVerifyLayout)
+        && !mRegistry.contains(binding_names::kSpecVerifyLayout))
+    {
+        mRegistry.addTensor({binding_names::kSpecVerifyLayout, TensorIO::kInput, trt_edgellm::DataType::kINT32,
+            {sym(&InferenceDims::specVerifyLayoutLen)}});
     }
 
     LOG_INFO("engine loaded successfully (%d I/O tensors)", mEngine->getNbIOTensors());
 }
 
-std::unique_ptr<EngineExecutor> EngineExecutor::createForLLM(std::filesystem::path const& enginePath,
-    LLMEngineConfig const& cfg, std::optional<int32_t> specDecodeBaseOutputHiddenDim)
+std::unique_ptr<nvinfer1::IExecutionContext> TrtEngineExecutor::createContext()
 {
-    auto registry = buildRegistryForLLM(cfg, specDecodeBaseOutputHiddenDim);
-    return std::unique_ptr<EngineExecutor>(new TrtEngineExecutor(enginePath, std::move(registry)));
+    std::unique_ptr<nvinfer1::IExecutionContext> context;
+#if IS_TRT_RTX
+    if (mRuntimeConfig != nullptr)
+    {
+        context = std::unique_ptr<nvinfer1::IExecutionContext>(mEngine->createExecutionContext(mRuntimeConfig.get()));
+        if (context != nullptr)
+        {
+            return context;
+        }
+        LOG_WARNING("createExecutionContext(runtimeConfig) failed; falling back to default context");
+        mRuntimeConfig.reset();
+    }
+#endif
+    // Use USER_MANAGED allocation so context memory can be shared across runners.
+    context = std::unique_ptr<nvinfer1::IExecutionContext>(
+        mEngine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
+    return context;
 }
 
-std::unique_ptr<EngineExecutor> EngineExecutor::createForDraft(
-    std::filesystem::path const& enginePath, DeploymentConfig const& bundle)
+bool TrtEngineExecutor::ensureDedicatedContext(int32_t profileIndex, cudaStream_t stream, char const* purpose)
+{
+    if (mDedicatedContext != nullptr)
+    {
+        return mDedicatedProfileIndex == profileIndex;
+    }
+    if (profileIndex < 0 || profileIndex >= mEngine->getNbOptimizationProfiles())
+    {
+        LOG_ERROR("%s: profile %d is out of range", purpose, profileIndex);
+        return false;
+    }
+    std::unique_ptr<nvinfer1::IExecutionContext> context = createContext();
+    if (context == nullptr)
+    {
+        LOG_WARNING("%s: failed to create a context; profile %d keeps the shared context", purpose, profileIndex);
+        return false;
+    }
+    if (mContextMemory != nullptr)
+    {
+        context->setDeviceMemoryV2(mContextMemory, static_cast<int64_t>(mContextMemoryBytes));
+    }
+    if (!context->setOptimizationProfileAsync(profileIndex, stream))
+    {
+        LOG_WARNING("%s: failed to select profile %d; it keeps the shared context", purpose, profileIndex);
+        return false;
+    }
+    AuxStreamSet auxStreams;
+    try
+    {
+        setNonBlockingAuxStreams(context.get(), mEngine.get(), auxStreams);
+    }
+    catch (std::exception const& error)
+    {
+        throw std::runtime_error(std::string("the auxiliary streams of the dedicated context (profile ")
+            + std::to_string(profileIndex) + ") could not be created: " + error.what());
+    }
+    mDedicatedAuxStreams = std::move(auxStreams);
+    mDedicatedContext = std::move(context);
+    mDedicatedProfileIndex = profileIndex;
+    return true;
+}
+
+bool TrtEngineExecutor::dedicateCompactContext(int32_t profileIndex, cudaStream_t stream)
+{
+    bool const hadContext = mDedicatedContext != nullptr;
+    if (!ensureDedicatedContext(profileIndex, stream, "dedicateCompactContext"))
+    {
+        return false;
+    }
+    if (!hadContext)
+    {
+        LOG_INFO("compact steps of optimization profile %d run on a dedicated execution context", profileIndex);
+    }
+    return true;
+}
+
+bool TrtEngineExecutor::dedicateContextChunkContext(int32_t profileIndex, cudaStream_t stream)
+{
+    bool const hadContext = mDedicatedContext != nullptr;
+    if (!ensureDedicatedContext(profileIndex, stream, "dedicateContextChunkContext"))
+    {
+        return false;
+    }
+    if (!hadContext)
+    {
+        LOG_INFO("context-chunk steps of optimization profile %d run on a dedicated execution context", profileIndex);
+    }
+    return true;
+}
+
+void TrtEngineExecutor::setContextChunkRouting(bool enabled)
+{
+    mRouteContextChunks = enabled;
+}
+
+std::unique_ptr<EngineExecutor> EngineExecutor::createWithRegistry(
+    std::filesystem::path const& enginePath, TensorRegistry registry, EngineRefitOptions refit)
+{
+    return std::unique_ptr<EngineExecutor>(
+        new TrtEngineExecutor(enginePath, std::move(registry), nullptr, std::move(refit)));
+}
+
+std::unique_ptr<EngineExecutor> EngineExecutor::createForLLM(std::filesystem::path const& enginePath,
+    LLMEngineConfig const& cfg, std::optional<int32_t> specDecodeBaseOutputHiddenDim,
+    std::shared_ptr<RtxRuntimeCache> runtimeCache, EngineRefitOptions refit)
+{
+    auto registry = buildRegistryForLLM(cfg, specDecodeBaseOutputHiddenDim);
+    return std::unique_ptr<EngineExecutor>(
+        new TrtEngineExecutor(enginePath, std::move(registry), std::move(runtimeCache), std::move(refit)));
+}
+
+std::unique_ptr<EngineExecutor> EngineExecutor::createForDraft(std::filesystem::path const& enginePath,
+    DeploymentConfig const& bundle, std::shared_ptr<RtxRuntimeCache> runtimeCache, EngineRefitOptions refit)
 {
     switch (bundle.specDecodeMode())
     {
@@ -182,23 +389,28 @@ std::unique_ptr<EngineExecutor> EngineExecutor::createForDraft(
     case SpecDecodeMode::kEAGLE:
     {
         auto registry = buildRegistryForSpecDecodeDraft(bundle);
-        return std::unique_ptr<EngineExecutor>(new TrtEngineExecutor(enginePath, std::move(registry)));
+        return std::unique_ptr<EngineExecutor>(
+            new TrtEngineExecutor(enginePath, std::move(registry), std::move(runtimeCache), std::move(refit)));
     }
     case SpecDecodeMode::kDFlash:
     case SpecDecodeMode::kJetSpec:
+    case SpecDecodeMode::kDomino:
     {
         auto registry = buildRegistryForDFlashDraft(bundle);
-        return std::unique_ptr<EngineExecutor>(new TrtEngineExecutor(enginePath, std::move(registry)));
+        return std::unique_ptr<EngineExecutor>(
+            new TrtEngineExecutor(enginePath, std::move(registry), std::move(runtimeCache), std::move(refit)));
     }
     case SpecDecodeMode::kGemma4MTP:
     {
         auto registry = buildRegistryForGemma4MTPDraft(bundle);
-        return std::unique_ptr<EngineExecutor>(new TrtEngineExecutor(enginePath, std::move(registry)));
+        return std::unique_ptr<EngineExecutor>(
+            new TrtEngineExecutor(enginePath, std::move(registry), std::move(runtimeCache), std::move(refit)));
     }
     case SpecDecodeMode::kDSpark:
     {
         auto registry = buildRegistryForDSparkDraft(bundle);
-        return std::unique_ptr<EngineExecutor>(new TrtEngineExecutor(enginePath, std::move(registry)));
+        return std::unique_ptr<EngineExecutor>(
+            new TrtEngineExecutor(enginePath, std::move(registry), std::move(runtimeCache), std::move(refit)));
     }
     case SpecDecodeMode::kNONE:
     default: ELLM_CHECK(false, "createForDraft requires a speculative decoding deployment with a draft engine.");
@@ -225,6 +437,27 @@ TrtEngineExecutor::~TrtEngineExecutor() noexcept
 bool TrtEngineExecutor::prepare(
     int32_t profileIndex, InferenceDims const& dims, TensorMap const& map, cudaStream_t stream)
 {
+    if (mRegistry.contains(binding_names::kExecutionPhaseMarker) && !isExecutionPhaseExtent(dims.executionPhaseLen))
+    {
+        LOG_ERROR("EngineExecutor::prepare: invalid execution phase extent %lld",
+            static_cast<long long>(dims.executionPhaseLen));
+        return false;
+    }
+    if (mRegistry.contains(binding_names::kSpecVerifyLayout)
+        && !isSpecVerifyLayoutExtentValid(
+            static_cast<ExecutionPhase>(dims.executionPhaseLen), dims.specVerifyLayoutLen))
+    {
+        LOG_ERROR("EngineExecutor::prepare: invalid spec verify layout extent %lld for execution phase %lld",
+            static_cast<long long>(dims.specVerifyLayoutLen), static_cast<long long>(dims.executionPhaseLen));
+        return false;
+    }
+    bool const hasIndependentDeltaPortal = mRegistry.contains(binding_names::kDFlashTargetHiddenConcat);
+    if (mRegistry.contains(binding_names::kPositions)
+        && !validateRaggedInferenceDims(dims, profileIndex, hasIndependentDeltaPortal))
+    {
+        LOG_ERROR("EngineExecutor::prepare: inconsistent ragged step dimensions for profile %d", profileIndex);
+        return false;
+    }
     if (auto bad = firstInvalidMember(dims, mRegistry.referencedMembers()); bad != nullptr)
     {
         auto const name = dimName(bad);
@@ -235,14 +468,22 @@ bool TrtEngineExecutor::prepare(
         return false;
     }
 
-    if (mCurrentProfileIndex != profileIndex && !mContext->setOptimizationProfileAsync(profileIndex, stream))
+    nvinfer1::IExecutionContext* context = mDedicatedContext.get();
+    if (!runsOnCompactContext(profileIndex, dims, mDedicatedProfileIndex)
+        && !runsOnContextChunkContext(profileIndex, dims, mDedicatedProfileIndex, mRouteContextChunks))
     {
-        LOG_ERROR("failed to set optimization profile %d", profileIndex);
-        return false;
+        context = mContext.get();
+        if (mCurrentProfileIndex != profileIndex && !context->setOptimizationProfileAsync(profileIndex, stream))
+        {
+            LOG_ERROR("failed to set optimization profile %d", profileIndex);
+            return false;
+        }
+        mCurrentProfileIndex = profileIndex;
     }
-    mCurrentProfileIndex = profileIndex;
+    mActiveContext = context;
+    mActiveProfileIndex = profileIndex;
 
-    if (!mRegistry.bindAll(mContext.get(), map, dims))
+    if (!mRegistry.bindAll(context, map, dims))
     {
         LOG_ERROR("bindAll failed for profile %d", profileIndex);
         return false;
@@ -278,14 +519,14 @@ bool TrtEngineExecutor::prepare(
                 name);
             return false;
         }
-        if (!mContext->setTensorAddress(name, tensor->rawPointer()))
+        if (!context->setTensorAddress(name, tensor->rawPointer()))
         {
             LOG_ERROR("setTensorAddress failed for binding '%s'", name);
             return false;
         }
         if (mEngine->getTensorIOMode(name) == nvinfer1::TensorIOMode::kINPUT)
         {
-            if (!mContext->setInputShape(name, tensor->getTRTDims()))
+            if (!context->setInputShape(name, toTrtDims(*tensor)))
             {
                 LOG_ERROR("setInputShape failed for binding '%s'", name);
                 return false;
@@ -298,44 +539,44 @@ bool TrtEngineExecutor::prepare(
 
 bool TrtEngineExecutor::execute(cudaStream_t stream)
 {
-    size_t const hash = computeBindingHash();
-    auto it = mGraphs.find(hash);
-    if (it != mGraphs.end())
+    NVTX_SCOPED_RANGE(engineExecution, mNvtxName.c_str(), nvtx_colors::BLUE);
+    if (mGraphScopes.count({mActiveContext, mActiveProfileIndex}) != 0)
     {
-        BindingSnapshot const current = snapshotBindings();
-        if (current == it->second.snapshot)
+        BindingSnapshot const snapshot = snapshotBindings();
+        auto const it = mGraphs.find(graphKey(snapshot));
+        if (it != mGraphs.end() && snapshot == it->second.snapshot)
         {
             cudaError_t const err = cudaGraphLaunch(it->second.exec, stream);
             if (err == cudaSuccess)
             {
+                ++mGraphLaunches;
                 return true;
             }
             LOG_WARNING("cudaGraphLaunch failed (%s), falling back to enqueueV3", cudaGetErrorString(err));
         }
     }
-
-    return mContext->enqueueV3(stream);
+    return mActiveContext->enqueueV3(stream);
 }
 
 bool TrtEngineExecutor::captureGraph(cudaStream_t stream)
 {
     // Warmup: run one enqueue to ensure all internal TRT state is initialized.
-    if (!mContext->enqueueV3(stream))
+    if (!mActiveContext->enqueueV3(stream))
     {
         LOG_ERROR("warmup enqueueV3 failed");
         return false;
     }
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    auto result = captureTRTCudaGraph(mContext.get(), stream);
+    auto result = captureTRTCudaGraph(mActiveContext, stream);
     if (!result.has_value())
     {
         LOG_WARNING("CUDA graph capture failed");
         return false;
     }
 
-    size_t const hash = computeBindingHash();
     BindingSnapshot const snap = snapshotBindings();
+    size_t const hash = graphKey(snap);
 
     // If there was a previous graph for this hash, destroy it first.
     auto it = mGraphs.find(hash);
@@ -356,6 +597,7 @@ bool TrtEngineExecutor::captureGraph(cudaStream_t stream)
     cg.exec = result->second;
     cg.snapshot = snap;
     mGraphs[hash] = cg;
+    mGraphScopes.emplace(mActiveContext, mActiveProfileIndex);
 
     LOG_INFO("captured graph (hash=0x%zx)", hash);
     return true;
@@ -371,7 +613,13 @@ int64_t TrtEngineExecutor::getRequiredContextMemorySize() const
 
 bool TrtEngineExecutor::setContextMemory(Tensor& sharedMem)
 {
-    mContext->setDeviceMemoryV2(sharedMem.rawPointer(), sharedMem.getMemoryCapacity());
+    mContextMemory = sharedMem.rawPointer();
+    mContextMemoryBytes = static_cast<size_t>(sharedMem.getMemoryCapacity());
+    mContext->setDeviceMemoryV2(mContextMemory, static_cast<int64_t>(mContextMemoryBytes));
+    if (mDedicatedContext != nullptr)
+    {
+        mDedicatedContext->setDeviceMemoryV2(mContextMemory, static_cast<int64_t>(mContextMemoryBytes));
+    }
     return true;
 }
 
@@ -390,9 +638,9 @@ bool TrtEngineExecutor::hasIOTensor(char const* name) const
     return engineHasIOTensor(*mEngine, name);
 }
 
-nvinfer1::DataType TrtEngineExecutor::getBindingDataType(char const* name) const
+trt_edgellm::DataType TrtEngineExecutor::getBindingDataType(char const* name) const
 {
-    return mEngine->getTensorDataType(name);
+    return fromTrt(mEngine->getTensorDataType(name));
 }
 
 nvinfer1::Dims TrtEngineExecutor::getProfileShape(
@@ -401,9 +649,9 @@ nvinfer1::Dims TrtEngineExecutor::getProfileShape(
     return mEngine->getProfileShape(name, profileIndex, selector);
 }
 
-void TrtEngineExecutor::setProfiler(nvinfer1::IProfiler* profiler) noexcept
+nvinfer1::Dims TrtEngineExecutor::getTensorShape(char const* name) const
 {
-    mContext->setProfiler(profiler);
+    return mEngine->getTensorShape(name);
 }
 
 nvinfer1::ICudaEngine const& TrtEngineExecutor::getEngine() const noexcept
@@ -439,17 +687,22 @@ bool EngineExecutor::BindingSnapshot::operator==(BindingSnapshot const& rhs) con
 // Private helpers
 // ---------------------------------------------------------------------------
 
-size_t TrtEngineExecutor::computeBindingHash() const
+size_t TrtEngineExecutor::graphKey(BindingSnapshot const& snapshot) const
+{
+    size_t key = computeExecutionGraphKey(reinterpret_cast<uintptr_t>(mEngine.get()), mActiveProfileIndex, snapshot);
+    hash_utils::hashCombine(key, reinterpret_cast<uintptr_t>(mActiveContext));
+    return key;
+}
+
+size_t computeExecutionGraphKey(
+    uintptr_t engineIdentity, int32_t profileIndex, EngineExecutor::BindingSnapshot const& snapshot)
 {
     size_t seed = 0;
-    int32_t const numIO = mEngine->getNbIOTensors();
-    for (int32_t i = 0; i < numIO; ++i)
+    hash_utils::hashCombine(seed, engineIdentity);
+    hash_utils::hashCombine(seed, profileIndex);
+    for (auto const& [address, shape] : snapshot.bindings)
     {
-        char const* name = mEngine->getIOTensorName(i);
-        auto const addr = reinterpret_cast<uintptr_t>(mContext->getTensorAddress(name));
-        nvinfer1::Dims const shape = mContext->getTensorShape(name);
-
-        hash_utils::hashCombine(seed, addr);
+        hash_utils::hashCombine(seed, address);
         hash_utils::hashCombine(seed, shape.nbDims);
         for (int32_t d = 0; d < shape.nbDims; ++d)
         {
@@ -467,8 +720,8 @@ EngineExecutor::BindingSnapshot TrtEngineExecutor::snapshotBindings() const
     for (int32_t i = 0; i < numIO; ++i)
     {
         char const* name = mEngine->getIOTensorName(i);
-        auto const addr = reinterpret_cast<uintptr_t>(mContext->getTensorAddress(name));
-        nvinfer1::Dims const shape = mContext->getTensorShape(name);
+        auto const addr = reinterpret_cast<uintptr_t>(mActiveContext->getTensorAddress(name));
+        nvinfer1::Dims const shape = mActiveContext->getTensorShape(name);
         snap.bindings.emplace_back(addr, shape);
     }
     return snap;

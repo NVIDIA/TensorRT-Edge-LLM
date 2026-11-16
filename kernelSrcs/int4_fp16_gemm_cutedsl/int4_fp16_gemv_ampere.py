@@ -63,13 +63,14 @@ from cutlass import Float16, Float32, Int32, Uint32
 from cutlass._mlir import ir
 from cutlass._mlir.dialects import llvm, vector
 from cutlass.cutlass_dsl import dsl_user_op
+from cutedsl_utils import aot_placeholders
 
 from common import (
     ceil_div,
     export_compiled_kernel,
+    make_row_major_2d_placeholder,
     mark_row_major_2d,
     parse_comma_separated_ints,
-    repacked_rows,
 )
 
 # Shared INT4 fragment-word dequant (the same path the prefill GEMM uses; both
@@ -188,6 +189,7 @@ class Int4Fp16GemvAmpere:
         mQW: cute.Tensor,
         mScales: cute.Tensor,
         mOut: cute.Tensor,          # [M, N] fp16, written directly
+        group_size: Int32,
         stream: cuda.CUstream,
     ) -> None:
         num_n_blocks = cute.ceil_div(mOut.shape[1], self.BN)
@@ -197,7 +199,7 @@ class Int4Fp16GemvAmpere:
             # overrides the inferred size, so it must be the allocator's real
             # footprint (sRed [W, 8, M, 2] Float32).
             smem_bytes = self.W * 8 * self.M * 2 * 4
-            self.kernel(mA, mQW, mScales, mOut).launch(
+            self.kernel(mA, mQW, mScales, mOut, group_size).launch(
                 grid=(cute.size(num_n_blocks) * 4, 2, 1),
                 block=[self.num_threads, 1, 1],
                 stream=stream,
@@ -205,7 +207,7 @@ class Int4Fp16GemvAmpere:
                 smem=smem_bytes,
             )
         else:
-            self.kernel(mA, mQW, mScales, mOut).launch(
+            self.kernel(mA, mQW, mScales, mOut, group_size).launch(
                 grid=(cute.size(num_n_blocks) * 4, 2, 1),
                 block=[self.num_threads, 1, 1],
                 stream=stream,
@@ -218,6 +220,7 @@ class Int4Fp16GemvAmpere:
         mQW: cute.Tensor,
         mScales: cute.Tensor,
         mOut: cute.Tensor,
+        group_size: Int32,
     ) -> None:
         tidx, _, _ = cute.arch.thread_idx()
         bx, pblk, _ = cute.arch.block_idx()
@@ -225,7 +228,7 @@ class Int4Fp16GemvAmpere:
         cg = bx % Int32(4)
 
         M = self.M
-        G = Int32(self.group_size)
+        G = group_size
         N = mOut.shape[1]
         K = mA.shape[1]
         num_k_tiles = K // Int32(self.BK)
@@ -423,15 +426,6 @@ def _gemv_defaults(m: int):
     return False, False, 3
 
 
-def _build_export_tensors(M, N, K, group_size):
-    """Zero CuPy tensors for the AOT trace (no Torch dependency)."""
-    a_cp = cp.zeros((M, K), dtype=cp.float16)
-    qw_cp = cp.zeros((repacked_rows(N, K, _BN, _BK), 128), dtype=cp.uint32)
-    scales_cp = cp.zeros((ceil_div(K, group_size), N), dtype=cp.float16)
-    out_cp = cp.zeros((M, N), dtype=cp.float16)
-    return a_cp, qw_cp, scales_cp, out_cp
-
-
 def run(
     mnk: "tuple[int, int, int]",
     group_size: int = 128,
@@ -459,7 +453,7 @@ def run(
         raise ValueError(f"K must be a multiple of 64 (got {K})")
     if group_size % 16 != 0:
         raise ValueError(f"group_size must be a multiple of 16 (got {group_size})")
-    if cp.cuda.runtime.getDeviceCount() == 0:
+    if not export_only and cp.cuda.runtime.getDeviceCount() == 0:
         raise RuntimeError("GPU is required.")
 
     # Arch-independent per-M tuning defaults (no device-SM detection), so the AOT
@@ -477,21 +471,27 @@ def run(
         m=M, group_size=group_size, warp_groups=warp_groups,
         prefetch=prefetch, unroll2=unroll2, u2_eager=u2_eager, min_blocks=min_blocks,
     )
-    current_stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    current_stream = (
+        aot_placeholders.make_stream()
+        if export_only
+        else cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    )
+    group_size_i32 = cutlass.Int32(group_size)
 
     if export_only:
-        a_cp, qw_cp, scales_cp, out_cp = _build_export_tensors(M, N, K, group_size)
-        mA = mark_row_major_2d(a_cp)
-        mQW = mark_row_major_2d(qw_cp)
-        mScales = mark_row_major_2d(scales_cp)
-        mOut = mark_row_major_2d(out_cp)
+        mA = make_row_major_2d_placeholder(cutlass.Float16)
+        mQW = make_row_major_2d_placeholder(cutlass.Uint32)
+        mScales = make_row_major_2d_placeholder(cutlass.Float16)
+        mOut = make_row_major_2d_placeholder(cutlass.Float16)
 
-        compile_opts = ("--gpu-arch " + gpu_arch) if gpu_arch else None
+        compile_opts = aot_placeholders.compile_options(
+            ("--gpu-arch " + gpu_arch) if gpu_arch else ""
+        )
         print(f"{_tag} Compiling kernel (gpu_arch={gpu_arch or 'default'})...")
         t0 = time.time()
         compiled = cute.compile(
-            kernel, mA, mQW, mScales, mOut, current_stream,
-            **(dict(options=compile_opts) if compile_opts else {}),
+            kernel, mA, mQW, mScales, mOut, group_size_i32, current_stream,
+            options=compile_opts,
         )
         print(f"{_tag} Compilation time: {time.time() - t0:.4f}s")
         export_compiled_kernel(
@@ -529,11 +529,12 @@ def run(
 
     print(f"{_tag} Compiling kernel...")
     t0 = time.time()
-    compiled = cute.compile(kernel, mA, mQW, mScales, mOut, current_stream)
+    compiled = cute.compile(kernel, mA, mQW, mScales, mOut, group_size_i32,
+                            current_stream)
     print(f"{_tag} Compilation time: {time.time() - t0:.4f}s")
 
     if not skip_ref_check:
-        compiled(mA, mQW, mScales, mOut, current_stream)
+        compiled(mA, mQW, mScales, mOut, group_size_i32, current_stream)
         torch.cuda.synchronize()
         diff = (out_t.to(torch.float32) - ref.to(torch.float32)).abs()
         max_abs = diff.max().item()
@@ -553,11 +554,11 @@ def run(
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     for _ in range(max(warmup_iterations, 0)):
-        compiled(mA, mQW, mScales, mOut, current_stream)
+        compiled(mA, mQW, mScales, mOut, group_size_i32, current_stream)
     torch.cuda.synchronize()
     start.record()
     for _ in range(max(iterations, 1)):
-        compiled(mA, mQW, mScales, mOut, current_stream)
+        compiled(mA, mQW, mScales, mOut, group_size_i32, current_stream)
     end.record()
     torch.cuda.synchronize()
     avg_time_us = start.elapsed_time(end) / max(iterations, 1) * 1e3

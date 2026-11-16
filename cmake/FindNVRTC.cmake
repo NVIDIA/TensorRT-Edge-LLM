@@ -28,7 +28,8 @@ set(NVRTC_INCLUDE_HINTS)
 set(NVRTC_LIBRARY_HINTS)
 foreach(nvrtc_root ${NVRTC_ROOT_HINTS})
   list(APPEND NVRTC_INCLUDE_HINTS "${nvrtc_root}/include")
-  list(APPEND NVRTC_LIBRARY_HINTS "${nvrtc_root}/lib" "${nvrtc_root}/lib64")
+  list(APPEND NVRTC_LIBRARY_HINTS "${nvrtc_root}/lib" "${nvrtc_root}/lib64"
+       "${nvrtc_root}/lib/x64")
 endforeach()
 if(DEFINED CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES)
   list(APPEND NVRTC_INCLUDE_HINTS ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
@@ -38,17 +39,21 @@ list(REMOVE_DUPLICATES NVRTC_LIBRARY_HINTS)
 
 find_path(NVRTC_INCLUDE_DIR nvrtc.h HINTS ${NVRTC_INCLUDE_HINTS})
 
-set(NVRTC_ORIGINAL_CMAKE_FIND_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
-set(CMAKE_FIND_LIBRARY_SUFFIXES ".so")
-find_library(NVRTC_DYNAMIC_LIB nvrtc HINTS ${NVRTC_LIBRARY_HINTS})
-set(CMAKE_FIND_LIBRARY_SUFFIXES ${NVRTC_ORIGINAL_CMAKE_FIND_LIBRARY_SUFFIXES})
-unset(NVRTC_ORIGINAL_CMAKE_FIND_LIBRARY_SUFFIXES)
+if(WIN32)
+  find_library(NVRTC_DYNAMIC_LIB nvrtc HINTS ${NVRTC_LIBRARY_HINTS})
+else()
+  set(NVRTC_ORIGINAL_CMAKE_FIND_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+  set(CMAKE_FIND_LIBRARY_SUFFIXES ".so")
+  find_library(NVRTC_DYNAMIC_LIB nvrtc HINTS ${NVRTC_LIBRARY_HINTS})
+  set(CMAKE_FIND_LIBRARY_SUFFIXES ${NVRTC_ORIGINAL_CMAKE_FIND_LIBRARY_SUFFIXES})
+  unset(NVRTC_ORIGINAL_CMAKE_FIND_LIBRARY_SUFFIXES)
+endif()
 
 # Some cross CUDA packages, such as D6L CUDA 11.4, ship only versioned
 # libnvrtc.so.* files in the target sysroot. Keep the fallback scoped to the
 # toolchain-provided target library hints so cross builds do not pick a host
 # x86_64 NVRTC library.
-if(NOT NVRTC_DYNAMIC_LIB)
+if(NOT NVRTC_DYNAMIC_LIB AND NOT WIN32)
   foreach(nvrtc_library_hint ${NVRTC_LIBRARY_HINTS})
     file(GLOB NVRTC_VERSIONED_LIBS "${nvrtc_library_hint}/libnvrtc.so.*")
     if(NVRTC_VERSIONED_LIBS)
@@ -70,7 +75,7 @@ if(NVRTC_DYNAMIC_LIB)
       "${NVRTC_DYNAMIC_LIB}"
       CACHE STRING "Path(s) to the NVRTC libraries" FORCE)
   set(NVRTC_LIB_TYPE "dynamic")
-else()
+elseif(NOT WIN32)
   set(NVRTC_ORIGINAL_CMAKE_FIND_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
   set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
   find_library(NVRTC_STATIC_LIB nvrtc_static HINTS ${NVRTC_LIBRARY_HINTS})
@@ -112,8 +117,8 @@ endif()
 if(NOT NVRTC_INCLUDE_DIR OR NOT NVRTC_LIB)
   message(
     FATAL_ERROR
-      "Plugin build-time NVRTC JIT requires nvrtc.h and libnvrtc.so "
-      "or libnvrtc_static.a. "
+      "Plugin build-time NVRTC JIT requires nvrtc.h and a dynamic or static "
+      "NVRTC library. "
       "Set NVRTC_ROOT_DIR or CUDA_DIR/CUDA_TARGET_DIR to a CUDA Toolkit with NVRTC."
   )
 endif()

@@ -21,9 +21,11 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "common/tensor.h"
+#include "common/trtInterop.h"
 #include "kernels/moe/moeActivationKernels.h"
 #include "kernels/moe/moeAlignSumKernels.h"
 #include "kernels/moe/moeMarlinIndicesKernels.h"
+#include "kernels/moe/moePerExpertScaleKernels.h"
 #include "kernels/moe/moeSigmoidGroupTopkKernels.h"
 #include "kernels/moe/moeTopkSoftmaxKernels.h"
 #include "kernels/moe/moe_marlin/moeMarlin.h"
@@ -50,6 +52,7 @@ namespace trt_edgellm
 {
 namespace plugins
 {
+using nvinfer1::DataType;
 
 namespace
 {
@@ -71,13 +74,16 @@ constexpr char const* kPluginVersion{"1"};
 
 constexpr int32_t kActivationSwiGlu{2};
 constexpr int32_t kActivationRelu2{4};
+constexpr int32_t kActivationGeGlu{5};
 constexpr int32_t kRoutingSoftmaxTopk{0};
 constexpr int32_t kRoutingSigmoidGroupTopk{1};
+constexpr int32_t kRoutingSoftmaxTopkPostScale{2};
 constexpr int32_t kNvfp4GroupSize{16};
 constexpr int32_t kSupportedNumExperts[]{128, 256, 512};
 constexpr int32_t kMaxTopK{32};
-constexpr int32_t kDecodeBlockSize{8};
-constexpr int32_t kPrefillBlockSize{32};
+constexpr int32_t kSmallTokenBlockSize{8};
+constexpr int32_t kLargeTokenBlockSize{32};
+constexpr int32_t kTokenMajorSmallTokenThreshold{8};
 
 constexpr int32_t kFieldNumExperts{0};
 constexpr int32_t kFieldTopK{1};
@@ -94,12 +100,45 @@ constexpr int32_t kNbPluginFields{11};
 
 int32_t getFc1OutDim(int32_t moeInterSize, int32_t activationType)
 {
-    return activationType == kActivationSwiGlu ? 2 * moeInterSize : moeInterSize;
+    return activationType == kActivationSwiGlu || activationType == kActivationGeGlu ? 2 * moeInterSize : moeInterSize;
 }
 
-int32_t getMoeBlockSize(int64_t seqLen)
+int32_t getFc1ProjectionCount(int32_t activationType)
 {
-    return seqLen == 1 ? kDecodeBlockSize : kPrefillBlockSize;
+    return activationType == kActivationSwiGlu || activationType == kActivationGeGlu ? 2 : 1;
+}
+
+bool getTokenCount(Dims const& hidden, int32_t hiddenSize, int64_t& tokenCount) noexcept
+{
+    if (hidden.nbDims != 2 || hidden.d[1] != hiddenSize || hidden.d[0] <= 0)
+    {
+        return false;
+    }
+    tokenCount = hidden.d[0];
+    return true;
+}
+
+bool hasSameDims(Dims const& lhs, Dims const& rhs) noexcept
+{
+    if (lhs.nbDims != rhs.nbDims)
+    {
+        return false;
+    }
+    for (int32_t index = 0; index < lhs.nbDims; ++index)
+    {
+        if (lhs.d[index] != rhs.d[index])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+//! Selects a Marlin tile by aggregate token count. This is a performance heuristic; both tiles preserve the same
+//! routing semantics and do not identify the execution phase.
+int32_t getTunedMoeBlockSize(int64_t numTokens) noexcept
+{
+    return numTokens <= kTokenMajorSmallTokenThreshold ? kSmallTokenBlockSize : kLargeTokenBlockSize;
 }
 
 bool getConservativePaddedRows(
@@ -111,6 +150,19 @@ bool getConservativePaddedRows(
         return false;
     }
     paddedRows = numTokens * topK + padding;
+    return true;
+}
+
+bool getProfilePaddedRows(int64_t numTokens, int32_t topK, int32_t numExperts, int64_t& paddedRows)
+{
+    int64_t smallTileRows{};
+    int64_t largeTileRows{};
+    if (!getConservativePaddedRows(numTokens, topK, numExperts, kSmallTokenBlockSize, smallTileRows)
+        || !getConservativePaddedRows(numTokens, topK, numExperts, kLargeTokenBlockSize, largeTileRows))
+    {
+        return false;
+    }
+    paddedRows = std::max(smallTileRows, largeTileRows);
     return true;
 }
 
@@ -140,15 +192,15 @@ size_t computeWorkspaceSize(int32_t maxTokens, int32_t maxRoutedRows, int32_t nu
 
         int64_t const totalSlots = static_cast<int64_t>(maxTokens) * topK;
         int32_t const fc1OutDim = getFc1OutDim(moeInterSize, activationType);
-        // Decode uses the smallest block and therefore needs the largest expert-id array for a fixed row cap.
-        int64_t const maxPaddedBlocks = divUp(maxRoutedRows, kDecodeBlockSize);
-        size_t const softmaxWorkspaceBytes
-            = routingMode == kRoutingSoftmaxTopk ? kernel::getMoeTopkSoftmaxWorkspaceSize(maxTokens, numExperts) : 0;
+        // The smallest tile needs the largest expert-id array for a fixed row cap.
+        int64_t const maxPaddedBlocks = divUp(maxRoutedRows, kSmallTokenBlockSize);
+        size_t const softmaxWorkspaceBytes = routingMode != kRoutingSigmoidGroupTopk
+            ? kernel::getMoeTopkSoftmaxWorkspaceSize(maxTokens, numExperts)
+            : 0;
 
         int64_t marlinWorkspaceElements = 0;
-        // A dynamic profile can execute both decode and prefill, so retain the largest workspace across both block
-        // sizes and both projections.
-        for (int32_t const blockSize : {kDecodeBlockSize, kPrefillBlockSize})
+        // Retain the largest workspace across both tuned tile sizes and both projections.
+        for (int32_t const blockSize : {kSmallTokenBlockSize, kLargeTokenBlockSize})
         {
             marlinWorkspaceElements = std::max(marlinWorkspaceElements,
                 kernel::getMoeMarlinWorkspaceSize(maxRoutedRows, fc1OutDim, blockSize, numSms));
@@ -332,12 +384,12 @@ void Nvfp4A16MoePlugin::validateAttributes() const
     {
         throw std::invalid_argument("Nvfp4A16MoePlugin: moe_inter_size must be positive");
     }
-    if (mActivationType == kActivationSwiGlu)
+    if (mActivationType == kActivationSwiGlu || mActivationType == kActivationGeGlu)
     {
         if (mMoeInterSize % 64 != 0 || mMoeInterSize > std::numeric_limits<int32_t>::max() / 2)
         {
             throw std::invalid_argument(
-                "Nvfp4A16MoePlugin: SwiGLU moe_inter_size must be divisible by 64 and fit the fused FC1 width");
+                "Nvfp4A16MoePlugin: gated moe_inter_size must be divisible by 64 and fit the fused FC1 width");
         }
     }
     else if (mActivationType == kActivationRelu2)
@@ -349,12 +401,14 @@ void Nvfp4A16MoePlugin::validateAttributes() const
     }
     else
     {
-        throw std::invalid_argument("Nvfp4A16MoePlugin: activation_type must be 2 (SwiGLU) or 4 (ReLU2)");
+        throw std::invalid_argument("Nvfp4A16MoePlugin: activation_type must be 2 (SwiGLU), 4 (ReLU2), or 5 (GeGLU)");
     }
-    if (mRoutingMode != kRoutingSoftmaxTopk && mRoutingMode != kRoutingSigmoidGroupTopk)
+    if (mRoutingMode != kRoutingSoftmaxTopk && mRoutingMode != kRoutingSigmoidGroupTopk
+        && mRoutingMode != kRoutingSoftmaxTopkPostScale)
     {
         throw std::invalid_argument(
-            "Nvfp4A16MoePlugin: routing_mode must be 0 (softmax top-k) or 1 (sigmoid group top-k)");
+            "Nvfp4A16MoePlugin: routing_mode must be 0 (softmax top-k), 1 (sigmoid group "
+            "top-k), or 2 (softmax top-k post-scale)");
     }
     if (mNormTopkProb != 0 && mNormTopkProb != 1)
     {
@@ -474,10 +528,17 @@ int32_t Nvfp4A16MoePlugin::getOutputShapes(DimsExprs const* inputs, int32_t nbIn
     }
     (void) shapeInputs;
     (void) nbShapeInputs;
-    outputs[0].nbDims = 3;
-    outputs[0].d[0] = inputs[kInHiddenStates].d[0];
-    outputs[0].d[1] = inputs[kInHiddenStates].d[1];
-    outputs[0].d[2] = exprBuilder.constant(mHiddenSize);
+    if (inputs[kInHiddenStates].nbDims != 2)
+    {
+        LOG_ERROR("Nvfp4A16MoePlugin: hidden_states must have rank 2");
+        return -1;
+    }
+    (void) exprBuilder;
+    outputs[0].nbDims = inputs[kInHiddenStates].nbDims;
+    for (int32_t index = 0; index < outputs[0].nbDims; ++index)
+    {
+        outputs[0].d[index] = inputs[kInHiddenStates].d[index];
+    }
     return 0;
 }
 
@@ -494,7 +555,7 @@ bool Nvfp4A16MoePlugin::validateTensorDesc(int32_t pos, PluginTensorDesc const& 
     case kInRouterLogits:
         return desc.type == DataType::kFLOAT && desc.dims.nbDims == 2 && desc.dims.d[1] == mNumExperts;
     case kInHiddenStates:
-        return isActivationDataType(desc.type) && desc.dims.nbDims == 3 && desc.dims.d[2] == mHiddenSize;
+        return isActivationDataType(desc.type) && desc.dims.nbDims == 2 && desc.dims.d[1] == mHiddenSize;
     case kInFc1QWeights:
         return desc.type == DataType::kINT8 && desc.dims.nbDims == 3 && desc.dims.d[0] == mNumExperts
             && desc.dims.d[1] == mHiddenSize / kNvfp4GroupSize && desc.dims.d[2] == 8LL * fc1OutDim;
@@ -502,7 +563,12 @@ bool Nvfp4A16MoePlugin::validateTensorDesc(int32_t pos, PluginTensorDesc const& 
         return desc.type == DataType::kINT8 && desc.dims.nbDims == 3 && desc.dims.d[0] == mNumExperts
             && desc.dims.d[1] == mHiddenSize / kNvfp4GroupSize && desc.dims.d[2] == fc1OutDim;
     case kInFc1GlobalScales:
-        return isActivationDataType(desc.type) && desc.dims.nbDims == 1 && desc.dims.d[0] == mNumExperts;
+        if (getFc1ProjectionCount(mActivationType) == 1)
+        {
+            return isActivationDataType(desc.type) && desc.dims.nbDims == 1 && desc.dims.d[0] == mNumExperts;
+        }
+        return isActivationDataType(desc.type) && desc.dims.nbDims == 2 && desc.dims.d[0] == 2
+            && desc.dims.d[1] == mNumExperts;
     case kInFc2QWeights:
         return desc.type == DataType::kINT8 && desc.dims.nbDims == 3 && desc.dims.d[0] == mNumExperts
             && desc.dims.d[1] == mMoeInterSize / kNvfp4GroupSize && desc.dims.d[2] == 8LL * mHiddenSize;
@@ -513,7 +579,7 @@ bool Nvfp4A16MoePlugin::validateTensorDesc(int32_t pos, PluginTensorDesc const& 
         return isActivationDataType(desc.type) && desc.dims.nbDims == 1 && desc.dims.d[0] == mNumExperts;
     case kInExpertScoreBias:
         return desc.type == DataType::kFLOAT && desc.dims.nbDims == 1 && desc.dims.d[0] == mNumExperts;
-    case kOutOutput: return isActivationDataType(desc.type) && desc.dims.nbDims == 3 && desc.dims.d[2] == mHiddenSize;
+    case kOutOutput: return isActivationDataType(desc.type) && desc.dims.nbDims == 2 && desc.dims.d[1] == mHiddenSize;
     default: return false;
     }
 }
@@ -566,19 +632,18 @@ int32_t Nvfp4A16MoePlugin::configurePlugin(
             return -1;
         }
 
-        auto validateProfileEndpoint = [this](Dims const& hidden, Dims const& router, char const* endpoint) {
-            if (hidden.nbDims != 3 || router.nbDims != 2 || hidden.d[0] <= 0 || hidden.d[1] <= 0
-                || hidden.d[2] != mHiddenSize || router.d[0] <= 0 || router.d[1] != mNumExperts)
+        auto validateProfileEndpoint = [this](Dims const& hidden, Dims const& router, Dims const& output,
+                                           char const* endpoint) {
+            int64_t numTokens{};
+            if (!getTokenCount(hidden, mHiddenSize, numTokens) || router.nbDims != 2 || router.d[0] <= 0
+                || router.d[1] != mNumExperts || !hasSameDims(output, hidden))
             {
                 LOG_ERROR("Nvfp4A16MoePlugin: optimization profile %s dimensions are incomplete or invalid", endpoint);
                 return false;
             }
-            int64_t const batchSize = hidden.d[0];
-            int64_t const seqLen = hidden.d[1];
-            if (batchSize > std::numeric_limits<int64_t>::max() / seqLen || router.d[0] != batchSize * seqLen)
+            if (router.d[0] != numTokens)
             {
-                LOG_ERROR("Nvfp4A16MoePlugin: router_logits %s rows must equal hidden_states %s batch*sequence",
-                    endpoint, endpoint);
+                LOG_ERROR("Nvfp4A16MoePlugin: router_logits %s rows must equal hidden_states token count", endpoint);
                 return false;
             }
             return true;
@@ -586,33 +651,27 @@ int32_t Nvfp4A16MoePlugin::configurePlugin(
 
         Dims const& hiddenMin = in[kInHiddenStates].min;
         Dims const& routerMin = in[kInRouterLogits].min;
+        Dims const& hiddenOpt = in[kInHiddenStates].opt;
+        Dims const& routerOpt = in[kInRouterLogits].opt;
         Dims const& hiddenMax = in[kInHiddenStates].max;
         Dims const& routerMax = in[kInRouterLogits].max;
-        if (!validateProfileEndpoint(hiddenMin, routerMin, "minimum")
-            || !validateProfileEndpoint(hiddenMax, routerMax, "maximum"))
+        if (!validateProfileEndpoint(hiddenMin, routerMin, out[0].min, "minimum")
+            || !validateProfileEndpoint(hiddenOpt, routerOpt, out[0].opt, "optimum")
+            || !validateProfileEndpoint(hiddenMax, routerMax, out[0].max, "maximum"))
         {
-            return -1;
-        }
-        if (out[0].min.nbDims != 3 || out[0].max.nbDims != 3 || out[0].min.d[0] != hiddenMin.d[0]
-            || out[0].min.d[1] != hiddenMin.d[1] || out[0].min.d[2] != mHiddenSize || out[0].max.d[0] != hiddenMax.d[0]
-            || out[0].max.d[1] != hiddenMax.d[1] || out[0].max.d[2] != mHiddenSize)
-        {
-            LOG_ERROR("Nvfp4A16MoePlugin: output profile range must match hidden_states");
             return -1;
         }
 
-        int64_t const maxBatchSize = hiddenMax.d[0];
-        int64_t const maxSeqLen = hiddenMax.d[1];
-        int64_t const maxTokens = maxBatchSize * maxSeqLen;
-        if (maxTokens > std::numeric_limits<int32_t>::max() / mTopK)
+        int64_t maxTokens{};
+        if (!getTokenCount(hiddenMax, mHiddenSize, maxTokens)
+            || maxTokens > std::numeric_limits<int32_t>::max() / mTopK)
         {
             LOG_ERROR("Nvfp4A16MoePlugin: optimization profile routed slots overflow int32");
             return -1;
         }
 
         int64_t requiredRows = 0;
-        int32_t const blockSize = getMoeBlockSize(maxSeqLen);
-        if (!getConservativePaddedRows(maxTokens, mTopK, mNumExperts, blockSize, requiredRows))
+        if (!getProfilePaddedRows(maxTokens, mTopK, mNumExperts, requiredRows))
         {
             LOG_ERROR("Nvfp4A16MoePlugin: optimization profile padded-row count overflows int64");
             return -1;
@@ -658,19 +717,14 @@ size_t Nvfp4A16MoePlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inputs
         return 0;
     }
     Dims const& hiddenMax = inputs[kInHiddenStates].max;
-    if (hiddenMax.nbDims != 3 || hiddenMax.d[0] <= 0 || hiddenMax.d[1] <= 0)
+    int64_t maxTokens{};
+    if (!getTokenCount(hiddenMax, mHiddenSize, maxTokens) || inputs[kInRouterLogits].max.nbDims != 2
+        || inputs[kInRouterLogits].max.d[0] != maxTokens || inputs[kInRouterLogits].max.d[1] != mNumExperts
+        || !hasSameDims(outputs[0].max, hiddenMax))
     {
         LOG_ERROR("Nvfp4A16MoePlugin: invalid profile max shape while computing workspace");
         return 0;
     }
-    int64_t const maxBatchSize = hiddenMax.d[0];
-    int64_t const maxSeqLen = hiddenMax.d[1];
-    if (maxBatchSize > std::numeric_limits<int64_t>::max() / maxSeqLen)
-    {
-        LOG_ERROR("Nvfp4A16MoePlugin: profile max batch*sequence overflows int64");
-        return 0;
-    }
-    int64_t const maxTokens = maxBatchSize * maxSeqLen;
     if (maxTokens > std::numeric_limits<int32_t>::max() / mTopK)
     {
         LOG_ERROR("Nvfp4A16MoePlugin: profile token count is too large for Marlin indexing");
@@ -681,8 +735,7 @@ size_t Nvfp4A16MoePlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inputs
     {
         // configurePlugin normally resolves auto max_routed_rows; recompute here for robustness.
         int64_t requiredRows = 0;
-        int32_t const blockSize = getMoeBlockSize(maxSeqLen);
-        if (!getConservativePaddedRows(maxTokens, mTopK, mNumExperts, blockSize, requiredRows)
+        if (!getProfilePaddedRows(maxTokens, mTopK, mNumExperts, requiredRows)
             || requiredRows > std::numeric_limits<int32_t>::max())
         {
             LOG_ERROR("Nvfp4A16MoePlugin: could not resolve auto max_routed_rows for workspace sizing");
@@ -735,14 +788,12 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
         }
 
         Dims const& hiddenDims = inputDesc[kInHiddenStates].dims;
-        int64_t const batchSize = hiddenDims.d[0];
-        int64_t const seqLen = hiddenDims.d[1];
-        if (batchSize <= 0 || seqLen <= 0 || batchSize > std::numeric_limits<int64_t>::max() / seqLen)
+        int64_t numTokens64{};
+        if (!getTokenCount(hiddenDims, mHiddenSize, numTokens64))
         {
-            LOG_ERROR("Nvfp4A16MoePlugin: runtime batch and sequence dimensions must be positive");
+            LOG_ERROR("Nvfp4A16MoePlugin: runtime hidden_states shape is invalid");
             return -1;
         }
-        int64_t const numTokens64 = batchSize * seqLen;
         if (numTokens64 > std::numeric_limits<int32_t>::max() / mTopK)
         {
             LOG_ERROR("Nvfp4A16MoePlugin: runtime routed slots overflow int32");
@@ -751,16 +802,16 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
         int32_t const numTokens = static_cast<int32_t>(numTokens64);
         if (inputDesc[kInRouterLogits].dims.d[0] != numTokens)
         {
-            LOG_ERROR("Nvfp4A16MoePlugin: router_logits rows must equal batch*sequence");
+            LOG_ERROR("Nvfp4A16MoePlugin: router_logits rows must equal hidden_states token count");
             return -1;
         }
-        if (outputDesc[0].dims.d[0] != batchSize || outputDesc[0].dims.d[1] != seqLen)
+        if (!hasSameDims(outputDesc[0].dims, hiddenDims))
         {
-            LOG_ERROR("Nvfp4A16MoePlugin: output batch and sequence dimensions must match hidden_states");
+            LOG_ERROR("Nvfp4A16MoePlugin: output dimensions must match hidden_states");
             return -1;
         }
 
-        int32_t const moeBlockSize = getMoeBlockSize(seqLen);
+        int32_t const moeBlockSize = getTunedMoeBlockSize(numTokens64);
         int64_t requiredRows = 0;
         if (!getConservativePaddedRows(numTokens, mTopK, mNumExperts, moeBlockSize, requiredRows))
         {
@@ -790,7 +841,7 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
         int32_t* topkIndices = static_cast<int32_t*>(
             assignTensorFromWorkspace(workspacePtr, {numTokens, mTopK}, DataType::kINT32).rawPointer());
         size_t const softmaxWorkspaceBytes
-            = mRoutingMode == kRoutingSoftmaxTopk ? getMoeTopkSoftmaxWorkspaceSize(numTokens, mNumExperts) : 0;
+            = mRoutingMode != kRoutingSigmoidGroupTopk ? getMoeTopkSoftmaxWorkspaceSize(numTokens, mNumExperts) : 0;
         void* softmaxWorkspace = nullptr;
         if (softmaxWorkspaceBytes > 0)
         {
@@ -831,12 +882,12 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
         float* topkWeightsPadded = static_cast<float*>(
             assignTensorFromWorkspace(workspacePtr, {mMaxRoutedRows}, DataType::kFLOAT).rawPointer());
 
-        Tensor routerLogits(
-            const_cast<void*>(inputs[kInRouterLogits]), {numTokens, mNumExperts}, DeviceType::kGPU, DataType::kFLOAT);
-        Tensor topkWeightsTensor(topkWeights, {numTokens, mTopK}, DeviceType::kGPU, DataType::kFLOAT);
-        Tensor topkIndicesTensor(topkIndices, {numTokens, mTopK}, DeviceType::kGPU, DataType::kINT32);
-        Tensor expertScoreBias(
-            const_cast<void*>(inputs[kInExpertScoreBias]), {mNumExperts}, DeviceType::kGPU, DataType::kFLOAT);
+        Tensor routerLogits(const_cast<void*>(inputs[kInRouterLogits]), {numTokens, mNumExperts}, DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT);
+        Tensor topkWeightsTensor(topkWeights, {numTokens, mTopK}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        Tensor topkIndicesTensor(topkIndices, {numTokens, mTopK}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor expertScoreBias(const_cast<void*>(inputs[kInExpertScoreBias]), {mNumExperts}, DeviceType::kGPU,
+            trt_edgellm::DataType::kFLOAT);
         OptionalInputTensor expertScoreBiasOpt = expertScoreBias;
         {
             NVTX_SCOPED_RANGE(nvtx_routing, "Nvfp4A16MoePlugin::routing", nvtx_colors::ORANGE);
@@ -845,10 +896,18 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
                 moeSigmoidGroupTopk(routerLogits, topkWeightsTensor, topkIndicesTensor, mTopK, mNGroup, mTopkGroup,
                     mNormTopkProb != 0, mRoutedScalingFactor, stream, expertScoreBiasOpt);
             }
-            else
+            else if (mRoutingMode == kRoutingSoftmaxTopk)
             {
                 moeTopkSoftmax(routerLogits, topkWeightsTensor, topkIndicesTensor, mTopK, softmaxWorkspace,
                     softmaxWorkspaceBytes, stream, mNormTopkProb != 0, 0.0F, expertScoreBiasOpt);
+            }
+            else
+            {
+                OptionalInputTensor noBias;
+                moeTopkSoftmax(routerLogits, topkWeightsTensor, topkIndicesTensor, mTopK, softmaxWorkspace,
+                    softmaxWorkspaceBytes, stream, mNormTopkProb != 0, 0.0F, noBias);
+                applyPerExpertScale(topkWeights, topkIndices, static_cast<float const*>(inputs[kInExpertScoreBias]),
+                    numTokens, mTopK, stream);
             }
             CUDA_CHECK(cudaGetLastError());
 
@@ -859,7 +918,7 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
                 slotsPerExpert, paddedCounts, paddedOffsets, numTokensPostPadded, mNumExperts, moeBlockSize, stream);
             CUDA_CHECK(cudaGetLastError());
             CUDA_CHECK(cudaMemsetAsync(slotsPerExpert, 0, mNumExperts * sizeof(int32_t), stream));
-            launchBuildSlotListsKernel(
+            launchBuildStableSlotListsKernel(
                 topkIndices, slotsByExpert, slotsPerExpert, numTokens, mTopK, mNumExperts, stream);
             CUDA_CHECK(cudaGetLastError());
             launchBuildMarlinIndicesKernel(slotsByExpert, slotsPerExpert, paddedCounts, paddedOffsets, topkWeights,
@@ -867,20 +926,25 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
             CUDA_CHECK(cudaGetLastError());
         }
 
-        Tensor hiddenStates(
-            const_cast<void*>(inputs[kInHiddenStates]), {numTokens, mHiddenSize}, DeviceType::kGPU, activationDataType);
+        Tensor hiddenStates(const_cast<void*>(inputs[kInHiddenStates]), {numTokens, mHiddenSize}, DeviceType::kGPU,
+            fromTrt(activationDataType));
         Tensor fc1QWeights(const_cast<void*>(inputs[kInFc1QWeights]),
-            {mNumExperts, mHiddenSize / kNvfp4GroupSize, 2 * fc1OutDim}, DeviceType::kGPU, DataType::kINT32);
+            {mNumExperts, mHiddenSize / kNvfp4GroupSize, 2 * fc1OutDim}, DeviceType::kGPU,
+            trt_edgellm::DataType::kINT32);
         Tensor fc1BlockScales(const_cast<void*>(inputs[kInFc1BlockScales]),
-            {mNumExperts, mHiddenSize / kNvfp4GroupSize, fc1OutDim}, DeviceType::kGPU, DataType::kINT8);
-        Tensor fc1GlobalScales(
-            const_cast<void*>(inputs[kInFc1GlobalScales]), {mNumExperts}, DeviceType::kGPU, activationDataType);
-        Tensor sortedTokenIdsTensor(sortedTokenIds, {mMaxRoutedRows}, DeviceType::kGPU, DataType::kINT32);
-        Tensor expertIdsTensor(expertIds, {maxPaddedBlocks}, DeviceType::kGPU, DataType::kINT32);
-        Tensor numTokensPostPaddedTensor(numTokensPostPadded, {1}, DeviceType::kGPU, DataType::kINT32);
-        Tensor topkWeightsFlatTensor(topkWeightsFlat, {mMaxRoutedRows}, DeviceType::kGPU, DataType::kFLOAT);
-        Tensor marlinWorkspaceTensor(marlinWorkspace, {marlinWorkspaceElements}, DeviceType::kGPU, DataType::kINT32);
-        Tensor fc1OutputTensor(fc1Output, {totalSlots, fc1OutDim}, DeviceType::kGPU, activationDataType);
+            {mNumExperts, mHiddenSize / kNvfp4GroupSize, fc1OutDim}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+        Tensor fc1GlobalScales(const_cast<void*>(inputs[kInFc1GlobalScales]), {mNumExperts}, DeviceType::kGPU,
+            fromTrt(activationDataType));
+        Tensor fc1ProjectionGlobalScales(const_cast<void*>(inputs[kInFc1GlobalScales]),
+            {getFc1ProjectionCount(mActivationType), mNumExperts}, DeviceType::kGPU, fromTrt(activationDataType));
+        Tensor sortedTokenIdsTensor(sortedTokenIds, {mMaxRoutedRows}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor expertIdsTensor(expertIds, {maxPaddedBlocks}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor numTokensPostPaddedTensor(numTokensPostPadded, {1}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor topkWeightsFlatTensor(
+            topkWeightsFlat, {mMaxRoutedRows}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+        Tensor marlinWorkspaceTensor(
+            marlinWorkspace, {marlinWorkspaceElements}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+        Tensor fc1OutputTensor(fc1Output, {totalSlots, fc1OutDim}, DeviceType::kGPU, fromTrt(activationDataType));
 
         {
             NVTX_SCOPED_RANGE(nvtx_fc1, "Nvfp4A16MoePlugin::fc1", nvtx_colors::BLUE);
@@ -893,27 +957,40 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
         }
 
         Tensor activationOutputTensor(
-            activationOutput, {totalSlots, mMoeInterSize}, DeviceType::kGPU, activationDataType);
+            activationOutput, {totalSlots, mMoeInterSize}, DeviceType::kGPU, fromTrt(activationDataType));
         {
             NVTX_SCOPED_RANGE(nvtx_activation, "Nvfp4A16MoePlugin::activation", nvtx_colors::GREEN);
-            moeActivation(fc1OutputTensor, activationOutputTensor, totalSlots, mMoeInterSize, mActivationType, stream);
+            if (getFc1ProjectionCount(mActivationType) == 2)
+            {
+                Tensor expertIndicesFlat(topkIndices, {totalSlots}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+                moeScaledGatedActivation(fc1OutputTensor, activationOutputTensor, fc1ProjectionGlobalScales,
+                    expertIndicesFlat, totalSlots, mMoeInterSize, mActivationType, stream);
+            }
+            else
+            {
+                moeActivation(
+                    fc1OutputTensor, activationOutputTensor, totalSlots, mMoeInterSize, mActivationType, stream);
+            }
             CUDA_CHECK(cudaGetLastError());
         }
 
         Tensor fc2QWeights(const_cast<void*>(inputs[kInFc2QWeights]),
-            {mNumExperts, mMoeInterSize / kNvfp4GroupSize, 2 * mHiddenSize}, DeviceType::kGPU, DataType::kINT32);
+            {mNumExperts, mMoeInterSize / kNvfp4GroupSize, 2 * mHiddenSize}, DeviceType::kGPU,
+            trt_edgellm::DataType::kINT32);
         Tensor fc2BlockScales(const_cast<void*>(inputs[kInFc2BlockScales]),
-            {mNumExperts, mMoeInterSize / kNvfp4GroupSize, mHiddenSize}, DeviceType::kGPU, DataType::kINT8);
-        Tensor fc2GlobalScales(
-            const_cast<void*>(inputs[kInFc2GlobalScales]), {mNumExperts}, DeviceType::kGPU, activationDataType);
-        Tensor fc2OutputTensor(fc2Output, {totalSlots, mHiddenSize}, DeviceType::kGPU, activationDataType);
+            {mNumExperts, mMoeInterSize / kNvfp4GroupSize, mHiddenSize}, DeviceType::kGPU,
+            trt_edgellm::DataType::kINT8);
+        Tensor fc2GlobalScales(const_cast<void*>(inputs[kInFc2GlobalScales]), {mNumExperts}, DeviceType::kGPU,
+            fromTrt(activationDataType));
+        Tensor fc2OutputTensor(fc2Output, {totalSlots, mHiddenSize}, DeviceType::kGPU, fromTrt(activationDataType));
 
         // FC2 applies routing weights by the original slot ID from sortedTokenIds, so keep weights in [token, topK]
         // order.
         CUDA_CHECK(cudaMemsetAsync(topkWeightsPadded, 0, mMaxRoutedRows * sizeof(float), stream));
         CUDA_CHECK(cudaMemcpyAsync(
             topkWeightsPadded, topkWeights, totalSlots * sizeof(float), cudaMemcpyDeviceToDevice, stream));
-        Tensor topkWeightsPaddedTensor(topkWeightsPadded, {mMaxRoutedRows}, DeviceType::kGPU, DataType::kFLOAT);
+        Tensor topkWeightsPaddedTensor(
+            topkWeightsPadded, {mMaxRoutedRows}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
 
         {
             NVTX_SCOPED_RANGE(nvtx_fc2, "Nvfp4A16MoePlugin::fc2", nvtx_colors::PURPLE);
@@ -971,22 +1048,21 @@ int32_t Nvfp4A16MoePlugin::onShapeChange(
         return -1;
     }
 
-    int64_t const batchSize = in[kInHiddenStates].dims.d[0];
-    int64_t const seqLen = in[kInHiddenStates].dims.d[1];
-    if (batchSize <= 0 || seqLen <= 0 || batchSize > std::numeric_limits<int64_t>::max() / seqLen)
+    Dims const& hiddenDims = in[kInHiddenStates].dims;
+    int64_t numTokens{};
+    if (!getTokenCount(hiddenDims, mHiddenSize, numTokens) || numTokens > std::numeric_limits<int32_t>::max() / mTopK)
     {
-        LOG_ERROR("Nvfp4A16MoePlugin: invalid runtime batch or sequence dimension");
+        LOG_ERROR("Nvfp4A16MoePlugin: invalid runtime hidden_states dimensions");
         return -1;
     }
-    int64_t const numTokens = batchSize * seqLen;
-    if (in[kInRouterLogits].dims.d[0] != numTokens || out[0].dims.d[0] != batchSize || out[0].dims.d[1] != seqLen)
+    if (in[kInRouterLogits].dims.d[0] != numTokens || !hasSameDims(out[0].dims, hiddenDims))
     {
         LOG_ERROR("Nvfp4A16MoePlugin: runtime router/output shapes do not match hidden_states");
         return -1;
     }
 
     int64_t requiredRows = 0;
-    int32_t const blockSize = getMoeBlockSize(seqLen);
+    int32_t const blockSize = getTunedMoeBlockSize(numTokens);
     if (!getConservativePaddedRows(numTokens, mTopK, mNumExperts, blockSize, requiredRows))
     {
         LOG_ERROR("Nvfp4A16MoePlugin: runtime padded-row count overflows int64");

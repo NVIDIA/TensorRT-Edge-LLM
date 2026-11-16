@@ -99,29 +99,34 @@ bool TokenEncoder::decode(std::vector<Rank> const& tokens, std::string& output, 
 
         for (Rank token : tokens)
         {
-            if (skipSpecialTokens && mSpecialTokensDecoder.find(token) != mSpecialTokensDecoder.end())
+            if (skipSpecialTokens && isSkippableSpecial(token))
             {
                 continue;
             }
-            auto it = mDecoder.find(token);
-            if (it != mDecoder.end())
+
+            // An added token can also live in the base vocab (Nemotron), so its
+            // definition has to win before the base-vocab lookup.
+            auto addedIt = mSpecialTokensDecoder.find(token);
+            if (addedIt != mSpecialTokensDecoder.end())
             {
-                output += it->second;
+                output += addedIt->second;
+                continue;
             }
-            else if (!skipSpecialTokens)
+
+            auto vocabIt = mDecoder.find(token);
+            if (vocabIt != mDecoder.end())
             {
-                auto specialIt = mSpecialTokensDecoder.find(token);
-                if (specialIt != mSpecialTokensDecoder.end())
-                {
-                    output += specialIt->second;
-                }
-                else
-                {
-                    LOG_ERROR("Unknown token %d during decode", token);
-                    return false;
-                }
+                output += vocabIt->second;
+                continue;
             }
-            // Skip unknown tokens if skipSpecialTokens is true
+
+            if (skipSpecialTokens)
+            {
+                continue;
+            }
+
+            LOG_ERROR("Unknown token %d during decode", token);
+            return false;
         }
         return true;
     }
@@ -278,8 +283,8 @@ void TokenEncoder::bytePairEncode(std::string const& piece, std::vector<Rank>& o
     parts.emplace_back(charPositions[numChars - 1], MAX_RANK);
     parts.emplace_back(charPositions[numChars], MAX_RANK);
 
-    // Helper function to get merged rank for position i (merging parts[i]..parts[i+2] into one,
-    // then checking the priority of the new pair: (merged, parts[i+2]..parts[i+3]))
+    // Helper function to get the rank of the pair formed by merging parts[i] and parts[i + 1]
+    // (spanning parts[i]..parts[i + 2]) with the following part parts[i + 2]..parts[i + 3].
     auto getMergedRank = [&](size_t i) -> Rank {
         if (i + 3 >= parts.size())
         {
@@ -291,6 +296,19 @@ void TokenEncoder::bytePairEncode(std::string const& piece, std::vector<Rank>& o
         return getPairPriority(left, right);
     };
 
+    // Helper function to get the rank of the pair formed by the untouched part[i - 1] with the
+    // part about to be merged at position i (spanning parts[i]..parts[i + 2]).
+    auto getLeftNeighborRank = [&](size_t i) -> Rank {
+        if (i == 0 || i + 2 >= parts.size())
+        {
+            return MAX_RANK;
+        }
+
+        std::string left(piece.begin() + parts[i - 1].first, piece.begin() + parts[i].first);
+        std::string right(piece.begin() + parts[i].first, piece.begin() + parts[i + 2].first);
+        return getPairPriority(left, right);
+    };
+
     // Main BPE loop
     while (minRank.second != MAX_RANK)
     {
@@ -299,7 +317,7 @@ void TokenEncoder::bytePairEncode(std::string const& piece, std::vector<Rank>& o
         // Update adjacent ranks
         if (i > 0)
         {
-            parts[i - 1].second = getMergedRank(i - 1);
+            parts[i - 1].second = getLeftNeighborRank(i);
         }
         parts[i].second = getMergedRank(i);
 

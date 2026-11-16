@@ -25,27 +25,21 @@ import sys
 
 def export_fc2(args: argparse.Namespace) -> tuple[str, str]:
     import cuda.bindings.driver as cuda
-    import cupy as cp
     import cutlass
     import cutlass.cute as cute
 
     globals().update({"cuda": cuda, "cutlass": cutlass, "cute": cute})
 
+    from cutedsl_utils import aot_placeholders
     from export_common import (
         M_TILE_SIZE,
         SF_VEC_SIZE,
-        allocate,
-        atom_scale_bytes,
-        get_max_active_clusters,
-        make_ptr,
         resolve_output_dtype,
         verify_export,
     )
     from blockscaled_contiguous_grouped_gemm_finalize_fusion import (
         Sm100BlockScaledContiguousGroupedGemmFinalizeFusionKernel,
     )
-
-    cp.cuda.Device(0).use()
 
     output_dtype = resolve_output_dtype(args.output_dtype)
     dummy_m = M_TILE_SIZE * args.dummy_experts
@@ -54,33 +48,19 @@ def export_fc2(args: argparse.Namespace) -> tuple[str, str]:
     cluster_shape_mn = (1, 1)
     mma_tiler_mn = (M_TILE_SIZE, args.mma_tiler_n)
 
-    buffers: list = []
-    a = allocate((dummy_m, dummy_k // 2), cp.uint8, buffers)
-    b = allocate((args.dummy_experts, dummy_n, dummy_k // 2), cp.uint8, buffers)
-    a_sf = allocate(atom_scale_bytes(dummy_m, dummy_k), cp.uint8, buffers)
-    b_sf = allocate(atom_scale_bytes(dummy_n, dummy_k, args.dummy_experts), cp.uint8, buffers)
-    c = allocate((args.dummy_tokens, dummy_n), cp.float16, buffers)
-    alpha = allocate((args.dummy_experts,), cp.float32, buffers)
-    tile_group = allocate((dummy_m // M_TILE_SIZE,), cp.int32, buffers)
-    tile_limit = allocate((dummy_m // M_TILE_SIZE,), cp.int32, buffers)
-    permuted_to_expanded = allocate((dummy_m,), cp.int32, buffers)
-    num_tiles = allocate((1,), cp.int32, buffers)
-    token_scales = allocate((args.dummy_tokens, args.dummy_top_k), cp.float32, buffers)
-    down_input_scale = allocate((args.dummy_experts,), cp.float32, buffers)
-
     ptrs = (
-        make_ptr(cutlass.Float4E2M1FN, a.data.ptr, assumed_align=32),
-        make_ptr(cutlass.Float4E2M1FN, b.data.ptr, assumed_align=32),
-        make_ptr(cutlass.Float8E4M3FN, a_sf.data.ptr, assumed_align=16),
-        make_ptr(cutlass.Float8E4M3FN, b_sf.data.ptr, assumed_align=16),
-        make_ptr(output_dtype, c.data.ptr, assumed_align=32),
-        make_ptr(cutlass.Float32, alpha.data.ptr, assumed_align=16),
-        make_ptr(cutlass.Float32, down_input_scale.data.ptr, assumed_align=16),
-        make_ptr(cutlass.Int32, tile_group.data.ptr),
-        make_ptr(cutlass.Int32, tile_limit.data.ptr),
-        make_ptr(cutlass.Int32, permuted_to_expanded.data.ptr),
-        make_ptr(cutlass.Int32, num_tiles.data.ptr),
-        make_ptr(cutlass.Float32, token_scales.data.ptr, assumed_align=16),
+        aot_placeholders.make_ptr(cutlass.Float4E2M1FN, assumed_align=32),
+        aot_placeholders.make_ptr(cutlass.Float4E2M1FN, assumed_align=32),
+        aot_placeholders.make_ptr(cutlass.Float8E4M3FN, assumed_align=16),
+        aot_placeholders.make_ptr(cutlass.Float8E4M3FN, assumed_align=16),
+        aot_placeholders.make_ptr(output_dtype, assumed_align=32),
+        aot_placeholders.make_ptr(cutlass.Float32, assumed_align=16),
+        aot_placeholders.make_ptr(cutlass.Float32, assumed_align=16),
+        aot_placeholders.make_ptr(cutlass.Int32, assumed_align=4),
+        aot_placeholders.make_ptr(cutlass.Int32, assumed_align=4),
+        aot_placeholders.make_ptr(cutlass.Int32, assumed_align=4),
+        aot_placeholders.make_ptr(cutlass.Int32, assumed_align=4),
+        aot_placeholders.make_ptr(cutlass.Float32, assumed_align=16),
     )
 
     kernel = Sm100BlockScaledContiguousGroupedGemmFinalizeFusionKernel(
@@ -91,7 +71,7 @@ def export_fc2(args: argparse.Namespace) -> tuple[str, str]:
         raster_along_m=False,
         b_tensor_l_sizes=(args.dummy_experts,),
     )
-    stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    stream = aot_placeholders.make_stream()
 
     @cute.jit
     def single_b_wrapper(
@@ -116,6 +96,7 @@ def export_fc2(args: argparse.Namespace) -> tuple[str, str]:
         tile_size: cutlass.Constexpr,
         scaling_vector_size: cutlass.Constexpr,
         max_active_clusters: cutlass.Int32,
+        enable_pdl: cutlass.Int32,
         stream: cuda.CUstream,
     ):
         return kernel.wrapper(
@@ -140,6 +121,7 @@ def export_fc2(args: argparse.Namespace) -> tuple[str, str]:
             tile_size,
             scaling_vector_size,
             max_active_clusters,
+            enable_pdl,
             stream,
         )
 
@@ -155,8 +137,10 @@ def export_fc2(args: argparse.Namespace) -> tuple[str, str]:
         args.dummy_top_k,
         tile_size=M_TILE_SIZE,
         scaling_vector_size=SF_VEC_SIZE,
-        max_active_clusters=get_max_active_clusters(cluster_shape_mn),
+        max_active_clusters=aot_placeholders.runtime_int32(),
+        enable_pdl=cutlass.Int32(1),
         stream=stream,
+        options=aot_placeholders.compile_options(),
     )
 
     os.makedirs(args.output_dir, exist_ok=True)

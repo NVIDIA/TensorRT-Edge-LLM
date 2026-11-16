@@ -55,8 +55,9 @@ public:
     //! \brief Constructor for NemotronOmniAudioRunner
     //! \param[in] engineDir Directory containing the audio encoder engine
     //! \param[in] stream CUDA stream for execution
+    //! \param[in] checkpointDir HF checkpoint directory used by runtime weight loading
     //! \throws std::runtime_error if engine loading fails or configuration is invalid
-    NemotronOmniAudioRunner(std::string const& engineDir, cudaStream_t stream);
+    NemotronOmniAudioRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir = "");
 
     ~NemotronOmniAudioRunner() noexcept = default;
 

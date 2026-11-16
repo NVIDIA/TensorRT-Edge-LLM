@@ -19,6 +19,7 @@
 #include "common/checkMacros.h"
 #include "common/mmapReader.h"
 #include "common/safetensorsUtils.h"
+#include "common/trtInterop.h"
 #include "profiling/metrics.h"
 #include "profiling/timer.h"
 #include <cstdint>
@@ -39,15 +40,18 @@ namespace trt_edgellm
 namespace rt
 {
 
-Gemma4AudioRunner::Gemma4AudioRunner(std::string const& engineDir, cudaStream_t stream)
+Gemma4AudioRunner::Gemma4AudioRunner(
+    std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
     : MultimodalRunner()
 {
-    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(TrtLogger::instance()));
 
     std::string const enginePath = engineDir + "/audio_encoder.engine";
     auto mmapReader = std::make_unique<file_io::MmapReader>(enginePath);
     mAudioEngine = std::unique_ptr<nvinfer1::ICudaEngine>(
         mRuntime->deserializeCudaEngine(mmapReader->getData(), mmapReader->getSize()));
+    ELLM_CHECK(mAudioEngine != nullptr, "Failed to deserialize Gemma4 audio engine");
+    prepareEngineWeights(engineDir, checkpointDir, stream, *mAudioEngine);
 
     mAudioContext = std::unique_ptr<nvinfer1::IExecutionContext>(
         mAudioEngine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
@@ -156,21 +160,20 @@ bool Gemma4AudioRunner::allocateBuffer([[maybe_unused]] cudaStream_t stream)
     bool status{true};
 
     mInputFeatures = rt::Tensor({1, mMaxSeqLen, static_cast<int64_t>(mConfig.melBins)}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Gemma4AudioRunner::mInputFeatures");
+        trt_edgellm::DataType::kHALF, "Gemma4AudioRunner::mInputFeatures");
     status &= mAudioContext->setTensorAddress("input_features", mInputFeatures.rawPointer());
 
-    // Valid mask for the downsampled sequence
-    int64_t const maxDownSeqLen = mMaxSeqLen / mConfig.subsamplingFactor;
-    mValidMask = rt::Tensor(
-        {1, maxDownSeqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kBOOL, "Gemma4AudioRunner::mValidMask");
-    status &= mAudioContext->setTensorAddress("valid", mValidMask.rawPointer());
+    mInputFeaturesMask = rt::Tensor(
+        {1, mMaxSeqLen}, rt::DeviceType::kGPU, trt_edgellm::DataType::kBOOL, "Gemma4AudioRunner::mInputFeaturesMask");
+    status &= mAudioContext->setTensorAddress("input_features_mask", mInputFeaturesMask.rawPointer());
 
     // Output embedding buffer — pre-allocate for max possible total rows across all clips.
     // Each clip produces at most maxDownSeqLen rows; we size for maxAudioClipsPerRequest clips
     // to avoid dynamic reallocation during inference.
+    int64_t const maxDownSeqLen = mMaxSeqLen / mConfig.subsamplingFactor;
     int64_t const maxTotalRows = maxDownSeqLen * static_cast<int64_t>(mConfig.maxAudioClipsPerRequest);
     mAudioEmbedding = rt::Tensor({maxTotalRows, static_cast<int64_t>(mConfig.audioFeatureDim)}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Gemma4AudioRunner::mAudioEmbedding");
+        trt_edgellm::DataType::kHALF, "Gemma4AudioRunner::mAudioEmbedding");
 
     if (!status)
     {
@@ -195,7 +198,7 @@ bool Gemma4AudioRunner::resizeEmbeddingForRows(int64_t rows)
         "Consider increasing maxAudioClipsPerRequest (currently %d).",
         rows, mConfig.maxAudioClipsPerRequest);
     mAudioEmbedding = rt::Tensor(
-        {rows, hidden}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Gemma4AudioRunner::mAudioEmbedding");
+        {rows, hidden}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "Gemma4AudioRunner::mAudioEmbedding");
     return true;
 }
 
@@ -216,7 +219,7 @@ bool Gemma4AudioRunner::loadMelSpectrogramFromFile(
     }
 
     check::check(tensors.size() == 1, "Mel-spectrogram safetensors should contain exactly one tensor");
-    check::check(tensors[0].getDataType() == nvinfer1::DataType::kHALF, "Mel-spectrogram must be FP16");
+    check::check(tensors[0].getDataType() == trt_edgellm::DataType::kHALF, "Mel-spectrogram must be FP16");
 
     melSpectrogram = std::move(tensors[0]);
     return true;
@@ -224,20 +227,14 @@ bool Gemma4AudioRunner::loadMelSpectrogramFromFile(
 
 bool Gemma4AudioRunner::extractMelFromPcm(rt::audio::AudioPCM const& pcm, rt::Tensor& melGpu, cudaStream_t stream)
 {
-    // HF Gemma4AudioFeatureExtractor pads the raw waveform to a multiple of 128 samples
-    // before mel extraction (pad_to_multiple_of=128). Replicate this to match frame counts.
-    static constexpr int32_t kPadToMultipleOf = 128;
-    rt::audio::AudioPCM paddedPcm = pcm;
-    size_t const rawLen = paddedPcm.samples.size();
-    size_t const paddedLen = ((rawLen + kPadToMultipleOf - 1) / kPadToMultipleOf) * kPadToMultipleOf;
-    if (paddedLen > rawLen)
+    int64_t const rawLen = pcm.numSamples();
+    if (rawLen == 0)
     {
-        paddedPcm.samples.resize(paddedLen, 0.0f);
+        LOG_ERROR("Gemma4AudioRunner: empty PCM");
+        return false;
     }
-
-    // Extract mel-spectrogram on CPU. Output shape: [mel_bins, T] (kMelTime layout).
     rt::Tensor hostMel;
-    if (!mMelExtractor.extract(paddedPcm, hostMel))
+    if (!mMelExtractor.extract(pcm, hostMel))
     {
         LOG_ERROR("Gemma4AudioRunner: mel extraction from PCM failed");
         return false;
@@ -259,12 +256,12 @@ bool Gemma4AudioRunner::extractMelFromPcm(rt::audio::AudioPCM const& pcm, rt::Te
     }
 
     melGpu = rt::Tensor(
-        {1, timeSteps, melBins}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Gemma4AudioRunner::melFromPcm");
+        {1, timeSteps, melBins}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "Gemma4AudioRunner::melFromPcm");
     CUDA_CHECK(cudaMemcpyAsync(melGpu.rawPointer(), transposedHalf.data(), static_cast<size_t>(numel) * sizeof(__half),
         cudaMemcpyHostToDevice, stream));
 
-    LOG_INFO("Gemma4AudioRunner: extracted mel from PCM (%zu samples @ %d Hz) -> [1, %ld, %ld]", pcm.samples.size(),
-        pcm.sampleRate, timeSteps, melBins);
+    LOG_INFO("Gemma4AudioRunner: extracted mel from PCM (%ld samples @ %d Hz) -> [1, %ld, %ld]",
+        static_cast<long>(pcm.numSamples()), pcm.sampleRate, timeSteps, melBins);
     return true;
 }
 
@@ -287,15 +284,11 @@ bool Gemma4AudioRunner::encodeSingleClip(
     CUDA_CHECK(cudaMemcpyAsync(
         mInputFeatures.rawPointer(), mel.rawPointer(), mel.getMemoryCapacity(), cudaMemcpyDeviceToDevice, stream));
 
-    // Set up valid mask — true for real encoded positions, false for padding.
-    check::check(mValidMask.reshape({1, encodedSeqLen}), "Valid mask reshape failed");
-    // Ceil, matching the HF encoder mask: a trailing partial group still
-    // carries real content and yields a valid soft token.
-    int64_t const validPositions = encodedSeqLen;
-    CUDA_CHECK(cudaMemsetAsync(mValidMask.rawPointer(), 0, encodedSeqLen * sizeof(bool), stream));
-    if (validPositions > 0)
+    check::check(mInputFeaturesMask.reshape({1, paddedSeqLen}), "Input features mask reshape failed");
+    CUDA_CHECK(cudaMemsetAsync(mInputFeaturesMask.rawPointer(), 0, paddedSeqLen * sizeof(bool), stream));
+    if (rawSeqLen > 0)
     {
-        CUDA_CHECK(cudaMemsetAsync(mValidMask.rawPointer(), 1, validPositions * sizeof(bool), stream));
+        CUDA_CHECK(cudaMemsetAsync(mInputFeaturesMask.rawPointer(), 1, rawSeqLen * sizeof(bool), stream));
     }
 
     // Bind encoder output to the correct offset in mAudioEmbedding
@@ -304,8 +297,8 @@ bool Gemma4AudioRunner::encodeSingleClip(
         = destRowOffset * static_cast<int64_t>(mConfig.audioFeatureDim) * static_cast<int64_t>(sizeof(__half));
 
     bool status{true};
-    status &= mAudioContext->setInputShape("input_features", mInputFeatures.getShape().getTRTDims());
-    status &= mAudioContext->setInputShape("valid", mValidMask.getShape().getTRTDims());
+    status &= mAudioContext->setInputShape("input_features", toTrtDims(mInputFeatures.getShape()));
+    status &= mAudioContext->setInputShape("input_features_mask", toTrtDims(mInputFeaturesMask.getShape()));
     status &= mAudioContext->setTensorAddress("last_hidden_state", embeddingBase + destByteOffset);
     if (!status)
     {
@@ -322,7 +315,7 @@ bool Gemma4AudioRunner::encodeSingleClip(
     mMultimodalMetrics.recordRun(1, encodedSeqLen);
     // Return valid (non-padding) positions so downstream token expansion matches
     // the actual encoded content. The encoder's valid mask zeroes padding outputs.
-    encodedRowsOut = validPositions;
+    encodedRowsOut = encodedSeqLen;
     return true;
 }
 

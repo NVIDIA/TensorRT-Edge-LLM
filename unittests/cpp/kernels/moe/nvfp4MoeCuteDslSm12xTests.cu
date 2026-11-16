@@ -49,9 +49,12 @@ namespace
 // ---------------------------------------------------------------------------
 constexpr int32_t kSfVecSize = 16;
 constexpr int32_t kRowTile = 128;
+constexpr int32_t kFc2ReductionTile = 128;
 constexpr int32_t kNumExperts = 128;
 constexpr int32_t kTopK = 8;
 constexpr size_t kRunnerRepeats = 2;
+// Keep each FP4 input block well-conditioned without pushing gated activations into saturation.
+constexpr float kHiddenMagnitude = 1.0f;
 
 constexpr std::array<float, 16> kFp4Levels{
     0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f};
@@ -70,6 +73,11 @@ inline uint8_t floatToFp8Byte(float value)
 {
     __nv_fp8_e4m3 fp8(value);
     return fp8.__x;
+}
+
+inline float fp16Roundtrip(float value)
+{
+    return __half2float(__float2half_rn(value));
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +345,7 @@ CaseData buildCase(MoeCase const& cfg)
 
     c.hiddenFp16.resize(static_cast<size_t>(cfg.numTokens) * cfg.hiddenSize);
     {
-        std::normal_distribution<float> dist(0.0f, 0.05f);
+        std::uniform_real_distribution<float> dist(-kHiddenMagnitude, kHiddenMagnitude);
         for (size_t i = 0; i < c.hiddenFp16.size(); ++i)
         {
             c.hiddenFp16[i] = __float2half_rn(dist(rng));
@@ -375,23 +383,21 @@ CaseData buildCase(MoeCase const& cfg)
     c.fc2QWeights = makeQWeights(rng, static_cast<size_t>(kNumExperts) * cfg.hiddenSize * (cfg.intermediateSize / 2));
     c.fc1Scale = makeScaleTensorUniform(c.n1, cfg.hiddenSize);
     c.fc2Scale = makeScaleTensorUniform(cfg.hiddenSize, cfg.intermediateSize);
-    // Unit global-scale regime (alpha = input_gs = down_gs = 1.0).
-    //
-    // The SM12x fused kernel applies the per-expert scalars differently from
-    // the SM110 split kernel: the activation is FP4-packed using
-    // input_global_scale (folding a 1/input_gs factor into the packed value),
-    // FC1 then multiplies by fc1_alpha only, the FC1 intermediate is requantized
-    // using down_input_scale, and FC2 multiplies by fc2_alpha only (see
-    // kernelSrcs/nvfp4_fused_moe_cutedsl/moe_decode_kernel.py and fp4_common.py).
-    // With every global scale == 1.0 those convention differences collapse to
-    // the identity, so this true-MoE numpy reference matches the kernel up to
-    // FP4 rounding -- while still exercising routing, FP4/FP8 quant, the
-    // grouped GEMMs, the activation, and the scatter-add. Per-expert non-unit
-    // scales would require mirroring the kernel's exact multi-stage scale flow.
-    c.fc1Alpha.assign(kNumExperts, 1.0f);
-    c.fc2Alpha.assign(kNumExperts, 1.0f);
-    c.inputGlobalScale.assign(kNumExperts, 1.0f);
-    c.downInputScale.assign(kNumExperts, 1.0f);
+    // Non-unit per-expert scales make the reference sensitive to both missing
+    // and swapped FC1/FC2 activation-scale folds. Keep alpha * scale near one
+    // so the fp16 output remains well conditioned.
+    c.fc1Alpha.resize(kNumExperts);
+    c.fc2Alpha.resize(kNumExperts);
+    c.inputGlobalScale.resize(kNumExperts);
+    c.downInputScale.resize(kNumExperts);
+    for (int32_t e = 0; e < kNumExperts; ++e)
+    {
+        float const frac = static_cast<float>(e) / static_cast<float>(kNumExperts);
+        c.inputGlobalScale[static_cast<size_t>(e)] = 0.02f * (1.0f + 0.5f * frac);
+        c.fc1Alpha[static_cast<size_t>(e)] = 40.0f * (1.0f + 0.25f * frac);
+        c.downInputScale[static_cast<size_t>(e)] = 0.05f * (1.0f + frac);
+        c.fc2Alpha[static_cast<size_t>(e)] = 10.0f * (1.0f + 0.5f * frac);
+    }
     return c;
 }
 
@@ -445,20 +451,32 @@ std::vector<float> computeReference(CaseData const& c)
             }
 
             std::vector<float> activated = applyFc1Activation(projection.data(), I, c.config.activationType);
+            for (float& value : activated)
+            {
+                value = fp16Roundtrip(value);
+            }
 
             std::vector<float> activatedRaw = fp4RoundtripLinearSfRaw(activated.data(), 1, I, downScale);
             std::vector<float> fc2W
                 = dequantWeight(c.fc2QWeights.data(), c.fc2Scale.data(), expert, H, I, c.fc2Alpha[expert]);
             float* outRow = output.data() + static_cast<size_t>(t) * H;
-            for (int32_t row = 0; row < H; ++row)
+            // Prefill emits one FP16 atomic scatter-add per 128-wide FC2 reduction tile. Mirror the operand
+            // rounding, then use an order-insensitive FP32 ideal instead of one arbitrary FP16 atomic order.
+            for (int32_t begin = 0; begin < I; begin += kFc2ReductionTile)
             {
-                float acc = 0.0f;
-                float const* wRow = fc2W.data() + static_cast<size_t>(row) * I;
-                for (int32_t k = 0; k < I; ++k)
+                int32_t const end = std::min(begin + kFc2ReductionTile, I);
+                for (int32_t row = 0; row < H; ++row)
                 {
-                    acc += wRow[k] * activatedRaw[k];
+                    float partial = 0.0f;
+                    float const* wRow = fc2W.data() + static_cast<size_t>(row) * I;
+                    for (int32_t k = begin; k < end; ++k)
+                    {
+                        partial += wRow[k] * activatedRaw[k];
+                    }
+                    float const partialFp16 = fp16Roundtrip(downScale * partial);
+                    float const weightedFp16 = fp16Roundtrip(routerWeight * partialFp16);
+                    outRow[row] += weightedFp16;
                 }
-                outRow[row] += routerWeight * downScale * acc;
             }
         }
     }
@@ -484,32 +502,32 @@ RunResult runCase(CaseData const& c)
     int32_t const I = c.config.intermediateSize;
     int32_t const n1 = c.n1;
 
-    rt::Tensor hidden({T, H}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
-    rt::Tensor topkIds({T, kTopK}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor topkWeights({T, kTopK}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor fc1Q({kNumExperts, n1, H / 2}, DeviceType::kGPU, nvinfer1::DataType::kINT8);
-    rt::Tensor fc2Q({kNumExperts, H, I / 2}, DeviceType::kGPU, nvinfer1::DataType::kINT8);
+    rt::Tensor hidden({T, H}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
+    rt::Tensor topkIds({T, kTopK}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor topkWeights({T, kTopK}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor fc1Q({kNumExperts, n1, H / 2}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
+    rt::Tensor fc2Q({kNumExperts, H, I / 2}, DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
     auto const fc1Shape = scaleShape(n1, H);
     auto const fc2Shape = scaleShape(H, I);
     rt::Tensor fc1Scale(
         {fc1Shape.experts, fc1Shape.mOuter, fc1Shape.kOuter, fc1Shape.inner0, fc1Shape.inner1, fc1Shape.inner2},
-        DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        DeviceType::kGPU, trt_edgellm::DataType::kINT8);
     rt::Tensor fc2Scale(
         {fc2Shape.experts, fc2Shape.mOuter, fc2Shape.kOuter, fc2Shape.inner0, fc2Shape.inner1, fc2Shape.inner2},
-        DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        DeviceType::kGPU, trt_edgellm::DataType::kINT8);
 
-    rt::Tensor fc1Alpha({kNumExperts}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor fc2Alpha({kNumExperts}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor inputScale({kNumExperts}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor downScale({kNumExperts}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor output({T, H}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor fc1Alpha({kNumExperts}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor fc2Alpha({kNumExperts}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor inputScale({kNumExperts}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor downScale({kNumExperts}, DeviceType::kGPU, trt_edgellm::DataType::kFLOAT);
+    rt::Tensor output({T, H}, DeviceType::kGPU, trt_edgellm::DataType::kHALF);
 
     // Identity tables required by the SM12x runner ABI: weightExpertIds and
     // globalToLocalExpertIds must be [0, 1, ..., E-1] and MUST NOT alias each
     // other (the kernel collapses cos_sim if they alias -- see runner header).
-    rt::Tensor weightExpertIds({kNumExperts}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
-    rt::Tensor globalToLocalExpertIds({kNumExperts}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor weightExpertIds({kNumExperts}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
+    rt::Tensor globalToLocalExpertIds({kNumExperts}, DeviceType::kGPU, trt_edgellm::DataType::kINT32);
     std::vector<int32_t> identity(kNumExperts);
     for (int32_t i = 0; i < kNumExperts; ++i)
     {
@@ -613,6 +631,7 @@ Summary summarize(std::vector<float> const& got, std::vector<float> const& ref, 
 {
     std::vector<double> cosines;
     cosines.reserve(static_cast<size_t>(T));
+    bool hasUndefinedCosine = false;
     double gotNorm2 = 0.0;
     double refNorm2 = 0.0;
     double maxAbs = 0.0;
@@ -633,11 +652,20 @@ Summary summarize(std::vector<float> const& got, std::vector<float> const& ref, 
         gotNorm2 += gn;
         refNorm2 += rn;
         double const denom = std::sqrt(gn) * std::sqrt(rn);
-        cosines.push_back(denom > 0.0 ? dot / std::max(denom, 1e-30) : 1.0);
+        // An undefined zero-norm cosine must not let a degenerate fixture pass.
+        if (denom <= 0.0)
+        {
+            hasUndefinedCosine = true;
+            cosines.push_back(0.0);
+        }
+        else
+        {
+            cosines.push_back(dot / denom);
+        }
     }
     std::sort(cosines.begin(), cosines.end());
-    double const median = cosines.empty()
-        ? 1.0
+    double const median = hasUndefinedCosine || cosines.empty()
+        ? 0.0
         : (cosines.size() % 2 == 0 ? 0.5 * (cosines[cosines.size() / 2 - 1] + cosines[cosines.size() / 2])
                                    : cosines[cosines.size() / 2]);
     double const mag = std::sqrt(refNorm2) > 0.0 ? std::sqrt(gotNorm2) / std::max(std::sqrt(refNorm2), 1e-30) : 0.0;
@@ -667,19 +695,15 @@ bool checkRequirements()
 
 std::vector<MoeCase> defaultCases()
 {
-    // Scope: prefill backend with gated activations. SwiGLU was validated on real GB10 (SM121) at
-    // cosine == 1.0 against this true-MoE numpy reference. GeGLU is covered by
-    // the regression case below. Two backends and ReLU2 are intentionally NOT covered here yet:
-    //   * the decode backend (kAuto/kDecode at small token counts) emitted an
-    //     all-zero output in this standalone runner harness -- its resident-grid
-    //     route/pack -> compute barrier appears to need launch conditions the
-    //     plugin provides but a bare runner call does not; and
-    //   * ReLU2 only reached cosine ~= 0.70 because squaring the FC1 output
-    //     amplifies the FP4 requant noise of the intermediate at this small
-    //     (H=1024, I=768) shape.
-    // Both are tracked as follow-ups; covering them needs the runner-level
-    // harness to mirror the kernel's exact decode-barrier setup / requant noise
-    // model rather than the true-MoE reference used here.
+    // Scope: prefill backend. SwiGLU, GeGLU and ReLU2 are checked against the
+    // true-MoE reference below. The decode backend (kAuto/kDecode at small token
+    // counts) is intentionally NOT covered here yet: it emitted an all-zero
+    // output in this standalone runner harness -- its resident-grid route/pack
+    // -> compute barrier appears to need launch conditions the plugin provides
+    // but a bare runner call does not. Tracked as a follow-up; covering it needs
+    // the runner-level harness to mirror the kernel's exact decode-barrier setup.
+    // (The "ReLU2 only reaches cosine ~= 0.70" seen earlier was the FC1 -> FC2
+    // shared-memory race of the non-gated path, not FP4 requant noise.)
     return {
         // Explicit kPrefill so both cases exercise the prefill grouped-GEMM
         // backend (kAuto would pick decode below the 640-routed-row cutover).
@@ -691,6 +715,23 @@ std::vector<MoeCase> defaultCases()
             /*backend=*/CuteDslMoeBackend::kPrefill, /*seed=*/0xDEADBEEFu},
         {/*name=*/"prefill_h1024_i768_t8_geglu", /*numTokens=*/8, /*hiddenSize=*/1024,
             /*intermediateSize=*/768, /*activationType=*/kActivationTypeGeGLU,
+            /*backend=*/CuteDslMoeBackend::kPrefill, /*seed=*/0xDEADBEEFu},
+        // Non-gated ReLU2 experts (Nemotron-H): the only activation without an up
+        // pass, so the FC1 -> FC2 shared-memory hand-off needs its own pass_sync
+        // barrier. Without it the H=1024 cases read median cosine 0.86-0.95 and
+        // differ between two repeats of identical inputs. H=2816 / I=1920 is the
+        // Nemotron-3-Nano shape (2688 / 1856) as the model builder pads it to the
+        // runner contract (hiddenSize % kHiddenSizeAlignment == 0,
+        // intermediateSize % kLevelTileN == 0), see the per-case canImplement
+        // check in the accuracy test.
+        {/*name=*/"prefill_h1024_i768_t8_relu2", /*numTokens=*/8, /*hiddenSize=*/1024,
+            /*intermediateSize=*/768, /*activationType=*/kActivationTypeReLU2,
+            /*backend=*/CuteDslMoeBackend::kPrefill, /*seed=*/0xDEADBEEFu},
+        {/*name=*/"prefill_h1024_i768_t16_relu2", /*numTokens=*/16, /*hiddenSize=*/1024,
+            /*intermediateSize=*/768, /*activationType=*/kActivationTypeReLU2,
+            /*backend=*/CuteDslMoeBackend::kPrefill, /*seed=*/0xDEADBEEFu},
+        {/*name=*/"prefill_h2816_i1920_t16_relu2", /*numTokens=*/16, /*hiddenSize=*/2816,
+            /*intermediateSize=*/1920, /*activationType=*/kActivationTypeReLU2,
             /*backend=*/CuteDslMoeBackend::kPrefill, /*seed=*/0xDEADBEEFu},
     };
 }
@@ -746,20 +787,23 @@ TEST(CuteDslNvfp4MoeSm12xTest, accuracy)
         GTEST_SKIP() << "SM12x NVFP4 fused MoE CuTeDSL canImplement returned false";
     }
 
-    // Median cosine is the correctness gate (validated == 1.0 on real GB10):
-    // it catches sign / routing / activation / weight-scale regressions. The
-    // magnitude ratio is recorded for visibility but NOT asserted as a tight
-    // band: at unit global scales the fused kernel and this true-MoE reference
-    // agree in direction (cosine 1.0), but small-signal tokens whose reference
-    // norm collapses under FP4 rounding make the global norm ratio swing widely
-    // (observed ~0.4 at T=8, ~6.5 at T=16) without indicating an error. A loose
-    // sanity floor still catches a wholesale magnitude collapse.
-    constexpr double kMinCosine = 0.94;
-    constexpr double kMinMagRatio = 0.02;
+    // Median cosine catches direction errors. The magnitude band catches a
+    // missing global-scale fold while allowing FP4 rounding noise.
+    constexpr double kMinCosine = 0.99;
+    constexpr double kMinMagRatio = 0.99;
+    constexpr double kMaxMagRatio = 1.01;
 
     for (auto const& cfg : defaultCases())
     {
         SCOPED_TRACE(::testing::Message() << "case=" << cfg.name);
+        // Every case must satisfy the contract the plugin enforces through
+        // canImplement (hidden size a multiple of kHiddenSizeAlignment,
+        // intermediate size a multiple of kLevelTileN): the kernels floor-divide
+        // the N-tile count, so a ragged intermediate size silently drops the tail
+        // half-tile and, for gated activations, mis-pairs the up / gate halves.
+        ASSERT_TRUE(CuteDslNvfp4MoeRunner::canImplement(cfg.hiddenSize, cfg.intermediateSize, kNumExperts, kTopK, sm,
+            toRunnerActivation(cfg.activationType), CuteDslMoeIoDtype::kFP16, cfg.backend))
+            << "case outside the runner contract: " << cfg.name;
         CaseData c = buildCase(cfg);
         std::vector<float> const ref = computeReference(c);
         RunResult const result = runCase(c);
@@ -776,7 +820,9 @@ TEST(CuteDslNvfp4MoeSm12xTest, accuracy)
             EXPECT_GE(s.medianCosine, kMinCosine)
                 << "median cosine " << s.medianCosine << " below threshold " << kMinCosine << " for " << cfg.name;
             EXPECT_GE(s.magRatio, kMinMagRatio)
-                << "magnitude ratio " << s.magRatio << " indicates a wholesale magnitude collapse for " << cfg.name;
+                << "magnitude ratio " << s.magRatio << " indicates a missing activation-scale fold for " << cfg.name;
+            EXPECT_LE(s.magRatio, kMaxMagRatio)
+                << "magnitude ratio " << s.magRatio << " indicates a missing activation-scale fold for " << cfg.name;
         }
     }
 }

@@ -22,9 +22,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <type_traits>
@@ -64,6 +67,13 @@ struct PublishedSpecRecord
     RecordId id{};
 };
 
+struct PublishedSwaRecord
+{
+    std::vector<PageId> producerBasePages;
+    SwaWindowState state;
+    RecordId id{};
+};
+
 CacheRequestLease takeLease(AcquireResult& result)
 {
     if (!result.lease.has_value())
@@ -82,6 +92,39 @@ CacheRequestLease acquirePrivatePages(ContextCacheManager& manager, int32_t coun
 SpecReuseContract eagleSpecReuseContract()
 {
     return SpecReuseContract{/*ownsPagedSpecState=*/true, /*futureDependencyTokens=*/1};
+}
+
+int32_t swaPrivatePageLimit(int32_t windowSize)
+{
+    return static_cast<int32_t>(computeSwaPrivatePagesPerSlot(windowSize, kPAGE_SIZE, kSWA_REPLACEMENT_PAGES));
+}
+
+SwaWindowState materializeSwaState(ContextCacheManager& manager, CacheRequestLease& lease, int32_t endpoint,
+    int32_t windowSize, int32_t pageSize = kPAGE_SIZE)
+{
+    std::optional<SwaKVCacheState> admitted = manager.takeSwaState(lease);
+    if (!admitted.has_value())
+    {
+        throw std::runtime_error("Test SWA admission did not provide execution state");
+    }
+
+    int32_t const publishableEndpoint = endpoint - endpoint % pageSize;
+    int32_t const activeBegin = std::max(0, publishableEndpoint - windowSize) / pageSize;
+    int32_t const retainedBegin = std::max(0, activeBegin - kSWA_REPLAY_HALO_PAGES);
+    int32_t const retainedEnd = (endpoint + pageSize - 1) / pageSize;
+    admitted->exactResidentTokenCount = endpoint;
+    admitted->retainedLogicalPageBegin = retainedBegin;
+    admitted->retainedLogicalPageEnd = retainedEnd;
+    for (int32_t logicalPage = retainedBegin; logicalPage < retainedEnd; ++logicalPage)
+    {
+        if (admitted->reservedPages.empty())
+        {
+            throw std::runtime_error("Test SWA admission has too few retained pages");
+        }
+        admitted->pageBindings.push_back(SwaPageBinding{logicalPage, admitted->reservedPages.back()});
+        admitted->reservedPages.pop_back();
+    }
+    return static_cast<SwaWindowState const&>(*admitted);
 }
 
 std::vector<PageId> const& eaglePagePath(CacheRecord const& record)
@@ -127,6 +170,45 @@ PublishedSpecRecord publishPrivateSpecRecord(ContextCacheManager& manager, std::
     return PublishedSpecRecord{status, producerBasePages, producerDraftPages, lru.back()};
 }
 
+PublishedSwaRecord publishSwaRecord(ContextCacheManager& manager, std::vector<BlockHash> hashes, int32_t windowSize)
+{
+    int32_t const endpoint = static_cast<int32_t>(hashes.size()) * kPAGE_SIZE;
+    AcquireResult result = manager.acquireVanilla(hashes, endpoint, ContextCacheLookupPolicy::kBypass);
+    CacheRequestLease lease = takeLease(result);
+    std::vector<PageId> const producerBasePages = lease.basePages();
+    SwaWindowState const state = materializeSwaState(manager, lease, endpoint, windowSize);
+    PublishResult const published
+        = manager.publish(lease, PublishRequest{hashes, endpoint, std::optional<SwaWindowState>{state}});
+    if (!published.record.has_value())
+    {
+        throw std::runtime_error("Test SWA publication did not retain a record");
+    }
+    lease.release();
+    return PublishedSwaRecord{producerBasePages, state, *published.record};
+}
+
+std::vector<PageId> swaPages(SwaWindowState const& state)
+{
+    std::vector<PageId> pages;
+    pages.reserve(state.pageBindings.size());
+    for (SwaPageBinding const& binding : state.pageBindings)
+    {
+        pages.push_back(binding.page);
+    }
+    return pages;
+}
+
+int32_t activeSwaRefCount(ContextCacheManager const& manager)
+{
+    ResourcePools const& pools = manager.pools();
+    int32_t count{};
+    for (PageId page = 0; page < pools.capacity(ResourceType::kSwaKvPage); ++page)
+    {
+        count += pools.activeRefCount(ResourceId{ResourceType::kSwaKvPage, page});
+    }
+    return count;
+}
+
 void expectPoolState(ContextCacheManager const& manager, ResourceType type, std::vector<int32_t> const& activeRefs,
     std::vector<int32_t> const& cacheRefs, int32_t freeCount)
 {
@@ -149,9 +231,419 @@ void expectOnlyBaseState(ContextCacheManager const& manager, std::vector<int32_t
     expectPoolState(manager, ResourceType::kDraftKvPage, {}, {}, 0);
     expectPoolState(manager, ResourceType::kRecurrentSnapshot, {}, {}, 0);
     expectPoolState(manager, ResourceType::kPartialKvSnapshot, {}, {}, 0);
+    expectPoolState(manager, ResourceType::kSwaKvPage, {}, {}, 0);
 }
 
 } // namespace
+
+TEST(ContextCacheManagerTests, ActionLeasePinsPublishedPrefixAndCannotPublish)
+{
+    // Given a published prefix, when action pins it and other requests exhaust the pool,
+    // then eviction cannot reclaim the prefix and the read-only lease cannot publish, even after a move.
+    ContextCacheManager manager(kPAGE_SIZE, {3, 0, 0, 0}, 4);
+    auto const record = publishPrivateRecord(manager, {kHASH_A});
+    auto action = manager.retainBasePages(record.producerPages);
+    CacheRequestLease moved = std::move(action);
+    auto pressure = acquirePrivatePages(manager, 2);
+    EXPECT_THROW(manager.publish(moved, PublishRequest{{kHASH_B, kHASH_C}, 2 * kPAGE_SIZE}), std::runtime_error);
+    auto competing = manager.acquireVanilla({}, kPAGE_SIZE);
+    EXPECT_FALSE(competing.lease.has_value());
+    EXPECT_EQ(manager.records().lruToMru(), (std::vector<RecordId>{record.id}));
+    for (PageId const page : pressure.basePages())
+    {
+        EXPECT_EQ(manager.pools().cacheRefCount({ResourceType::kBaseKvPage, page}), 0);
+    }
+    moved.release();
+    pressure.release();
+    EXPECT_EQ(manager.pools().freeCount(ResourceType::kBaseKvPage), 2);
+    EXPECT_EQ(manager.pools().activeRefCount({ResourceType::kBaseKvPage, record.producerPages[0]}), 0);
+    EXPECT_EQ(manager.pools().cacheRefCount({ResourceType::kBaseKvPage, record.producerPages[0]}), 1);
+}
+
+TEST(ContextCacheManagerTests, ActionAcquisitionRejectsUnownedPagesAndRollsBackPins)
+{
+    // Given a live page and a free page, when pinning an invalid prefix,
+    // then acquisition fails without retaining any extra references or consuming free pages.
+    ContextCacheManager manager(kPAGE_SIZE, {3, 0, 0, 0}, 4);
+    auto prefix = acquirePrivatePages(manager, 1);
+    PageId const page = prefix.basePages()[0];
+    EXPECT_THROW(manager.retainBasePages({page, 2}), std::runtime_error);
+    EXPECT_EQ(manager.pools().activeRefCount({ResourceType::kBaseKvPage, page}), 1);
+    EXPECT_EQ(manager.pools().freeCount(ResourceType::kBaseKvPage), 2);
+}
+
+TEST(ContextCacheManagerTests, SwaAdmissionRollsBackWhenTheBoundedReservationCannotFit)
+{
+    constexpr int32_t kWINDOW_SIZE{6};
+    int32_t const privatePages = swaPrivatePageLimit(kWINDOW_SIZE);
+    ContextCacheManager manager(kPAGE_SIZE, ResourceDemand{0, 0, 0, 0, privatePages}, 1, std::nullopt,
+        SwaCacheConfig{kWINDOW_SIZE, kSWA_REPLACEMENT_PAGES});
+    AcquireResult firstResult = manager.acquireVanilla({}, 0, ContextCacheLookupPolicy::kBypass);
+    CacheRequestLease first = takeLease(firstResult);
+    ASSERT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), 0);
+
+    AcquireResult const result = manager.acquireVanilla({}, 0, ContextCacheLookupPolicy::kBypass);
+
+    EXPECT_EQ(result.status, AcquireStatus::kInsufficientCapacity);
+    EXPECT_FALSE(result.lease.has_value());
+    EXPECT_EQ(result.plan.demand.swaKvPages, privatePages);
+    EXPECT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), 0);
+    EXPECT_TRUE(manager.records().lruToMru().empty());
+
+    first.release();
+    EXPECT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), privatePages);
+}
+
+TEST(ContextCacheManagerTests, SwaExactRecordRewindFitsTheAutoSizedActivePool)
+{
+    // Given a resident SWA record, when looking up a covered prefix or replaying its complete input,
+    // then reuse the covered prefix and reserve one-page rewind within the bounded pool.
+    constexpr int32_t kWINDOW_SIZE{6};
+    int32_t const privatePages = swaPrivatePageLimit(kWINDOW_SIZE);
+    ContextCacheManager manager(kPAGE_SIZE, ResourceDemand{4, 0, 0, 0, privatePages}, 1, std::nullopt,
+        SwaCacheConfig{kWINDOW_SIZE, kSWA_REPLACEMENT_PAGES});
+    std::vector<BlockHash> const hashes{kHASH_A, kHASH_B, kHASH_C};
+    PublishedSwaRecord const published = publishSwaRecord(manager, hashes, kWINDOW_SIZE);
+    ASSERT_EQ(published.state.pageBindings.size(), 3U);
+
+    ReusePlan const prefix = manager.planVanilla({kHASH_A, kHASH_B}, 2 * kPAGE_SIZE + 1);
+    EXPECT_EQ(prefix.kind, ReusePlanKind::kStandard);
+    EXPECT_EQ(prefix.reuseTokenLength, 2 * kPAGE_SIZE);
+    EXPECT_EQ(prefix.swaRecord, published.id);
+
+    AcquireResult result = manager.acquireVanilla(hashes, 3 * kPAGE_SIZE);
+
+    ASSERT_EQ(result.status, AcquireStatus::kAcquired);
+    EXPECT_EQ(result.plan.kind, ReusePlanKind::kFullInputRewind);
+    EXPECT_EQ(result.plan.matchedTokenLength, 3 * kPAGE_SIZE);
+    EXPECT_EQ(result.plan.reuseTokenLength, 2 * kPAGE_SIZE);
+    ASSERT_TRUE(result.plan.swaWindowState.has_value());
+    EXPECT_EQ(result.plan.swaWindowState->retentionMode, SwaRetentionMode::kFullInputRewind);
+    EXPECT_EQ(result.plan.swaWindowState->pageBindings.size(), 2U);
+    EXPECT_EQ(result.plan.demand.swaKvPages, privatePages - 3);
+
+    CacheRequestLease lease = takeLease(result);
+    std::optional<SwaKVCacheState> state = manager.takeSwaState(lease);
+    ASSERT_TRUE(state.has_value());
+    EXPECT_EQ(state->pageBindings.size() + state->reservedPages.size(), static_cast<size_t>(privatePages - 1));
+    for (SwaPageBinding const& binding : state->pageBindings)
+    {
+        EXPECT_TRUE(manager.isExternallyOwnedSwaPage(lease, binding.page));
+    }
+    ASSERT_FALSE(state->reservedPages.empty());
+    EXPECT_FALSE(manager.isExternallyOwnedSwaPage(lease, state->reservedPages.front()));
+    EXPECT_EQ(manager.records().get(published.id).swaWindowState, std::optional<SwaWindowState>{published.state});
+
+    lease.release();
+    EXPECT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), privatePages - 3);
+}
+
+TEST(ContextCacheManagerTests, SwaProjectedPrefixAcquisitionPinsPagesAcrossSourceEviction)
+{
+    // Given a longer SWA record in a minimum-sized pool, when a partial or complete input reuses its prefix,
+    // then bind the original prefix pages despite source eviction, and release every pin with the lease.
+    constexpr int32_t kTOKENS_PER_PAGE{128};
+    constexpr int32_t kWINDOW_SIZE{512};
+    constexpr int32_t kSWA_CAPACITY{13};
+    constexpr int32_t kBASE_CAPACITY{256};
+    constexpr int32_t kPROMPT_LENGTH{525};
+    std::vector<int32_t> prompt(kPROMPT_LENGTH);
+    std::iota(prompt.begin(), prompt.end(), 0);
+    auto const hashes = hashFullBlocks(prompt.data(), prompt.size(), kTOKENS_PER_PAGE);
+
+    for (bool const fullInput : {false, true})
+    {
+        SCOPED_TRACE(fullInput);
+        ContextCacheManager manager(kTOKENS_PER_PAGE, {kBASE_CAPACITY, 0, 0, 0, kSWA_CAPACITY}, 4, std::nullopt,
+            SwaCacheConfig{kWINDOW_SIZE, kSWA_REPLACEMENT_PAGES});
+        auto producerResult = manager.acquireVanilla(hashes, kPROMPT_LENGTH);
+        auto producer = takeLease(producerResult);
+        auto const sourcePages = producer.basePages();
+        auto const sourceWindow
+            = materializeSwaState(manager, producer, kPROMPT_LENGTH, kWINDOW_SIZE, kTOKENS_PER_PAGE);
+        auto const published = manager.publish(producer, {hashes, kPROMPT_LENGTH, sourceWindow});
+        producer.release();
+
+        int32_t const inputLength = fullInput ? 384 : 550;
+        int32_t const commonLength = fullInput ? 384 : 498;
+        int32_t const reuseLength = fullInput ? 256 : 384;
+        std::vector<int32_t> input(inputLength, -1);
+        std::copy_n(prompt.begin(), commonLength, input.begin());
+        auto const inputHashes = hashFullBlocks(input.data(), input.size(), kTOKENS_PER_PAGE);
+        auto acquired = manager.acquireVanilla(inputHashes, inputLength);
+        auto lease = takeLease(acquired);
+        auto const state = manager.takeSwaState(lease).value();
+        int32_t const reusedPages = reuseLength / kTOKENS_PER_PAGE;
+        auto const reusedBaseEnd
+            = lease.basePages().begin() + std::min(lease.basePages().size(), static_cast<size_t>(reusedPages));
+
+        EXPECT_EQ(acquired.plan.reuseTokenLength, reuseLength);
+        EXPECT_EQ((std::vector<PageId>{lease.basePages().begin(), reusedBaseEnd}),
+            (std::vector<PageId>{sourcePages.begin(), sourcePages.begin() + reusedPages}));
+        EXPECT_EQ(state.pageBindings,
+            (std::deque<SwaPageBinding>{
+                sourceWindow.pageBindings.begin(), sourceWindow.pageBindings.begin() + reusedPages}));
+        EXPECT_FALSE(manager.records().contains(published.record.value()));
+        for (auto const& binding : state.pageBindings)
+        {
+            EXPECT_EQ(manager.pools().activeRefCount({ResourceType::kSwaKvPage, binding.page}), 1);
+        }
+        lease.release();
+        EXPECT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), kSWA_CAPACITY);
+        EXPECT_EQ(manager.pools().freeCount(ResourceType::kBaseKvPage), kBASE_CAPACITY);
+    }
+}
+
+TEST(ContextCacheManagerTests, SwaPrefixMissesWhenWindowOrReplayHaloIsNoLongerResident)
+{
+    // Given a valid SWA record with older pages retired, when a prefix needs a missing window or replay-halo page,
+    // then plan a cold prefill without binding any cached base or SWA pages.
+    constexpr int32_t kWINDOW_SIZE{6};
+    int32_t const privatePages = swaPrivatePageLimit(kWINDOW_SIZE);
+    ContextCacheManager manager(kPAGE_SIZE, {10, 0, 0, 0, 2 * privatePages}, 4, std::nullopt,
+        SwaCacheConfig{kWINDOW_SIZE, kSWA_REPLACEMENT_PAGES});
+    (void) publishSwaRecord(manager, {kHASH_A, kHASH_B, kHASH_C, kHASH_D, kHASH_E}, kWINDOW_SIZE);
+    for (auto const& hashes :
+        {std::vector<BlockHash>{kHASH_A, kHASH_B, kHASH_C, kHASH_D}, std::vector<BlockHash>{kHASH_A, kHASH_B}})
+    {
+        SCOPED_TRACE(hashes.size());
+        auto const plan = manager.planVanilla(hashes, static_cast<int32_t>(hashes.size()) * kPAGE_SIZE + 1);
+        EXPECT_EQ(plan.reuseTokenLength, 0);
+        EXPECT_TRUE(plan.basePageBindings.empty());
+        EXPECT_TRUE(plan.swaWindowState.value().pageBindings.empty());
+    }
+}
+
+TEST(ContextCacheManagerTests, SwaPrefixChoosesTheLongestCoherentRecord)
+{
+    // Given a shorter exact record and a longer record covering the branch point, when planning prefix reuse,
+    // then bind the longest coherent prefix rather than the exact endpoint or a shorter candidate.
+    constexpr int32_t kWINDOW_SIZE{16};
+    int32_t const privatePages = swaPrivatePageLimit(kWINDOW_SIZE);
+    ContextCacheManager manager(kPAGE_SIZE, {16, 0, 0, 0, 3 * privatePages}, 4, std::nullopt,
+        SwaCacheConfig{kWINDOW_SIZE, kSWA_REPLACEMENT_PAGES});
+    (void) publishSwaRecord(manager, {kHASH_A, kHASH_B}, kWINDOW_SIZE);
+    auto const longer = publishSwaRecord(manager, {kHASH_A, kHASH_B, kHASH_C, kHASH_D}, kWINDOW_SIZE);
+    (void) publishSwaRecord(manager, {kHASH_A}, kWINDOW_SIZE);
+
+    auto const plan = manager.planVanilla({kHASH_A, kHASH_B, kHASH_C, kHASH_E}, 4 * kPAGE_SIZE + 1);
+
+    EXPECT_EQ(plan.reuseTokenLength, 3 * kPAGE_SIZE);
+    EXPECT_EQ(plan.swaRecord, longer.id);
+    EXPECT_EQ(plan.swaWindowState.value().pageBindings,
+        (std::deque<SwaPageBinding>{longer.state.pageBindings.begin(), longer.state.pageBindings.begin() + 3}));
+}
+
+TEST(ContextCacheManagerTests, SwaRecordEvictionPreservesPagesPinnedByBranches)
+{
+    constexpr int32_t kWINDOW_SIZE{6};
+    int32_t const privatePages = swaPrivatePageLimit(kWINDOW_SIZE);
+    ContextCacheManager manager(kPAGE_SIZE, ResourceDemand{10, 0, 0, 0, 3 * privatePages}, 1, std::nullopt,
+        SwaCacheConfig{kWINDOW_SIZE, kSWA_REPLACEMENT_PAGES});
+    PublishedSwaRecord const published = publishSwaRecord(manager, {kHASH_A, kHASH_B, kHASH_C}, kWINDOW_SIZE);
+    std::vector<PageId> const publishedPages = swaPages(published.state);
+
+    AcquireResult firstResult = manager.acquireVanilla({kHASH_A, kHASH_B, kHASH_C}, 3 * kPAGE_SIZE + 1);
+    AcquireResult secondResult = manager.acquireVanilla({kHASH_A, kHASH_B, kHASH_C}, 3 * kPAGE_SIZE + 1);
+    CacheRequestLease first = takeLease(firstResult);
+    CacheRequestLease second = takeLease(secondResult);
+    for (PageId const page : publishedPages)
+    {
+        ResourceId const resource{ResourceType::kSwaKvPage, page};
+        EXPECT_EQ(manager.pools().activeRefCount(resource), 2);
+        EXPECT_EQ(manager.pools().cacheRefCount(resource), 1);
+    }
+
+    PublishedSwaRecord const replacement = publishSwaRecord(manager, {kHASH_D}, kWINDOW_SIZE);
+    EXPECT_NE(replacement.id, published.id);
+    EXPECT_FALSE(manager.records().contains(published.id));
+    for (PageId const page : publishedPages)
+    {
+        ResourceId const resource{ResourceType::kSwaKvPage, page};
+        EXPECT_EQ(manager.pools().activeRefCount(resource), 2);
+        EXPECT_EQ(manager.pools().cacheRefCount(resource), 0);
+    }
+
+    first.release();
+    second.release();
+    for (PageId const page : publishedPages)
+    {
+        ResourceId const resource{ResourceType::kSwaKvPage, page};
+        EXPECT_EQ(manager.pools().activeRefCount(resource), 0);
+        EXPECT_EQ(manager.pools().cacheRefCount(resource), 0);
+    }
+}
+
+TEST(ContextCacheManagerTests, SwaReplacementPreservesCachedRecordAndReservation)
+{
+    constexpr int32_t kWINDOW_SIZE{6};
+    int32_t const privatePages = swaPrivatePageLimit(kWINDOW_SIZE);
+    int32_t const swaCapacity = 2 * privatePages;
+    std::vector<BlockHash> const hashes{kHASH_A, kHASH_B, kHASH_C};
+    ContextCacheManager manager(kPAGE_SIZE, ResourceDemand{4, 0, 0, 0, swaCapacity}, 1, std::nullopt,
+        SwaCacheConfig{kWINDOW_SIZE, kSWA_REPLACEMENT_PAGES});
+    PublishedSwaRecord const published = publishSwaRecord(manager, hashes, kWINDOW_SIZE);
+
+    AcquireResult result = manager.acquireVanilla(hashes, 3 * kPAGE_SIZE + 1);
+    CacheRequestLease lease = takeLease(result);
+    std::optional<SwaKVCacheState> state = manager.takeSwaState(lease);
+    ASSERT_TRUE(state.has_value());
+    std::vector<PageId> const sharedPages = swaPages(*state);
+    ASSERT_FALSE(sharedPages.empty());
+    EXPECT_EQ(activeSwaRefCount(manager), privatePages);
+
+    for (PageId const oldPage : sharedPages)
+    {
+        ResourceId const oldResource{ResourceType::kSwaKvPage, oldPage};
+        ASSERT_EQ(manager.pools().activeRefCount(oldResource), 1);
+        ASSERT_EQ(manager.pools().cacheRefCount(oldResource), 1);
+
+        PageId const replacement = manager.replaceSwaPage(lease, oldPage);
+        state->reservedPages.push_back(replacement);
+
+        EXPECT_NE(replacement, oldPage);
+        EXPECT_EQ(manager.pools().activeRefCount(oldResource), 0);
+        EXPECT_EQ(manager.pools().cacheRefCount(oldResource), 1);
+        EXPECT_EQ(manager.pools().activeRefCount(ResourceId{ResourceType::kSwaKvPage, replacement}), 1);
+        EXPECT_EQ(manager.pools().cacheRefCount(ResourceId{ResourceType::kSwaKvPage, replacement}), 0);
+        EXPECT_EQ(manager.records().get(published.id).swaWindowState, std::optional<SwaWindowState>{published.state});
+        EXPECT_EQ(activeSwaRefCount(manager), privatePages);
+    }
+
+    lease.release();
+    EXPECT_EQ(activeSwaRefCount(manager), 0);
+    EXPECT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), swaCapacity - 3);
+    EXPECT_EQ(manager.records().get(published.id).swaWindowState, std::optional<SwaWindowState>{published.state});
+}
+
+TEST(ContextCacheManagerTests, SwaReplacementEvictsRecordWhenActivePoolIsFull)
+{
+    constexpr int32_t kWINDOW_SIZE{6};
+    int32_t const privatePages = swaPrivatePageLimit(kWINDOW_SIZE);
+    std::vector<BlockHash> const hashes{kHASH_A, kHASH_B, kHASH_C};
+    ContextCacheManager manager(kPAGE_SIZE, ResourceDemand{4, 0, 0, 0, privatePages}, 1, std::nullopt,
+        SwaCacheConfig{kWINDOW_SIZE, kSWA_REPLACEMENT_PAGES});
+    PublishedSwaRecord const published = publishSwaRecord(manager, hashes, kWINDOW_SIZE);
+
+    AcquireResult result = manager.acquireVanilla(hashes, 3 * kPAGE_SIZE + 1);
+    CacheRequestLease lease = takeLease(result);
+    std::optional<SwaKVCacheState> state = manager.takeSwaState(lease);
+    ASSERT_TRUE(state.has_value());
+    ASSERT_FALSE(state->pageBindings.empty());
+    ASSERT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), 0);
+    PageId const oldPage = state->pageBindings.front().page;
+
+    PageId const replacement = manager.replaceSwaPage(lease, oldPage);
+    state->reservedPages.push_back(replacement);
+
+    EXPECT_EQ(replacement, oldPage);
+    EXPECT_FALSE(manager.records().contains(published.id));
+    EXPECT_EQ(manager.pools().activeRefCount(ResourceId{ResourceType::kSwaKvPage, replacement}), 1);
+    EXPECT_EQ(manager.pools().cacheRefCount(ResourceId{ResourceType::kSwaKvPage, replacement}), 0);
+    EXPECT_EQ(activeSwaRefCount(manager), privatePages);
+    for (size_t index = 1; index < state->pageBindings.size(); ++index)
+    {
+        ResourceId const retained{ResourceType::kSwaKvPage, state->pageBindings[index].page};
+        EXPECT_EQ(manager.pools().activeRefCount(retained), 1);
+        EXPECT_EQ(manager.pools().cacheRefCount(retained), 0);
+    }
+
+    lease.release();
+    EXPECT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), privatePages);
+}
+
+TEST(ContextCacheManagerTests, SwaReplacementFailureLeavesLeaseCleanupSafe)
+{
+    constexpr int32_t kWINDOW_SIZE{6};
+    int32_t const privatePages = swaPrivatePageLimit(kWINDOW_SIZE);
+    int32_t const swaCapacity = 2 * privatePages - 3;
+    std::vector<BlockHash> const hashes{kHASH_A, kHASH_B, kHASH_C};
+    ContextCacheManager manager(kPAGE_SIZE, ResourceDemand{5, 0, 0, 0, swaCapacity}, 1, std::nullopt,
+        SwaCacheConfig{kWINDOW_SIZE, kSWA_REPLACEMENT_PAGES});
+    PublishedSwaRecord const published = publishSwaRecord(manager, hashes, kWINDOW_SIZE);
+
+    AcquireResult firstResult = manager.acquireVanilla(hashes, 3 * kPAGE_SIZE + 1);
+    AcquireResult secondResult = manager.acquireVanilla(hashes, 3 * kPAGE_SIZE + 1);
+    CacheRequestLease first = takeLease(firstResult);
+    CacheRequestLease second = takeLease(secondResult);
+    std::optional<SwaKVCacheState> firstState = manager.takeSwaState(first);
+    std::optional<SwaKVCacheState> secondState = manager.takeSwaState(second);
+    ASSERT_TRUE(firstState.has_value());
+    ASSERT_TRUE(secondState.has_value());
+    ASSERT_FALSE(firstState->pageBindings.empty());
+    PageId const sharedPage = firstState->pageBindings.front().page;
+    ResourceId const sharedResource{ResourceType::kSwaKvPage, sharedPage};
+    ASSERT_EQ(manager.pools().activeRefCount(sharedResource), 2);
+    ASSERT_EQ(manager.pools().cacheRefCount(sharedResource), 1);
+    ASSERT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), 0);
+
+    EXPECT_THROW((void) manager.replaceSwaPage(first, sharedPage), std::runtime_error);
+
+    EXPECT_EQ(manager.pools().activeRefCount(sharedResource), 1);
+    EXPECT_EQ(manager.pools().cacheRefCount(sharedResource), 1);
+    EXPECT_TRUE(manager.records().contains(published.id));
+    first.release();
+    second.release();
+    EXPECT_EQ(manager.pools().activeRefCount(sharedResource), 0);
+    EXPECT_EQ(manager.pools().cacheRefCount(sharedResource), 1);
+    EXPECT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), swaCapacity - 3);
+}
+
+TEST(ContextCacheManagerTests, SwaReplacementSurvivesRepeatedPublication)
+{
+    constexpr int32_t kWINDOW_SIZE{6};
+    int32_t const privatePages = swaPrivatePageLimit(kWINDOW_SIZE);
+    int32_t const swaCapacity = 2 * privatePages;
+    std::vector<BlockHash> const initialHashes{kHASH_A, kHASH_B, kHASH_C};
+    ContextCacheManager manager(kPAGE_SIZE, ResourceDemand{5, 0, 0, 0, swaCapacity}, 1, std::nullopt,
+        SwaCacheConfig{kWINDOW_SIZE, kSWA_REPLACEMENT_PAGES});
+    (void) publishSwaRecord(manager, initialHashes, kWINDOW_SIZE);
+
+    AcquireResult producerResult = manager.acquireVanilla(initialHashes, 3 * kPAGE_SIZE + 1);
+    CacheRequestLease producer = takeLease(producerResult);
+    std::optional<SwaKVCacheState> producerState = manager.takeSwaState(producer);
+    ASSERT_TRUE(producerState.has_value());
+    for (PageId const sharedPage : swaPages(*producerState))
+    {
+        producerState->reservedPages.push_back(manager.replaceSwaPage(producer, sharedPage));
+        EXPECT_EQ(activeSwaRefCount(manager), privatePages);
+    }
+
+    constexpr int32_t kNEXT_ENDPOINT = 4 * kPAGE_SIZE;
+    producerState->exactResidentTokenCount = kNEXT_ENDPOINT;
+    producerState->retainedLogicalPageBegin = 1;
+    producerState->retainedLogicalPageEnd = 4;
+    producerState->pageBindings.clear();
+    for (int32_t logicalPage = producerState->retainedLogicalPageBegin;
+        logicalPage < producerState->retainedLogicalPageEnd; ++logicalPage)
+    {
+        ASSERT_FALSE(producerState->reservedPages.empty());
+        producerState->pageBindings.push_back(SwaPageBinding{logicalPage, producerState->reservedPages.back()});
+        producerState->reservedPages.pop_back();
+    }
+    std::vector<BlockHash> const nextHashes{kHASH_A, kHASH_B, kHASH_C, kHASH_D};
+    PublishResult const published = manager.publish(
+        producer, PublishRequest{nextHashes, kNEXT_ENDPOINT, std::optional<SwaWindowState>{*producerState}});
+    ASSERT_EQ(published.status, PublishStatus::kPublished);
+    ASSERT_TRUE(published.record.has_value());
+    EXPECT_EQ(manager.records().get(*published.record).swaWindowState,
+        std::optional<SwaWindowState>{static_cast<SwaWindowState const&>(*producerState)});
+    producer.release();
+
+    AcquireResult replayResult = manager.acquireVanilla(nextHashes, kNEXT_ENDPOINT + 1);
+    CacheRequestLease replay = takeLease(replayResult);
+    std::optional<SwaKVCacheState> replayState = manager.takeSwaState(replay);
+    ASSERT_TRUE(replayState.has_value());
+    ASSERT_FALSE(replayState->pageBindings.empty());
+    for (PageId const sharedPage : swaPages(*replayState))
+    {
+        replayState->reservedPages.push_back(manager.replaceSwaPage(replay, sharedPage));
+        EXPECT_EQ(activeSwaRefCount(manager), privatePages);
+    }
+
+    replay.release();
+    EXPECT_EQ(manager.pools().freeCount(ResourceType::kSwaKvPage), swaCapacity - 3);
+}
 
 TEST(ContextCacheManagerTests, AcquirePinsHitsBeforeEvictionAndAllocatesPrivatePages)
 {

@@ -202,26 +202,32 @@ TEST(ContextCacheResourcePoolsTests, MultiPoolAllocationIsAllOrNothing)
     EXPECT_EQ(emptyPools.freeCount(ResourceType::kBaseKvPage), 0);
 }
 
-TEST(ContextCacheResourcePoolsTests, BaseAndDraftIdsArePoolLocal)
+TEST(ContextCacheResourcePoolsTests, PageIdsArePoolLocal)
 {
-    ResourcePools pools(ResourceDemand{2, 1, 0, 0});
+    ResourcePools pools(ResourceDemand{2, 1, 0, 0, 1});
     auto const baseResources = pools.allocate(ResourceDemand{2, 0, 0, 0});
     auto const draftResources = pools.allocate(ResourceDemand{0, 1, 0, 0});
+    auto const swaResources = pools.allocate(ResourceDemand{0, 0, 0, 0, 1});
 
     ASSERT_TRUE(baseResources.has_value());
     ASSERT_TRUE(draftResources.has_value());
+    ASSERT_TRUE(swaResources.has_value());
     ASSERT_EQ(baseResources->size(), 2U);
     ResourceId const base0 = baseResources->at(0);
     ResourceId const base1 = baseResources->at(1);
     ResourceId const draft = draftResources->front();
+    ResourceId const swa = swaResources->front();
     EXPECT_EQ(base0.index, 0);
     EXPECT_EQ(base1.index, 1);
     EXPECT_EQ(draft.index, 0);
+    EXPECT_EQ(swa.index, 0);
     EXPECT_FALSE(base0 == draft);
+    EXPECT_FALSE(base0 == swa);
+    EXPECT_FALSE(draft == swa);
     EXPECT_FALSE(base0 == base1);
 
-    std::unordered_set<ResourceId> const resources{base0, base1, draft};
-    EXPECT_EQ(resources.size(), 3U);
+    std::unordered_set<ResourceId> const resources{base0, base1, draft, swa};
+    EXPECT_EQ(resources.size(), 4U);
 }
 
 TEST(ContextCacheResourcePoolsTests, ReferenceUnderflowThrows)

@@ -23,6 +23,7 @@
 #include "common/logger.h"
 #include "ssdVarlenMetadata.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace trt_edgellm
@@ -44,9 +45,17 @@ bool isGenericConfiguration(int32_t dim, int32_t dstate)
 }
 
 #if defined(CUTE_DSL_SSD_BLACKWELL_ENABLED)
+//! The AOT tensor placeholders assume 16-byte aligned base pointers.
+constexpr size_t kPACKED_METADATA_ALIGN{16};
+
+size_t alignPackedMetadataBytes(size_t bytes)
+{
+    return (bytes + kPACKED_METADATA_ALIGN - 1) / kPACKED_METADATA_ALIGN * kPACKED_METADATA_ALIGN;
+}
+
 bool isD80BlackwellSm(int32_t smVersion)
 {
-    return smVersion == 100 || smVersion == 101 || smVersion == 110;
+    return smVersion == 100 || smVersion == 101 || smVersion == 103 || smVersion == 110;
 }
 
 bool isD80BlackwellConfiguration(int32_t dim, int32_t dstate, int32_t smVersion)
@@ -98,6 +107,23 @@ size_t getBlackwellWorkspaceSize(int32_t batch, int32_t seqLen, int32_t nheads, 
     size += static_cast<size_t>(batch) * logicalChunksPerSeqUpper * sizeof(int32_t);
     size += static_cast<size_t>(batch + 1) * sizeof(int32_t);
     size += static_cast<size_t>(batch) * sizeof(int32_t);
+    return size;
+}
+
+//! Mirrors the packed branch of CALL_SSD_PREFILL_BLACKWELL: per-chunk scratch on the flat token axis, then seq_idx,
+//! chunk_indices, chunk_offsets, seq_chunk_cumsum and synthesized valid_lens, each 16-byte aligned.
+size_t getBlackwellPackedWorkspaceSize(int32_t maxSeqs, int32_t maxTokens, int32_t nheads, int32_t dim)
+{
+    int32_t const totalChunks = (maxTokens + kCHUNK_SIZE - 1) / kCHUNK_SIZE;
+    int32_t const logicalChunks = mamba::ssdPackedLogicalChunkUpperBound(maxSeqs, maxTokens, kCHUNK_SIZE);
+    size_t size{};
+    size += static_cast<size_t>(totalChunks) * nheads * kCHUNK_SIZE * sizeof(float);
+    size += static_cast<size_t>(totalChunks) * nheads * kCHUNK_SIZE * sizeof(__half);
+    size += static_cast<size_t>(totalChunks) * nheads * dim * kCHUNK_SIZE * sizeof(__half);
+    size += alignPackedMetadataBytes(static_cast<size_t>(maxTokens) * sizeof(int32_t));
+    size += 2 * alignPackedMetadataBytes(static_cast<size_t>(logicalChunks) * sizeof(int32_t));
+    size += alignPackedMetadataBytes(static_cast<size_t>(maxSeqs + 1) * sizeof(int32_t));
+    size += alignPackedMetadataBytes(static_cast<size_t>(maxSeqs) * sizeof(int32_t));
     return size;
 }
 
@@ -252,8 +278,43 @@ bool CuteDslSSDRunner::ensureKernelModules(SSDParams const& params, cudaStream_t
     return false;
 }
 
+bool CuteDslSSDRunner::canImplementPacked(
+    [[maybe_unused]] int32_t dim, [[maybe_unused]] int32_t dstate, [[maybe_unused]] int32_t smVersion)
+{
+#ifdef CUTE_DSL_SSD_BLACKWELL_ENABLED
+    return (smVersion == 100 || smVersion == 101 || smVersion == 103 || smVersion == 110)
+        && ((dim == 64 && (dstate == 64 || dstate == 128)) || (dim == kD80_DIM && dstate == kD80_DSTATE));
+#else
+    return false;
+#endif
+}
+
+bool CuteDslSSDRunner::supportsZeroInitialState(int32_t dim, int32_t dstate, int32_t smVersion)
+{
+    return canImplementPacked(dim, dstate, smVersion);
+}
+
+size_t CuteDslSSDRunner::getPackedWorkspaceSize([[maybe_unused]] int32_t maxSeqs, [[maybe_unused]] int32_t maxTokens,
+    [[maybe_unused]] int32_t nheads, [[maybe_unused]] int32_t dim)
+{
+#ifdef CUTE_DSL_SSD_BLACKWELL_ENABLED
+    return getBlackwellPackedWorkspaceSize(maxSeqs, maxTokens, nheads, dim);
+#else
+    return 0;
+#endif
+}
+
 int CuteDslSSDRunner::run(SSDParams const& params, cudaStream_t stream)
 {
+    if (params.cu_seqlens != nullptr
+        && (!canImplementPacked(params.dim, params.dstate, params.smVersion) || params.total_tokens <= 0))
+    {
+        LOG_ERROR(
+            "CuTe DSL SSD prefill: packed input needs the Blackwell kernel and total_tokens > 0 (dim=%d "
+            "dstate=%d sm=%d total_tokens=%d)",
+            params.dim, params.dstate, params.smVersion, params.total_tokens);
+        return -1;
+    }
     if (!ensureKernelModules(params, stream))
     {
         return -1;
@@ -421,17 +482,25 @@ int CuteDslSSDRunner::runPrefill(SSDParams const& params, cudaStream_t stream)
 // Macro to fill tensor structs and call the Blackwell wrapper for a given variant prefix.
 // All Blackwell variants share the same struct layout: only the type name prefix differs.
 // Relies on local variables: params, n, seq_len, nheads, dim, dstate, ngroups, nchunks, stream.
-// Plugin contract is padded [B,S,...]+context_lengths; runner reshapes to [1,B*S,...] via
-// stride change (zero data movement), passes context_lengths as valid_lens for end-of-seq clamp.
+// Padded [B,S,...] input with context_lengths is viewed as [1,B*S,...] (zero data movement) and context_lengths
+// becomes valid_lens for the end-of-sequence clamp; packed input with cu_seqlens is already [1,T,...].
 // clang-format off
 #define CALL_SSD_PREFILL_BLACKWELL(PREFIX, MODULE)                                                                     \
     do                                                                                                                 \
     {                                                                                                                  \
         /* Reshape padded [B,T,...] to [1,B*T,...] (zero data movement); kernel hardcodes b_idx=0. */                  \
-        int32_t const total_seq = n * seq_len;                                                                         \
+        /* Packed input is already one flat token axis with cu_seqlens; its metadata is 16-byte aligned. */           \
+        bool const packed = params.cu_seqlens != nullptr;                                                              \
+        int32_t const total_seq = packed ? params.total_tokens : n * seq_len;                                          \
         int32_t const total_chunks = (total_seq + 127) / 128;                                                          \
         int32_t const logical_chunks_per_seq_upper = nchunks + ((seq_len % 128) == 0 ? 0 : 1);                         \
-        int32_t const numLogicalChunks = n * logical_chunks_per_seq_upper;                                             \
+        int32_t const numLogicalChunks = packed                                                                        \
+            ? ::trt_edgellm::mamba::ssdPackedLogicalChunkUpperBound(n, total_seq, 128)                                 \
+            : n * logical_chunks_per_seq_upper;                                                                        \
+        auto const metadataBytes = [packed](size_t count) {                                                            \
+            size_t const bytes = count * sizeof(int32_t);                                                              \
+            return packed ? alignPackedMetadataBytes(bytes) : bytes;                                                   \
+        };                                                                                                             \
                                                                                                                        \
         PREFIX##_Tensor_x_t xTensor{};                                                                                 \
         SET_4D_TENSOR(xTensor, params.x, 1, total_seq, nheads, dim);                                                   \
@@ -480,17 +549,17 @@ int CuteDslSSDRunner::runPrefill(SSDParams const& params, cudaStream_t stream)
         offset += yBytes;                                                                                              \
                                                                                                                        \
         /* Varlen metadata (always-varlen at AOT: uniform batch synthesizes degenerate metadata). */                   \
-        size_t seqIdxBytes = static_cast<size_t>(n) * seq_len * sizeof(int32_t);                                       \
+        size_t seqIdxBytes = metadataBytes(static_cast<size_t>(total_seq));                                            \
         int32_t* dSeqIdx = reinterpret_cast<int32_t*>(static_cast<char*>(ws) + offset);                                \
         offset += seqIdxBytes;                                                                                         \
                                                                                                                        \
-        size_t chunkBytes = static_cast<size_t>(numLogicalChunks) * sizeof(int32_t);                                  \
+        size_t chunkBytes = metadataBytes(static_cast<size_t>(numLogicalChunks));                                      \
         int32_t* dChunkIndices = reinterpret_cast<int32_t*>(static_cast<char*>(ws) + offset);                          \
         offset += chunkBytes;                                                                                          \
         int32_t* dChunkOffsets = reinterpret_cast<int32_t*>(static_cast<char*>(ws) + offset);                          \
         offset += chunkBytes;                                                                                          \
                                                                                                                        \
-        size_t cumsumChunkBytes = static_cast<size_t>(n + 1) * sizeof(int32_t);                                        \
+        size_t cumsumChunkBytes = metadataBytes(static_cast<size_t>(n) + 1);                                           \
         int32_t* dSeqChunkCumsum = reinterpret_cast<int32_t*>(static_cast<char*>(ws) + offset);                        \
         offset += cumsumChunkBytes;                                                                                    \
                                                                                                                        \
@@ -498,10 +567,19 @@ int CuteDslSSDRunner::runPrefill(SSDParams const& params, cudaStream_t stream)
                                                                                                                        \
         /* Build metadata fully on-device: CUDA-graph-compatible, no D2H sync. */                                      \
         int32_t const numSeqs = n;                                                                                     \
-        ::trt_edgellm::mamba::buildSSDVarlenMetadata(                                                                  \
-            dSeqIdx, dChunkIndices, dChunkOffsets, dSeqChunkCumsum,                                                    \
-            reinterpret_cast<int32_t const*>(params.context_lengths),                                                  \
-            n, seq_len, 128, stream);                                                                                  \
+        int32_t const* cuSeqlensPtr = reinterpret_cast<int32_t const*>(params.cu_seqlens);                             \
+        if (packed)                                                                                                    \
+        {                                                                                                              \
+            ::trt_edgellm::mamba::buildSSDPackedVarlenMetadata(dSeqIdx, dChunkIndices, dChunkOffsets,                  \
+                dSeqChunkCumsum, cuSeqlensPtr, n, total_seq, 128, numLogicalChunks, stream);                           \
+        }                                                                                                              \
+        else                                                                                                           \
+        {                                                                                                              \
+            ::trt_edgellm::mamba::buildSSDVarlenMetadata(                                                              \
+                dSeqIdx, dChunkIndices, dChunkOffsets, dSeqChunkCumsum,                                                \
+                reinterpret_cast<int32_t const*>(params.context_lengths),                                              \
+                n, seq_len, 128, stream);                                                                              \
+        }                                                                                                              \
                                                                                                                        \
         PREFIX##_Tensor_seq_idx_t seqIdxTensor{};                                                                      \
         seqIdxTensor.data = dSeqIdx;                                                                                   \
@@ -522,14 +600,23 @@ int CuteDslSSDRunner::runPrefill(SSDParams const& params, cudaStream_t stream)
         seqChunkCumsumTensor.dynamic_shapes[0] = numSeqs + 1;                                                          \
                                                                                                                        \
         /* Synth valid_lens[b] = seq_len when caller passes null (kernel always reads context_lengths). */             \
-        int32_t const* validLensPtr = reinterpret_cast<int32_t const*>(params.context_lengths);                        \
+        int32_t const* validLensPtr                                                                                    \
+            = packed ? nullptr : reinterpret_cast<int32_t const*>(params.context_lengths);                             \
         int32_t* dValidLensSynth = nullptr;                                                                            \
         if (validLensPtr == nullptr)                                                                                   \
         {                                                                                                              \
-            size_t validLensBytes = static_cast<size_t>(n) * sizeof(int32_t);                                          \
+            size_t validLensBytes = metadataBytes(static_cast<size_t>(n));                                             \
             dValidLensSynth = reinterpret_cast<int32_t*>(static_cast<char*>(ws) + offset);                             \
             offset += validLensBytes;                                                                                  \
-            ::trt_edgellm::mamba::fillUniformValidLens(dValidLensSynth, n, seq_len, stream);                           \
+            if (packed)                                                                                                \
+            {                                                                                                          \
+                ::trt_edgellm::mamba::fillValidLensFromCuSeqlens(                                                      \
+                    dValidLensSynth, cuSeqlensPtr, n, total_seq, stream);                                              \
+            }                                                                                                          \
+            else                                                                                                       \
+            {                                                                                                          \
+                ::trt_edgellm::mamba::fillUniformValidLens(dValidLensSynth, n, seq_len, stream);                       \
+            }                                                                                                          \
             validLensPtr = dValidLensSynth;                                                                            \
         }                                                                                                              \
         PREFIX##_Tensor_valid_lens_t validLensTensor{};                                                                \
@@ -612,6 +699,19 @@ size_t CuteDslSSDRunner::getWorkspaceSize(
 #else
     return getGenericWorkspaceSize(batch, seqLen, nheads, dim, dstate, ngroups);
 #endif
+}
+
+size_t CuteDslSSDRunner::getWorkspaceSizeForTokenBudget(
+    int32_t maxBatch, int32_t maxTokens, int32_t nheads, int32_t dim, int32_t dstate, int32_t ngroups)
+{
+    size_t workspaceSize{};
+    int32_t const batchUpperBound = std::min(maxBatch, maxTokens);
+    for (int32_t batch = 1; batch <= batchUpperBound; ++batch)
+    {
+        int32_t const seqLen = maxTokens / batch;
+        workspaceSize = std::max(workspaceSize, getWorkspaceSize(batch, seqLen, nheads, dim, dstate, ngroups));
+    }
+    return workspaceSize;
 }
 
 } // namespace trt_edgellm

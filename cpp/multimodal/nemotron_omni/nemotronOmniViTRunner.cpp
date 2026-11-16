@@ -43,8 +43,9 @@ namespace trt_edgellm
 namespace rt
 {
 
-NemotronOmniViTRunner::NemotronOmniViTRunner(std::string const& engineDir, cudaStream_t stream)
-    : MultimodalRunner(engineDir, stream)
+NemotronOmniViTRunner::NemotronOmniViTRunner(
+    std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
+    : MultimodalRunner(engineDir, stream, checkpointDir)
     , mEngineDir(engineDir)
 {
     bool const configValid = validateAndFillConfig(engineDir);
@@ -252,7 +253,7 @@ bool NemotronOmniViTRunner::loadVEmbedder(cudaStream_t stream)
         {
             if (t.getName() == "embedder.weight")
             {
-                check::check(t.getDataType() == nvinfer1::DataType::kHALF, "embedder.weight must be FP16");
+                check::check(t.getDataType() == trt_edgellm::DataType::kHALF, "embedder.weight must be FP16");
                 check::check(t.getShape().getNumDims() == 2 && t.getShape()[0] == mConfig.vitHiddenSize
                         && t.getShape()[1] == patchDim,
                     "embedder.weight shape mismatch");
@@ -260,7 +261,7 @@ bool NemotronOmniViTRunner::loadVEmbedder(cudaStream_t stream)
             }
             else if (t.getName() == "video_embedder.weight")
             {
-                check::check(t.getDataType() == nvinfer1::DataType::kHALF, "video_embedder.weight must be FP16");
+                check::check(t.getDataType() == trt_edgellm::DataType::kHALF, "video_embedder.weight must be FP16");
                 check::check(t.getShape().getNumDims() == 2 && t.getShape()[0] == mConfig.vitHiddenSize
                         && t.getShape()[1] == videoPatchDim,
                     "video_embedder.weight shape mismatch");
@@ -269,7 +270,7 @@ bool NemotronOmniViTRunner::loadVEmbedder(cudaStream_t stream)
             }
             else if (t.getName() == "pos_embed")
             {
-                check::check(t.getDataType() == nvinfer1::DataType::kHALF, "pos_embed must be FP16");
+                check::check(t.getDataType() == trt_edgellm::DataType::kHALF, "pos_embed must be FP16");
                 check::check(t.getShape().getNumDims() == 3 && t.getShape()[2] == mConfig.vitHiddenSize,
                     "pos_embed shape mismatch");
                 posEmbedRaw = std::move(t);
@@ -311,18 +312,18 @@ bool NemotronOmniViTRunner::allocateBuffer(cudaStream_t stream)
 
     int64_t const scale = mConfig.downsampleScale;
     mVitInput = rt::Tensor({mConfig.maxNumBlocks, mConfig.maxNumPatches, mConfig.vitHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "NemotronOmniViTRunner::mVitInput");
+        trt_edgellm::DataType::kHALF, "NemotronOmniViTRunner::mVitInput");
     setTensorAddressStatus &= mVisualContext->setTensorAddress(binding_names::kVisualInput, mVitInput.rawPointer());
 
     mShuffleIndices = rt::Tensor({mConfig.maxNumPatches / (scale * scale), scale * scale}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kINT64, "NemotronOmniViTRunner::mShuffleIndices");
+        trt_edgellm::DataType::kINT64, "NemotronOmniViTRunner::mShuffleIndices");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kVisualShuffleIndices, mShuffleIndices.rawPointer());
 
     // Output: [maxNumBlocks * tokensPerBlock, outHiddenSize]
     int64_t const maxTotalTokens = mConfig.maxNumBlocks * mConfig.tokensPerBlock;
     mOutputEmbedding = rt::Tensor({maxTotalTokens, mConfig.outHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "NemotronOmniViTRunner::mOutputEmbedding");
+        trt_edgellm::DataType::kHALF, "NemotronOmniViTRunner::mOutputEmbedding");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kVisualOutput, mOutputEmbedding.rawPointer());
 
@@ -332,34 +333,28 @@ bool NemotronOmniViTRunner::allocateBuffer(cudaStream_t stream)
         return false;
     }
 
-    // Copy image mean and std to device
-    int64_t const channels = static_cast<int64_t>(mConfig.imageMean.size());
-    mImageMean = rt::Tensor({channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "mImageMean");
-    mImageStd = rt::Tensor({channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "mImageStd");
-    CUDA_CHECK(cudaMemcpyAsync(
-        mImageMean.rawPointer(), mConfig.imageMean.data(), channels * sizeof(float), cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(cudaMemcpyAsync(
-        mImageStd.rawPointer(), mConfig.imageStd.data(), channels * sizeof(float), cudaMemcpyHostToDevice, stream));
+    mImageMean = mConfig.imageMean;
+    mImageStd = mConfig.imageStd;
 
     // Pixel staging and GEMM-row scratch. Video tubelets pack T frames per block, so the pixel
     // staging holds up to maxNumBlocks * T frames and GEMM rows are T*3*P*P wide.
     int64_t const T = std::max<int64_t>(1, mConfig.videoTemporalPatchSize);
     mBlockPixels
         = rt::Tensor({mConfig.maxNumBlocks * T, mConfig.numChannels, mConfig.blockImageSizeH, mConfig.blockImageSizeW},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "NemotronOmniViTRunner::mBlockPixels");
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "NemotronOmniViTRunner::mBlockPixels");
     int64_t const maxPatchDim = T * mConfig.numChannels * mConfig.patchSize * mConfig.patchSize;
     mGemmRows = rt::Tensor({mConfig.maxNumBlocks * mConfig.maxNumPatches, maxPatchDim}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "NemotronOmniViTRunner::mGemmRows");
+        trt_edgellm::DataType::kHALF, "NemotronOmniViTRunner::mGemmRows");
 
     // Position embeddings: static square grid for image tiles, per-grid scratch for video. mPosEmbedGridHost
     // is pinned host staging (kCPU) shared by the image and per-video pos-embed H2D uploads.
     int64_t const gridSide = mConfig.blockImageSizeH / mConfig.patchSize;
     mPosEmbedGridHost = rt::Tensor({mConfig.maxNumPatches, mConfig.vitHiddenSize}, rt::DeviceType::kCPU,
-        nvinfer1::DataType::kHALF, "NemotronOmniViTRunner::mPosEmbedGridHost");
+        trt_edgellm::DataType::kHALF, "NemotronOmniViTRunner::mPosEmbedGridHost");
     {
         std::vector<half> const posImage = interpolatePosEmbedHost(gridSide, gridSide);
         mPosEmbedImage = rt::Tensor({gridSide * gridSide, mConfig.vitHiddenSize}, rt::DeviceType::kGPU,
-            nvinfer1::DataType::kHALF, "NemotronOmniViTRunner::mPosEmbedImage");
+            trt_edgellm::DataType::kHALF, "NemotronOmniViTRunner::mPosEmbedImage");
         std::memcpy(mPosEmbedGridHost.rawPointer(), posImage.data(), posImage.size() * sizeof(half));
         CUDA_CHECK(cudaMemcpyAsync(mPosEmbedImage.rawPointer(), mPosEmbedGridHost.rawPointer(),
             posImage.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
@@ -368,46 +363,29 @@ bool NemotronOmniViTRunner::allocateBuffer(cudaStream_t stream)
         CUDA_CHECK(cudaStreamSynchronize(stream));
     }
     mPosEmbedGrid = rt::Tensor({mConfig.maxNumPatches, mConfig.vitHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "NemotronOmniViTRunner::mPosEmbedGrid");
+        trt_edgellm::DataType::kHALF, "NemotronOmniViTRunner::mPosEmbedGrid");
     mImageShuffleTable = buildShuffleIndicesHost(gridSide, gridSide);
 
     // EVS scratch (video token pruning).
     mEvsScores = rt::Tensor(
-        {maxTotalTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "NemotronOmniViTRunner::mEvsScores");
+        {maxTotalTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kFLOAT, "NemotronOmniViTRunner::mEvsScores");
     mEvsGatherIdx = rt::Tensor(
-        {maxTotalTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "NemotronOmniViTRunner::mEvsGatherIdx");
-    mEvsScratch = rt::Tensor({maxTotalTokens, mConfig.outHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
-        "NemotronOmniViTRunner::mEvsScratch");
+        {maxTotalTokens}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "NemotronOmniViTRunner::mEvsGatherIdx");
+    mEvsScratch = rt::Tensor({maxTotalTokens, mConfig.outHiddenSize}, rt::DeviceType::kGPU,
+        trt_edgellm::DataType::kHALF, "NemotronOmniViTRunner::mEvsScratch");
 
     // Pinned (rt::Tensor kCPU = cudaMallocHost) host staging so the shuffle-index and EVS gather-index
     // H2D copies run truly async instead of the pageable synchronous-staging fallback.
-    mShuffleIndicesHost = rt::Tensor({mConfig.maxNumPatches}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64,
+    mShuffleIndicesHost = rt::Tensor({mConfig.maxNumPatches}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
         "NemotronOmniViTRunner::mShuffleIndicesHost");
-    mEvsGatherIdxHost = rt::Tensor(
-        {maxTotalTokens}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "NemotronOmniViTRunner::mEvsGatherIdxHost");
+    mEvsGatherIdxHost = rt::Tensor({maxTotalTokens}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32,
+        "NemotronOmniViTRunner::mEvsGatherIdxHost");
     mEvsScoresHost = rt::Tensor(
-        {maxTotalTokens}, rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "NemotronOmniViTRunner::mEvsScoresHost");
+        {maxTotalTokens}, rt::DeviceType::kCPU, trt_edgellm::DataType::kFLOAT, "NemotronOmniViTRunner::mEvsScoresHost");
 
-    // Pre-allocate temporary image buffers for preprocessing
     int64_t const maxImagePixels = mBlockPixels.getShape().volume();
-    mImageDevice = rt::Tensor(
-        {maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8, "NemotronOmniViTRunner::mImageDevice");
-    mNormalizedImageDevice = rt::Tensor({maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
+    mNormalizedImageDevice = rt::Tensor({maxImagePixels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
         "NemotronOmniViTRunner::mNormalizedImageDevice");
-
-    // Pinned (rt::Tensor kCPU = cudaMallocHost) host buffer for the video CPU-resize output; images
-    // use the GPU resize path. Sized for the largest video: maxNumBlocks tubelets x T frames.
-    mResizedImageHost = rt::imageUtils::ImageData(
-        rt::Tensor({mConfig.maxNumBlocks * T, mConfig.blockImageSizeH, mConfig.blockImageSizeW, mConfig.numChannels},
-            rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8, "NemotronOmniViTRunner::mResizedImageHost"));
-
-    // GPU image-resize scratch.
-    // Horizontal-pass scratch holds [rawH, outW, C] floats. computeBestBlockGridForResize snaps to a
-    // block grid and does NOT preserve aspect ratio, so bound each dimension independently: rawH by the
-    // raw cap and outW by the widest single-row block grid (maxNumBlocks * blockImageSizeW).
-    int64_t const kMaxResizeTmpElems
-        = kernel::kGpuResizeMaxRawDim * mConfig.maxNumBlocks * mConfig.blockImageSizeW * channels;
-    kernel::allocateResizeScratch(channels, kMaxResizeTmpElems, mRawImageDevice, mResizeTmpDevice);
 
     return true;
 }
@@ -558,11 +536,8 @@ void NemotronOmniViTRunner::formatPatch(rt::imageUtils::ImageData const& image, 
         ++numImages;
     }
 
-    // mImageDevice already holds the [1, height, width, channels] image, populated by the caller.
+    // mNormalizedImageDevice already holds the [1, height, width, channels] preprocessed image.
     check::check(mNormalizedImageDevice.reshape({1, height, width, channels}), "Tensor reshape failed");
-
-    // Normalize image
-    kernel::normalizeImage(mImageDevice, mImageMean, mImageStd, mNormalizedImageDevice, stream);
 
     // Transpose to block-split CHW staging (embedder GEMM input is patchified from here)
     int64_t offset = totalNumBlocks * mConfig.numChannels * mConfig.blockImageSizeH * mConfig.blockImageSizeW;
@@ -583,7 +558,8 @@ void NemotronOmniViTRunner::imagePreprocessTokenLengthsOnly(
         {
             auto const [h, w] = image.doResize
                 ? imageUtils::computeBestBlockGridForResize(image.height, image.width, mConfig.minImageTokensPerImage,
-                      mConfig.maxImageTokensPerImage, mConfig.blockImageSizeH, mConfig.blockImageSizeW)
+                      mConfig.maxImageTokensPerImage, mConfig.blockImageSizeH, mConfig.blockImageSizeW,
+                      mConfig.tokensPerBlock)
                 : std::make_tuple(image.height, image.width);
             int64_t const mainBlocks = (h / mConfig.blockImageSizeH) * (w / mConfig.blockImageSizeW);
             int64_t tokens = mainBlocks * mConfig.tokensPerBlock;
@@ -641,18 +617,17 @@ void NemotronOmniViTRunner::imagePreprocess(rt::LLMGenerationRequest const& requ
                 // Resize image to the aspect-ratio-matched tile grid within the per-image tile budget
                 auto [resizedHeight, resizedWidth] = imageUtils::computeBestBlockGridForResize(image.height,
                     image.width, mConfig.minImageTokensPerImage, mConfig.maxImageTokensPerImage,
-                    mConfig.blockImageSizeH, mConfig.blockImageSizeW);
-                kernel::copyImageToDeviceAndResize(image.data(), image.frames, image.height, image.width,
-                    image.channels, mRawImageDevice, mResizeTmpDevice, mImageDevice, resizedHeight, resizedWidth,
-                    stream);
+                    mConfig.blockImageSizeH, mConfig.blockImageSizeW, mConfig.tokensPerBlock);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, image.frames, mImageMean, mImageStd,
+                    mNormalizedImageDevice, resizedHeight, resizedWidth, stream);
                 formatPatch(image.resizedMeta(resizedHeight, resizedWidth), imageTokenLengths, numImage,
                     mTotalNumBlocks, false, stream);
             }
             else
             {
                 LOG_DEBUG("Skipping resize for pre-resized image %ldx%ld", image.height, image.width);
-                kernel::copyImageToDeviceAndResize(image.data(), image.frames, image.height, image.width,
-                    image.channels, mRawImageDevice, mResizeTmpDevice, mImageDevice, image.height, image.width, stream);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, image.frames, mImageMean, mImageStd,
+                    mNormalizedImageDevice, image.height, image.width, stream);
                 formatPatch(image, imageTokenLengths, numImage, mTotalNumBlocks, false, stream);
             }
 
@@ -661,9 +636,8 @@ void NemotronOmniViTRunner::imagePreprocess(rt::LLMGenerationRequest const& requ
             int64_t const mainImageBlocks = mTotalNumBlocks - blocksBeforePatch;
             if (mainImageBlocks > 1)
             {
-                kernel::copyImageToDeviceAndResize(image.data(), 1, image.height, image.width, image.channels,
-                    mRawImageDevice, mResizeTmpDevice, mImageDevice, mConfig.blockImageSizeH, mConfig.blockImageSizeW,
-                    stream);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, mImageMean, mImageStd, mNormalizedImageDevice,
+                    mConfig.blockImageSizeH, mConfig.blockImageSizeW, stream);
                 formatPatch(image.resizedMeta(mConfig.blockImageSizeH, mConfig.blockImageSizeW), imageTokenLengths,
                     numImage, mTotalNumBlocks, true, stream);
             }
@@ -786,28 +760,21 @@ void NemotronOmniViTRunner::videoPreprocess(rt::LLMGenerationRequest const& requ
         "Nemotron-Omni video: grid " + std::to_string(gridH) + "x" + std::to_string(gridW)
             + " is not divisible by the downsample scale " + std::to_string(scale));
 
-    // Resize all frames to the aspect-preserving grid (host, UINT8 bicubic). The HF processor resizes in
-    // FP32 with antialias, so this is a close approximation, not a bit-exact match.
-    // resizeImage returns `video` itself when already at target size, so consume the return.
-    auto const& resized = rt::imageUtils::resizeImage(
-        video, mResizedImageHost, frameW, frameH, rt::imageUtils::InterpolationMode::kBICUBIC);
-
-    // One bulk H2D of the contiguous [numFrames,H,W,C] frames + one normalize. The transpose stays
-    // per-frame (kernel launches only); padding to a multiple of T reuses the last frame's view.
+    // Preprocessing resizes the page-locked frames to the aspect-preserving grid where they lie. The HF
+    // processor resizes in FP32 with antialias, so this is a close approximation, not a bit-exact match.
     check::check(mBlockPixels.reshape({paddedFrames, mConfig.numChannels, frameH, frameW}), "Tensor reshape failed");
-    check::check(mImageDevice.reshape({numFrames, frameH, frameW, mConfig.numChannels}), "Tensor reshape failed");
-    check::check(
-        mNormalizedImageDevice.reshape({numFrames, frameH, frameW, mConfig.numChannels}), "Tensor reshape failed");
-    int64_t const frameBytes = frameH * frameW * mConfig.numChannels;
-    CUDA_CHECK(cudaMemcpyAsync(
-        mImageDevice.rawPointer(), resized.data(), numFrames * frameBytes, cudaMemcpyHostToDevice, stream));
-    kernel::normalizeImage(mImageDevice, mImageMean, mImageStd, mNormalizedImageDevice, stream);
+    rt::imageUtils::resizeAndNormalizeToRgb(
+        video, 0, numFrames, mImageMean, mImageStd, mNormalizedImageDevice, frameH, frameW, stream);
+
+    // The transpose stays per-frame (kernel launches only); padding to a multiple of T reuses the last
+    // frame's view.
+    int64_t const frameElems = frameH * frameW * mConfig.numChannels;
     auto* normBase = static_cast<half*>(mNormalizedImageDevice.rawPointer());
     for (int64_t f = 0; f < paddedFrames; ++f)
     {
         int64_t const srcFrame = std::min(f, numFrames - 1);
-        rt::Tensor frameView(normBase + srcFrame * frameBytes, {1, frameH, frameW, mConfig.numChannels},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "NemotronOmniViTRunner::frameView");
+        rt::Tensor frameView(normBase + srcFrame * frameElems, {1, frameH, frameW, mConfig.numChannels},
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "NemotronOmniViTRunner::frameView");
         kernel::transposeToPatchInternVLPhi4MM(
             frameView, mBlockPixels, f * mConfig.numChannels * frameH * frameW, stream);
     }
@@ -1038,6 +1005,14 @@ void NemotronOmniViTRunner::textPreprocess(rt::LLMGenerationRequest const& reque
     }
 }
 
+bool NemotronOmniViTRunner::tokenLayoutNeedsEncoder(rt::LLMGenerationRequest const& request) const noexcept
+{
+    return std::any_of(request.requests.begin(), request.requests.end(), [](auto const& item) {
+        return std::any_of(item.imageBuffers.begin(), item.imageBuffers.end(),
+            [](rt::imageUtils::ImageData const& image) { return image.isVideo; });
+    });
+}
+
 bool NemotronOmniViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     std::vector<std::vector<int32_t>>& batchedInputIds, tokenizer::Tokenizer const* tokenizer,
     [[maybe_unused]] rt::OptionalOutputTensor mropeCosSinOut, cudaStream_t stream, bool imageOnly, bool skipEncoderWork)
@@ -1060,6 +1035,11 @@ bool NemotronOmniViTRunner::preprocess(rt::LLMGenerationRequest const& request,
 
         if (skipEncoderWork)
         {
+            // The video placeholder expansion reads mVideoTubeletCounts / mVideoTimestamps, which only
+            // videoPreprocess writes; here they would still describe an earlier request's video.
+            check::check(!hasVideo,
+                "NemotronOmniViTRunner: a video's token layout needs its encoder run; preprocess without encoder "
+                "work takes images only.");
             imagePreprocessTokenLengthsOnly(request, imageTokenLengths, numImages);
         }
         else if (hasVideo)
@@ -1082,8 +1062,8 @@ bool NemotronOmniViTRunner::preprocess(rt::LLMGenerationRequest const& request,
         {
             LOG_ERROR("Failed: %s", e.what());
         }
-        // Drain async H2D copies that may still read the request's image buffers, so the caller can
-        // safely release them after the failure -- including when the error propagates.
+        // Preprocessing reads the request's image buffers in place, so drain the stream before the
+        // caller may release them after the failure -- including when the error propagates.
         cudaStreamSynchronize(stream);
         if (actionable)
         {

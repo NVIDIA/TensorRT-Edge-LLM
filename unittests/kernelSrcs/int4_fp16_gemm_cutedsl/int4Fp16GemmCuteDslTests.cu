@@ -25,19 +25,18 @@
 
 #ifdef CUTE_DSL_INT4_FP16_GEMM_ENABLED
 
-// The AOT-generated headers use cudaLibrary_t, which only exists in the CUDA
-// 12.8+ runtime. On CUDA < 12.8 the build defines TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT
-// (manually on x86, auto for jetson-orin); route it to the driver CUlibrary type.
+// CUDA 12.0-12.7 AOT headers use cudaLibrary_t, which the runtime does not
+// declare until 12.8. CUDA 11.4 headers use CUmodule, and CUlibrary does not exist.
 #include <cuda.h>
 #if defined(TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT)
 #include <cuda_runtime.h>
-#if CUDA_VERSION < 12800
+#if CUDA_VERSION >= 12000 && CUDA_VERSION < 12080
 typedef CUlibrary cudaLibrary_t;
 static inline cudaError_t cudaLibraryUnload(cudaLibrary_t lib)
 {
     return static_cast<cudaError_t>(cuLibraryUnload(lib));
 }
-#endif // CUDA_VERSION < 12800
+#endif // CUDA_VERSION >= 12000 && CUDA_VERSION < 12080
 #endif // TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT
 
 #include "cutedsl_all.h"
@@ -56,8 +55,6 @@ namespace
 {
 
 #define ASSERT_CUDA_OK(expr) ASSERT_EQ((expr), cudaSuccess) << cudaGetErrorString(cudaGetLastError())
-
-constexpr int32_t kGroupSize = 128;
 
 inline int32_t ceilDiv(int32_t a, int32_t b)
 {
@@ -190,16 +187,16 @@ bool loadModules()
         SET_2D_TENSOR(tW, C, M, N);                                                                                    \
         PREFIX##_Tensor_mLocks_t tL{};                                                                                 \
         SET_1D_TENSOR(tL, locks, nTiles);                                                                              \
-        ret = cute_dsl_##PREFIX##_wrapper(&g_##PREFIX, &tA, &tQW, &tS, &tC, &tW, &tL, swizzle, stream);                \
+        ret = cute_dsl_##PREFIX##_wrapper(&g_##PREFIX, &tA, &tQW, &tS, &tC, &tW, &tL, groupSize, swizzle, stream);     \
     } while (0)
 
 int launchVariant(int32_t tileBM, int32_t tileBN, int32_t tileBK, int32_t stages, int32_t splitK, void const* A,
-    void const* QW, void const* scales, void* C, void* locks, int32_t M, int32_t N, int32_t K, int32_t swizzle,
-    cudaStream_t stream)
+    void const* QW, void const* scales, void* C, void* locks, int32_t M, int32_t N, int32_t K, int32_t groupSize,
+    int32_t swizzle, cudaStream_t stream)
 {
     int32_t const kn = (tileBK / 16) * (tileBN / 64);
     int32_t const qwRows = ceilDiv(N, tileBN) * ceilDiv(K, tileBK) * kn;
-    int32_t const scaleRows = ceilDiv(K, kGroupSize);
+    int32_t const scaleRows = ceilDiv(K, groupSize);
     int32_t const nTiles = ceilDiv(M, tileBM) * ceilDiv(N, tileBN);
     int32_t ret = -1;
 #define DISPATCH_ONE(prefix, bM, bN, bK, st, sk)                                                                       \
@@ -328,6 +325,7 @@ struct Int4GemmTestConfig
     int32_t bK;
     int32_t stages;
     int32_t splitK;
+    int32_t groupSize;
     int32_t swizzle;
 };
 
@@ -337,13 +335,13 @@ std::vector<Int4GemmTestConfig> buildConfigs()
     // Every compiled variant at a canonical shape: K=1024 -> ceil(K/64)=16 is
     // divisible by every split_k {1,2,4,8,16}; N=256 and M=128 work for all tiles.
     constexpr int32_t M = 128, N = 256, K = 1024;
-#define ADD_VARIANT(prefix, bM, bN, bK, st, sk) v.push_back(Int4GemmTestConfig{M, N, K, bM, bN, bK, st, sk, 1});
+#define ADD_VARIANT(prefix, bM, bN, bK, st, sk) v.push_back(Int4GemmTestConfig{M, N, K, bM, bN, bK, st, sk, 128, 1});
     INT4_FP16_GEMM_VARIANTS(ADD_VARIANT)
 #undef ADD_VARIANT
     // Extra edge-case shapes on the 16x128x64 tile.
-    v.push_back(Int4GemmTestConfig{200, 160, 256, 16, 128, 64, 4, 1, 1}); // M and N residues; N % 64 != 0
-    v.push_back(Int4GemmTestConfig{512, 256, 512, 16, 128, 64, 4, 1, 4}); // grouped-M swizzle = 4
-    v.push_back(Int4GemmTestConfig{64, 128, 256, 16, 128, 64, 4, 2, 1});  // small low-M split-K shape
+    v.push_back(Int4GemmTestConfig{200, 160, 256, 16, 128, 64, 4, 1, 64, 1});  // G64 plus M/N residues
+    v.push_back(Int4GemmTestConfig{512, 256, 512, 16, 128, 64, 4, 1, 128, 4}); // grouped-M swizzle = 4
+    v.push_back(Int4GemmTestConfig{64, 128, 256, 16, 128, 64, 4, 2, 128, 1});  // small low-M split-K shape
     return v;
 }
 
@@ -360,7 +358,7 @@ TEST_P(Int4Fp16GemmCuteDslTest, CorrectnessVsFp32Reference)
 {
     auto const& cfg = GetParam();
     int32_t const M = cfg.M, N = cfg.N, K = cfg.K;
-    int32_t const groupSize = kGroupSize;
+    int32_t const groupSize = cfg.groupSize;
 
     int32_t smMajor{}, smMinor{};
     ASSERT_CUDA_OK(cudaDeviceGetAttribute(&smMajor, cudaDevAttrComputeCapabilityMajor, 0));
@@ -422,7 +420,7 @@ TEST_P(Int4Fp16GemmCuteDslTest, CorrectnessVsFp32Reference)
 
     // ---- Run ----
     ASSERT_EQ(launchVariant(cfg.bM, cfg.bN, cfg.bK, cfg.stages, cfg.splitK, dA.ptr, dQW.ptr, dScales.ptr, dC.ptr,
-                  dLocks.ptr, M, N, K, cfg.swizzle, /*stream=*/nullptr),
+                  dLocks.ptr, M, N, K, groupSize, cfg.swizzle, /*stream=*/nullptr),
         0)
         << "INT4 FP16 GEMM kernel launch failed";
     ASSERT_CUDA_OK(cudaDeviceSynchronize());
@@ -450,7 +448,8 @@ INSTANTIATE_TEST_SUITE_P(Int4Fp16GemmAllVariants, Int4Fp16GemmCuteDslTest, ::tes
         auto const& c = info.param;
         return "t" + std::to_string(c.bM) + "x" + std::to_string(c.bN) + "x" + std::to_string(c.bK) + "_s"
             + std::to_string(c.stages) + "_sk" + std::to_string(c.splitK) + "_M" + std::to_string(c.M) + "_N"
-            + std::to_string(c.N) + "_K" + std::to_string(c.K) + "_sw" + std::to_string(c.swizzle);
+            + std::to_string(c.N) + "_K" + std::to_string(c.K) + "_G" + std::to_string(c.groupSize) + "_sw"
+            + std::to_string(c.swizzle);
     });
 
 } // namespace

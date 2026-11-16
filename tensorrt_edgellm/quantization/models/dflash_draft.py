@@ -36,10 +36,12 @@ The calibration forward drives all Linear modules with realistic
 activations produced from the unquantized base model's hidden states.
 """
 
+import dataclasses
 import gc
 import json
 import logging
 import os
+import types
 from pathlib import Path
 from typing import Optional, Union
 
@@ -53,7 +55,10 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from tensorrt_edgellm._safetensors_io import save_file
 
 from ..datasets import TextDataset, dataset_name, resolve_dataset
-from ..quantization_configs import build_quant_config
+from ..quantization_configs import (append_quant_cfg_entries,
+                                    build_quant_config,
+                                    split_lm_head_calibration)
+from . import layers
 from .attention_scale import resolve_attention_scale
 from .layers import (RMSNorm, RotaryEmbedding, SwiGLUMLP, apply_rotary_pos_emb,
                      repeat_kv, rotate_half)
@@ -74,7 +79,8 @@ class DFlashCalibAttention(nn.Module):
                  num_kv_heads,
                  head_dim,
                  rms_norm_eps,
-                 attention_scale=None):
+                 attention_scale=None,
+                 is_causal=True):
         super().__init__()
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
@@ -82,6 +88,7 @@ class DFlashCalibAttention(nn.Module):
         self.kv_groups = num_heads // num_kv_heads
         self.attention_scale = (resolve_attention_scale({}, "", head_dim) if
                                 attention_scale is None else attention_scale)
+        self.is_causal = bool(is_causal)
 
         self.q_proj = nn.Linear(hidden_size, num_heads * head_dim, bias=False)
         self.k_proj = nn.Linear(hidden_size,
@@ -145,7 +152,7 @@ class DFlashCalibAttention(nn.Module):
         w = torch.matmul(q, k_full.transpose(2, 3)) * self.attention_scale
 
         # Proposal tokens can attend to all target tokens + causal self
-        if BS > 1:
+        if self.is_causal and BS > 1:
             # Causal mask: proposal position i can attend to target[:L] +
             # proposal[:i+1]
             mask = torch.ones(BS, total_len, device=q.device, dtype=torch.bool)
@@ -173,11 +180,13 @@ class DFlashCalibDecoderLayer(nn.Module):
                  num_kv_heads,
                  head_dim,
                  rms_norm_eps,
-                 attention_scale=None):
+                 attention_scale=None,
+                 is_causal=True):
         super().__init__()
         self.self_attn = DFlashCalibAttention(hidden_size, num_heads,
                                               num_kv_heads, head_dim,
-                                              rms_norm_eps, attention_scale)
+                                              rms_norm_eps, attention_scale,
+                                              is_causal)
         self.mlp = SwiGLUMLP(hidden_size, intermediate_size)
         self.input_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps)
@@ -213,10 +222,247 @@ class DFlashCalibDecoderLayer(nn.Module):
         return hidden_states
 
 
+@dataclasses.dataclass(frozen=True)
+class Gemma4DraftLayerSpec:
+    """Shapes and options shared by Gemma4 DFlash draft calibration layers."""
+
+    hidden_size: int
+    intermediate_size: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    rms_norm_eps: float
+    attention_scale: float
+    k_eq_v: bool
+    has_value_norm: bool
+
+
+class Gemma4DFlashCalibAttention(nn.Module):
+    """Gemma4 DFlash draft attention: per-head RMSNorms and optional K=V."""
+
+    def __init__(self, spec: Gemma4DraftLayerSpec):
+        super().__init__()
+        self.num_heads = spec.num_heads
+        self.num_kv_heads = spec.num_kv_heads
+        self.head_dim = spec.head_dim
+        self.kv_groups = spec.num_heads // spec.num_kv_heads
+        self.attention_scale = spec.attention_scale
+        self.k_eq_v = spec.k_eq_v
+        q_dim = spec.num_heads * spec.head_dim
+        kv_dim = spec.num_kv_heads * spec.head_dim
+        self.q_proj = nn.Linear(spec.hidden_size, q_dim, bias=False)
+        self.k_proj = nn.Linear(spec.hidden_size, kv_dim, bias=False)
+        self.v_proj = (None if spec.k_eq_v else nn.Linear(
+            spec.hidden_size, kv_dim, bias=False))
+        self.o_proj = nn.Linear(q_dim, spec.hidden_size, bias=False)
+        self.q_norm = layers.Gemma4RMSNorm(spec.head_dim, spec.rms_norm_eps)
+        self.k_norm = layers.Gemma4RMSNorm(spec.head_dim, spec.rms_norm_eps)
+        self.v_norm = (layers.Gemma4RMSNorm(
+            spec.head_dim, spec.rms_norm_eps, with_scale=False)
+                       if spec.has_value_norm else None)
+
+    def project_kv(self, hidden_states):
+        """Return normalized [B, L, Hkv, D] K and V; K=V reuses raw K."""
+        B, L, _ = hidden_states.shape
+        key_raw = self.k_proj(hidden_states)
+        value_raw = key_raw if self.k_eq_v else self.v_proj(hidden_states)
+        key = self.k_norm(key_raw.view(B, L, self.num_kv_heads, self.head_dim))
+        value = value_raw.view(B, L, self.num_kv_heads, self.head_dim)
+        if self.v_norm is not None:
+            value = self.v_norm(value)
+        return key, value
+
+    def forward(self, proposal_hidden, target_k, target_v, target_cos,
+                target_sin, proposal_cos, proposal_sin):
+        """Bidirectional block attention over target K/V plus proposal K/V."""
+        B, BS, _ = proposal_hidden.shape
+        q = self.q_norm(
+            self.q_proj(proposal_hidden).view(B, BS, self.num_heads,
+                                              self.head_dim)).transpose(1, 2)
+        k_self, v_self = self.project_kv(proposal_hidden)
+        q, k_self = apply_rotary_pos_emb(q, k_self.transpose(1, 2),
+                                         proposal_cos, proposal_sin)
+        target_k_t = target_k.transpose(1, 2)
+        target_k_t = (target_k_t * target_cos) + (rotate_half(target_k_t) *
+                                                  target_sin)
+        k_full = repeat_kv(torch.cat([target_k_t, k_self], dim=2),
+                           self.kv_groups)
+        v_full = repeat_kv(
+            torch.cat([target_v.transpose(1, 2),
+                       v_self.transpose(1, 2)],
+                      dim=2), self.kv_groups)
+        w = torch.matmul(q, k_full.transpose(2, 3)) * self.attention_scale
+        w = nn.functional.softmax(w, dim=-1, dtype=torch.float32).to(q.dtype)
+        attn_output = torch.matmul(w, v_full).transpose(1,
+                                                        2).reshape(B, BS, -1)
+        return self.o_proj(attn_output)
+
+
+class Gemma4DFlashCalibMLP(nn.Module):
+    """Gemma4 GeGLU MLP matching the exporter's FP32 gate*up and clamp."""
+
+    def __init__(self, hidden_size, intermediate_size):
+        super().__init__()
+        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+
+    def forward(self, x):
+        gate = nn.functional.gelu(self.gate_proj(x).to(torch.float32),
+                                  approximate="tanh")
+        intermediate = (gate * self.up_proj(x).to(torch.float32)).clamp(
+            -2048.0, 2048.0)
+        return self.down_proj(intermediate.to(x.dtype))
+
+
+class Gemma4DFlashCalibDecoderLayer(nn.Module):
+    """Gemma4 DFlash draft layer with sandwich norms and ``layer_scalar``."""
+
+    def __init__(self, spec: Gemma4DraftLayerSpec):
+        super().__init__()
+        hidden, eps = spec.hidden_size, spec.rms_norm_eps
+        self.self_attn = Gemma4DFlashCalibAttention(spec)
+        self.mlp = Gemma4DFlashCalibMLP(hidden, spec.intermediate_size)
+        self.input_layernorm = layers.Gemma4RMSNorm(hidden, eps)
+        self.post_attention_layernorm = layers.Gemma4RMSNorm(hidden, eps)
+        self.pre_feedforward_layernorm = layers.Gemma4RMSNorm(hidden, eps)
+        self.post_feedforward_layernorm = layers.Gemma4RMSNorm(hidden, eps)
+        self.register_buffer("layer_scalar", torch.ones(1))
+
+    def forward(self, hidden_states, h_delta, target_cos, target_sin,
+                proposal_cos, proposal_sin):
+        target_k, target_v = self.self_attn.project_kv(h_delta)
+        attn_out = self.self_attn(self.input_layernorm(hidden_states),
+                                  target_k, target_v, target_cos, target_sin,
+                                  proposal_cos, proposal_sin)
+        hidden_states = hidden_states + self.post_attention_layernorm(attn_out)
+        hidden_states = hidden_states + self.post_feedforward_layernorm(
+            self.mlp(self.pre_feedforward_layernorm(hidden_states)))
+        return hidden_states * self.layer_scalar.to(hidden_states.dtype)
+
+
+class DFlash2CalibGroupedConv(nn.Module):
+    """ModelOpt-visible equivalent of the production grouped-conv plugin."""
+
+    def __init__(self, hidden_size, block_size, taps, group_size):
+        super().__init__()
+        if hidden_size % group_size:
+            raise ValueError("DFlash2 conv_group_size must divide hidden_size")
+        if block_size <= 0 or taps <= 0 or group_size <= 0:
+            raise ValueError(
+                "DFlash2 grouped-conv dimensions must be positive")
+        self.block_size = int(block_size)
+        self.taps = int(taps)
+        self.group_size = int(group_size)
+        self.num_groups = int(hidden_size) // self.group_size
+        base = torch.zeros(2, self.taps, int(hidden_size))
+        base[:, 0] = 1.0
+        self.base_kernel = nn.Parameter(base)
+        self.kernel_projection = nn.Linear(int(hidden_size),
+                                           2 * self.taps * self.num_groups,
+                                           bias=False)
+
+    def _convolve(self, hidden_states, delta, side, residual=None):
+        batch, sequence, hidden = hidden_states.shape
+        blocks = hidden_states.reshape(batch, sequence, self.num_groups,
+                                       self.group_size)
+        base = self.base_kernel[side].reshape(1, 1, self.taps, self.num_groups,
+                                              self.group_size)
+        coefficients = (base + delta.unsqueeze(-1)).to(torch.float32)
+        blocks = blocks.to(torch.float32)
+        output = coefficients[:, :, 0] * blocks
+        positions = torch.arange(sequence, device=hidden_states.device)
+        positions = positions.remainder(self.block_size)
+        for tap in range(1, self.taps):
+            padding = torch.zeros_like(blocks[:, :tap])
+            shifted = torch.cat((padding, blocks[:, :-tap]), dim=1)
+            valid = (positions >= tap).reshape(1, sequence, 1, 1)
+            output = output + coefficients[:, :, tap] * shifted * valid
+        output = output.reshape(batch, sequence, hidden)
+        if residual is not None:
+            return output + residual.to(torch.float32)
+        if hidden_states.dtype == torch.float16:
+            output = output.clamp(min=-torch.finfo(torch.float16).max,
+                                  max=torch.finfo(torch.float16).max)
+        return output.to(hidden_states.dtype)
+
+    def prepare(self, hidden_states):
+        coefficients = self.kernel_projection(hidden_states).reshape(
+            *hidden_states.shape[:-1], 2, self.taps, self.num_groups)
+        return (self._convolve(hidden_states, coefficients[..., 0, :, :],
+                               0), coefficients[..., 1, :, :])
+
+    def finish(self, hidden_states, coefficients, residual):
+        return self._convolve(hidden_states, coefficients, 1, residual)
+
+
+class DFlash2CalibDecoderLayer(DFlashCalibDecoderLayer):
+    """DFlash2 calibration layer with both trained convolution wrappers."""
+
+    def __init__(self,
+                 hidden_size,
+                 intermediate_size,
+                 num_heads,
+                 num_kv_heads,
+                 head_dim,
+                 rms_norm_eps,
+                 block_size,
+                 taps,
+                 group_size,
+                 attention_scale=None,
+                 is_causal=False):
+        super().__init__(hidden_size, intermediate_size, num_heads,
+                         num_kv_heads, head_dim, rms_norm_eps, attention_scale,
+                         is_causal)
+        self.attention_conv = DFlash2CalibGroupedConv(hidden_size, block_size,
+                                                      taps, group_size)
+        self.mlp_conv = DFlash2CalibGroupedConv(hidden_size, block_size, taps,
+                                                group_size)
+
+    def forward(self, hidden_states, h_delta, target_cos, target_sin,
+                proposal_cos, proposal_sin):
+        residual = hidden_states
+        normed, attention_kernel = self.attention_conv.prepare(
+            self.input_layernorm(hidden_states))
+
+        batch, length, _ = h_delta.shape
+        num_kv = self.self_attn.num_kv_heads
+        head_dim = self.self_attn.head_dim
+        target_k = self.self_attn.k_proj(h_delta).view(batch, length, num_kv,
+                                                       head_dim)
+        target_k = self.self_attn.k_norm(target_k)
+        target_v = self.self_attn.v_proj(h_delta).view(batch, length, num_kv,
+                                                       head_dim)
+        attention = self.self_attn(normed, target_k, target_v, target_cos,
+                                   target_sin, proposal_cos, proposal_sin)
+        hidden_states = self.attention_conv.finish(attention, attention_kernel,
+                                                   residual)
+
+        residual = hidden_states
+        normed, mlp_kernel = self.mlp_conv.prepare(
+            self.post_attention_layernorm(hidden_states))
+        return self.mlp_conv.finish(self.mlp(normed), mlp_kernel, residual)
+
+
+class DFlash2CalibCandidateSelector(nn.Module):
+    """Materialize and calibrate every trained DFlash2 selector parameter."""
+
+    def __init__(self, hidden_size, vocab_size, rank):
+        super().__init__()
+        self.hidden_projection = nn.Linear(hidden_size, rank, bias=False)
+        self.predecessor_codebook = nn.Parameter(torch.zeros(vocab_size, rank),
+                                                 requires_grad=False)
+        self.successor_codebook = nn.Parameter(torch.zeros(vocab_size, rank),
+                                               requires_grad=False)
+
+    def forward(self, hidden_states):
+        return self.hidden_projection(hidden_states)
+
+
 class DFlashCalibDraftModel(nn.Module):
     """Standalone DFlash draft model for quantization calibration.
 
-    Module names match the ONNX export model's state_dict keys so
+    Module names match the checkpoint-native builder model.s state_dict keys so
     quantized weights load without remapping.
     """
 
@@ -230,27 +476,95 @@ class DFlashCalibDraftModel(nn.Module):
             config, getattr(config, "model_type", ""), head_dim)
 
         dflash_cfg = getattr(config, "dflash_config", {}) or {}
+        architectures = tuple(getattr(config, "architectures", ()) or ())
+        self.is_dflash2 = "DFlash2DraftModel" in architectures
+        self.is_gemma4 = str(getattr(config, "model_type",
+                                     "")).startswith("gemma4")
         self.target_layer_ids = dflash_cfg.get("target_layer_ids",
                                                [1, 8, 15, 22, 29])
         self.block_size = dflash_cfg.get("block_size", 16)
-        self.mask_token_id = dflash_cfg.get("mask_token_id", 248070)
+        self.mask_token_id = dflash_cfg.get("mask_token_id",
+                                            4 if self.is_gemma4 else 248070)
         num_target_layers = len(self.target_layer_ids)
 
+        norm_cls = layers.Gemma4RMSNorm if self.is_gemma4 else RMSNorm
         self.fc = nn.Linear(num_target_layers * hs, hs, bias=False)
-        self.hidden_norm = RMSNorm(hs, eps=config.rms_norm_eps)
+        self.hidden_norm = norm_cls(hs, eps=config.rms_norm_eps)
+        rotary_dim = head_dim
+        proportional_rotary_factor = None
 
-        self.layers = nn.ModuleList([
-            DFlashCalibDecoderLayer(hs, config.intermediate_size,
-                                    config.num_attention_heads,
-                                    config.num_key_value_heads, head_dim,
-                                    config.rms_norm_eps, attention_scale)
-            for _ in range(config.num_hidden_layers)
-        ])
-        self.norm = RMSNorm(hs, eps=config.rms_norm_eps)
+        if self.is_gemma4:
+            if self.is_dflash2:
+                raise ValueError("Gemma4 DFlash2 draft quantization is not "
+                                 "supported.")
+            layer_types = list(
+                getattr(config, "layer_types", None)
+                or ["full_attention"] * config.num_hidden_layers)
+            if any(t != "full_attention" for t in layer_types):
+                raise ValueError(
+                    "Gemma4 DFlash draft quantization supports full-attention "
+                    f"layers only; got layer_types={layer_types}.")
+            k_eq_v = bool(getattr(config, "attention_k_eq_v", False))
+            head_dim = int(getattr(config, "global_head_dim", 0) or head_dim)
+            num_kv_heads = int(
+                (k_eq_v and getattr(config, "num_global_key_value_heads", 0))
+                or config.num_key_value_heads)
+            rope = ((getattr(config, "rope_parameters", None)
+                     or {}).get("full_attention") or {})
+            if rope.get("rope_type") == "proportional":
+                proportional_rotary_factor = float(
+                    rope.get("partial_rotary_factor", 1.0))
+            rotary_dim = head_dim
+            spec = Gemma4DraftLayerSpec(
+                hidden_size=hs,
+                intermediate_size=config.intermediate_size,
+                num_heads=config.num_attention_heads,
+                num_kv_heads=num_kv_heads,
+                head_dim=head_dim,
+                rms_norm_eps=config.rms_norm_eps,
+                attention_scale=resolve_attention_scale(
+                    config, config.model_type, head_dim),
+                k_eq_v=k_eq_v,
+                has_value_norm=bool(getattr(config, "has_value_norm", True)))
+            self.layers = nn.ModuleList([
+                Gemma4DFlashCalibDecoderLayer(spec)
+                for _ in range(config.num_hidden_layers)
+            ])
+            self.candidate_selector = None
+        elif self.is_dflash2:
+            taps = int(dflash_cfg["conv_kernel_size"])
+            group_size = int(dflash_cfg["conv_group_size"])
+            self.layers = nn.ModuleList([
+                DFlash2CalibDecoderLayer(
+                    hs, config.intermediate_size, config.num_attention_heads,
+                    config.num_key_value_heads, head_dim, config.rms_norm_eps,
+                    self.block_size, taps, group_size, attention_scale,
+                    bool(getattr(config, "is_causal", False)))
+                for _ in range(config.num_hidden_layers)
+            ])
+            self.candidate_selector = DFlash2CalibCandidateSelector(
+                hs, config.vocab_size, int(dflash_cfg["selector_rank"]))
+        else:
+            self.layers = nn.ModuleList([
+                DFlashCalibDecoderLayer(hs, config.intermediate_size,
+                                        config.num_attention_heads,
+                                        config.num_key_value_heads, head_dim,
+                                        config.rms_norm_eps, attention_scale)
+                for _ in range(config.num_hidden_layers)
+            ])
+            self.candidate_selector = None
+        self.norm = norm_cls(hs, eps=config.rms_norm_eps)
         self.lm_head = nn.Linear(hs, config.vocab_size, bias=False)
 
-        rope_theta = getattr(config, "rope_theta", None) or 10000.0
-        self.rotary_emb = RotaryEmbedding(head_dim, base=rope_theta)
+        rope_theta = (((getattr(config, "rope_parameters", None)
+                        or {}).get("full_attention") or {}).get("rope_theta")
+                      if self.is_gemma4 else None)
+        rope_theta = rope_theta or getattr(config, "rope_theta",
+                                           None) or 10000.0
+        self.rotary_emb = RotaryEmbedding(
+            rotary_dim,
+            base=rope_theta,
+            proportional_rotary_factor=proportional_rotary_factor)
 
     @property
     def device(self):
@@ -286,12 +600,22 @@ class DFlashCalibDraftModel(nn.Module):
         proposal_cos, proposal_sin = self.rotary_emb(proposal_embeds,
                                                      proposal_position_ids)
 
-        hidden_states = proposal_embeds
+        # DFlash2 is trained in BF16 and its residual stream exceeds FP16
+        # range. Match the TensorRT graph: residuals stay FP32 while RMSNorm
+        # emits the FP16 activations consumed by attention/MLP/conv Linears.
+        hidden_states = (proposal_embeds.to(torch.float32)
+                         if self.is_dflash2 else proposal_embeds)
         for layer in self.layers:
             hidden_states = layer(hidden_states, h_delta, target_cos,
                                   target_sin, proposal_cos, proposal_sin)
 
         hidden_states = self.norm(hidden_states)
+        if self.candidate_selector is not None:
+            prediction_hidden = hidden_states[:, 1:self.block_size]
+            # Execute the projection so ModelOpt observes its real activation
+            # distribution. Codebook lookups do not require quantization.
+            self.candidate_selector(prediction_hidden)
+            hidden_states = prediction_hidden
         logits = self.lm_head(hidden_states)
         return logits
 
@@ -301,16 +625,33 @@ class DFlashCalibDraftModel(nn.Module):
                         base_model_dir=None,
                         device="cuda"):
         """Load DFlash draft weights from checkpoint."""
-        config = AutoConfig.from_pretrained(draft_model_dir,
-                                            trust_remote_code=True)
-        if hasattr(config, "text_config"):
-            config = config.text_config
-
-        # Attach dflash_config to the config object
         cfg_path = os.path.join(draft_model_dir, "config.json")
         with open(cfg_path) as f:
             cfg_dict = json.load(f)
-        config.dflash_config = cfg_dict.get("dflash_config", {})
+        if str(cfg_dict.get("model_type", "")).startswith("gemma4"):
+            # DeepSpec Gemma4 drafts mix per-layer-type and scalar entries in
+            # rope_parameters, which transformers' config validation rejects.
+            config = types.SimpleNamespace(**cfg_dict)
+        else:
+            config = AutoConfig.from_pretrained(draft_model_dir,
+                                                trust_remote_code=True)
+            if hasattr(config, "text_config"):
+                config = config.text_config
+
+        # Attach dflash_config to the config object. JetSpec and DSpark drafts
+        # share the DFlash backbone; their raw checkpoints (and some raw
+        # DFlash ones) publish target_layer_ids/block_size/mask_token_id at
+        # the top level.
+        raw_spec_cfg = cfg_dict.get("dflash_config")
+        if raw_spec_cfg is None:
+            raw_spec_cfg = cfg_dict.get("jetspec_config")
+        if raw_spec_cfg is None:
+            raw_spec_cfg = cfg_dict.get("dspark_config")
+        spec_cfg = dict(raw_spec_cfg or {})
+        for key in ("target_layer_ids", "block_size", "mask_token_id"):
+            if key not in spec_cfg and key in cfg_dict:
+                spec_cfg[key] = cfg_dict[key]
+        config.dflash_config = spec_cfg
 
         model = cls(config)
 
@@ -399,6 +740,7 @@ def quantize_and_export_dflash_draft(
     *,
     text_dataset: Union[str, TextDataset, None] = None,
     num_samples: int = 512,
+    keep_last_layer_fp16: bool = False,
 ) -> str:
     """Load base + DFlash draft models, quantize draft, and export."""
     import shutil
@@ -427,9 +769,15 @@ def quantize_and_export_dflash_draft(
         base, tokenizer = _load_base_for_calib(base_model_dir, dtype, device)
         embed_layer = _resolve_base_embed_layer(base)
 
-        quant_cfg = build_quant_config(quantization, lm_head_quantization,
-                                       kv_cache_quantization)
+        quant_cfg = build_quant_config(
+            quantization,
+            lm_head_quantization,
+            kv_cache_quantization,
+            fp16_layer_index=(draft.config.num_hidden_layers -
+                              1 if keep_last_layer_fp16 else None))
         _disable_dflash_fc_quantization(quant_cfg)
+        if draft.is_gemma4 and quantization in _GEMMA4_FP16_DOWN_PROJ_QUANTS:
+            _disable_gemma4_down_proj_quantization(quant_cfg, draft)
         from ..quantize import _text_calib_dataloader
         text_ds = resolve_dataset(text_dataset, "text")
         print(f"DFlash text calibration: {dataset_name(text_ds)}")
@@ -475,8 +823,13 @@ def quantize_and_export_dflash_draft(
                 # Use a single delta position for calibration
                 dm(proposal_embeds, target_hidden_concat)
 
+        lm_head_cfg = split_lm_head_calibration(quant_cfg,
+                                                lm_head_quantization)
         mtq.quantize(draft, quant_cfg, forward_loop=_calib)
+        if lm_head_cfg:
+            mtq.quantize(draft, lm_head_cfg, forward_loop=_calib)
         mtq.print_quant_summary(draft)
+        _check_finite_amax(draft)
 
     logger.info("Quantization: %.1fs", time.time() - t0)
 
@@ -495,6 +848,17 @@ def quantize_and_export_dflash_draft(
     # Remove rotary_emb from saved state
     sd = {k: v for k, v in sd.items() if not k.startswith("rotary_emb")}
 
+    # Pass sidecar heads through unquantized: the exporter reads DSpark
+    # markov/confidence tensors and the Domino GRU/embed_proj tensors from
+    # this checkpoint's safetensors.
+    passthrough_prefixes = ("markov_head.", "confidence_head.", "prefix_gru.",
+                            "embed_proj.")
+    for sf_path in sorted(Path(draft_model_dir).glob("*.safetensors")):
+        with safe_open(str(sf_path), framework="pt", device="cpu") as f:
+            for key in f.keys():
+                if key.startswith(passthrough_prefixes) and key not in sd:
+                    sd[key] = f.get_tensor(key)
+
     save_file(sd, os.path.join(output_dir, "model.safetensors"))
 
     # Copy config.json from draft dir, preserving dflash_config
@@ -502,12 +866,14 @@ def quantize_and_export_dflash_draft(
     if os.path.isfile(src_cfg):
         shutil.copy2(src_cfg, os.path.join(output_dir, "config.json"))
 
-    # Record that the DFlash projector stays FP16/FP32-safe while the rest of
-    # the draft, including lm_head when requested, can be quantized.
+    # Record the precision-sensitive projectors that stay in FP16 while the
+    # heavy draft linears, including lm_head when requested, are quantized.
     q_section = qc.setdefault("quantization", {})
     exclude = list(q_section.get("exclude_modules", []))
     if "fc" not in exclude:
         exclude.append("fc")
+    if draft.is_dflash2 and "candidate_selector.hidden_projection" not in exclude:
+        exclude.append("candidate_selector.hidden_projection")
     q_section["exclude_modules"] = exclude
 
     # Write hf_quant_config.json
@@ -551,9 +917,46 @@ def _resolve_base_embed_layer(base):
         f"Cannot locate embed_tokens on {type(base).__name__}")
 
 
+# Matches the Gemma4 base policy in ``quantization/quantize.py``: 4-bit
+# down_proj cannot represent the clamped +/-2048 GeGLU intermediate.
+_GEMMA4_FP16_DOWN_PROJ_QUANTS = ("int4_awq", "nvfp4", "nvfp4_a16_gptq")
+
+
+def _disable_gemma4_down_proj_quantization(quant_cfg, draft):
+    entries = []
+    for name, module in draft.named_modules():
+        if isinstance(module, nn.Linear) and name.endswith("mlp.down_proj"):
+            entries += [{
+                "quantizer_name": f"*{name}.{quantizer}",
+                "enable": False
+            } for quantizer in ("weight_quantizer", "input_quantizer")]
+    append_quant_cfg_entries(quant_cfg, entries)
+
+
+def _check_finite_amax(model):
+    """Reject calibration that observed FP16 overflow (non-finite amax)."""
+    bad = []
+    for name, module in model.named_modules():
+        amax = getattr(module, "amax", None)
+        if (isinstance(amax, torch.Tensor)
+                and not torch.isfinite(amax.float()).all()):
+            bad.append(name)
+    if bad:
+        raise RuntimeError("DFlash draft calibration produced non-finite "
+                           f"amax (activation overflow) in: {bad[:8]}")
+
+
 def _disable_dflash_fc_quantization(quant_cfg):
-    """Exclude only the DFlash target-hidden projector from draft PTQ."""
-    section = quant_cfg["quant_cfg"]
-    names = ("fc.input_quantizer", "fc.weight_quantizer",
-             "fc.output_quantizer")
-    section.extend({"quantizer_name": name, "enable": False} for name in names)
+    """Exclude DFlash projectors whose quantization changes proposal semantics."""
+    names = (
+        "fc.input_quantizer",
+        "fc.weight_quantizer",
+        "fc.output_quantizer",
+        "candidate_selector.hidden_projection.input_quantizer",
+        "candidate_selector.hidden_projection.weight_quantizer",
+        "candidate_selector.hidden_projection.output_quantizer",
+    )
+    append_quant_cfg_entries(quant_cfg, [{
+        "quantizer_name": name,
+        "enable": False
+    } for name in names])

@@ -19,25 +19,35 @@ The experimental C++ runtime remains under ``experimental_models/cosmos3`` and
 consumes the component artifacts emitted by this package.
 """
 
-from .modeling_gen import (ACTION_CHUNK_SIZE, DEFAULT_DOMAIN,
-                           DEFAULT_NUM_INFERENCE_STEPS, DEFAULT_RAW_ACTION_DIM,
-                           Cosmos3GenConfig, build_cosmos3_gen)
-from .modeling_und_prefill import build_cosmos3_und_prefill
-from .modeling_vae_encoder import (VAE_NUM_FRAMES, build_cosmos3_vae_encoder,
-                                   get_vae_onnx_export_args)
-from .weights import load_config_json, split_transformer_weights
+_EXPORT_MODULES = {
+    "DEFAULT_ACTION_CHUNK_SIZE": ".policy_geometry",
+    "DEFAULT_DOMAIN": ".policy_geometry",
+    "DEFAULT_NUM_FRAMES": ".policy_geometry",
+    "DEFAULT_NUM_INFERENCE_STEPS": ".modeling_gen",
+    "DEFAULT_RAW_ACTION_DIM": ".policy_geometry",
+    "Cosmos3GenConfig": ".modeling_gen",
+    "Cosmos3PolicyGeometry": ".policy_geometry",
+    "build_cosmos3_gen": ".modeling_gen",
+    "build_cosmos3_und_prefill": ".modeling_und_prefill",
+    "build_cosmos3_vae_encoder": ".modeling_vae_encoder",
+    "get_vae_onnx_export_args": ".modeling_vae_encoder",
+    "load_config_json": ".weights",
+    "split_transformer_weights": ".weights",
+}
 
-__all__ = [
-    "ACTION_CHUNK_SIZE",
-    "DEFAULT_DOMAIN",
-    "DEFAULT_NUM_INFERENCE_STEPS",
-    "DEFAULT_RAW_ACTION_DIM",
-    "VAE_NUM_FRAMES",
-    "Cosmos3GenConfig",
-    "build_cosmos3_gen",
-    "build_cosmos3_und_prefill",
-    "build_cosmos3_vae_encoder",
-    "get_vae_onnx_export_args",
-    "load_config_json",
-    "split_transformer_weights",
-]
+__all__ = list(_EXPORT_MODULES)
+
+
+def __getattr__(name):
+    import importlib
+
+    if name not in _EXPORT_MODULES:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(_EXPORT_MODULES[name], __name__),
+                    name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

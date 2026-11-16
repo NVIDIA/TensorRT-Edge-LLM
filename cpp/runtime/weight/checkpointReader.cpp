@@ -26,8 +26,12 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 
 namespace trt_edgellm
 {
@@ -44,9 +48,27 @@ bool isSafetensorsIndex(std::filesystem::path const& path)
     return name.size() >= 23 && name.compare(name.size() - 23, 23, ".safetensors.index.json") == 0;
 }
 
+//! Returns the host memory page size, or zero when the platform query fails.
+size_t systemPageSize()
+{
+#if defined(_WIN32)
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    return static_cast<size_t>(info.dwPageSize);
+#else
+    long const result = sysconf(_SC_PAGESIZE);
+    return result > 0 ? static_cast<size_t>(result) : 0;
+#endif
+}
+
 int discardMappedPages(void* address, size_t length)
 {
-#if defined(__QNXNTO__)
+#if defined(_WIN32)
+    // Windows has no advisory page-discard operation for mapped file views.
+    static_cast<void>(address);
+    static_cast<void>(length);
+    return 0;
+#elif defined(__QNXNTO__)
     return posix_madvise(address, length, POSIX_MADV_DONTNEED);
 #else
     return madvise(address, length, MADV_DONTNEED);
@@ -60,26 +82,38 @@ CheckpointReader::CheckpointReader(std::filesystem::path const& directory)
 {
 }
 
-CheckpointReader::CheckpointReader(
-    std::filesystem::path const& directory, std::vector<TensorLocation> const& explicitTensorLocations)
+CheckpointReader::CheckpointReader(std::filesystem::path const& directory,
+    std::vector<TensorLocation> const& explicitTensorLocations, std::filesystem::path const& singleFile)
 {
     ELLM_CHECK(std::filesystem::is_directory(directory), "Checkpoint directory does not exist: " + directory.string());
 
     std::vector<std::filesystem::path> indices;
     std::vector<std::filesystem::path> shards;
-    for (auto const& entry : std::filesystem::directory_iterator(directory))
+    if (!singleFile.empty())
     {
-        if (!entry.is_regular_file())
+        ELLM_CHECK(
+            std::filesystem::is_regular_file(singleFile), "Checkpoint file does not exist: " + singleFile.string());
+        if (explicitTensorLocations.empty())
         {
-            continue;
+            shards.push_back(singleFile);
         }
-        if (isSafetensorsIndex(entry.path()))
+    }
+    else
+    {
+        for (auto const& entry : std::filesystem::directory_iterator(directory))
         {
-            indices.push_back(entry.path());
-        }
-        else if (entry.path().extension() == ".safetensors")
-        {
-            shards.push_back(entry.path());
+            if (!entry.is_regular_file())
+            {
+                continue;
+            }
+            if (isSafetensorsIndex(entry.path()))
+            {
+                indices.push_back(entry.path());
+            }
+            else if (entry.path().extension() == ".safetensors")
+            {
+                shards.push_back(entry.path());
+            }
         }
     }
     std::sort(indices.begin(), indices.end());
@@ -230,13 +264,12 @@ void CheckpointReader::discardTensorRange(std::string const& name, size_t offset
             LOG_WARNING("Checkpoint discard range exceeds tensor %s", name.c_str());
             return;
         }
-        long const pageSizeResult = sysconf(_SC_PAGESIZE);
-        if (pageSizeResult <= 0)
+        size_t const pageSize = systemPageSize();
+        if (pageSize == 0)
         {
             LOG_WARNING("Failed to query system page size while releasing checkpoint pages");
             return;
         }
-        size_t const pageSize = static_cast<size_t>(pageSizeResult);
         size_t const rangeBegin = shard.dataOffset + info.offset + offset;
         size_t const begin = rangeBegin - rangeBegin % pageSize;
         size_t const rangeEnd = rangeBegin + bytes;
@@ -303,9 +336,8 @@ CheckpointReader::TensorInfo const& CheckpointReader::tensorInfo(std::string con
 void CheckpointReader::registerTensors(std::vector<std::string> const& names)
 {
     auto const registrationStart = std::chrono::steady_clock::now();
-    long const pageSizeResult = sysconf(_SC_PAGESIZE);
-    ELLM_CHECK(pageSizeResult > 0, "Failed to query system page size");
-    size_t const pageSize = static_cast<size_t>(pageSizeResult);
+    size_t const pageSize = systemPageSize();
+    ELLM_CHECK(pageSize > 0, "Failed to query system page size");
     ELLM_CHECK((pageSize & (pageSize - 1)) == 0, "System page size is not a power of two");
 
     using Range = std::pair<size_t, size_t>;
@@ -389,9 +421,8 @@ CheckpointReader::View CheckpointReader::registerTensorRange(std::string const& 
     ELLM_CHECK(offset <= info.bytes && bytes > 0 && bytes <= info.bytes - offset,
         "Checkpoint registration range exceeds tensor " + name);
 
-    long const pageSizeResult = sysconf(_SC_PAGESIZE);
-    ELLM_CHECK(pageSizeResult > 0, "Failed to query system page size");
-    size_t const pageSize = static_cast<size_t>(pageSizeResult);
+    size_t const pageSize = systemPageSize();
+    ELLM_CHECK(pageSize > 0, "Failed to query system page size");
     ELLM_CHECK((pageSize & (pageSize - 1)) == 0, "System page size is not a power of two");
     size_t const tensorBegin = shard.dataOffset + info.offset;
     size_t const rangeBegin = tensorBegin + offset;
@@ -433,6 +464,16 @@ bool CheckpointReader::findHost(std::string const& name, View& view) const
     view = View{info.dtype, info.shape, reinterpret_cast<uint8_t const*>(shard.file->getByteData()) + offset, nullptr,
         info.bytes};
     return true;
+}
+
+CheckpointReader::TensorLocation CheckpointReader::locate(std::string const& name) const
+{
+    auto const location = mTensorShards.find(name);
+    ELLM_CHECK(location != mTensorShards.end(), "Checkpoint tensor is missing: " + name);
+    Shard const& shard = openShard(location->second);
+    TensorInfo const& info = tensorInfo(name, shard);
+    return {name, location->second, safetensors::dataTypeToString(info.dtype), info.shape,
+        shard.dataOffset + info.offset, info.bytes};
 }
 
 bool CheckpointReader::find(std::string const& name, View& view) const

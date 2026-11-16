@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 schema_version = 1
-qualified_python_abis = ["cp310", "cp311", "cp312"]
+wheel_python_tag = "cp310"
+wheel_abi_tag = "abi3"
+qualified_python_abis = ["cp310", "cp311", "cp312", "cp313", "cp314"]
 qualified_tensorrt_majors = [10, 11]
 
 [support]
@@ -13,7 +15,10 @@ required_platform_releases = [
   "jetson:jp71",
   "jetson:jp72",
   "drive:7.2",
+  "igx-thor:current",
   "dgx-spark:current",
+  "gb200:current",
+  "gb300:current",
 ]
 
 [[cutedsl_artifacts]]
@@ -62,12 +67,28 @@ cuda_major = 13
 
 [[cutedsl_artifacts]]
 cpu_arch = "aarch64"
+gpu_sm = 100
+cuda_major = 13
+
+[[cutedsl_artifacts]]
+cpu_arch = "aarch64"
 gpu_sm = 101
 cuda_major = 12
 
 [[cutedsl_artifacts]]
 cpu_arch = "aarch64"
+gpu_sm = 103
+cuda_major = 13
+
+[[cutedsl_artifacts]]
+cpu_arch = "aarch64"
 gpu_sm = 110
+cuda_major = 13
+
+# SM110 and SM120 are emitted together for the IGX Thor wheel payload.
+[[cutedsl_artifacts]]
+cpu_arch = "aarch64"
+gpu_sm = 120
 cuda_major = 13
 
 [[cutedsl_artifacts]]
@@ -99,7 +120,7 @@ gpu_sm = 80
 cute_dsl_artifact_tag = "sm_80"
 cuda_ctk_version = "13.0"
 embedded_target = ""
-cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "x86-ubuntu2404-cu13-sm86"
@@ -114,7 +135,7 @@ gpu_sm = 86
 cute_dsl_artifact_tag = "sm_86"
 cuda_ctk_version = "13.2"
 embedded_target = ""
-cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "x86-ubuntu2404-cu13-sm100"
@@ -129,7 +150,7 @@ gpu_sm = 100
 cute_dsl_artifact_tag = "sm_100"
 cuda_ctk_version = "13.2"
 embedded_target = ""
-cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "x86-ubuntu2404-cu13-sm120"
@@ -144,7 +165,7 @@ gpu_sm = 120
 cute_dsl_artifact_tag = "sm_120"
 cuda_ctk_version = "13.2"
 embedded_target = ""
-cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "jetson-orin-jp72-cu13-sm87"
@@ -159,7 +180,7 @@ gpu_sm = 87
 cute_dsl_artifact_tag = "sm_87"
 cuda_ctk_version = "13.2"
 embedded_target = "jetson-orin"
-cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "jetson-thor-jp70-cu13-sm110"
@@ -174,7 +195,7 @@ gpu_sm = 110
 cute_dsl_artifact_tag = "sm_110"
 cuda_ctk_version = "13.0"
 embedded_target = "jetson-thor"
-cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "jetson-thor-jp71-cu13-sm110"
@@ -189,7 +210,7 @@ gpu_sm = 110
 cute_dsl_artifact_tag = "sm_110"
 cuda_ctk_version = "13.0"
 embedded_target = "jetson-thor"
-cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "jetson-thor-jp72-cu13-sm110"
@@ -204,7 +225,7 @@ gpu_sm = 110
 cute_dsl_artifact_tag = "sm_110"
 cuda_ctk_version = "13.2"
 embedded_target = "jetson-thor"
-cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "drive-thor-d72-cu13-sm110"
@@ -219,11 +240,22 @@ gpu_sm = 110
 cute_dsl_artifact_tag = "sm_110"
 cuda_ctk_version = "13.3"
 embedded_target = "auto-thor"
-cmake_args = [
-  "-DAARCH64_BUILD=ON",
-  "-DENABLE_CUTE_DSL=ALL",
-  "-DCUDA_TARGET_DIR=/usr/local/cuda/n1/targets/aarch64-linux",
-]
+cmake_args = []
+
+[[variants]]
+variant_id = "igx-thor-cu13-sm110-sm120"
+platform_family = "igx-thor"
+platform_probe_source = "device-model"
+platform_probe_values = ["NVIDIA IGX Thor"]
+platform_release = "current"
+cpu_arch = "aarch64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 110
+cute_dsl_artifact_tag = "sm_110_sm_120"
+cuda_ctk_version = "13.0"
+embedded_target = "igx-thor"
+cmake_args = []
 
 [[variants]]
 variant_id = "dgx-spark-cu13-sm121"
@@ -238,7 +270,37 @@ gpu_sm = 121
 cute_dsl_artifact_tag = "sm_121"
 cuda_ctk_version = "13.0"
 embedded_target = "gb10"
-cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
+
+[[variants]]
+variant_id = "gb200-ubuntu2404-cu13-sm100-trt11"
+platform_family = "gb200"
+platform_probe_source = "device-model"
+platform_probe_values = ["GB200"]
+platform_release = "current"
+cpu_arch = "aarch64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.11"
+gpu_sm = 100
+cute_dsl_artifact_tag = "sm_100"
+cuda_ctk_version = "13.4"
+embedded_target = "gb200"
+cmake_args = []
+
+[[variants]]
+variant_id = "gb300-ubuntu2404-cu13-sm103-trt11"
+platform_family = "gb300"
+platform_probe_source = "device-model"
+platform_probe_values = ["GB300"]
+platform_release = "current"
+cpu_arch = "aarch64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.11"
+gpu_sm = 103
+cute_dsl_artifact_tag = "sm_103"
+cuda_ctk_version = "13.4"
+embedded_target = "gb300"
+cmake_args = []
 
 [[variants]]
 variant_id = "x86-ubuntu2404-cu13-sm80-trt11"
@@ -253,7 +315,7 @@ gpu_sm = 80
 cute_dsl_artifact_tag = "sm_80"
 cuda_ctk_version = "13.2"
 embedded_target = ""
-cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "x86-ubuntu2404-cu13-sm86-trt11"
@@ -268,7 +330,7 @@ gpu_sm = 86
 cute_dsl_artifact_tag = "sm_86"
 cuda_ctk_version = "13.2"
 embedded_target = ""
-cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "x86-ubuntu2404-cu13-sm100-trt11"
@@ -283,7 +345,7 @@ gpu_sm = 100
 cute_dsl_artifact_tag = "sm_100"
 cuda_ctk_version = "13.2"
 embedded_target = ""
-cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []
 
 [[variants]]
 variant_id = "x86-ubuntu2404-cu13-sm120-trt11"
@@ -298,4 +360,4 @@ gpu_sm = 120
 cute_dsl_artifact_tag = "sm_120"
 cuda_ctk_version = "13.2"
 embedded_target = ""
-cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+cmake_args = []

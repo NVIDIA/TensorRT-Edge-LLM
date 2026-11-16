@@ -26,7 +26,7 @@
 //                                           SlotStreamState, compactVector)
 //
 // The live-runtime integration scenarios (B*, S*, C*, L* from the plan) run
-// against real engines via examples/llm/llm_stream — see that binary.
+// against real engines via examples/cpp/llm_stream.cpp.
 //
 
 #include "common/utf8.h"
@@ -78,16 +78,6 @@ TEST(TokenizerTest, SetAdditionalEosIdsFromEngineConfig)
 })JSON";
     std::ofstream(dir / "tokenizer_config.json")
         << R"JSON({"eos_token": {"content": "<eos>"}, "bos_token": {"content": "<bos>"}})JSON";
-    std::ofstream(dir / "processed_chat_template.json") << R"JSON({
-  "model_path": "unit",
-  "roles": {
-    "system": {"prefix": "", "suffix": ""},
-    "user": {"prefix": "", "suffix": ""},
-    "assistant": {"prefix": "", "suffix": ""}
-  },
-  "generation_prompt": ""
-})JSON";
-
     tokenizer::Tokenizer tokenizer;
     ASSERT_TRUE(tokenizer.loadFromHF(dir));
     tokenizer.setAdditionalEosIds({1, 106, 106});
@@ -96,169 +86,6 @@ TEST(TokenizerTest, SetAdditionalEosIdsFromEngineConfig)
     EXPECT_TRUE(tokenizer.isEosId(106));
     EXPECT_FALSE(tokenizer.isEosId(7));
     EXPECT_EQ(tokenizer.getEosIds(), (std::vector<tokenizer::Rank>{1, 106}));
-
-    std::filesystem::remove_all(dir);
-}
-
-TEST(TokenizerTest, AppliesThinkingChatTemplateFields)
-{
-    auto const dir = std::filesystem::temp_directory_path() / "edgellm_tokenizer_thinking_template_test";
-    std::filesystem::remove_all(dir);
-    std::filesystem::create_directories(dir);
-
-    std::ofstream(dir / "processed_chat_template.json") << R"JSON({
-  "model_path": "unit",
-  "roles": {
-    "system": {
-      "prefix": "<bos><|turn>system\n",
-      "suffix": "<turn|>\n",
-      "prefix_thinking": "<bos><|turn>system\n<|think|>\n",
-      "suffix_thinking": "<turn|>\n"
-    },
-    "user": {"prefix": "<bos><|turn>user\n", "suffix": "<turn|>\n"},
-    "assistant": {"prefix": "<|turn>model\n", "suffix": "<turn|>\n"}
-  },
-  "generation_prompt": "<|turn>model\n<|channel>thought\n<channel|>",
-  "generation_prompt_thinking": "<|turn>model\n"
-})JSON";
-
-    tokenizer::Tokenizer tokenizer;
-    ASSERT_TRUE(tokenizer.loadChatTemplate(dir / "processed_chat_template.json"));
-
-    rt::LLMGenerationRequest::Request request;
-    request.messages = {
-        rt::Message{"system", {rt::Message::MessageContent{"text", "Reply with only the letter."}}},
-        rt::Message{"user", {rt::Message::MessageContent{"text", "Question?\nAnswer: "}}},
-    };
-
-    rt::LLMGenerationRequest::FormattedRequest formatted;
-    ASSERT_TRUE(tokenizer.applyChatTemplate(
-        request, formatted, /*applyChatTemplate=*/true, /*addGenerationPrompt=*/true, /*enableThinking=*/false));
-    EXPECT_EQ(formatted.formattedCompleteRequest,
-        "<bos><|turn>system\nReply with only the letter.<turn|>\n"
-        "<bos><|turn>user\nQuestion?\nAnswer: <turn|>\n"
-        "<|turn>model\n<|channel>thought\n<channel|>");
-
-    ASSERT_TRUE(tokenizer.applyChatTemplate(
-        request, formatted, /*applyChatTemplate=*/true, /*addGenerationPrompt=*/true, /*enableThinking=*/true));
-    EXPECT_EQ(formatted.formattedCompleteRequest,
-        "<bos><|turn>system\n<|think|>\nReply with only the letter.<turn|>\n"
-        "<bos><|turn>user\nQuestion?\nAnswer: <turn|>\n"
-        "<|turn>model\n");
-
-    std::filesystem::remove_all(dir);
-}
-
-TEST(TokenizerTest, AppliesTrimContentChatTemplateFields)
-{
-    auto const dir = std::filesystem::temp_directory_path() / "edgellm_tokenizer_trim_template_test";
-    std::filesystem::remove_all(dir);
-    std::filesystem::create_directories(dir);
-
-    std::ofstream(dir / "processed_chat_template.json") << R"JSON({
-  "model_path": "unit",
-  "roles": {
-    "system": {"prefix": "<bos><|turn>system\n", "suffix": "<turn|>\n", "trim_content": true},
-    "user": {"prefix": "<|turn>user\n", "suffix": "<turn|>\n", "trim_content": true},
-    "assistant": {"prefix": "<|turn>model\n", "suffix": "<turn|>\n", "trim_content": true}
-  },
-  "generation_prompt": "<|turn>model\n"
-})JSON";
-
-    tokenizer::Tokenizer tokenizer;
-    ASSERT_TRUE(tokenizer.loadChatTemplate(dir / "processed_chat_template.json"));
-
-    rt::LLMGenerationRequest::Request request;
-    request.messages = {
-        rt::Message{"system", {rt::Message::MessageContent{"text", "  Reply with only the letter.  "}}},
-        rt::Message{"user", {rt::Message::MessageContent{"text", "  Question?\nAnswer:  "}}},
-    };
-
-    rt::LLMGenerationRequest::FormattedRequest formatted;
-    ASSERT_TRUE(tokenizer.applyChatTemplate(
-        request, formatted, /*applyChatTemplate=*/true, /*addGenerationPrompt=*/true, /*enableThinking=*/false));
-    EXPECT_EQ(formatted.formattedCompleteRequest,
-        "<bos><|turn>system\nReply with only the letter.<turn|>\n"
-        "<|turn>user\nQuestion?\nAnswer:<turn|>\n"
-        "<|turn>model\n");
-
-    std::filesystem::remove_all(dir);
-}
-
-TEST(TokenizerTest, AppliesGlobalPrefixOnce)
-{
-    auto const dir = std::filesystem::temp_directory_path() / "edgellm_tokenizer_global_prefix_test";
-    std::filesystem::remove_all(dir);
-    std::filesystem::create_directories(dir);
-
-    std::ofstream(dir / "processed_chat_template.json") << R"JSON({
-  "model_path": "unit",
-  "global_prefix": "<bos>",
-  "roles": {
-    "system": {"prefix": "<|turn>system\n", "suffix": "<turn|>\n"},
-    "user": {"prefix": "<|turn>user\n", "suffix": "<turn|>\n"},
-    "assistant": {"prefix": "<|turn>model\n", "suffix": "<turn|>\n"}
-  },
-  "generation_prompt": "<|turn>model\n"
-})JSON";
-
-    tokenizer::Tokenizer tokenizer;
-    ASSERT_TRUE(tokenizer.loadChatTemplate(dir / "processed_chat_template.json"));
-
-    rt::LLMGenerationRequest::Request userOnlyRequest;
-    userOnlyRequest.messages = {
-        rt::Message{"user", {rt::Message::MessageContent{"text", "Question?"}}},
-    };
-
-    rt::LLMGenerationRequest::FormattedRequest formatted;
-    ASSERT_TRUE(tokenizer.applyChatTemplate(userOnlyRequest, formatted, /*applyChatTemplate=*/true,
-        /*addGenerationPrompt=*/true, /*enableThinking=*/false));
-    EXPECT_EQ(formatted.formattedCompleteRequest, "<bos><|turn>user\nQuestion?<turn|>\n<|turn>model\n");
-    EXPECT_EQ(formatted.formattedSystemPrompt, "");
-
-    rt::LLMGenerationRequest::Request systemRequest;
-    systemRequest.messages = {
-        rt::Message{"system", {rt::Message::MessageContent{"text", "System."}}},
-        rt::Message{"user", {rt::Message::MessageContent{"text", "Question?"}}},
-    };
-
-    ASSERT_TRUE(tokenizer.applyChatTemplate(systemRequest, formatted, /*applyChatTemplate=*/true,
-        /*addGenerationPrompt=*/true, /*enableThinking=*/false));
-    EXPECT_EQ(formatted.formattedSystemPrompt, "<bos><|turn>system\nSystem.<turn|>\n");
-    EXPECT_EQ(formatted.formattedCompleteRequest,
-        "<bos><|turn>system\nSystem.<turn|>\n"
-        "<|turn>user\nQuestion?<turn|>\n"
-        "<|turn>model\n");
-
-    std::filesystem::remove_all(dir);
-}
-
-TEST(TokenizerTest, RawPromptModePreservesWhitespaceWithTrimTemplate)
-{
-    auto const dir = std::filesystem::temp_directory_path() / "edgellm_tokenizer_raw_prompt_trim_test";
-    std::filesystem::remove_all(dir);
-    std::filesystem::create_directories(dir);
-
-    std::ofstream(dir / "processed_chat_template.json") << R"JSON({
-  "model_path": "unit",
-  "roles": {
-    "user": {"prefix": "<|turn>user\n", "suffix": "<turn|>\n", "trim_content": true}
-  },
-  "generation_prompt": "<|turn>model\n"
-})JSON";
-
-    tokenizer::Tokenizer tokenizer;
-    ASSERT_TRUE(tokenizer.loadChatTemplate(dir / "processed_chat_template.json"));
-
-    rt::LLMGenerationRequest::Request request;
-    request.messages = {
-        rt::Message{"user", {rt::Message::MessageContent{"text", "  raw prompt<|turn>model\n"}}},
-    };
-
-    rt::LLMGenerationRequest::FormattedRequest formatted;
-    ASSERT_TRUE(tokenizer.applyChatTemplate(
-        request, formatted, /*applyChatTemplate=*/false, /*addGenerationPrompt=*/false, /*enableThinking=*/false));
-    EXPECT_EQ(formatted.formattedCompleteRequest, "  raw prompt<|turn>model\n");
 
     std::filesystem::remove_all(dir);
 }
@@ -662,6 +489,37 @@ TEST_F(StreamChannelTest, FinishIsIdempotentFirstWriterWins)
     EXPECT_EQ(ch->getReason(), FinishReason::kError);
 }
 
+// Given an eight-token prompt whose stream the finalizer terminates, once before its prefill sampled a token and
+// once after a prefill that executed only three of its tokens
+// When the finalizer pushes the terminal chunk
+// Then the chunk reports -1 reused tokens before the prefill rather than the whole prompt, and five after it
+TEST_F(StreamChannelTest, FinalizerReportsReusedPromptTokensOnlyAfterThePrefill)
+{
+    auto const terminalChunkOf = [](int32_t generatedTokens, int32_t effectivePrefillLength) {
+        auto ch = StreamChannel::create();
+        rt::DecodingInferenceContext ctx;
+        ctx.slotStreams.resize(1);
+        ctx.slotStreams[0].channel = ch;
+        ctx.rawBatchedInputIds = {std::vector<int32_t>(8, 1)};
+        ctx.effectivePrefillLengths = {effectivePrefillLength};
+        ctx.currentGenerateLengths = {generatedTokens};
+        tokenizer::Tokenizer tok;
+        {
+            rt::StreamChannelFinalizer f(ctx, tok);
+        }
+        return ch->tryPop();
+    };
+
+    auto const beforePrefill = terminalChunkOf(/*generatedTokens=*/0, /*effectivePrefillLength=*/0);
+    ASSERT_TRUE(beforePrefill.has_value());
+    EXPECT_EQ(beforePrefill->promptTokenCount, 8);
+    EXPECT_EQ(beforePrefill->reusedPromptTokenCount, -1);
+
+    auto const afterPrefill = terminalChunkOf(/*generatedTokens=*/1, /*effectivePrefillLength=*/3);
+    ASSERT_TRUE(afterPrefill.has_value());
+    EXPECT_EQ(afterPrefill->reusedPromptTokenCount, 5);
+}
+
 TEST_F(StreamChannelTest, ConsumeDeliversAllChunksBeforeExit)
 {
     auto ch = StreamChannel::create();
@@ -845,6 +703,80 @@ TEST(StreamChunkTest, IsMovable)
 // ─────────────────────────────────────────────────────────────────────────────
 // Token callback emission
 // ─────────────────────────────────────────────────────────────────────────────
+
+TEST(StreamMetricsTest, PublishesRequestedMetricsOnCompletionCancellationAndAbort)
+{
+    // Given opt-in metrics, when a stream terminates, then its final chunk carries the snapshot.
+    for (bool const collectMetrics : {false, true})
+    {
+        for (auto const reason : {FinishReason::kLength, FinishReason::kCancelled, FinishReason::kError})
+        {
+            rt::DecodingInferenceContext context;
+            context.activeBatchSize = 1;
+            context.slotStreams.resize(1);
+            context.rawBatchedInputIds = {{10, 11, 12, 13, 14}};
+            context.effectivePrefillLengths = {2};
+            context.tokenIds = {{20, 21, 22}};
+            context.finishedStates = {1};
+            auto& slot = context.slotStreams[0];
+            slot.channel = StreamChannel::create(collectMetrics);
+            slot.profiler.beginPrefill(slot.channel->getCollectMetrics());
+            slot.profiler.finishPrefill(1);
+            slot.profiler.recordGeneration(3);
+            slot.sentTokenCount = 3;
+            slot.pendingEmitText = "answer";
+            slot.terminalReason = reason;
+            auto const expected = slot.profiler.snapshot(2);
+            tokenizer::Tokenizer tokenizer;
+            if (reason == FinishReason::kError)
+            {
+                rt::StreamChannelFinalizer finalizer(context, tokenizer);
+            }
+            else
+            {
+                rt::emitChunks(context, tokenizer);
+            }
+            auto chunk = slot.channel->tryPop();
+            ASSERT_TRUE(chunk.has_value());
+            EXPECT_TRUE(chunk->finished);
+            EXPECT_EQ(chunk->reason, reason);
+            EXPECT_EQ(chunk->metrics.generatedTokens, collectMetrics ? 3 : 0);
+            EXPECT_EQ(chunk->metrics.decodedTokens, collectMetrics ? 2 : 0);
+            EXPECT_EQ(chunk->metrics.processedPromptTokens, collectMetrics ? 2 : -1);
+            EXPECT_DOUBLE_EQ(chunk->metrics.promptSeconds, expected.promptSeconds);
+            EXPECT_DOUBLE_EQ(chunk->metrics.generationSeconds, expected.generationSeconds);
+            EXPECT_EQ(chunk->promptTokenCount, 5);
+        }
+    }
+}
+
+TEST_F(StreamChannelTest, FlushesStopHoldbackWhenEosOrLengthBecomesFinal)
+{
+    for (auto const reason :
+        {FinishReason::kEndId, FinishReason::kLength, FinishReason::kCancelled, FinishReason::kError})
+    {
+        rt::DecodingInferenceContext context;
+        context.activeBatchSize = 1;
+        context.slotStreams.resize(1);
+        context.rawBatchedInputIds = {{10}};
+        context.tokenIds = {{1, 2, 3}};
+        context.finishedStates = {1};
+        auto& slot = context.slotStreams[0];
+        slot.channel = StreamChannel::create();
+        slot.sentTokenCount = 3;
+        slot.stopMatchBuffer = "123";
+        slot.terminalReason = reason;
+        tokenizer::Tokenizer tokenizer;
+        rt::emitChunks(context, tokenizer);
+        auto chunk = slot.channel->tryPop();
+        ASSERT_TRUE(chunk.has_value());
+        EXPECT_TRUE(chunk->finished);
+        EXPECT_EQ(chunk->reason, reason);
+        bool const flush = reason == FinishReason::kEndId || reason == FinishReason::kLength;
+        EXPECT_EQ(chunk->text, flush ? "123" : "");
+        EXPECT_EQ(slot.stopMatchBuffer, flush ? "" : "123");
+    }
+}
 
 TEST(TokenCallbackTest, EmitsAllNewTokensAndMarksOnlyLastFinished)
 {

@@ -53,6 +53,12 @@ public:
      * @return String identifying the step type
      */
     virtual std::string getTypeName() const = 0;
+
+    //! Whether process() prepends a word marker to text that does not start with a space.
+    virtual bool prependsSpaceMarker() const noexcept
+    {
+        return false;
+    }
 };
 
 /**
@@ -104,6 +110,32 @@ private:
 };
 
 /**
+ * @brief SentencePiece-style whitespace replacement used by Metaspace tokenizers.
+ */
+class Metaspace : public PreTokenizer
+{
+public:
+    Metaspace(std::string replacement, std::string prependScheme, bool split);
+
+    std::vector<std::string> process(std::string const& text) const override;
+
+    std::string getTypeName() const override
+    {
+        return "Metaspace";
+    }
+
+    bool prependsSpaceMarker() const noexcept override
+    {
+        return mPrepend;
+    }
+
+private:
+    std::string mReplacement;
+    bool mPrepend{false};
+    bool mSplit{true};
+};
+
+/**
  * @brief PreTokenizer class for splitting text before main tokenization
  * Now supports a sequence of processing steps
  */
@@ -137,6 +169,8 @@ public:
     {
         return "Sequence";
     }
+
+    bool prependsSpaceMarker() const noexcept override;
 
     /**
      * @brief Add a processing step to the sequence

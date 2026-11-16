@@ -19,7 +19,7 @@ from typing import Any, List
 
 from ._native import (NativeDetectionError, NativeLoadError,
                       NativeManifestError, NativeRuntimeError,
-                      NativeSelectionError)
+                      NativeSelectionError, TensorRTDependencyError)
 from ._native.load import get_loaded_runtime, load_runtime
 
 
@@ -27,7 +27,7 @@ def load() -> ModuleType:
     """Detect, validate, and return the native runtime module.
 
     Returns:
-        The selected ``_edgellm_runtime`` pybind11 module.
+        The selected ``_edgellm_runtime`` nanobind module.
 
     Raises:
         NativeRuntimeError: If the installed wheel has no compatible payload or
@@ -54,5 +54,6 @@ __all__ = [
     "NativeManifestError",
     "NativeRuntimeError",
     "NativeSelectionError",
+    "TensorRTDependencyError",
     "load",
 ]

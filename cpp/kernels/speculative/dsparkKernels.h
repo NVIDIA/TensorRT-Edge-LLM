@@ -37,19 +37,12 @@ int32_t dsparkMarkovPartialCount(int32_t vocabSize);
  * verify[b, j + 1] = draftTokenIds[b, j], j in [0, verifyProposalLen)
  */
 void dsparkBuildVerifyTokens(rt::Tensor const& lastAcceptedTokens, rt::Tensor const& draftTokenIds,
-    rt::Tensor& verifyTokenIds, int32_t batchSize, int32_t draftStride, int32_t verifyProposalLen, cudaStream_t stream);
+    rt::Tensor const& proposalLengths, rt::Tensor& verifyTokenIds, rt::Tensor& acceptValidTokenCounts,
+    int32_t batchSize, int32_t draftStride, int32_t verifyProposalLen, cudaStream_t stream);
 
-/*!
- * @brief Greedy DSpark accept for a linear proposal block.
- *
- * This deterministic path accepts a draft token while it matches the base
- * argmax at the previous verify position, then appends the base bonus token.
- * It is the top-1 analogue of DeepSpec's rejection-sampling verifier.
- */
-void dsparkGreedyAccept(rt::Tensor const& baseLogits, rt::Tensor const& draftTokenIds,
-    rt::Tensor const& proposalLengths, rt::Tensor& acceptedTokenIds, rt::Tensor& acceptLength,
-    rt::Tensor& argmaxScratch, int32_t batchSize, int32_t draftStride, int32_t verifyProposalLen, int32_t vocabSize,
-    cudaStream_t stream);
+//! Select target IDs using DSpark's existing CUB reduction and exceptional-value semantics.
+void dsparkSelectTargetTokens(rt::Tensor const& baseLogits, rt::Tensor& targetTokenIds, int32_t batchSize,
+    int32_t verifyLen, int32_t vocabSize, cudaStream_t stream);
 
 /*!
  * @brief Fill logical proposal lengths with a fixed full-block value.
@@ -64,7 +57,8 @@ void dsparkComputeConfidenceAndProposalLengths(rt::Tensor const& draftHiddenStat
     rt::Tensor const& confidenceWeight, rt::Tensor const& confidenceBias, rt::Tensor const& firstPrevTokens,
     rt::Tensor const& draftTokenIds, rt::Tensor& confidenceScores, rt::Tensor& proposalLengths, int32_t batchSize,
     int32_t proposalLen, int32_t hiddenSize, int32_t markovRank, bool confidenceWithMarkov, float threshold,
-    int32_t minProposalLen, int32_t maxProposalLen, cudaStream_t stream);
+    int32_t minProposalLen, int32_t maxProposalLen, cudaStream_t stream, int32_t hiddenStride = 0,
+    int32_t hiddenOffset = 0);
 
 /*!
  * @brief Compute DSpark confidence scores and SPS-scheduled proposal lengths.
@@ -76,17 +70,19 @@ void dsparkComputeConfidenceAndSPSProposalLengths(rt::Tensor const& draftHiddenS
     rt::Tensor const& confidenceWeight, rt::Tensor const& confidenceBias, rt::Tensor const& firstPrevTokens,
     rt::Tensor const& draftTokenIds, rt::Tensor& confidenceScores, rt::Tensor& proposalLengths, int32_t batchSize,
     int32_t proposalLen, int32_t hiddenSize, int32_t markovRank, bool confidenceWithMarkov, float survivalFloor,
-    int32_t minProposalLen, int32_t maxProposalLen, cudaStream_t stream);
+    int32_t minProposalLen, int32_t maxProposalLen, cudaStream_t stream, int32_t hiddenStride = 0,
+    int32_t hiddenOffset = 0);
 
 /*!
  * @brief Compute DSpark per-step acceptance confidence scores only (no scheduling).
  *
- * Used by DDTree drafting to bias tree growth; confidenceScores is [batch, proposalLen].
+ * Retained for chain-side confidence analysis; confidenceScores is [batch, proposalLen].
  */
 void dsparkComputeConfidenceScores(rt::Tensor const& draftHiddenStates, rt::Tensor const& markovW1,
     rt::Tensor const& confidenceWeight, rt::Tensor const& confidenceBias, rt::Tensor const& firstPrevTokens,
     rt::Tensor const& draftTokenIds, rt::Tensor& confidenceScores, int32_t batchSize, int32_t proposalLen,
-    int32_t hiddenSize, int32_t markovRank, bool confidenceWithMarkov, cudaStream_t stream);
+    int32_t hiddenSize, int32_t markovRank, bool confidenceWithMarkov, cudaStream_t stream, int32_t hiddenStride = 0,
+    int32_t hiddenOffset = 0);
 
 /*!
  * @brief Convert logits to the sampling probability distribution used by DSpark.
@@ -115,14 +111,82 @@ void dsparkVanillaMarkovSample(rt::Tensor const& backboneLogits, rt::Tensor cons
     rt::Tensor const& firstPrevTokens, rt::Tensor const& proposalUniforms, rt::Tensor& draftTokenIds,
     rt::Tensor& draftProbabilities, rt::Tensor& correctedLogitsScratch, rt::Tensor& probabilityScratch,
     int32_t batchSize, int32_t proposalLen, int32_t vocabSize, int32_t markovRank, float temperature, int32_t topK,
-    float topP, cudaStream_t stream);
+    float topP, cudaStream_t stream, int32_t logitsStride = 0, int32_t logitsOffset = 0);
 
 /*!
  * @brief Build corrected DSpark Markov logits for one proposal step.
  */
 void dsparkBuildMarkovLogits(rt::Tensor const& backboneLogits, rt::Tensor const& markovW1, rt::Tensor const& markovW2,
     rt::Tensor const& firstPrevTokens, rt::Tensor const& draftTokenIds, rt::Tensor& correctedLogitsScratch,
-    int32_t batchSize, int32_t step, int32_t proposalLen, int32_t vocabSize, int32_t markovRank, cudaStream_t stream);
+    int32_t batchSize, int32_t step, int32_t proposalLen, int32_t vocabSize, int32_t markovRank, cudaStream_t stream,
+    int32_t logitsStride = 0, int32_t logitsOffset = 0);
+
+/*!
+ * @brief True when the fused greedy Markov step kernel supports this markov rank.
+ */
+bool dsparkFusedGreedySupported(int32_t markovRank);
+
+/*!
+ * @brief Fused greedy Markov proposal step: correction + exact top-1 in one launch.
+ *
+ * Reads the previous step's winner from greedySlots (packed orderable-float key,
+ * ties resolve to the lowest vocab index), so no host-visible token round trip is
+ * needed between steps. greedySlots is [batch, proposalLen] UINT64 and must be
+ * zeroed once per round before step 0. When stackedLogits is non-null, the
+ * corrected full-vocab row is also written to depth row stackedDepthRow of the
+ * [batch, proposalLen + 1, vocab] tree candidate buffer; chain mode passes null
+ * and never materializes the row.
+ */
+void dsparkMarkovGreedyFusedStep(rt::Tensor const& backboneLogits, rt::Tensor const& markovW1,
+    rt::Tensor const& markovW2, rt::Tensor const& firstPrevTokens, rt::Tensor& greedySlots, rt::Tensor* stackedLogits,
+    int32_t stackedDepthRow, int32_t batchSize, int32_t step, int32_t proposalLen, int32_t vocabSize,
+    int32_t markovRank, cudaStream_t stream, int32_t logitsStride = 0, int32_t logitsOffset = 0);
+
+/*!
+ * @brief Unpack the per-step greedy winners in greedySlots into draftTokenIds [batch, proposalLen].
+ */
+void dsparkFinalizeGreedyDraftTokens(
+    rt::Tensor const& greedySlots, rt::Tensor& draftTokenIds, int32_t totalSteps, cudaStream_t stream);
+
+/*!
+ * @brief Quantize markov_w2 [V, R] FP16 to FP8 E4M3 with one FP16 scale per row.
+ *
+ * w2Fp8 is [V, R] UINT8 (E4M3 bytes of w / rowScale); w2RowScales is [V] FP16 with
+ * rowScale = rowAbsMax / 448 so each row spans the full E4M3 range. Requires R % 16 == 0.
+ */
+void dsparkQuantizeMarkovW2Fp8(rt::Tensor const& markovW2, rt::Tensor& w2Fp8, rt::Tensor& w2RowScales,
+    int32_t vocabSize, int32_t markovRank, cudaStream_t stream);
+
+/*!
+ * @brief FP8-W2 variant of the fused greedy Markov step (same contract as
+ * dsparkMarkovGreedyFusedStep). Two tokens per warp, one 16-byte load per lane,
+ * hardware fp8x2 -> half2 conversion. Requires markovRank == 16 * 2^k so the
+ * per-token lane groups tile a warp exactly.
+ */
+void dsparkMarkovGreedyFusedStepFp8(rt::Tensor const& backboneLogits, rt::Tensor const& markovW1,
+    rt::Tensor const& w2Fp8, rt::Tensor const& w2RowScales, rt::Tensor const& firstPrevTokens, rt::Tensor& greedySlots,
+    rt::Tensor* stackedLogits, int32_t stackedDepthRow, int32_t batchSize, int32_t step, int32_t proposalLen,
+    int32_t vocabSize, int32_t markovRank, cudaStream_t stream, int32_t logitsStride = 0, int32_t logitsOffset = 0);
+
+//! Materialize the dense FP16 fallback from native NVFP4 weights on the initialization stream.
+void dsparkDequantizeW2(rt::Tensor const& packed, rt::Tensor const& scales, rt::Tensor const& globalScale,
+    rt::Tensor& dense, cudaStream_t stream);
+
+//! Repack row-major NVFP4 bytes to the SM110 TCGen5 opaque layout before graph capture.
+void dsparkRepackW2Tcgen5(rt::Tensor const& packed, rt::Tensor const& scales, rt::Tensor& opaquePacked,
+    rt::Tensor& opaqueScales, int32_t vocabSize, int32_t markovRank, cudaStream_t stream);
+
+//! Execute one device-dependent W4A16 Markov step using persistent scratch buffers.
+//! The AOT transform scales weights in FP16 before tensor-core accumulation and stores
+//! an FP16 correction; its scale rounding and reduction differ from the SIMT path.
+//! Non-null stackedLogits must own storage for batchSize * (proposalLen + 1) * vocabSize
+//! elements; the call updates its logical shape. Scratch and output storage must remain
+//! valid until stream work and every graph execution referencing it have completed.
+void dsparkMarkovGreedyStepTcgen5(rt::Tensor const& backboneLogits, rt::Tensor const& markovW1,
+    rt::Tensor const& opaquePacked, rt::Tensor const& opaqueScales, rt::Tensor const& globalScale,
+    rt::Tensor const& firstPrevTokens, rt::Tensor& greedySlots, rt::Tensor& activation, rt::Tensor& correction,
+    rt::Tensor* stackedLogits, int32_t stackedDepthRow, int32_t batchSize, int32_t step, int32_t proposalLen,
+    int32_t vocabSize, int32_t markovRank, cudaStream_t stream, int32_t logitsStride, int32_t logitsOffset);
 
 /*!
  * @brief Sample one token per row from probabilityScratch [B, vocabSize].
@@ -158,15 +222,6 @@ void dsparkSampleTopKRowsAndStore(rt::Tensor const& topKValues, rt::Tensor const
     cudaStream_t stream);
 
 /*!
- * @brief DSpark probabilistic verifier over sparse top-k target/draft supports.
- */
-void dsparkSparseTopKAccept(rt::Tensor const& targetTopKProbabilities, rt::Tensor const& targetTopKIndices,
-    rt::Tensor const& draftTopKProbabilities, rt::Tensor const& draftTopKIndices, rt::Tensor const& draftTokenIds,
-    rt::Tensor const& proposalLengths, rt::Tensor const& acceptUniforms, rt::Tensor& acceptedTokenIds,
-    rt::Tensor& acceptLength, int32_t batchSize, int32_t draftStride, int32_t verifyProposalLen, int32_t targetTopK,
-    int32_t draftTopK, cudaStream_t stream);
-
-/*!
  * @brief DSpark probabilistic verifier with residual sampling.
  *
  * targetProbabilities is [B, proposalLen + 1, vocabSize]. draftProbabilities is
@@ -178,7 +233,7 @@ void dsparkSparseTopKAccept(rt::Tensor const& targetTopKProbabilities, rt::Tenso
 void dsparkProbabilisticAccept(rt::Tensor const& targetProbabilities, rt::Tensor const& draftProbabilities,
     rt::Tensor const& draftTokenIds, rt::Tensor const& proposalLengths, rt::Tensor const& acceptUniforms,
     rt::Tensor& acceptedTokenIds, rt::Tensor& acceptLength, int32_t batchSize, int32_t draftStride,
-    int32_t verifyProposalLen, int32_t vocabSize, cudaStream_t stream);
+    int32_t verifyProposalLen, int32_t vocabSize, cudaStream_t stream, int32_t forcedAcceptanceLength = -1);
 
 } // namespace kernel
 } // namespace trt_edgellm

@@ -17,6 +17,20 @@ GB10 GPU per system. Connect the systems through their high-speed ConnectX-7
 QSFP/RoCE interfaces. The Dual DGX Spark path runs one MPI process per system
 and uses NCCL for cross-system communication.
 
+Multi-device inference is not supported on Windows.
+
+## Supported Models
+
+| Model |
+|---|
+| Qwen3-4B |
+| Qwen3-8B |
+| Qwen3-14B |
+| Qwen3-32B |
+| Qwen3.5-27B |
+| Qwen3-VL-8B |
+| Alpamayo-R1-10B |
+
 ## Tensor Parallel Inference
 
 Tensor parallelism (TP) splits supported model projections across multiple GPUs
@@ -82,7 +96,7 @@ Export all TP ranks in one command:
 export CHECKPOINT=/path/to/checkpoint
 export ONNX_ROOT=/path/to/onnx/model-tp2
 
-tensorrt-edgellm-export "$CHECKPOINT" "$ONNX_ROOT" \
+trtedge export "$CHECKPOINT" "$ONNX_ROOT" \
   --tp-size 2 \
   --skip-visual \
   --skip-audio \
@@ -109,26 +123,26 @@ artifacts, and every rank writes its own engine:
 ```bash
 export ONNX_DIR="$ONNX_ROOT/llm"
 export ENGINE_DIR=/path/to/engines/model-tp2
-export LLM_BUILD=./build/examples/llm/llm_build
+export LLM_BUILD=./build/bin/llm_build
 
 mkdir -p "$ENGINE_DIR"
 
 for RANK in 0 1; do
   "$LLM_BUILD" \
-    --onnxDir="$ONNX_DIR" \
-    --engineDir="$ENGINE_DIR" \
-    --maxBatchSize=1 \
-    --maxInputLen=2048 \
-    --maxKVCacheCapacity=4096 \
-    --tpSize=2 \
-    --tpRank="$RANK"
+    --onnx-dir="$ONNX_DIR" \
+    --engine-dir="$ENGINE_DIR" \
+    --max-batch-size=1 \
+    --max-input-len=2048 \
+    --max-kv-cache-capacity=4096 \
+    --tp-size=2 \
+    --tp-rank="$RANK"
 done
 ```
 
 On Dual DGX Spark, run one rank build per system against the same ONNX and
 engine directories instead of running the loop on one system. Build global TP
-rank 0 on the first system with `--tpRank=0 --localDevice=0`, and build global
-TP rank 1 on the second system with `--tpRank=1 --localDevice=0`. Both systems
+rank 0 on the first system with `--tp-rank=0 --local-device=0`, and build global
+TP rank 1 on the second system with `--tp-rank=1 --local-device=0`. Both systems
 use CUDA device 0 because CUDA ordinals are node-local.
 
 The completed engine directory contains:
@@ -142,7 +156,7 @@ embedding files
 ```
 
 Do not rename rank artifacts. The runtime resolves them from the shared world
-config and validates that its `rank_configs` length matches `--tpSize`.
+config and validates that its `rank_configs` length matches `--tp-size`.
 
 ### Build Directly From The Checkpoint
 
@@ -153,12 +167,12 @@ and output directory:
 ```bash
 export CHECKPOINT=/path/to/checkpoint
 export ENGINE_DIR=/path/to/engines/model-tp2
-export PLUGIN_PATH=/path/to/build/libNvInfer_edgellm_plugin.so
+export PLUGIN_PATH=/path/to/build/lib/libNvInfer_edgellm_plugin.so
 
 mkdir -p "$ENGINE_DIR"
 
 for RANK in 0 1; do
-  .venv/bin/tensorrt-edgellm-build \
+  .venv/bin/trtedge build \
     --model-dir "$CHECKPOINT" \
     --engine-dir "$ENGINE_DIR" \
     --plugin-path "$PLUGIN_PATH" \
@@ -184,16 +198,16 @@ speculative decoding.
 ## Run TP2 Inference
 
 Use the same request JSON accepted by single-device `llm_inference` and add
-`--tpSize=2`:
+`--tp-size=2`:
 
 ```bash
-export LLM_INFERENCE=./build/examples/llm/llm_inference
+export LLM_INFERENCE=./build/bin/llm_inference
 
 "$LLM_INFERENCE" \
-  --engineDir="$ENGINE_DIR" \
-  --inputFile=/path/to/input.json \
-  --outputFile=/path/to/output.json \
-  --tpSize=2
+  --engine-dir="$ENGINE_DIR" \
+  --input-file=/path/to/input.json \
+  --output-file=/path/to/output.json \
+  --tp-size=2
 ```
 
 The process initializes both rank-local engines and NCCL resources before
@@ -204,12 +218,49 @@ initialization:
 
 ```bash
 "$LLM_INFERENCE" \
-  --engineDir="$ENGINE_DIR" \
-  --checkpointDir="$CHECKPOINT" \
-  --inputFile=/path/to/input.json \
-  --outputFile=/path/to/output.json \
+  --engine-dir="$ENGINE_DIR" \
+  --checkpoint-dir="$CHECKPOINT" \
+  --input-file=/path/to/input.json \
+  --output-file=/path/to/output.json \
+  --tp-size=2
+```
+
+### Alpamayo VLA
+
+For Alpamayo-R1-10B, TP=2 partitions only the LLM backbone. Add `--tp-size 2`
+to the export command in the [Alpamayo guide](../examples/vla/alpamayo.md), then
+build the two LLM rank engines as described above. Build the visual and action
+engines once; they remain unsharded.
+
+To use NVFP4 for the LLM backbone and LM head with an FP8 KV cache, prepare a
+quantized checkpoint before export:
+
+```bash
+trtedge quantize llm \
+  --model_dir /path/to/Alpamayo-R1-10B \
+  --output_dir /path/to/Alpamayo-R1-10B-nvfp4-fp8kv \
+  --quantization nvfp4 \
+  --lm_head_quantization nvfp4 \
+  --kv_cache_quantization fp8
+```
+
+This keeps the visual encoder and action expert in FP16. Pass the quantized
+checkpoint directory to `trtedge export` and add `--tp-size 2`.
+
+Run the complete VLA pipeline with `action_inference` instead of
+`llm_inference`:
+
+```bash
+./build/bin/action_inference \
+  --engineDir=/path/to/engines/alpamayo/llm \
+  --multimodalEngineDir=/path/to/engines/alpamayo \
+  --inputFile=/path/to/input_action.json \
+  --outputFile=/path/to/output_action.json \
   --tpSize=2
 ```
+
+For a multi-host launch, use this executable and its arguments in the MPI
+command below.
 
 ### Run On Dual DGX Spark
 
@@ -227,14 +278,14 @@ mpirun \
   -x EDGELLM_PLUGIN_PATH \
   -x EDGELLM_NCCL_SO_PATH \
   "$LLM_INFERENCE" \
-    --engineDir="$ENGINE_DIR" \
-    --inputFile=/path/to/input.json \
-    --outputFile=/path/to/output.json \
-    --tpSize=2
+    --engine-dir="$ENGINE_DIR" \
+    --input-file=/path/to/input.json \
+    --output-file=/path/to/output.json \
+    --tp-size=2
 ```
 
 For engines produced by the checkpoint-direct builder, also pass
-`--checkpointDir="$CHECKPOINT"`. Verify from the NCCL startup log that the
+`--checkpoint-dir="$CHECKPOINT"`. Verify from the NCCL startup log that the
 selected network interfaces are the QSFP/RoCE links, not the management
 interfaces.
 
@@ -242,13 +293,13 @@ To collect performance metrics:
 
 ```bash
 "$LLM_INFERENCE" \
-  --engineDir="$ENGINE_DIR" \
-  --inputFile=/path/to/input.json \
-  --outputFile=/path/to/output.json \
-  --tpSize=2 \
+  --engine-dir="$ENGINE_DIR" \
+  --input-file=/path/to/input.json \
+  --output-file=/path/to/output.json \
+  --tp-size=2 \
   --warmup=3 \
-  --dumpProfile \
-  --profileOutputFile=/path/to/profile.json
+  --dump-profile \
+  --profile-output-file=/path/to/profile.json
 ```
 
 Always compare generated output against the corresponding single-device run
@@ -264,3 +315,4 @@ builder limits, warmup count, and runtime environment for both measurements.
   TP greater than one.
 - The supported cross-system topology is Dual DGX Spark. Other multi-host
   hardware requires separate validation.
+

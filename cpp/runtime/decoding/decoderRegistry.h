@@ -33,8 +33,8 @@ namespace rt
 
 struct DecoderRegistryInit
 {
-    //! Still needed by the decoders that read their own strategy-specific sidecars (EAGLE's d2t table, DSpark's
-    //! head weights, DFlash's draft vocab map). Draft engine weights arrive via `draftWeights` instead.
+    //! Still needed by decoders that read strategy-specific sidecars (EAGLE's d2t table, MTP/DFlash draft vocab
+    //! maps, and DSpark head weights). Draft engine weights arrive via `draftWeights` instead.
     std::filesystem::path engineDir;
     std::optional<SpecDecodeDraftingConfig> draftingConfig;
     //! Validated draft executor whose ownership is consumed by the selected speculative decoder.
@@ -45,8 +45,8 @@ struct DecoderRegistryInit
 };
 
 //! Return whether an available speculative decoder should yield to the default decoder for this request.
-bool shouldSelectDefaultDecoder(
-    DecodingStrategyKind speculativeDecoderKind, LLMGenerationRequest const& request) noexcept;
+bool shouldSelectDefaultDecoder(DecodingStrategyKind speculativeDecoderKind,
+    DecodingStrategyCapabilities const& speculativeCapabilities, LLMGenerationRequest const& request) noexcept;
 
 class DecoderRegistry final
 {
@@ -54,7 +54,12 @@ public:
     DecoderRegistry(DecodingRuntimeContext& runtime, DecoderRegistryInit init);
 
     DecodingStrategy& select(LLMGenerationRequest const& request) const noexcept;
-    DecodingStrategy& cachePrimingStrategy() const noexcept;
+    //! The non-speculative decoder every request falls back to: what a runtime session runs, since
+    //! its deployment carries no draft engine and its residents are not chosen per request.
+    DecodingStrategy& defaultDecoder() const noexcept
+    {
+        return *mDefaultDecoder;
+    }
     bool captureCudaGraphs(cudaStream_t stream) const;
     int64_t getRequiredContextMemorySize() const noexcept;
     void setContextMemory(Tensor& memory) const;
@@ -67,6 +72,13 @@ public:
     char const* speculativeDecoderName() const noexcept
     {
         return mSpeculativeDecoder ? mSpeculativeDecoder->name() : "vanilla";
+    }
+
+    //! Name of the non-speculative decoder (vanilla, or block_diffusion for a diffusion backbone). Exists so
+    //! callers (and tests) can observe which one `select()` falls back to without a speculative decoder active.
+    char const* defaultDecoderName() const noexcept
+    {
+        return mDefaultDecoder ? mDefaultDecoder->name() : "none";
     }
 
 private:

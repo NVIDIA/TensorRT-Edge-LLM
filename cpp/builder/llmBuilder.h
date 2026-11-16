@@ -17,15 +17,21 @@
 
 #pragma once
 
+#include "common/bindingNames.h"
 #include "common/checkMacros.h"
 #include "common/pagedKvTypes.h"
+#include "common/specDecodeLimits.h"
 
 #include <NvInfer.h>
+#include <algorithm>
+#include <array>
 #include <filesystem>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <utility>
 
 using Json = nlohmann::json;
 
@@ -34,6 +40,54 @@ namespace trt_edgellm
 
 namespace builder
 {
+
+inline bool isDFlashV2Config(Json const& config)
+{
+    std::string const specType = config.value("spec_decode_type", "none");
+    if (specType == "dflash2")
+    {
+        return true;
+    }
+    auto const dflashConfig = config.find("dflash_config");
+    return specType == "dflash" && dflashConfig != config.end() && dflashConfig->is_object()
+        && dflashConfig->value("version", 1) == 2;
+}
+
+inline bool isDFlashV2DraftConfig(Json const& config)
+{
+    return config.value("engine_role", "llm") == "draft" && isDFlashV2Config(config);
+}
+
+inline bool isLiLiCorrDraftConfig(Json const& config)
+{
+    if (!isDFlashV2DraftConfig(config))
+    {
+        return false;
+    }
+    auto const dflashConfig = config.find("dflash_config");
+    if (dflashConfig == config.end() || !dflashConfig->is_object())
+    {
+        return false;
+    }
+    auto const projectorType = dflashConfig->find("projector_type");
+    return projectorType != dflashConfig->end() && projectorType->is_string()
+        && projectorType->get<std::string>() == binding_names::kDFlashLiLiCorrProjectorType;
+}
+
+struct RaggedProfilePoint
+{
+    int64_t numSequences;
+    int64_t physicalTokens;
+    int64_t queryOffsets;
+    int64_t logitsRows;
+};
+
+struct RaggedProfileRange
+{
+    RaggedProfilePoint min;
+    RaggedProfilePoint opt;
+    RaggedProfilePoint max;
+};
 
 //! Configuration structure for LLM model building.
 //! Contains all parameters needed to configure the TensorRT engine building process
@@ -46,12 +100,88 @@ struct LLMBuilderConfig
     int64_t maxBatchSize{4};          //!< Maximum batch size for inference
     int64_t maxLoraRank{0};           //!< Maximum LoRA rank (0 = no LoRA support)
     int64_t maxKVCacheCapacity{4096}; //!< Maximum KV cache capacity (sequence length)
-    int64_t maxVerifyTreeSize{60};    //!< Maximum length of input_ids passed into spec base model for verification
-    int64_t maxDraftTreeSize{60};     //!< Maximum length of input_ids passed into spec draft model for draft generation
+    int64_t maxSpecVerifyTokens{60};  //!< Maximum length of input_ids passed into spec base model for verification
+    int64_t maxSpecDraftTokens{60};   //!< Maximum length of input_ids passed into spec draft model for draft generation
     bool profilingDetailed{false};    //!< Enable detailed profiling verbosity for layer info extraction
     //! Exact physical K-page count for the engine's KV pool. Zero selects the minimum active pages.
     //! Kept after the original aggregate fields so existing positional initializers remain source-compatible.
     int64_t maxKVPoolPages{0};
+    std::string raggedBackend{"entry_padded_compatibility"};
+    //! Additional model-role query width (for example, a diffusion canvas). Zero selects role-derived sizing.
+    int64_t maxQueryLength{0};
+
+    int64_t resolvedRoleQueryLength() const
+    {
+        ELLM_CHECK(maxInputLen > 0 && maxInputLen <= std::numeric_limits<int32_t>::max(),
+            "LLMBuilderConfig: maxInputLen must fit a positive int32.");
+        ELLM_CHECK(maxQueryLength >= 0 && maxQueryLength <= std::numeric_limits<int32_t>::max(),
+            "LLMBuilderConfig: maxQueryLength must be zero or fit a positive int32.");
+        int64_t result = std::max<int64_t>(1, maxQueryLength);
+        if (specDraft)
+        {
+            ELLM_CHECK(maxSpecDraftTokens > 0 && maxSpecDraftTokens <= std::numeric_limits<int32_t>::max(),
+                "LLMBuilderConfig: maxSpecDraftTokens must fit a positive int32.");
+            result = std::max(result, maxSpecDraftTokens);
+        }
+        if (specBase)
+        {
+            ELLM_CHECK(maxSpecVerifyTokens > 0 && maxSpecVerifyTokens <= kMAX_SPEC_VERIFY_TREE_TOKENS,
+                "LLMBuilderConfig: maxSpecVerifyTokens must be in [1, " + std::to_string(kMAX_SPEC_VERIFY_TREE_TOKENS)
+                    + "], got " + std::to_string(maxSpecVerifyTokens) + ".");
+            result = std::max(result, maxSpecVerifyTokens);
+        }
+        return result;
+    }
+
+    int64_t resolvedMaxQueryLength() const
+    {
+        return std::max(maxInputLen, resolvedRoleQueryLength());
+    }
+
+    int64_t checkedPhysicalTokens(int64_t queryLength) const
+    {
+        ELLM_CHECK(maxBatchSize > 0 && maxBatchSize <= std::numeric_limits<int32_t>::max(),
+            "LLMBuilderConfig: maxBatchSize must fit a positive int32.");
+        ELLM_CHECK(queryLength > 0 && queryLength <= std::numeric_limits<int32_t>::max(),
+            "LLMBuilderConfig: query length must fit a positive int32.");
+        ELLM_CHECK(maxBatchSize <= std::numeric_limits<int32_t>::max() / queryLength,
+            "LLMBuilderConfig: ragged physical-token capacity exceeds int32.");
+        return maxBatchSize * queryLength;
+    }
+
+    int64_t resolvedMaxPhysicalTokens() const
+    {
+        return checkedPhysicalTokens(resolvedMaxQueryLength());
+    }
+
+    RaggedProfileRange raggedPrefillProfileRange() const
+    {
+        int64_t const maxTokens = checkedPhysicalTokens(maxInputLen);
+        int64_t const optQueryLength = std::max<int64_t>(1, maxInputLen / 2);
+        int64_t const optTokens = maxBatchSize * optQueryLength;
+        return RaggedProfileRange{{1, 1, 2, 1}, {maxBatchSize, optTokens, maxBatchSize + 1, maxBatchSize},
+            {maxBatchSize, maxTokens, maxBatchSize + 1, maxBatchSize}};
+    }
+
+    RaggedProfileRange raggedDecodeProfileRange() const
+    {
+        resolvedMaxPhysicalTokens();
+        return RaggedProfileRange{{1, 1, 2, 1}, {maxBatchSize, maxBatchSize, maxBatchSize + 1, maxBatchSize},
+            {maxBatchSize, maxBatchSize, maxBatchSize + 1, maxBatchSize}};
+    }
+
+    RaggedProfileRange raggedMultiTokenGenerationProfileRange(int64_t maxTokensPerSequence) const
+    {
+        ELLM_CHECK(maxBatchSize > 0 && maxBatchSize <= std::numeric_limits<int32_t>::max(),
+            "LLMBuilderConfig: maxBatchSize must fit a positive int32.");
+        ELLM_CHECK(maxTokensPerSequence > 0 && maxTokensPerSequence <= std::numeric_limits<int32_t>::max(),
+            "LLMBuilderConfig: generation tokens per sequence must fit a positive int32.");
+        ELLM_CHECK(maxBatchSize <= std::numeric_limits<int32_t>::max() / maxTokensPerSequence,
+            "LLMBuilderConfig: generation physical-token capacity exceeds int32.");
+        int64_t const maxTokens = maxBatchSize * maxTokensPerSequence;
+        return RaggedProfileRange{{1, 1, 2, 1}, {maxBatchSize, maxTokens, maxBatchSize + 1, maxTokens},
+            {maxBatchSize, maxTokens, maxBatchSize + 1, maxTokens}};
+    }
 
     //! Resolve the exact physical K-page count serialized into the engine binding shape.
     //! @return `maxKVPoolPages`, or the minimum active pages when it is zero
@@ -80,6 +210,48 @@ struct LLMBuilderConfig
 
     int64_t tpSize{1}; //!< Tensor parallel size
     int64_t tpRank{0}; //!< Tensor parallel rank
+    //! Total K-page budget for the independent SWA pool (0 = auto-size when reduced markers are present).
+    int64_t numSwaPages{0};
+
+    //! Resolve and store the positive SWA page budget once SWA capability markers are known.
+    //! A zero configured value selects the bounded builder default; runtime config does not use this auto mode.
+    int32_t resolveNumSwaPages(int32_t slidingWindowCapacity)
+    {
+        if (maxBatchSize <= 0 || maxBatchSize > std::numeric_limits<int32_t>::max() || numSwaPages < 0
+            || numSwaPages > std::numeric_limits<int32_t>::max())
+        {
+            throw std::invalid_argument(
+                "builder SWA page sizing requires positive int32 maxBatchSize and "
+                "non-negative int32 numSwaPages");
+        }
+        int64_t const minimumPages = rt::computeMinimumSwaPoolPages(maxBatchSize, slidingWindowCapacity);
+        ELLM_CHECK(minimumPages <= std::numeric_limits<int32_t>::max(),
+            "LLMBuilderConfig: minimum SWA page budget exceeds int32 range.");
+        if (numSwaPages != 0 && numSwaPages < minimumPages)
+        {
+            throw std::invalid_argument(
+                "LLMBuilderConfig: numSwaPages must cover every active slot's private SWA pages");
+        }
+        int32_t const resolvedPages = static_cast<int32_t>(numSwaPages == 0 ? minimumPages : numSwaPages);
+        numSwaPages = resolvedPages;
+        return resolvedPages;
+    }
+
+    //! Resolve the min/opt/max page dimension for one KV-cache input profile.
+    //! SWA-capable layers optimize for the smaller storage policy while the profile covers both page counts.
+    std::array<int64_t, 3> resolveKVPoolPageProfile(int32_t kvCacheCapacity) const
+    {
+        int64_t const fullPages = resolvedKVPoolPages();
+        if (!rt::isReducedKvCacheCapacity(kvCacheCapacity, static_cast<int32_t>(maxKVCacheCapacity)))
+        {
+            return {fullPages, fullPages, fullPages};
+        }
+        ELLM_CHECK(numSwaPages > 0 && numSwaPages <= std::numeric_limits<int32_t>::max(),
+            "LLMBuilderConfig: SWA-capable KV profiles require a resolved positive numSwaPages value.");
+        int32_t const boundedPages = static_cast<int32_t>(numSwaPages);
+        int64_t const smallerPages = std::min<int64_t>(boundedPages, fullPages);
+        return {smallerPages, smallerPages, std::max<int64_t>(boundedPages, fullPages)};
+    }
 
     //! Convert configuration to JSON format for serialization.
     //! @return JSON object containing all configuration parameters
@@ -93,15 +265,20 @@ struct LLMBuilderConfig
         json["max_lora_rank"] = maxLoraRank;
         json["max_kv_cache_capacity"] = maxKVCacheCapacity;
         json["max_kv_pool_pages"] = resolvedKVPoolPages();
+        json["ragged_backend"] = raggedBackend;
         json["tp_size"] = tpSize;
+        if (numSwaPages > 0)
+        {
+            json["num_swa_pages"] = numSwaPages;
+        }
         // Only include speculative-decoding limits for the engine role that owns them.
         if (specBase)
         {
-            json["max_verify_tree_size"] = maxVerifyTreeSize;
+            json["max_spec_verify_tokens"] = maxSpecVerifyTokens;
         }
         if (specDraft)
         {
-            json["max_draft_tree_size"] = maxDraftTreeSize;
+            json["max_spec_draft_tokens"] = maxSpecDraftTokens;
         }
         return json;
     }
@@ -149,13 +326,18 @@ struct LLMBuilderConfig
         {
             config.maxKVPoolPages = json["max_kv_pool_pages"];
         }
-        if (json.contains("max_verify_tree_size"))
+        if (json.contains("num_swa_pages"))
         {
-            config.maxVerifyTreeSize = json["max_verify_tree_size"];
+            config.numSwaPages = json["num_swa_pages"];
         }
-        if (json.contains("max_draft_tree_size"))
+        config.raggedBackend = json.value("ragged_backend", config.raggedBackend);
+        if (json.contains("max_spec_verify_tokens"))
         {
-            config.maxDraftTreeSize = json["max_draft_tree_size"];
+            config.maxSpecVerifyTokens = json["max_spec_verify_tokens"];
+        }
+        if (json.contains("max_spec_draft_tokens"))
+        {
+            config.maxSpecDraftTokens = json["max_spec_draft_tokens"];
         }
         if (json.contains("tp_size"))
         {
@@ -179,18 +361,59 @@ struct LLMBuilderConfig
         oss << "  maxKVPoolPages: " << resolvedKVPoolPages() << "\n";
         oss << "  tpSize: " << tpSize << "\n";
         oss << "  tpRank: " << tpRank << "\n";
+        oss << "  numSwaPages: " << numSwaPages << "\n";
         // Only show speculative-decoding limits for the engine role that owns them.
         if (specBase)
         {
-            oss << "  maxVerifyTreeSize: " << maxVerifyTreeSize << "\n";
+            oss << "  maxSpecVerifyTokens: " << maxSpecVerifyTokens << "\n";
         }
         if (specDraft)
         {
-            oss << "  maxDraftTreeSize: " << maxDraftTreeSize << "\n";
+            oss << "  maxSpecDraftTokens: " << maxSpecDraftTokens << "\n";
         }
         return oss.str();
     }
 };
+
+inline bool dFlashV2BuildCapacityCoversCheckpoint(Json const& config, LLMBuilderConfig const& builderConfig)
+{
+    if (!isDFlashV2Config(config))
+    {
+        return true;
+    }
+    auto const dflashConfig = config.find("dflash_config");
+    if (dflashConfig == config.end() || !dflashConfig->is_object())
+    {
+        return false;
+    }
+    int64_t const checkpointBlockSize = dflashConfig->value("block_size", static_cast<int64_t>(0));
+    std::string const role = config.value("engine_role", "llm");
+    if (role == "draft")
+    {
+        // The LiLiCorr head reshapes each sequence to exactly block_size - 1 candidate slots.
+        if (isLiLiCorrDraftConfig(config))
+        {
+            return checkpointBlockSize > 0 && builderConfig.maxSpecDraftTokens == checkpointBlockSize;
+        }
+        return checkpointBlockSize > 0 && builderConfig.maxSpecDraftTokens >= checkpointBlockSize;
+    }
+    if (role == "base")
+    {
+        return checkpointBlockSize > 0 && builderConfig.maxSpecVerifyTokens >= checkpointBlockSize;
+    }
+    return true;
+}
+
+//! Minimum proposal rows (`inputs_embeds` rows) of a DFlash draft engine profile.
+//! LiLiCorr drafts always run whole blocks, so their minimum is one full sequence.
+inline int64_t dFlashDraftMinProposalRows(Json const& config, LLMBuilderConfig const& builderConfig)
+{
+    if (isLiLiCorrDraftConfig(config))
+    {
+        return std::max<int64_t>(1, builderConfig.maxSpecDraftTokens);
+    }
+    return isDFlashV2DraftConfig(config) ? 2 : 1;
+}
 
 //! Builder class for Large Language Model TensorRT engines.
 //! Handles the complete process of building TensorRT engines from ONNX models
@@ -257,13 +480,15 @@ private:
     bool setupRopeProfiles(nvinfer1::IOptimizationProfile& contextProfile,
         nvinfer1::IOptimizationProfile& generationProfile, nvinfer1::INetworkDefinition const& network);
 
+    std::pair<RaggedProfileRange, RaggedProfileRange> tokenAlignedProfileRanges() const;
+
     //! Set up optimization profiles for vanilla LLM models.
     //! Configures input IDs and last token IDs for standard transformer models.
     //! @param contextProfile Optimization profile for context processing
     //! @param generationProfile Optimization profile for generation processing
     //! @return true if setup was successful, false otherwise
-    bool setupVanillaProfiles(
-        nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile);
+    bool setupVanillaProfiles(nvinfer1::IOptimizationProfile& contextProfile,
+        nvinfer1::IOptimizationProfile& generationProfile, nvinfer1::INetworkDefinition const& network);
 
     //! Effective opt-shape token count for a generation-time optimization profile.
     //!
@@ -282,7 +507,7 @@ private:
     //! for the full dataset.
     //!
     //! @param maxToken The `max` shape count for this profile
-    //!                 (e.g., `maxVerifyTreeSize` for verify, `maxDraftTreeSize` for draft).
+    //!                 (e.g., `maxSpecVerifyTokens` for verify, `maxSpecDraftTokens` for draft).
     int64_t effectiveOptTokens(int64_t maxToken) const;
 
     //! Set up optimization profiles for speculative tree-decoding models.
@@ -290,8 +515,8 @@ private:
     //! @param contextProfile Optimization profile for context processing
     //! @param generationProfile Optimization profile for generation processing
     //! @return true if setup was successful, false otherwise
-    bool setupSpecDecodeProfiles(
-        nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile);
+    bool setupSpecDecodeProfiles(nvinfer1::IOptimizationProfile& contextProfile,
+        nvinfer1::IOptimizationProfile& generationProfile, nvinfer1::INetworkDefinition const& network);
 
     //! Set up optimization profiles for the DiffusionGemma backbone engine.
     //! Configures full-canvas denoise shapes and finalized-token commit shapes.
@@ -319,14 +544,21 @@ private:
     bool setupDSparkDraftProfiles(
         nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile);
 
-    //! Set up optimization profiles for Gemma4 PLE tensor inputs.
-    //! Gemma4 E-model engines receive one ple_token_embeds_* tensor per layer.
+    //! Set up the PLE pool capacity and token-major row-map profiles.
     //! @param contextProfile Optimization profile for context processing
     //! @param generationProfile Optimization profile for generation processing
-    //! @param network TensorRT network definition for input analysis
     //! @return true if setup was successful, false otherwise
-    bool setupPleProfiles(nvinfer1::IOptimizationProfile& contextProfile,
-        nvinfer1::IOptimizationProfile& generationProfile, nvinfer1::INetworkDefinition const& network);
+    bool setupPleProfiles(
+        nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile);
+
+    //! Set up optimization profiles for the Qwen4-Exp n-gram injection.
+    //! Unrelated to the Gemma4 tensors above: one conv state per injected layer; the gathered rows
+    //! themselves come through the shared PLE row pool. No-op when the model carries no injection.
+    //! @param contextProfile Optimization profile for context processing
+    //! @param generationProfile Optimization profile for generation processing
+    //! @return true if setup was successful, false otherwise
+    bool setupNgramPleProfiles(
+        nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile);
 
     //! Set up optimization profiles for Deepstack embeddings (Qwen3VL).
     //! Configures deepstack embedding inputs with the same profile as inputs_embeds.
@@ -425,6 +657,14 @@ private:
     //! @return true if copying was successful or this is not a DSpark draft.
     bool copyDSparkFiles();
 
+    //! Copy DFlash2 selector sidecars to the engine directory.
+    //! @return true if copying was successful or this is not a DFlash2 draft.
+    bool copyDFlash2Files();
+
+    //! Copy the Domino runtime correction-head sidecar into the engine directory.
+    //! @return true if copying was successful or this is not a Domino draft.
+    bool copyDominoFiles();
+
     //! Copy vocabulary mapping files to the engine directory.
     //! Copies vocab_map.safetensors file if reduced vocabulary is used.
     //! @return true if copying was successful, false otherwise
@@ -441,17 +681,18 @@ private:
     bool copyExternalWeightFiles();
 
     // Model dimensions extracted from config.json
-    int64_t mHiddenSize{0};                   //!< Hidden size of the model
-    int64_t mNumKVHeads{0};                   //!< Number of key-value heads
-    int64_t mHeadSize{0};                     //!< Size of each attention head
-    int64_t mRotaryDim{0};                    //!< Dimension for rotary position embeddings
-    int64_t mSlidingRotaryDim{0};             //!< Dimension for sliding-attention rotary embeddings
-    int64_t mFullRotaryDim{0};                //!< Dimension for full-attention rotary embeddings
-    int32_t mNbKVCacheInputs{0};              //!< Number of KV cache inputs (layers)
-    std::vector<int64_t> mPerLayerHeadSize;   //!< Per-layer head size (for heterogeneous models like Gemma4)
-    std::vector<int64_t> mPerLayerNumKVHeads; //!< Per-layer KV head count (for heterogeneous models like Gemma4)
-    int32_t mTargetModelOutputHiddenDim{0};   //!< Target output hidden dimension
-    int32_t mNumDeepstackFeatures{0};         //!< Number of deepstack features (for Qwen3VL)
+    int64_t mHiddenSize{0};                        //!< Hidden size of the model
+    int64_t mNumKVHeads{0};                        //!< Number of key-value heads
+    int64_t mHeadSize{0};                          //!< Size of each attention head
+    int64_t mRotaryDim{0};                         //!< Dimension for rotary position embeddings
+    int64_t mSlidingRotaryDim{0};                  //!< Dimension for sliding-attention rotary embeddings
+    int64_t mFullRotaryDim{0};                     //!< Dimension for full-attention rotary embeddings
+    int32_t mNbKVCacheInputs{0};                   //!< Number of KV cache inputs (layers)
+    std::vector<int64_t> mPerLayerHeadSize;        //!< Per-layer head size (for heterogeneous models like Gemma4)
+    std::vector<int64_t> mPerLayerNumKVHeads;      //!< Per-layer KV head count (for heterogeneous models like Gemma4)
+    std::vector<int32_t> mPerLayerKVCacheCapacity; //!< 0 = full-only, otherwise SWA-capable window W
+    int32_t mTargetModelOutputHiddenDim{0};        //!< Target output hidden dimension
+    int32_t mNumDeepstackFeatures{0};              //!< Number of deepstack features (for Qwen3VL)
     // TODO: Use better mechanism to organize model configuration.
     int32_t mNumLinearAttnLayers{0};    //!< Number of recurrent layers (Mamba/GDN/linear-attention)
     int32_t mRecurrentStateNumHeads{0}; //!< Number of recurrent state heads
@@ -459,10 +700,18 @@ private:
     int32_t mRecurrentStateSize{0};     //!< Recurrent state size
     int32_t mConvDim{0};                //!< Conv state dimension
     int32_t mConvKernel{0};             //!< Conv kernel size (d_conv)
-    Json mModelConfig;                  //!< Parsed model configuration
-    Json mSharedModelConfig;            //!< Shared runtime config before rank-local overrides
-    bool mIsDiffusionBackbone{false};   //!< Whether this builder builds the DiffusionGemma DLLM engine
-    int64_t mDiffusionCanvasLength{0};  //!< DiffusionGemma fixed canvas/block length
+    //! Qwen4-Exp n-gram injection. All zero/empty for a model without one, which is what leaves
+    //! its bindings and profiles out of such an engine entirely.
+    std::vector<int32_t> mNgramLayers{}; //!< Decoder layers carrying an injection, zero-indexed
+    int32_t mNgramEmbedDim{0};           //!< Width of the gathered n-gram vector
+    int32_t mNgramConvDim{0};            //!< Channels of the injection's dilated conv
+    int32_t mNgramConvStateLen{0};       //!< Steps of that conv's state
+    Json mModelConfig;                   //!< Parsed model configuration
+    Json mSharedModelConfig;             //!< Shared runtime config before rank-local overrides
+    bool mIsDiffusionBackbone{false};    //!< Whether this builder builds the DiffusionGemma DLLM engine
+    int64_t mDiffusionCanvasLength{0};   //!< DiffusionGemma fixed canvas/block length
+    //! Every phase-8 plugin layer of the engine reserved the compact workspace (builder_config.compact_execution)
+    bool mCompactExecution{false};
 };
 
 } // namespace builder

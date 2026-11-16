@@ -13,12 +13,11 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-# Honor TRT_PACKAGE_DIR as the primary root hint (facilitates multi-version x86
-# systems). Falls back to standard system paths (e.g. JetPack).
 if(DEFINED TRT_PACKAGE_DIR AND NOT DEFINED TENSORRT_ROOT)
   set(TENSORRT_ROOT ${TRT_PACKAGE_DIR})
 endif()
-set(_trt_hints ${TENSORRT_ROOT} /usr /opt/tensorrt)
+set(_trt_hints ${TENSORRT_ROOT} $ENV{TENSORRT_ROOT} $ENV{TRT_PACKAGE_DIR} /usr
+               /usr/local/TensorRT /opt/tensorrt)
 set(_trt_lib_suffixes lib lib64 lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu)
 set(_trt_inc_suffixes include include/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu)
 if(CMAKE_SYSTEM_NAME STREQUAL "QNX")
@@ -30,11 +29,32 @@ find_path(
   TensorRT_INCLUDE_DIR NvInfer.h
   HINTS ${_trt_hints}
   PATH_SUFFIXES ${_trt_inc_suffixes})
+
+set(_trt_library_names tensorrt_rtx nvinfer)
+set(_trt_parser_library_names tensorrt_onnxparser_rtx nvonnxparser)
+if(WIN32 AND TENSORRT_ROOT)
+  file(
+    GLOB _trt_versioned_libraries
+    LIST_DIRECTORIES FALSE
+    "${TENSORRT_ROOT}/lib/tensorrt_rtx_*.lib"
+    "${TENSORRT_ROOT}/lib/nvinfer_[0-9]*.lib"
+    "${TENSORRT_ROOT}/lib/tensorrt_onnxparser_rtx_*.lib"
+    "${TENSORRT_ROOT}/lib/nvonnxparser_[0-9]*.lib")
+  foreach(_trt_library IN LISTS _trt_versioned_libraries)
+    get_filename_component(_trt_library_name "${_trt_library}" NAME_WE)
+    if(_trt_library_name MATCHES "onnxparser")
+      list(PREPEND _trt_parser_library_names "${_trt_library_name}")
+    else()
+      list(PREPEND _trt_library_names "${_trt_library_name}")
+    endif()
+  endforeach()
+endif()
+
 # Find either one of tensorrt_rtx or nvinfer from the provided path, so only one
 # lib should be presented in the lib folder.
 find_library(
   TensorRT_LIBRARY
-  NAMES tensorrt_rtx nvinfer
+  NAMES ${_trt_library_names}
   HINTS ${_trt_hints}
   PATH_SUFFIXES ${_trt_lib_suffixes})
 
@@ -44,13 +64,18 @@ find_path(TensorRT_OnnxParser_INCLUDE_DIR NvOnnxParser.h
 # nvonnxparser.
 find_library(
   TensorRT_OnnxParser_LIBRARY
-  NAMES nvonnxparser tensorrt_onnxparser_rtx
+  NAMES ${_trt_parser_library_names}
   HINTS ${_trt_hints}
   PATH_SUFFIXES ${_trt_lib_suffixes})
 
 unset(_trt_hints)
 unset(_trt_lib_suffixes)
 unset(_trt_inc_suffixes)
+unset(_trt_library_names)
+unset(_trt_parser_library_names)
+unset(_trt_versioned_libraries)
+unset(_trt_library)
+unset(_trt_library_name)
 
 if(TensorRT_OnnxParser_INCLUDE_DIR AND TensorRT_OnnxParser_LIBRARY)
   set(TensorRT_OnnxParser_FOUND TRUE)
@@ -62,8 +87,10 @@ include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(
   TensorRT
   REQUIRED_VARS TensorRT_LIBRARY TensorRT_INCLUDE_DIR
-  HANDLE_COMPONENTS REASON_FAILURE_MESSAGE
-  "TensorRT not found. Please specify -DTRT_PACKAGE_DIR=/path/to/TRT.")
+  HANDLE_COMPONENTS
+  REASON_FAILURE_MESSAGE
+  "TensorRT was not found in the system paths. Set TRT_PACKAGE_DIR to an extracted SDK root."
+)
 
 mark_as_advanced(TensorRT_INCLUDE_DIR TensorRT_LIBRARY
                  TensorRT_OnnxParser_INCLUDE_DIR TensorRT_OnnxParser_LIBRARY)
@@ -72,14 +99,20 @@ if(TensorRT_FOUND)
   # Make the resolved runtime unmistakable in the configure log.
   get_filename_component(_trt_lib_name "${TensorRT_LIBRARY}" NAME)
   if(_trt_lib_name MATCHES "tensorrt_rtx")
+    set(_is_trt_rtx TRUE)
     message(
       STATUS
         "TensorRT: linking TRT-RTX (${_trt_lib_name}) -> ${TensorRT_LIBRARY}")
   else()
+    set(_is_trt_rtx FALSE)
     message(
       STATUS
         "TensorRT: linking TensorRT (${_trt_lib_name}) -> ${TensorRT_LIBRARY}")
   endif()
+  set(IS_TRT_RTX
+      ${_is_trt_rtx}
+      CACHE INTERNAL "TensorRT-RTX runtime is in use")
+  unset(_is_trt_rtx)
   unset(_trt_lib_name)
 
   if(NOT TARGET TensorRT::TensorRT)

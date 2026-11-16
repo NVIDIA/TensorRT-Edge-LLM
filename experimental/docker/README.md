@@ -23,7 +23,7 @@ build context.
 To customize the image name, set `EXPERIMENTAL_DOCKER_IMAGE` before running the
 wrapper.
 
-Run the OpenAI-compatible experimental server:
+Run the OpenAI-compatible server:
 
 ```bash
 docker run --runtime nvidia --rm -it --network host \
@@ -33,3 +33,13 @@ docker run --runtime nvidia --rm -it --network host \
 ```
 
 Model downloads and complete runtime bundles are cached under `/data/cache`.
+Pre-quantized checkpoints use the identical one-line workflow, for example:
+
+```bash
+docker run --runtime nvidia --rm -it --network host \
+  -v /data:/data \
+  tensorrt-edge-llm:experimental \
+  tensorrt-edgellm-serve \
+    RedHatAI/DeepSeek-R1-Distill-Qwen-1.5B-quantized.w4a16 \
+    --cache-dir /data/cache
+```

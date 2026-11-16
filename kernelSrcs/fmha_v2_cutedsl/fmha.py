@@ -43,6 +43,9 @@ import numpy as np
 from cutlass.cute.nvgpu import cpasync, warp
 from cutlass.cute.runtime import from_dlpack
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from cutedsl_utils import aot_placeholders  # isort: skip
+
 
 """FMHA-v2 Ampere-floor forward kernel (CuTe DSL), AOT-export build.
 
@@ -60,7 +63,7 @@ all KV tiles internally with FA2-style online softmax (rescale-on-shift).
 
 Variant axes baked at compile time:
   * ``head_dim``  — whole-D MMA partitioning; runtime mode-3 not honored.
-  * ``is_causal`` — separate compiled kernel for causal vs dense masking.
+  * ``is_causal`` — compile-time selection of causal or non-causal attention.
 
 Runtime-dynamic axes (no recompile needed across these): batch size,
 seqlen_q, seqlen_k, num_head (Q heads), ``num_kv_heads`` (GQA — passed as a
@@ -78,20 +81,56 @@ prefix length for chunked prefill).  Padding K/V positions are never
 attended by valid rows, and padding Q rows are residual-masked in the masked
 steps so padding NaNs cannot corrupt valid rows.
 
-Vision-block overlay (Gemma4 Unified): two optional ``(B, S_q)`` Int32
+Vision-block overlay (Gemma4 Unified): two optional Int32 tensors with
+shape ``(B, S_q)`` for padded Q or ``(total_q,)`` for packed Q. These
 tensors ``mBlockBegin`` / ``mBlockEnd`` carry, per query row, an extra
 allowed KV interval ``[blockBegin[q], blockEnd[q]]`` (sentinel ``-1`` /
-``-1`` for text rows — the empty interval).  Every image-placeholder run
+``-2`` for text rows — the empty interval).  Every image-placeholder run
 gets one contiguous block that contains the row's own diagonal position
 (``blockBegin[q] <= q + offset_b <= blockEnd[q]``), so
 ``allow(q, k) = causal(q, k) OR blockBegin[q] <= k <= blockEnd[q]``.  KV
 tiles between the causal diagonal and the Q tile's largest ``blockEnd``
 are additionally visited through the masked path (blocks are short —
 O(hundreds of tokens) past the diagonal — so the extra work is bounded).
-Passing ``None`` for both tensors compiles the overlay away entirely: the
+Packed boundaries are indexed by ``cu_q[b] + q`` and their values remain
+sequence-relative KV positions, including the cached prefix. Passing
+``None`` for both tensors compiles the overlay away entirely: the
 generated kernel and its AOT C ABI are identical to the plain causal
 variant.
+
+Skip-softmax (BLASST, ``skip_softmax=True``, native-paged causal only): the
+kernel takes the calibrated scale table as a trailing runtime ``Int32[2N]``
+tensor of ``(seqlen_bin, S)`` pairs (a flat ``S`` is the one-row table
+``[0, S]``), floor-looks-up ``S`` by each sequence's KV length and derives
+``lambda = S / seqlen_kv``.  For every KV tile after the diagonal, a warp
+skips exp / rescale / ``P @ V`` when all of its rows satisfy
+``(tile_max - running_max) * scale < ln(lambda)``; the skipped tile's mass is
+below ``lambda`` of the running max, so O and the row sum are left as they
+are.  Sequences below the first bin or with ``S >= seqlen_kv`` skip nothing.
+Without ``skip_softmax`` the generated kernel and its ABI are identical to the
+plain native-paged variant.
 """
+
+
+@cute.jit
+def skip_softmax_threshold_log2_from_table(skip_softmax_scale_table, seqlen_k):
+    """Per-sequence log2(lambda), lambda = S / seqlen_k, with S the floor-bin
+    lookup of seqlen_k in the flattened [bin_0, S_0, bin_1, S_1, ...] table
+    (bins ascending). Below the first bin, or when S >= seqlen_k (lambda >= 1
+    would pass every tile), returns -2^100 so no tile can win the vote: the
+    sequence runs dense inside the skip kernel. Once per CTA, off the KV loop.
+    Branch-free on purpose: the scf.if form costs 6% in the all-skip bound on
+    GB10 (ptxas -O2 register allocation), the select form none."""
+    num_rows = cute.size(skip_softmax_scale_table) // 2
+    scale = cutlass.Int32(0)
+    for row in cutlass.range(num_rows, unroll=1):
+        if skip_softmax_scale_table[2 * row] <= seqlen_k:
+            scale = skip_softmax_scale_table[2 * row + 1]
+    valid = cutlass.Float32(cutlass.Int32((scale > 0) and (scale < seqlen_k)))
+    threshold_log2 = cute.math.log2(
+        cute.arch.fmax(cutlass.Float32(scale), cutlass.Float32(1.0)), fastmath=True
+    ) - cute.math.log2(cutlass.Float32(seqlen_k), fastmath=True)
+    return threshold_log2 * valid - cutlass.Float32(2.0**100) * (1.0 - valid)
 
 
 class FMHAV2Ampere:
@@ -107,6 +146,8 @@ class FMHAV2Ampere:
         packed_varlen: bool = False,
         skip_rescale: bool = False,
         hybrid_exp2: bool = False,
+        skip_softmax: bool = False,
+        software_fp8: bool = False,
     ):
         """Initialize the FMHA-v2 Ampere-floor kernel.
 
@@ -127,6 +168,10 @@ class FMHAV2Ampere:
             line with the upstream xlite-dev/ffpa-attn tuning.
         :param hybrid_exp2: scaffold for FA4-style 75 % MUFU + 25 % polynomial
             exp2 in softmax.  Not validated in this variant; defer.
+        :param skip_softmax: compile the skip-softmax (BLASST) path in: a
+            warp skips softmax + P@V for a KV tile when every one of its rows
+            has ``(tile_max - running_max) * scale < ln(lambda)``.  Adds the
+            runtime ``skip_softmax_scale_table`` to the native-paged ABI.
         """
         self._head_dim = head_dim
         self._m_block_size = m_block_size
@@ -149,6 +194,8 @@ class FMHAV2Ampere:
         # matches the long/ragged reference exactly.
         self._skip_rescale = skip_rescale and head_dim != 72
         self._hybrid_exp2 = hybrid_exp2
+        self._skip_softmax = skip_softmax
+        self._software_fp8 = software_fp8
         self._async_load_cache_mode = (
             cpasync.LoadCacheMode.ALWAYS
             if head_dim == 72
@@ -382,8 +429,13 @@ class FMHAV2Ampere:
             mCuSeqLenK,
             mBlockBegin,
             mBlockEnd,
+            None,
+            cutlass.Int32(0),
             softmax_scale_log2,
             num_kv_heads,
+            None,
+            None,
+            None,
             None,
             None,
             sQ_layout,
@@ -560,9 +612,14 @@ class FMHAV2Ampere:
             cum_seqlen_k,
             block_begin,
             block_end,
+            None,
+            cutlass.Int32(0),
             softmax_scale_log2,
             num_kv_heads,
             runtime_window,
+            None,
+            None,
+            None,
             None,
             sQ_layout,
             sKV_layout,
@@ -579,7 +636,7 @@ class FMHAV2Ampere:
         )
 
     @cute.jit
-    def __call_context_paged__(
+    def _launch_context_paged(
         self,
         q_tensor: cute.Tensor,
         kv_cache_pool: cute.Tensor,
@@ -587,10 +644,22 @@ class FMHAV2Ampere:
         o_tensor: cute.Tensor,
         cum_seqlen_q: cute.Tensor,
         cum_seqlen_k: cute.Tensor,
+        max_seqlen_q: Optional[cutlass.Int32],
         window_size_left: cutlass.Int32,
         attention_scale: cutlass.Float32,
         sm_count: cutlass.Int32,
         stream: cuda.CUstream,
+        attention_sinks: Optional[cute.Tensor],
+        enable_attention_sink: cutlass.Int32,
+        skip_softmax_scale_table: Optional[cute.Tensor] = None,
+        skip_softmax_count: Optional[cute.Tensor] = None,
+        total_softmax_count: Optional[cute.Tensor] = None,
+        scale_k: Optional[cutlass.Float32] = None,
+        scale_v: Optional[cutlass.Float32] = None,
+        action_pool: Optional[cute.Tensor] = None,
+        action_pages: Optional[cute.Tensor] = None,
+        block_begin: Optional[cute.Tensor] = None,
+        block_end: Optional[cute.Tensor] = None,
     ):
         """Launch FMHA-v2 directly against Edge-LLM's paged NHD KV cache.
 
@@ -602,23 +671,42 @@ class FMHAV2Ampere:
 
         ``cum_seqlen_q`` and ``cum_seqlen_k`` carry the actual per-batch
         logical lengths. The page size is fixed at 128 tokens. ``Bc`` must
-        divide 128 so each K/V tile remains within one physical page.
+        divide 128 so each K/V tile remains within one physical page. For
+        non-causal mode, every valid query row attends to all valid paged KV rows
+        in its sequence; partial pages are bounded by ``cum_seqlen_k``.
+
+        ``skip_softmax_scale_table`` is the skip-softmax variants' Int32[2N]
+        ``(seqlen_bin, S)`` table; the kernel looks up S by each sequence's
+        ``cum_seqlen_k`` length (actual here, unlike the optimized kernel's
+        padded primary) and derives lambda = S / seqlen_kv.  The two Int32[1]
+        counters are self-test instrumentation only.
         """
         if cutlass.const_expr(
             q_tensor.element_type != cutlass.Float16
-            or kv_cache_pool.element_type != cutlass.Float16
+            or kv_cache_pool.element_type not in (cutlass.Float16, cutlass.Float8E4M3FN)
             or o_tensor.element_type != cutlass.Float16
         ):
-            raise TypeError("FMHA-v2 paged attention requires Float16 Q, K/V, and O")
+            raise TypeError("FMHA-v2 paged attention requires Float16 Q/O and Float16 or Float8E4M3FN KV")
+        if cutlass.const_expr((block_begin is None) != (block_end is None)):
+            raise TypeError("Vision-block attention requires both range tensors")
+        if cutlass.const_expr(block_begin is not None):
+            if cutlass.const_expr(not self._packed_varlen or not self._is_causal
+                                 or self._head_dim not in (256, 512)):
+                raise TypeError("Paged vision-block attention requires packed causal D256 or D512")
         if cutlass.const_expr(
-            not self._is_causal
-            or self._packed_varlen
-            or 128 % self._n_block_size != 0
+            (skip_softmax_scale_table is not None) != self._skip_softmax
         ):
             raise TypeError(
-                "FMHA-v2 paged attention requires causal, non-packed BSND "
-                "Q/O, a 128-token page, and Bc that divides 128"
+                "pass skip_softmax_scale_table iff the class was built with skip_softmax"
             )
+        if cutlass.const_expr(128 % self._n_block_size != 0):
+            raise TypeError(
+                "FMHA-v2 paged attention requires a 128-token page and Bc "
+                "that divides 128"
+            )
+        if cutlass.const_expr(kv_cache_pool.element_type == cutlass.Float8E4M3FN):
+            if cutlass.const_expr(self._head_dim != 128 or self._is_causal or scale_k is None or scale_v is None):
+                raise TypeError("FP8 paged KV requires d128 non-causal attention and K/V dequantization scales")
         self._dtype = q_tensor.element_type
 
         smem_k_block_size = (
@@ -700,7 +788,16 @@ class FMHAV2Ampere:
             permutation_mnk=(self._num_threads // 32 * 16, 16, 16),
         )
 
-        if cutlass.const_expr(self._num_output_blocks == 2):
+        if cutlass.const_expr(self._packed_varlen):
+            grid_m = cute.ceil_div(max_seqlen_q, self._m_block_size)
+            if cutlass.const_expr(self._num_output_blocks == 2):
+                grid_m = grid_m * 2
+            grid_dim = (
+                grid_m,
+                cum_seqlen_q.shape[0] - 1,
+                cute.size(q_tensor.shape[1]),
+            )
+        elif cutlass.const_expr(self._num_output_blocks == 2):
             grid_dim = (
                 cute.ceil_div(q_tensor.shape[1], self._m_block_size) * 2,
                 cute.size(q_tensor.shape[2]),
@@ -730,12 +827,17 @@ class FMHAV2Ampere:
             o_tensor,
             cum_seqlen_q,
             cum_seqlen_k,
-            None,
-            None,
+            block_begin,
+            block_end,
+            attention_sinks,
+            enable_attention_sink,
             softmax_scale_log2,
             kv_cache_pool.shape[1],
             runtime_window,
-            None,
+            max_seqlen_q,
+            skip_softmax_scale_table,
+            skip_softmax_count,
+            total_softmax_count,
             sQ_layout,
             sKV_layout,
             sV_layout,
@@ -744,10 +846,208 @@ class FMHAV2Ampere:
             gmem_tiled_copy_O,
             tiled_mma,
             SharedStorage,
+            scale_k,
+            scale_v,
+            action_pool,
+            action_pages,
         ).launch(
             grid=grid_dim,
             block=[self._num_threads, 1, 1],
             stream=stream,
+        )
+
+    @cute.jit
+    def __call_context_paged__(
+        self,
+        q_tensor: cute.Tensor,
+        kv_cache_pool: cute.Tensor,
+        kv_cache_page_list: cute.Tensor,
+        o_tensor: cute.Tensor,
+        cum_seqlen_q: cute.Tensor,
+        cum_seqlen_k: cute.Tensor,
+        window_size_left: cutlass.Int32,
+        attention_scale: cutlass.Float32,
+        sm_count: cutlass.Int32,
+        stream: cuda.CUstream,
+    ):
+        self._launch_context_paged(
+            q_tensor,
+            kv_cache_pool,
+            kv_cache_page_list,
+            o_tensor,
+            cum_seqlen_q,
+            cum_seqlen_k,
+            None,
+            window_size_left,
+            attention_scale,
+            sm_count,
+            stream,
+            None,
+            cutlass.Int32(0),
+        )
+
+    @cute.jit
+    def __call_context_paged_two_pool__(
+        self, q_tensor: cute.Tensor, kv_cache_pool: cute.Tensor,
+        kv_cache_page_list: cute.Tensor, o_tensor: cute.Tensor,
+        cum_seqlen_q: cute.Tensor, cum_seqlen_k: cute.Tensor,
+        window_size_left: cutlass.Int32, attention_scale: cutlass.Float32,
+        sm_count: cutlass.Int32, stream: cuda.CUstream,
+        scale_k: cutlass.Float32, scale_v: cutlass.Float32,
+        action_pool: cute.Tensor, action_pages: cute.Tensor,
+    ):
+        self._launch_context_paged(
+            q_tensor, kv_cache_pool, kv_cache_page_list, o_tensor,
+            cum_seqlen_q, cum_seqlen_k, None, window_size_left,
+            attention_scale, sm_count, stream,
+            attention_sinks=None, enable_attention_sink=cutlass.Int32(0),
+            scale_k=scale_k, scale_v=scale_v,
+            action_pool=action_pool, action_pages=action_pages,
+        )
+
+    @cute.jit
+    def __call_context_paged_skipsoftmax__(
+        self,
+        q_tensor: cute.Tensor,
+        kv_cache_pool: cute.Tensor,
+        kv_cache_page_list: cute.Tensor,
+        o_tensor: cute.Tensor,
+        cum_seqlen_q: cute.Tensor,
+        cum_seqlen_k: cute.Tensor,
+        window_size_left: cutlass.Int32,
+        attention_scale: cutlass.Float32,
+        sm_count: cutlass.Int32,
+        stream: cuda.CUstream,
+        skip_softmax_scale_table: cute.Tensor,
+    ):
+        """Native-paged ABI plus the trailing Int32[2N] skip-softmax scale table
+        (after ``stream``, as in the optimized ``fmha_d*_skipsoftmax_paged`` ABI,
+        which additionally takes actual KV lengths — redundant here, see
+        ``_launch_context_paged``). This is the ABI of the shipped causal paged
+        kernels; a table that yields no S (e.g. the row [0, 0]) runs dense."""
+        self._launch_context_paged(
+            q_tensor,
+            kv_cache_pool,
+            kv_cache_page_list,
+            o_tensor,
+            cum_seqlen_q,
+            cum_seqlen_k,
+            None,
+            window_size_left,
+            attention_scale,
+            sm_count,
+            stream,
+            None,
+            cutlass.Int32(0),
+            skip_softmax_scale_table,
+        )
+
+    @cute.jit
+    def __call_context_paged_skipsoftmax_verify__(
+        self,
+        q_tensor: cute.Tensor,
+        kv_cache_pool: cute.Tensor,
+        kv_cache_page_list: cute.Tensor,
+        o_tensor: cute.Tensor,
+        cum_seqlen_q: cute.Tensor,
+        cum_seqlen_k: cute.Tensor,
+        window_size_left: cutlass.Int32,
+        attention_scale: cutlass.Float32,
+        sm_count: cutlass.Int32,
+        stream: cuda.CUstream,
+        skip_softmax_scale_table: cute.Tensor,
+        skip_softmax_count: cute.Tensor,
+        total_softmax_count: cute.Tensor,
+    ):
+        """Self-test only: the skip-softmax ABI plus (skipped, visited) warp-tile
+        counters. Not exported."""
+        self._launch_context_paged(
+            q_tensor,
+            kv_cache_pool,
+            kv_cache_page_list,
+            o_tensor,
+            cum_seqlen_q,
+            cum_seqlen_k,
+            None,
+            window_size_left,
+            attention_scale,
+            sm_count,
+            stream,
+            None,
+            cutlass.Int32(0),
+            skip_softmax_scale_table,
+            skip_softmax_count,
+            total_softmax_count,
+        )
+
+    @cute.jit
+    def __call_context_paged_ragged__(
+        self,
+        q_tensor: cute.Tensor,
+        kv_cache_pool: cute.Tensor,
+        kv_cache_page_list: cute.Tensor,
+        o_tensor: cute.Tensor,
+        cum_seqlen_q: cute.Tensor,
+        cum_seqlen_k: cute.Tensor,
+        attention_sinks: cute.Tensor,
+        enable_attention_sink: cutlass.Int32,
+        max_seqlen_q: cutlass.Int32,
+        window_size_left: cutlass.Int32,
+        attention_scale: cutlass.Float32,
+        sm_count: cutlass.Int32,
+        stream: cuda.CUstream,
+    ):
+        self._launch_context_paged(
+            q_tensor,
+            kv_cache_pool,
+            kv_cache_page_list,
+            o_tensor,
+            cum_seqlen_q,
+            cum_seqlen_k,
+            max_seqlen_q,
+            window_size_left,
+            attention_scale,
+            sm_count,
+            stream,
+            attention_sinks=attention_sinks,
+            enable_attention_sink=enable_attention_sink,
+        )
+
+    @cute.jit
+    def __call_context_paged_ragged_vision__(
+        self,
+        q_tensor: cute.Tensor,
+        kv_cache_pool: cute.Tensor,
+        kv_cache_page_list: cute.Tensor,
+        o_tensor: cute.Tensor,
+        cum_seqlen_q: cute.Tensor,
+        cum_seqlen_k: cute.Tensor,
+        attention_sinks: cute.Tensor,
+        enable_attention_sink: cutlass.Int32,
+        max_seqlen_q: cutlass.Int32,
+        window_size_left: cutlass.Int32,
+        attention_scale: cutlass.Float32,
+        sm_count: cutlass.Int32,
+        stream: cuda.CUstream,
+        block_begin: cute.Tensor,
+        block_end: cute.Tensor,
+    ):
+        self._launch_context_paged(
+            q_tensor,
+            kv_cache_pool,
+            kv_cache_page_list,
+            o_tensor,
+            cum_seqlen_q,
+            cum_seqlen_k,
+            max_seqlen_q,
+            window_size_left,
+            attention_scale,
+            sm_count,
+            stream,
+            attention_sinks=attention_sinks,
+            enable_attention_sink=enable_attention_sink,
+            block_begin=block_begin,
+            block_end=block_end,
         )
 
     @cute.jit
@@ -895,10 +1195,15 @@ class FMHAV2Ampere:
             cu_seqlens,
             None,
             None,
+            None,
+            cutlass.Int32(0),
             scale_softmax_log2,
             k_tensor.shape[1],
             None,
             max_seqlen,
+            None,
+            None,
+            None,
             sQ_layout,
             sKV_layout,
             sV_layout,
@@ -927,10 +1232,15 @@ class FMHAV2Ampere:
         mCuSeqLenK: cute.Tensor,
         mBlockBegin: Optional[cute.Tensor],
         mBlockEnd: Optional[cute.Tensor],
+        mAttentionSinks: Optional[cute.Tensor],
+        enable_attention_sink: cutlass.Int32,
         softmax_scale_log2: cutlass.Float32,
         num_kv_heads: cutlass.Int32,
         window_size_left: Optional[cutlass.Int32],
         max_seqlen: Optional[cutlass.Int32],
+        skip_softmax_scale_table: Optional[cute.Tensor],
+        skip_softmax_count: Optional[cute.Tensor],
+        total_softmax_count: Optional[cute.Tensor],
         sQ_layout: cute.ComposedLayout,
         sKV_layout: cute.ComposedLayout,
         sV_layout: cute.ComposedLayout,
@@ -939,6 +1249,10 @@ class FMHAV2Ampere:
         gmem_tiled_copy_O: cute.TiledCopy,
         tiled_mma: cute.TiledMma,
         SharedStorage: cutlass.Constexpr,
+        scale_k: Optional[cutlass.Float32] = None,
+        scale_v: Optional[cutlass.Float32] = None,
+        action_pool: Optional[cute.Tensor] = None,
+        action_pages: Optional[cute.Tensor] = None,
     ):
         """FA2 kernel body: prologue cp.async Q/K, KV outer loop in reverse,
         ``compute_one_n_block`` for BMM1 → softmax_rescale → BMM2.  Epilogue
@@ -977,7 +1291,23 @@ class FMHAV2Ampere:
         if cutlass.const_expr(mCuSeqLenQ is not None):
             seqlen_q_b = mCuSeqLenQ[batch_size + 1] - mCuSeqLenQ[batch_size]
         seqlen_k_b = mCuSeqLenK[batch_size + 1] - mCuSeqLenK[batch_size]
+        prefix_length = None
+        action_base = None
+        if cutlass.const_expr(action_pool is not None):
+            prefix_length = seqlen_k_b - seqlen_q_b
+            action_base = cute.ceil_div(prefix_length, self._n_block_size) * self._n_block_size
+            seqlen_k_b = action_base + seqlen_q_b
         offset_b = seqlen_k_b - seqlen_q_b
+        q_start = cutlass.Int32(0)
+        if cutlass.const_expr(self._packed_varlen):
+            q_start = mCuSeqLenQ[batch_size]
+        # Skip-softmax: per-sequence lambda = S(seqlen_kv) / seqlen_kv, so
+        # mixed-length batches each get their calibrated threshold.
+        skip_softmax_threshold_log2 = None
+        if cutlass.const_expr(skip_softmax_scale_table is not None):
+            skip_softmax_threshold_log2 = skip_softmax_threshold_log2_from_table(
+                skip_softmax_scale_table, seqlen_k_b
+            )
 
         n_block_max = cute.ceil_div(seqlen_k_b, self._n_block_size)
         if self._is_causal:
@@ -1008,7 +1338,7 @@ class FMHAV2Ampere:
         # A block that crosses the upper Q-tile edge is the only interval that
         # can exceed the tile's causal bound, so its endpoint row supplies the
         # extension.  The extra tiles always take the masked path.  With no
-        # block at that edge (blockEnd == -1), the extension is zero and the
+        # block at that edge (blockEnd < 0), the extension is zero and the
         # traversal matches the plain causal kernel.
         n_block_max_causal = n_block_max
         extra_mask_steps = 0
@@ -1026,13 +1356,20 @@ class FMHAV2Ampere:
                 # the tile are already covered by those endpoint rows'
                 # analytic attention span.  Sampling the two endpoints avoids
                 # a redundant Br-element global scan in every CTA thread.
-                block_begin_first = mBlockBegin[batch_size, row_lo]
-                block_end_first = mBlockEnd[batch_size, row_lo]
+                if cutlass.const_expr(self._packed_varlen):
+                    block_begin_first = mBlockBegin[q_start + row_lo]
+                    block_end_first = mBlockEnd[q_start + row_lo]
+                else:
+                    block_begin_first = mBlockBegin[batch_size, row_lo]
+                    block_end_first = mBlockEnd[batch_size, row_lo]
                 if block_begin_first <= block_end_first:
                     block_begin_tile_min = cutlass.min(
                         block_begin_tile_min, cutlass.max(block_begin_first, 0)
                     )
-                block_end_tile_max = mBlockEnd[batch_size, row_hi - 1]
+                if cutlass.const_expr(self._packed_varlen):
+                    block_end_tile_max = mBlockEnd[q_start + row_hi - 1]
+                else:
+                    block_end_tile_max = mBlockEnd[batch_size, row_hi - 1]
             n_block_ext = cutlass.min(
                 cute.ceil_div(block_end_tile_max + 1, self._n_block_size),
                 cute.ceil_div(seqlen_k_b, self._n_block_size),
@@ -1047,7 +1384,7 @@ class FMHAV2Ampere:
         # nearly full-causal work.  Start at the tile containing the earliest
         # sliding-window key instead.  A vision-block interval is OR-ed with
         # the sliding/causal interval, so include its earliest valid begin as
-        # well; the -1/-1 text-row sentinel does not lower the bound.
+        # well; the -1/-2 text-row sentinel does not lower the bound.
         n_block_min = cutlass.Int32(0)
         if cutlass.const_expr(self._use_sliding_window):
             first_query_row = m_block * self._m_block_size
@@ -1107,6 +1444,8 @@ class FMHAV2Ampere:
         kv_head_dim = 0
         if cutlass.const_expr(mPagedKV is not None):
             kv_capacity = mPageList.shape[2] * 128
+            if cutlass.const_expr(action_pool is not None):
+                kv_capacity += action_pages.shape[2] * 128
             kv_head_dim = mPagedKV.shape[3]
         elif cutlass.const_expr(mKV is not None):
             kv_capacity = mKV.shape[3]
@@ -1366,7 +1705,14 @@ class FMHAV2Ampere:
         # logical bound is applied here and in the first V load below; interior
         # blocks are entirely below seqlen_k_b and keep the fast full copies.
         if n_block >= 0:
-            if cutlass.const_expr(mPagedKV is not None):
+            if cutlass.const_expr(action_pool is not None):
+                self._copy_paged_two_pool_tile(
+                    mPagedKV, mPageList, action_pool, action_pages,
+                    batch_size, num_head_kv, 0, n_block, prefix_length,
+                    action_base, seqlen_q_b, gmem_thr_copy_QKV,
+                    gmem_tiled_copy_QKV, tKsK, tKVpKV, scale_k,
+                )
+            elif cutlass.const_expr(mPagedKV is not None):
                 tPagedK = self._paged_partition(
                     mPagedKV,
                     mPageList,
@@ -1378,11 +1724,9 @@ class FMHAV2Ampere:
                 )
                 for n in cutlass.range_constexpr(cute.size(tKsK.shape[1])):
                     if cute.elem_less(tKVcKV[0, n, 0][1], seqlen_k_b):
-                        cute.copy(
-                            gmem_tiled_copy_QKV,
-                            tPagedK[None, n, None],
-                            tKsK[None, n, None],
-                            pred=tKVpKV[None, n, None],
+                        self._copy_paged_kv(
+                            gmem_tiled_copy_QKV, tPagedK[None, n, None],
+                            tKsK[None, n, None], tKVpKV[None, n, None], scale_k,
                         )
                     else:
                         tKsK[None, n, None].fill(0)
@@ -1411,6 +1755,18 @@ class FMHAV2Ampere:
         )
         row_max.fill(-cutlass.Float32.inf)
         row_sum.fill(0.0)
+        if cutlass.const_expr(mAttentionSinks is not None):
+            if enable_attention_sink != 0:
+                # Online softmax stores raw QK scores; convert the natural-log sink to that scale.
+                sink_score = (
+                    mAttentionSinks[num_head]
+                    / softmax_scale_log2
+                    * 1.4426950408889634
+                )
+                row_max.fill(sink_score)
+                # row_sum is reduced across four lanes, so seed one lane per quad.
+                if cute.arch.lane_idx() % 4 == 0:
+                    row_sum.fill(1.0)
 
         basic_params = SimpleNamespace(
             m_block=m_block,
@@ -1420,7 +1776,10 @@ class FMHAV2Ampere:
             num_head=num_head,
             seqlen_q_b=seqlen_q_b,
             seqlen_k_b=seqlen_k_b,
+            prefix_length=prefix_length,
+            action_base=action_base,
             offset_b=offset_b,
+            q_start=q_start,
             mBlockBegin=mBlockBegin,
             mBlockEnd=mBlockEnd,
             kv_capacity=kv_capacity,
@@ -1438,6 +1797,10 @@ class FMHAV2Ampere:
             acc_O=acc_O,
         )
         gmem_copy_params = SimpleNamespace(
+            scale_k=scale_k,
+            scale_v=scale_v,
+            action_pool=action_pool,
+            action_pages=action_pages,
             gmem_tiled_copy_QKV=gmem_tiled_copy_QKV,
             gmem_thr_copy_QKV=gmem_thr_copy_QKV,
             tKVcKV=tKVcKV,
@@ -1469,6 +1832,9 @@ class FMHAV2Ampere:
             row_max=row_max,
             row_sum=row_sum,
             softmax_scale_log2=softmax_scale_log2,
+            skip_softmax_threshold_log2=skip_softmax_threshold_log2,
+            skip_softmax_count=skip_softmax_count,
+            total_softmax_count=total_softmax_count,
         )
 
         # Two flavours of N-block iteration: masking (the block straddling the
@@ -1495,6 +1861,7 @@ class FMHAV2Ampere:
                     gmem_copy_params,
                     smem_copy_params,
                     softmax_params,
+                    enable_attention_sink,
                     is_first_n_block=True,
                     in_mask_steps=True,
                 )
@@ -1549,6 +1916,7 @@ class FMHAV2Ampere:
                         gmem_copy_params,
                         smem_copy_params,
                         softmax_params,
+                        enable_attention_sink,
                         is_first_n_block=False,
                         in_mask_steps=True,
                     )
@@ -1563,6 +1931,7 @@ class FMHAV2Ampere:
                         gmem_copy_params,
                         smem_copy_params,
                         softmax_params,
+                        enable_attention_sink,
                         is_first_n_block=False,
                         in_mask_steps=False,
                     )
@@ -1577,6 +1946,7 @@ class FMHAV2Ampere:
                         gmem_copy_params,
                         smem_copy_params,
                         softmax_params,
+                        enable_attention_sink,
                         is_first_n_block=False,
                         in_mask_steps=True,
                     )
@@ -1592,6 +1962,7 @@ class FMHAV2Ampere:
                         gmem_copy_params,
                         smem_copy_params,
                         softmax_params,
+                        enable_attention_sink,
                         is_first_n_block=False,
                         in_mask_steps=True,
                     )
@@ -1607,6 +1978,7 @@ class FMHAV2Ampere:
                             gmem_copy_params,
                             smem_copy_params,
                             softmax_params,
+                            enable_attention_sink,
                             is_first_n_block=(n_tile == 0),
                             in_mask_steps=True,
                         )
@@ -1618,6 +1990,7 @@ class FMHAV2Ampere:
                             gmem_copy_params,
                             smem_copy_params,
                             softmax_params,
+                            enable_attention_sink,
                             is_first_n_block=True,
                             in_mask_steps=True,
                         )
@@ -1634,6 +2007,7 @@ class FMHAV2Ampere:
                         gmem_copy_params,
                         smem_copy_params,
                         softmax_params,
+                        enable_attention_sink,
                         is_first_n_block=False,
                         in_mask_steps=True,
                     )
@@ -1648,6 +2022,7 @@ class FMHAV2Ampere:
                     gmem_copy_params,
                     smem_copy_params,
                     softmax_params,
+                    enable_attention_sink,
                     is_first_n_block=False,
                     in_mask_steps=False,
                 )
@@ -1808,6 +2183,54 @@ class FMHAV2Ampere:
         return cute.make_tensor(gPagedKV.iterator.align(16), gPagedKV.layout)
 
     @cute.jit
+    def _copy_paged_kv(self, tiled_copy, source, destination, predicate, scale):
+        if cutlass.const_expr(source.element_type == cutlass.Float8E4M3FN):
+            # D128 fills the head extent; callers predicate invalid token rows.
+            for i in cutlass.range_constexpr(cute.size(destination.shape)):
+                if cutlass.const_expr(self._software_fp8):
+                    # Ampere lacks native E4M3 converts; decode the byte without FP8 arithmetic.
+                    bits = source[i].bitcast(cutlass.Uint8).to(cutlass.Uint32)
+                    magnitude = bits & 0x7F
+                    sign = (bits & 0x80) << 24
+                    # E4M3 bias 7 -> FP32 bias 127; align the three mantissa bits.
+                    decoded = (((magnitude << 20) + 0x3C000000) | sign).bitcast(cutlass.Float32)
+                    if magnitude < 8:
+                        subnormal = magnitude.to(cutlass.Float32) * (1.0 / 512.0)
+                        decoded = (subnormal.bitcast(cutlass.Uint32) | sign).bitcast(cutlass.Float32)
+                    if magnitude == 0x7F:
+                        decoded = (cutlass.Uint32(0x7FC00000) | sign).bitcast(cutlass.Float32)
+                else:
+                    decoded = source[i].to(cutlass.Float32)
+                destination[i] = (decoded * scale).to(cutlass.Float16)
+        else:
+            cute.copy(tiled_copy, source, destination, pred=predicate)
+
+    @cute.jit
+    def _copy_source_tile(self, pool, pages, batch, head, plane, block,
+                          length, thr_copy, tiled_copy, dest, predicate, scale):
+        source = self._paged_partition(pool, pages, batch, head, plane, block, thr_copy)
+        coords = thr_copy.partition_S(cute.make_identity_tensor((self._n_block_size, self._head_dim_padded)))
+        for n in cutlass.range_constexpr(cute.size(dest.shape[1])):
+            if block * self._n_block_size + coords[0, n, 0][0] < length:
+                self._copy_paged_kv(tiled_copy, source[None, n, None],
+                                    dest[None, n, None], predicate[None, n, None], scale)
+            else:
+                dest[None, n, None].fill(0)
+
+    @cute.jit
+    def _copy_paged_two_pool_tile(self, prefix_pool, prefix_pages, action_pool, action_pages,
+                            batch, head, plane: cutlass.Constexpr, block,
+                            prefix_length, action_base, action_length,
+                            thr_copy, tiled_copy, dest, predicate, scale):
+        if block * self._n_block_size < action_base:
+            self._copy_source_tile(prefix_pool, prefix_pages, batch, head, plane,
+                                   block, prefix_length, thr_copy, tiled_copy, dest, predicate, scale)
+        else:
+            self._copy_source_tile(action_pool, action_pages, batch, head, plane,
+                                   block - action_base // self._n_block_size, action_length,
+                                   thr_copy, tiled_copy, dest, predicate, cutlass.Float32(1.0))
+
+    @cute.jit
     def _paged_partition(
         self,
         mPagedKV: cute.Tensor,
@@ -1818,7 +2241,7 @@ class FMHAV2Ampere:
         n_block: cutlass.Int32,
         gmem_thr_copy_QKV: cute.TiledCopy,
     ):
-        """Return this thread's source partition for one FP16 paged KV tile."""
+        """Return this thread's source partition for one paged KV tile."""
         gPagedKV = self._paged_tile(
             mPagedKV,
             mPageList,
@@ -1830,10 +2253,9 @@ class FMHAV2Ampere:
             self._head_dim_padded,
         )
         tPagedKV = gmem_thr_copy_QKV.partition_S(gPagedKV)
-        # Dynamic page/head/token offsets make partitioning conservatively
-        # drop the ABI's 16-byte alignment. Each thread still begins on one
-        # complete 128-bit copy vector, so restore that fact at the copy edge.
-        return cute.make_tensor(tPagedKV.iterator.align(16), tPagedKV.layout)
+        # Each thread starts on eight elements: 16 bytes for FP16, eight for FP8.
+        alignment = 8 if cutlass.const_expr(mPagedKV.element_type == cutlass.Float8E4M3FN) else 16
+        return cute.make_tensor(tPagedKV.iterator.align(alignment), tPagedKV.layout)
 
     @cute.jit
     def _paged_partition_from_physical_page(
@@ -1844,7 +2266,7 @@ class FMHAV2Ampere:
         n_block: cutlass.Int32,
         gmem_thr_copy_QKV: cute.TiledCopy,
     ):
-        """Partition one FP16 KV tile after its page-table entry is prefetched."""
+        """Partition one KV tile after its page-table entry is prefetched."""
         gPagedKV = self._paged_tile_from_physical_page(
             mPagedKV,
             num_head_kv,
@@ -1854,7 +2276,8 @@ class FMHAV2Ampere:
             self._head_dim_padded,
         )
         tPagedKV = gmem_thr_copy_QKV.partition_S(gPagedKV)
-        return cute.make_tensor(tPagedKV.iterator.align(16), tPagedKV.layout)
+        alignment = 8 if cutlass.const_expr(mPagedKV.element_type == cutlass.Float8E4M3FN) else 16
+        return cute.make_tensor(tPagedKV.iterator.align(alignment), tPagedKV.layout)
 
     @cute.jit
     def _paged_partition_output(
@@ -1911,10 +2334,12 @@ class FMHAV2Ampere:
         gmem_copy_params: SimpleNamespace,
         smem_copy_params: SimpleNamespace,
         softmax_params: SimpleNamespace,
+        enable_attention_sink: cutlass.Int32,
         is_first_n_block: cutlass.Constexpr,
         in_mask_steps: cutlass.Constexpr,
     ):
         """One outer N-block: BMM1 (Q @ K^T → S) → online softmax → BMM2 (P @ V → O)."""
+        in_mask_steps = in_mask_steps or cutlass.const_expr(gmem_copy_params.action_pool is not None)
         acc_shape_S = mma_params.thr_mma.partition_shape_C(
             (self._m_block_size, self._n_block_size)
         )
@@ -1926,7 +2351,7 @@ class FMHAV2Ampere:
         # and BMM1 make forward progress.
         current_v_page = cutlass.Int32(0)
         next_k_page = cutlass.Int32(0)
-        if cutlass.const_expr(gmem_copy_params.mPagedKV is not None):
+        if cutlass.const_expr(gmem_copy_params.mPagedKV is not None and gmem_copy_params.action_pool is None):
             blocks_per_page = 128 // self._n_block_size
             current_v_logical_page = basic_params.n_block // blocks_per_page
             current_v_page = gmem_copy_params.mPageList[
@@ -1946,7 +2371,17 @@ class FMHAV2Ampere:
         # a single vectorised copy is enough — the `if` here is a constexpr).
         # First tile == the boundary K/V block: zero-fill V rows at logical
         # positions >= seqlen_k_b (NaN hardening — see the prologue K load).
-        if cutlass.const_expr(gmem_copy_params.mPagedKV is not None):
+        if cutlass.const_expr(gmem_copy_params.action_pool is not None):
+            self._copy_paged_two_pool_tile(
+                gmem_copy_params.mPagedKV, gmem_copy_params.mPageList,
+                gmem_copy_params.action_pool, gmem_copy_params.action_pages,
+                gmem_copy_params.batch_size, gmem_copy_params.num_head_kv,
+                1, basic_params.n_block, basic_params.prefix_length, basic_params.action_base,
+                basic_params.seqlen_q_b, gmem_copy_params.gmem_thr_copy_QKV,
+                gmem_copy_params.gmem_tiled_copy_QKV, gmem_copy_params.tVsV,
+                gmem_copy_params.tVpV, gmem_copy_params.scale_v,
+            )
+        elif cutlass.const_expr(gmem_copy_params.mPagedKV is not None):
             if cutlass.const_expr(self._num_output_blocks == 2):
                 tPagedV = self._paged_partition_output_from_physical_page(
                     gmem_copy_params.mPagedKV,
@@ -1972,20 +2407,17 @@ class FMHAV2Ampere:
                         gmem_copy_params.tVcV[0, n, 0][1],
                         basic_params.seqlen_k_b,
                     ):
-                        cute.copy(
+                        self._copy_paged_kv(
                             gmem_copy_params.gmem_tiled_copy_QKV,
-                            tPagedV[None, n, None],
-                            gmem_copy_params.tVsV[None, n, None],
-                            pred=gmem_copy_params.tVpV[None, n, None],
+                            tPagedV[None, n, None], gmem_copy_params.tVsV[None, n, None],
+                            gmem_copy_params.tVpV[None, n, None], gmem_copy_params.scale_v,
                         )
                     else:
                         gmem_copy_params.tVsV[None, n, None].fill(0.0)
             else:
-                cute.copy(
-                    gmem_copy_params.gmem_tiled_copy_QKV,
-                    tPagedV,
-                    gmem_copy_params.tVsV,
-                    pred=gmem_copy_params.tVpV,
+                self._copy_paged_kv(
+                    gmem_copy_params.gmem_tiled_copy_QKV, tPagedV,
+                    gmem_copy_params.tVsV, gmem_copy_params.tVpV, gmem_copy_params.scale_v,
                 )
         else:
             if is_first_n_block:
@@ -2054,7 +2486,17 @@ class FMHAV2Ampere:
         self.cta_sync_barrier.arrive_and_wait()
 
         if basic_params.n_block > basic_params.n_block_min:
-            if cutlass.const_expr(gmem_copy_params.mPagedKV is not None):
+            if cutlass.const_expr(gmem_copy_params.action_pool is not None):
+                self._copy_paged_two_pool_tile(
+                    gmem_copy_params.mPagedKV, gmem_copy_params.mPageList,
+                    gmem_copy_params.action_pool, gmem_copy_params.action_pages,
+                    gmem_copy_params.batch_size, gmem_copy_params.num_head_kv,
+                    0, basic_params.n_block - 1, basic_params.prefix_length, basic_params.action_base,
+                    basic_params.seqlen_q_b, gmem_copy_params.gmem_thr_copy_QKV,
+                    gmem_copy_params.gmem_tiled_copy_QKV, gmem_copy_params.tKsK,
+                    gmem_copy_params.tKVpKV, gmem_copy_params.scale_k,
+                )
+            elif cutlass.const_expr(gmem_copy_params.mPagedKV is not None):
                 tPagedKNext = self._paged_partition_from_physical_page(
                     gmem_copy_params.mPagedKV,
                     gmem_copy_params.num_head_kv,
@@ -2062,11 +2504,9 @@ class FMHAV2Ampere:
                     basic_params.n_block - 1,
                     gmem_copy_params.gmem_thr_copy_QKV,
                 )
-                cute.copy(
-                    gmem_copy_params.gmem_tiled_copy_QKV,
-                    tPagedKNext,
-                    gmem_copy_params.tKsK,
-                    pred=gmem_copy_params.tKVpKV,
+                self._copy_paged_kv(
+                    gmem_copy_params.gmem_tiled_copy_QKV, tPagedKNext,
+                    gmem_copy_params.tKsK, gmem_copy_params.tKVpKV, gmem_copy_params.scale_k,
                 )
             else:
                 cute.copy(
@@ -2081,20 +2521,35 @@ class FMHAV2Ampere:
         # ///////////////////////////////////////////////////////////////////////////////
         # Online softmax: rescale row_max/row_sum/acc_O, compute P = softmax(S).
         # ///////////////////////////////////////////////////////////////////////////////
-        self.softmax_rescale_O(
+        skip_tile = self.softmax_rescale_O(
             basic_params,
             mma_params,
             softmax_params,
             acc_S,
             is_first_n_block,
             in_mask_steps,
+            enable_attention_sink,
         )
 
+        # A skipped tile leaves row_max/row_sum/acc_O untouched, so P@V is
+        # elided outright (P would be exact zeros). No CTA barrier sits between
+        # here and the next tile's cp.async wait, so the per-warp branch is safe.
+        if cutlass.const_expr(self._skip_softmax):
+            if not skip_tile:
+                self.bmm2(acc_S, mma_params, smem_copy_params)
+        else:
+            self.bmm2(acc_S, mma_params, smem_copy_params)
+
+    @cute.jit
+    def bmm2(
+        self,
+        acc_S: cute.Tensor,
+        mma_params: SimpleNamespace,
+        smem_copy_params: SimpleNamespace,
+    ):
+        """O += P @ V (BMM2) for this warp's rows; ``acc_S`` already holds P."""
         rP = cute.make_fragment_like(acc_S, self._dtype)
         rP.store(acc_S.load().to(self._dtype))
-        # ///////////////////////////////////////////////////////////////////////////////
-        # O += P @ V  (BMM2)
-        # ///////////////////////////////////////////////////////////////////////////////
         # mma.m16n8k16 layout: rearrange P from (4, MMA_M, MMA_N)
         # to ((4, 2), MMA_M, MMA_N / 2) to match the operand-A shape.
         rP_layout_divided = cute.logical_divide(rP.layout, (None, None, 2))
@@ -2141,6 +2596,7 @@ class FMHAV2Ampere:
         acc_S: cute.Tensor,
         is_first_n_block: cutlass.Constexpr,
         in_mask_steps: cutlass.Constexpr,
+        enable_attention_sink: cutlass.Int32,
     ):
         """Apply online softmax to ``acc_S`` and rescale ``acc_O``.
 
@@ -2149,6 +2605,9 @@ class FMHAV2Ampere:
         ``skip_rescale`` is enabled and ``exp2(m_prev - m_cur) ≈ 1``, the
         rescale factor is snapped to exactly ``1.0`` to suppress precision
         wobble (see the upstream implementation).
+
+        Returns the warp-uniform skip-softmax decision for this tile (Python
+        ``False`` when the skip path is compiled out).
         """
         acc_S_mn = self._make_acc_tensor_mn_view(acc_S)
         acc_O_mn = self._make_acc_tensor_mn_view(mma_params.acc_O)
@@ -2158,8 +2617,10 @@ class FMHAV2Ampere:
                 softmax_params.row_max, cutlass.Float32
             )
             cute.basic_copy(softmax_params.row_max, row_max_prev)
+        # The first tile never skips; a ragged launch may seed its online state with the sink.
+        enable_skip = self._skip_softmax and not is_first_n_block
         tScS_mn = None
-        if cutlass.const_expr(in_mask_steps):
+        if cutlass.const_expr(in_mask_steps or enable_skip):
             mcS = cute.make_identity_tensor(
                 (
                     1,
@@ -2176,119 +2637,234 @@ class FMHAV2Ampere:
             tScS = mma_params.thr_mma.partition_C(cS)
             tScS_mn = self._make_acc_tensor_mn_view(tScS)
 
-        for r in cutlass.range_constexpr(cute.size(softmax_params.row_max)):
-            if cutlass.const_expr(in_mask_steps):
-                # Per-batch variable-length masking:
-                #   residual K: mask index_k >= seqlen_k_b (padding keys)
-                #   causal:     bottom-right aligned, limit = qi + offset_b + 1
-                #   residual Q: padding rows (qi >= seqlen_q_b) fully masked
-                #     (masked steps only — in unmasked blocks padding rows
-                #     still accumulate bounded valid-V combinations)
-                row_idx = tScS_mn[r, 0][1]
-                if cutlass.const_expr(not self._is_causal):
-                    col_idx_limit = basic_params.seqlen_k_b
-                else:
-                    col_idx_limit = cutlass.min(
-                        row_idx + 1 + basic_params.offset_b, basic_params.seqlen_k_b
+        skip_tile = False
+        if cutlass.const_expr(not enable_skip):
+            for r in cutlass.range_constexpr(cute.size(softmax_params.row_max)):
+                if cutlass.const_expr(in_mask_steps):
+                    self.mask_score_row(basic_params, acc_S_mn, tScS_mn, r)
+                row_max_cur_row = self._threadquad_reduce_max(
+                    acc_S_mn[r, None].load().reduce(
+                        cute.ReductionOp.MAX, -cutlass.Float32.inf, 0
                     )
-                col_idx_limit = (
-                    0 if row_idx + 1 > basic_params.seqlen_q_b else col_idx_limit
                 )
-                col_idx_begin = cutlass.Int32(0)
-                if cutlass.const_expr(basic_params.window_size_left is not None):
-                    # AttentionPlugin passes W-1.  Therefore the first allowed
-                    # key for a query row q is q-(W-1), i.e. this inclusive
-                    # lower bound has no additional +1.
-                    col_idx_begin = cutlass.max(
-                        row_idx + basic_params.offset_b
-                        - basic_params.window_size_left,
-                        0,
-                    )
-                if cutlass.const_expr(basic_params.mBlockBegin is not None):
-                    # Vision-block overlay: this row's extra allowed KV
-                    # interval.  The 0/-1 default keeps the interval empty
-                    # for padding rows (also guarding the (B, S_q) gather
-                    # against out-of-bounds row indices in residual tiles);
-                    # text rows store the -1/-1 sentinel which is empty for
-                    # the same reason (no key satisfies col <= -1).
-                    block_begin_r = cutlass.Int32(0)
-                    block_end_r = cutlass.Int32(-1)
-                    if row_idx < basic_params.seqlen_q_b:
-                        block_begin_r = basic_params.mBlockBegin[
-                            basic_params.batch_size, row_idx
-                        ]
-                        block_end_r = cutlass.min(
-                            basic_params.mBlockEnd[
-                                basic_params.batch_size, row_idx
-                            ],
-                            basic_params.seqlen_k_b - 1,
+                if cutlass.const_expr(is_first_n_block):
+                    if enable_attention_sink != 0:
+                        row_max_prev_row = softmax_params.row_max[r]
+                        self.softmax_row(
+                            softmax_params,
+                            acc_S_mn,
+                            acc_O_mn,
+                            r,
+                            cute.arch.fmax(row_max_prev_row, row_max_cur_row),
+                            row_max_prev_row,
+                            False,
                         )
-                    for c in cutlass.range_constexpr(cute.size(tScS_mn.shape[1])):
-                        col_idx = tScS_mn[0, c][3]
-                        # Masked iff outside the analytic sliding-causal
-                        # interval AND outside the row's vision block.
-                        if cute.elem_less(col_idx, block_begin_r):
-                            if cute.elem_less(col_idx + 1, col_idx_begin + 1):
-                                acc_S_mn[r, c] = -cutlass.Float32.inf
-                            if cute.elem_less(col_idx_limit, col_idx + 1):
-                                acc_S_mn[r, c] = -cutlass.Float32.inf
-                        if cute.elem_less(block_end_r, col_idx):
-                            if cute.elem_less(col_idx + 1, col_idx_begin + 1):
-                                acc_S_mn[r, c] = -cutlass.Float32.inf
-                            if cute.elem_less(col_idx_limit, col_idx + 1):
-                                acc_S_mn[r, c] = -cutlass.Float32.inf
+                    else:
+                        self.softmax_row(
+                            softmax_params,
+                            acc_S_mn,
+                            acc_O_mn,
+                            r,
+                            row_max_cur_row,
+                            None,
+                            True,
+                        )
                 else:
-                    for c in cutlass.range_constexpr(cute.size(tScS_mn.shape[1])):
-                        col_idx = tScS_mn[0, c][3]
-                        if cute.elem_less(col_idx + 1, col_idx_begin + 1):
-                            acc_S_mn[r, c] = -cutlass.Float32.inf
-                        if cute.elem_less(col_idx_limit, col_idx + 1):
-                            acc_S_mn[r, c] = -cutlass.Float32.inf
-
-            acc_S_row = acc_S_mn[r, None].load()
-            row_max_cur_row = acc_S_row.reduce(
-                cute.ReductionOp.MAX, -cutlass.Float32.inf, 0
+                    row_max_prev_row = row_max_prev[r]
+                    self.softmax_row(
+                        softmax_params,
+                        acc_S_mn,
+                        acc_O_mn,
+                        r,
+                        cute.arch.fmax(row_max_prev_row, row_max_cur_row),
+                        row_max_prev_row,
+                        False,
+                    )
+        else:
+            # Skip-softmax (BLASST): per-row masked tile max first, then ONE
+            # warp-wide vote. Each warp owns its rows' O accumulator outright,
+            # so a unanimous warp skips exp/rescale/P@V with no CTA exchange.
+            # Per-thread predicate: (tile_max - running_max) * scale_log2 <
+            # log2(lambda). Padding rows never contribute; they vote skip.
+            tile_row_max = cute.make_fragment_like(
+                softmax_params.row_max, cutlass.Float32
             )
-            row_max_cur_row = self._threadquad_reduce_max(row_max_cur_row)
-            row_max_prev_row = None
-            if cutlass.const_expr(not is_first_n_block):
-                row_max_prev_row = row_max_prev[r]
-                row_max_cur_row = cute.arch.fmax(row_max_prev_row, row_max_cur_row)
-            # Use a finite max for exponent arithmetic on fully-masked rows,
-            # but preserve -inf in the running max until a valid score arrives.
-            row_max_safe_row = (
-                0.0 if row_max_cur_row == -cutlass.Float32.inf else row_max_cur_row
-            )
+            thread_wants_skip = cutlass.Boolean(True)
+            thread_all_oob = cutlass.Boolean(True)
+            for r in cutlass.range_constexpr(cute.size(softmax_params.row_max)):
+                if cutlass.const_expr(in_mask_steps):
+                    self.mask_score_row(basic_params, acc_S_mn, tScS_mn, r)
+                tile_row_max[r] = self._threadquad_reduce_max(
+                    acc_S_mn[r, None].load().reduce(
+                        cute.ReductionOp.MAX, -cutlass.Float32.inf, 0
+                    )
+                )
+                row_is_oob = tScS_mn[r, 0][1] >= basic_params.seqlen_q_b
+                row_wants_skip = (
+                    (tile_row_max[r] - row_max_prev[r])
+                    * softmax_params.softmax_scale_log2
+                    < softmax_params.skip_softmax_threshold_log2
+                ) or row_is_oob
+                thread_wants_skip = thread_wants_skip and row_wants_skip
+                thread_all_oob = thread_all_oob and row_is_oob
+            skip_tile = cute.arch.vote_all_sync(thread_wants_skip)
+            if cutlass.const_expr(softmax_params.skip_softmax_count is not None):
+                # Self-test counters: exclude all-padding warps, which always
+                # vote skip by construction and would inflate the ratio.
+                warp_all_oob = cute.arch.vote_all_sync(thread_all_oob)
+                if not warp_all_oob:
+                    if cute.arch.lane_idx() == 0:
+                        if skip_tile:
+                            cute.arch.atomic_add(
+                                softmax_params.skip_softmax_count.iterator.llvm_ptr,
+                                cutlass.Int32(1),
+                            )
+                        cute.arch.atomic_add(
+                            softmax_params.total_softmax_count.iterator.llvm_ptr,
+                            cutlass.Int32(1),
+                        )
+            if not skip_tile:
+                for r in cutlass.range_constexpr(cute.size(softmax_params.row_max)):
+                    row_max_prev_row = row_max_prev[r]
+                    self.softmax_row(
+                        softmax_params,
+                        acc_S_mn,
+                        acc_O_mn,
+                        r,
+                        cute.arch.fmax(row_max_prev_row, tile_row_max[r]),
+                        row_max_prev_row,
+                        is_first_n_block,
+                    )
+        return skip_tile
 
-            acc_S_row_exp = cute.math.exp2(
-                acc_S_row * softmax_params.softmax_scale_log2
+    @cute.jit
+    def mask_score_row(
+        self,
+        basic_params: SimpleNamespace,
+        acc_S_mn: cute.Tensor,
+        tScS_mn: cute.Tensor,
+        r: cutlass.Constexpr,
+    ):
+        """Per-batch variable-length masking of score row ``r``:
+        residual K: mask index_k >= seqlen_k_b (padding keys);
+        causal:     bottom-right aligned, limit = qi + offset_b + 1;
+        residual Q: padding rows (qi >= seqlen_q_b) fully masked
+        (masked steps only — in unmasked blocks padding rows still
+        accumulate bounded valid-V combinations).
+        """
+        row_idx = tScS_mn[r, 0][1]
+        if cutlass.const_expr(not self._is_causal):
+            col_idx_limit = basic_params.seqlen_k_b
+        else:
+            col_idx_limit = cutlass.min(
+                row_idx + 1 + basic_params.offset_b, basic_params.seqlen_k_b
+            )
+        col_idx_limit = (
+            0 if row_idx + 1 > basic_params.seqlen_q_b else col_idx_limit
+        )
+        col_idx_begin = cutlass.Int32(0)
+        if cutlass.const_expr(basic_params.window_size_left is not None):
+            # AttentionPlugin passes W-1.  Therefore the first allowed
+            # key for a query row q is q-(W-1), i.e. this inclusive
+            # lower bound has no additional +1.
+            col_idx_begin = cutlass.max(
+                row_idx + basic_params.offset_b
+                - basic_params.window_size_left,
+                0,
+            )
+        if cutlass.const_expr(basic_params.mBlockBegin is not None):
+            # Vision-block overlay: this row's extra allowed KV
+            # interval.  The 0/-1 default keeps the interval empty
+            # for padding rows (also guarding the (B, S_q) gather
+            # against out-of-bounds row indices in residual tiles);
+            # text rows store the -1/-2 sentinel which is empty for
+            # the same reason (no key satisfies col <= -2).
+            block_begin_r = cutlass.Int32(0)
+            block_end_r = cutlass.Int32(-1)
+            if row_idx < basic_params.seqlen_q_b:
+                if cutlass.const_expr(self._packed_varlen):
+                    block_begin_r = basic_params.mBlockBegin[basic_params.q_start + row_idx]
+                    block_end_r = basic_params.mBlockEnd[basic_params.q_start + row_idx]
+                else:
+                    block_begin_r = basic_params.mBlockBegin[basic_params.batch_size, row_idx]
+                    block_end_r = basic_params.mBlockEnd[basic_params.batch_size, row_idx]
+                block_end_r = cutlass.min(block_end_r, basic_params.seqlen_k_b - 1)
+            for c in cutlass.range_constexpr(cute.size(tScS_mn.shape[1])):
+                col_idx = tScS_mn[0, c][3]
+                # Masked iff outside the analytic sliding-causal
+                # interval AND outside the row's vision block.
+                if cute.elem_less(col_idx, block_begin_r):
+                    if cute.elem_less(col_idx + 1, col_idx_begin + 1):
+                        acc_S_mn[r, c] = -cutlass.Float32.inf
+                    if cute.elem_less(col_idx_limit, col_idx + 1):
+                        acc_S_mn[r, c] = -cutlass.Float32.inf
+                if cute.elem_less(block_end_r, col_idx):
+                    if cute.elem_less(col_idx + 1, col_idx_begin + 1):
+                        acc_S_mn[r, c] = -cutlass.Float32.inf
+                    if cute.elem_less(col_idx_limit, col_idx + 1):
+                        acc_S_mn[r, c] = -cutlass.Float32.inf
+        else:
+            for c in cutlass.range_constexpr(cute.size(tScS_mn.shape[1])):
+                col_idx = tScS_mn[0, c][3]
+                if cute.elem_less(col_idx + 1, col_idx_begin + 1):
+                    acc_S_mn[r, c] = -cutlass.Float32.inf
+                if cute.elem_less(col_idx_limit, col_idx + 1):
+                    acc_S_mn[r, c] = -cutlass.Float32.inf
+
+        if cutlass.const_expr(basic_params.prefix_length is not None):
+            for c in cutlass.range_constexpr(cute.size(tScS_mn.shape[1])):
+                col_idx = tScS_mn[0, c][3]
+                if col_idx >= basic_params.prefix_length and col_idx < basic_params.action_base:
+                    acc_S_mn[r, c] = -cutlass.Float32.inf
+
+    @cute.jit
+    def softmax_row(
+        self,
+        softmax_params: SimpleNamespace,
+        acc_S_mn: cute.Tensor,
+        acc_O_mn: cute.Tensor,
+        r: cutlass.Constexpr,
+        row_max_cur_row: cutlass.Float32,
+        row_max_prev_row: Optional[cutlass.Float32],
+        is_first_n_block: cutlass.Constexpr,
+    ):
+        """Row ``r``: P = exp2(S*scale - max*scale), fold row_sum, rescale acc_O."""
+        acc_S_row = acc_S_mn[r, None].load()
+        # Use a finite max for exponent arithmetic on fully-masked rows,
+        # but preserve -inf in the running max until a valid score arrives.
+        row_max_safe_row = (
+            0.0 if row_max_cur_row == -cutlass.Float32.inf else row_max_cur_row
+        )
+
+        acc_S_row_exp = cute.math.exp2(
+            acc_S_row * softmax_params.softmax_scale_log2
+            - row_max_safe_row * softmax_params.softmax_scale_log2,
+            fastmath=True,
+        )
+        acc_S_row_sum = acc_S_row_exp.reduce(
+            cute.ReductionOp.ADD, cutlass.Float32.zero, 0
+        )
+        if cutlass.const_expr(not is_first_n_block):
+            prev_minus_cur_exp = cute.math.exp2(
+                row_max_prev_row * softmax_params.softmax_scale_log2
                 - row_max_safe_row * softmax_params.softmax_scale_log2,
                 fastmath=True,
             )
-            acc_S_row_sum = acc_S_row_exp.reduce(
-                cute.ReductionOp.ADD, cutlass.Float32.zero, 0
+            # skip_rescale: snap a near-unity rescale factor (within 2^-8)
+            # to exactly 1.0 — trades one FFMA for a stabilized rescale.
+            if cutlass.const_expr(self._skip_rescale):
+                prev_minus_cur_exp = (
+                    cutlass.Float32(1.0)
+                    if prev_minus_cur_exp > cutlass.Float32(0.99609375)
+                    else prev_minus_cur_exp
+                )
+            acc_S_row_sum = (
+                acc_S_row_sum + softmax_params.row_sum[r] * prev_minus_cur_exp
             )
-            if cutlass.const_expr(not is_first_n_block):
-                prev_minus_cur_exp = cute.math.exp2(
-                    row_max_prev_row * softmax_params.softmax_scale_log2
-                    - row_max_safe_row * softmax_params.softmax_scale_log2,
-                    fastmath=True,
-                )
-                # skip_rescale: snap a near-unity rescale factor (within 2^-8)
-                # to exactly 1.0 — trades one FFMA for a stabilized rescale.
-                if cutlass.const_expr(self._skip_rescale):
-                    prev_minus_cur_exp = (
-                        cutlass.Float32(1.0)
-                        if prev_minus_cur_exp > cutlass.Float32(0.99609375)
-                        else prev_minus_cur_exp
-                    )
-                acc_S_row_sum = (
-                    acc_S_row_sum + softmax_params.row_sum[r] * prev_minus_cur_exp
-                )
-                acc_O_mn[r, None] = acc_O_mn[r, None].load() * prev_minus_cur_exp
-            softmax_params.row_max[r] = row_max_cur_row
-            softmax_params.row_sum[r] = acc_S_row_sum
-            acc_S_mn[r, None] = acc_S_row_exp
+            acc_O_mn[r, None] = acc_O_mn[r, None].load() * prev_minus_cur_exp
+        softmax_params.row_max[r] = row_max_cur_row
+        softmax_params.row_sum[r] = acc_S_row_sum
+        acc_S_mn[r, None] = acc_S_row_exp
 
     @cute.jit
     def normalize_softmax(
@@ -2361,6 +2937,8 @@ class FMHAV2Ampere:
 
 
 def _cutlass_to_cupy_dtype(cutlass_dtype):
+    if cutlass_dtype == cutlass.Float8E4M3FN:
+        return cp.uint8
     if cutlass_dtype == cutlass.Float16:
         return cp.float16
     if cutlass_dtype == cutlass.BFloat16:
@@ -2378,6 +2956,7 @@ def _create_bsnd_tensor(
     dtype: Type[cutlass.Numeric],
     *,
     fill_random: bool,
+    storage_free: bool = False,
 ):
     """Allocate a BSND CuPy tensor and return the ``cute.Tensor`` wrapper.
 
@@ -2387,21 +2966,29 @@ def _create_bsnd_tensor(
     ``(B, S, H, D)`` packing with ``D`` innermost.
     """
     shape = (b, s, h, d)
-    cp_dtype = _cutlass_to_cupy_dtype(dtype)
-    if fill_random:
-        if dtype == cutlass.Float16:
-            arr = cp.random.uniform(-1.0, 1.0, shape).astype(cp_dtype)
-        else:
-            # bf16: pack a small fp32 random tensor into the upper 16 bits.
-            f32 = cp.random.uniform(-1.0, 1.0, shape).astype(cp.float32)
-            arr = cp.ascontiguousarray(
-                (f32.view(cp.uint32) >> 16).astype(cp.uint16)
-            )
+    if storage_free:
+        if fill_random:
+            raise ValueError("storage_free tensors carry no data to randomize")
+        arr = None
+        t = aot_placeholders.make_compact_tensor(
+            dtype, shape, stride_order=(3, 2, 1, 0), assumed_align=16
+        )
     else:
-        arr = cp.zeros(shape, dtype=cp_dtype)
+        cp_dtype = _cutlass_to_cupy_dtype(dtype)
+        if fill_random:
+            if dtype == cutlass.Float16:
+                arr = cp.random.uniform(-1.0, 1.0, shape).astype(cp_dtype)
+            else:
+                # bf16: pack a small fp32 random tensor into the upper 16 bits.
+                f32 = cp.random.uniform(-1.0, 1.0, shape).astype(cp.float32)
+                arr = cp.ascontiguousarray(
+                    (f32.view(cp.uint32) >> 16).astype(cp.uint16)
+                )
+        else:
+            arr = cp.zeros(shape, dtype=cp_dtype)
 
-    t = from_dlpack(arr, assumed_align=16)
-    t.element_type = dtype
+        t = from_dlpack(arr, assumed_align=16)
+        t.element_type = dtype
     # B / S / H are runtime-dynamic; D is compile-time-known per AOT variant.
     # `mark_compact_shape_dynamic` alone handles the dynamic-shape marking and
     # propagates the static D=512 contribution into the outer strides — that
@@ -2425,6 +3012,8 @@ def _create_paged_kv_pool_tensor(
     num_kv_heads: int,
     head_dim: int,
     dtype: Type[cutlass.Numeric],
+    *,
+    storage_free: bool = False,
 ):
     """Allocate Edge-LLM's physical NHD paged-pool layout.
 
@@ -2432,25 +3021,36 @@ def _create_paged_kv_pool_tensor(
     exposes the logical ``(2P, H_kv, tokens_per_page, D)`` view consumed by
     ``__call_context_paged__`` while preserving physical NHD strides.
     """
-    if dtype != cutlass.Float16:
-        raise ValueError("FMHA-v2 paged attention supports Float16 K/V only")
+    if dtype not in (cutlass.Float16, cutlass.Float8E4M3FN):
+        raise ValueError("FMHA-v2 paged attention requires Float16 or Float8E4M3FN KV")
     if tokens_per_page != 128:
         raise ValueError("FMHA-v2 paged attention requires 128-token pages")
 
-    physical_shape = (
-        num_flat_pages,
-        tokens_per_page,
-        num_kv_heads,
-        head_dim,
-    )
-    arr = cp.empty(physical_shape, dtype=_cutlass_to_cupy_dtype(dtype))
-    # DLPack preserves the transposed view's strides, presenting logical PHTD
-    # to CuTe while retaining physical PTHD/NHD storage.
-    logical_arr = arr.transpose(0, 2, 1, 3)
-    t = from_dlpack(logical_arr, assumed_align=16)
-    t.element_type = dtype
     # Logical PHTD is physically PTHD, so the compact stride order is P,T,H,D.
     stride_order = (0, 2, 1, 3)
+    if storage_free:
+        arr = None
+        # Rank order for logical PHTD over physical PTHD storage:
+        # D innermost (rank 0), then H (rank 1), T (rank 2), P outermost.
+        t = aot_placeholders.make_compact_tensor(
+            dtype,
+            (num_flat_pages, num_kv_heads, tokens_per_page, head_dim),
+            stride_order=(3, 1, 2, 0),
+            assumed_align=16,
+        )
+    else:
+        physical_shape = (
+            num_flat_pages,
+            tokens_per_page,
+            num_kv_heads,
+            head_dim,
+        )
+        arr = cp.empty(physical_shape, dtype=_cutlass_to_cupy_dtype(dtype))
+        # DLPack preserves the transposed view's strides, presenting logical
+        # PHTD to CuTe while retaining physical PTHD/NHD storage.
+        logical_arr = arr.transpose(0, 2, 1, 3)
+        t = from_dlpack(logical_arr, assumed_align=16)
+        t.element_type = dtype
     t = (
         t.mark_layout_dynamic(leading_dim=3)
         .mark_compact_shape_dynamic(mode=0, stride_order=stride_order)
@@ -2470,6 +3070,22 @@ def _wrap_page_list_tensor(arr: cp.ndarray):
     )
 
 
+def _make_page_list_placeholder(batch_size: int, max_pages_per_seq: int):
+    """Storage-free ``(B, 2, max_pages)`` Int32 page-table descriptor."""
+    stride_order = (0, 1, 2)
+    return (
+        aot_placeholders.make_compact_tensor(
+            cutlass.Int32,
+            (batch_size, 2, max_pages_per_seq),
+            stride_order=(2, 1, 0),
+            assumed_align=16,
+        )
+        .mark_layout_dynamic(leading_dim=2)
+        .mark_compact_shape_dynamic(mode=0, stride_order=stride_order)
+        .mark_compact_shape_dynamic(mode=2, stride_order=stride_order)
+    )
+
+
 def _create_shd_tensor(
     total_s: int,
     h: int,
@@ -2477,16 +3093,25 @@ def _create_shd_tensor(
     dtype: Type[cutlass.Numeric],
     *,
     fill_random: bool,
+    storage_free: bool = False,
 ):
     """Allocate a compact packed-varlen ``(total_S, H, D)`` tensor."""
     shape = (total_s, h, d)
-    cp_dtype = _cutlass_to_cupy_dtype(dtype)
-    if fill_random:
-        arr = cp.random.uniform(-1.0, 1.0, shape).astype(cp_dtype)
+    if storage_free:
+        if fill_random:
+            raise ValueError("storage_free tensors carry no data to randomize")
+        arr = None
+        t = aot_placeholders.make_compact_tensor(
+            dtype, shape, stride_order=(2, 1, 0), assumed_align=16
+        )
     else:
-        arr = cp.zeros(shape, dtype=cp_dtype)
-    t = from_dlpack(arr, assumed_align=16)
-    t.element_type = dtype
+        cp_dtype = _cutlass_to_cupy_dtype(dtype)
+        if fill_random:
+            arr = cp.random.uniform(-1.0, 1.0, shape).astype(cp_dtype)
+        else:
+            arr = cp.zeros(shape, dtype=cp_dtype)
+        t = from_dlpack(arr, assumed_align=16)
+        t.element_type = dtype
     so = (0, 1, 2)
     t = t.mark_compact_shape_dynamic(mode=0, stride_order=so).mark_compact_shape_dynamic(
         mode=1, stride_order=so
@@ -2494,15 +3119,34 @@ def _create_shd_tensor(
     return t, arr
 
 
-def _create_block_range_tensor(batch_size: int, seqlen: int, fill: int = -1):
+def _create_packed_block_range_tensor(total_q: int, fill: int = -1,
+                                      storage_free: bool = False):
+    """Create sequence-relative KV intervals indexed by packed query row."""
+    if storage_free:
+        return aot_placeholders.make_compact_tensor(
+            cutlass.Int32, (total_q,), stride_order=(0,), assumed_align=16
+        ).mark_compact_shape_dynamic(mode=0), None
+    values = cp.full((total_q,), fill, dtype=cp.int32)
+    return from_dlpack(values, assumed_align=16).mark_compact_shape_dynamic(mode=0), values
+
+
+def _create_block_range_tensor(batch_size: int, seqlen: int, fill: int = -1,
+                               *, storage_free: bool = False):
     """(B, S) Int32 vision-block interval tensor (``mBlockBegin`` / ``mBlockEnd``).
 
-    The -1 fill is the text-row sentinel: the ``[begin, end]`` interval is
-    empty, so the kernel degenerates to plain causal masking.  B and S are
-    runtime-dynamic; the row stride is derived from S (compact packing).
+    Text rows use fill=-1 for begin and fill=-2 for end, forming an empty
+    interval with negative endpoints.  B and S are runtime-dynamic; the row
+    stride is derived from S (compact packing).
     """
-    arr = cp.full((batch_size, seqlen), fill, dtype=cp.int32)
-    t = from_dlpack(arr, assumed_align=16)
+    if storage_free:
+        arr = None
+        t = aot_placeholders.make_compact_tensor(
+            cutlass.Int32, (batch_size, seqlen), stride_order=(1, 0),
+            assumed_align=16,
+        )
+    else:
+        arr = cp.full((batch_size, seqlen), fill, dtype=cp.int32)
+        t = from_dlpack(arr, assumed_align=16)
     so = (0, 1)
     t = t.mark_compact_shape_dynamic(mode=0, stride_order=so).mark_compact_shape_dynamic(
         mode=1, stride_order=so
@@ -2510,7 +3154,8 @@ def _create_block_range_tensor(batch_size: int, seqlen: int, fill: int = -1):
     return t, arr
 
 
-def _create_cu_seqlens_tensor(batch_size: int, seqlen: int):
+def _create_cu_seqlens_tensor(batch_size: int, seqlen: int,
+                              *, storage_free: bool = False):
     """(B+1,) Int32 cumulative sequence lengths for uniform per-batch ``seqlen``.
 
     Matches the ``fmha_cutedsl_blackwell/fmha.py`` convention: element ``b``
@@ -2518,20 +3163,65 @@ def _create_cu_seqlens_tensor(batch_size: int, seqlen: int):
     per-batch length is ``cu[b+1] - cu[b]``.  Uniform lengths make the varlen
     masking degenerate to the padded extents (dense behaviour).
     """
-    arr = cp.arange(batch_size + 1, dtype=cp.int32) * seqlen
-    t = from_dlpack(arr, assumed_align=16)
+    if storage_free:
+        arr = None
+        t = aot_placeholders.make_compact_tensor(
+            cutlass.Int32, (batch_size + 1,), stride_order=(0,),
+            assumed_align=16,
+        )
+    else:
+        arr = cp.arange(batch_size + 1, dtype=cp.int32) * seqlen
+        t = from_dlpack(arr, assumed_align=16)
     t = t.mark_layout_dynamic(leading_dim=0).mark_compact_shape_dynamic(
         mode=0, stride_order=(0,)
     )
     return t, arr
 
 
-def _create_cu_seqlens_from_lengths(lengths: Tuple[int, ...]):
+def _create_attention_sink_tensor(num_q_heads: int, *, storage_free: bool = False):
+    """Create the per-query-head FP32 attention-sink descriptor."""
+    if storage_free:
+        arr = None
+        t = aot_placeholders.make_compact_tensor(
+            cutlass.Float32, (num_q_heads,), stride_order=(0,), assumed_align=16
+        )
+    else:
+        arr = cp.zeros(num_q_heads, dtype=cp.float32)
+        t = from_dlpack(arr, assumed_align=16)
+    return t, arr
+
+
+def _create_skip_softmax_scale_table(scale_factor: int, *,
+                                     storage_free: bool = False):
+    """(2,) Int32 one-row skip-softmax scale table ``[0, S]`` (flat S)."""
+    if storage_free:
+        arr = None
+        t = aot_placeholders.make_compact_tensor(
+            cutlass.Int32, (2,), stride_order=(0,), assumed_align=16,
+        )
+    else:
+        arr = cp.asarray([0, scale_factor], dtype=cp.int32)
+        t = from_dlpack(arr, assumed_align=16)
+    t = t.mark_layout_dynamic(leading_dim=0).mark_compact_shape_dynamic(
+        mode=0, stride_order=(0,)
+    )
+    return t, arr
+
+
+def _create_cu_seqlens_from_lengths(lengths: Tuple[int, ...],
+                                    *, storage_free: bool = False):
     """Create ``(B+1,)`` cumulative lengths for a ragged packed batch."""
-    host = np.zeros(len(lengths) + 1, dtype=np.int32)
-    host[1:] = np.cumsum(np.asarray(lengths, dtype=np.int32))
-    arr = cp.asarray(host)
-    t = from_dlpack(arr, assumed_align=16)
+    if storage_free:
+        arr = None
+        t = aot_placeholders.make_compact_tensor(
+            cutlass.Int32, (len(lengths) + 1,), stride_order=(0,),
+            assumed_align=16,
+        )
+    else:
+        host = np.zeros(len(lengths) + 1, dtype=np.int32)
+        host[1:] = np.cumsum(np.asarray(lengths, dtype=np.int32))
+        arr = cp.asarray(host)
+        t = from_dlpack(arr, assumed_align=16)
     t = t.mark_layout_dynamic(leading_dim=0).mark_compact_shape_dynamic(
         mode=0, stride_order=(0,)
     )
@@ -2578,6 +3268,35 @@ def _fmha_v2_reference(
     return reference
 
 
+def _fmha_v2_paged_ragged_reference(
+    q: cp.ndarray,
+    k: cp.ndarray,
+    v: cp.ndarray,
+    q_lengths: Tuple[int, ...],
+    kv_lengths: Tuple[int, ...],
+    softmax_scale: float,
+    *,
+    is_causal: bool,
+    window_size_left: int,
+) -> cp.ndarray:
+    """Reference packed paged-Q/O attention against dense per-batch K/V."""
+    reference = cp.zeros(q.shape, dtype=cp.float32)
+    q_start = 0
+    for batch_idx, (q_length, kv_length) in enumerate(zip(q_lengths, kv_lengths)):
+        q_end = q_start + q_length
+        batch_reference = _fmha_v2_reference(
+            q[None, q_start:q_end],
+            k[batch_idx:batch_idx + 1, :kv_length],
+            v[batch_idx:batch_idx + 1, :kv_length],
+            softmax_scale,
+            is_causal=is_causal,
+            window_size_left=window_size_left,
+        )
+        reference[q_start:q_end] = batch_reference[0]
+        q_start = q_end
+    return reference
+
+
 def _report_reference_error(tag: str, actual: cp.ndarray, reference: cp.ndarray):
     """Print and enforce the standalone FP16-vs-FP32 correctness gate."""
     error = cp.abs(actual.astype(cp.float32) - reference)
@@ -2612,11 +3331,20 @@ def run(
     vision_block: bool = False,
     fmha_v2_context: bool = False,
     paged_kv: bool = False,
+    paged_kv_ragged: bool = False,
+    paged_kv_non_causal: bool = False,
+    paged_kv_fp8: bool = False,
+    target_sm: Optional[int] = None,
+    paged_kv_two_pool: bool = False,
+    paged_q_seqlens: Optional[Tuple[int, ...]] = None,
+    paged_kv_seqlens: Optional[Tuple[int, ...]] = None,
     fmha_v2_vit: bool = False,
     vit_seqlens: Optional[Tuple[int, ...]] = None,
     window_size_left: int = -1,
     skip_rescale: bool = True,
     hybrid_exp2: bool = False,
+    skip_softmax_threshold: Optional[float] = None,
+    skip_softmax: bool = False,
     warmup_iterations: int = 3,
     iterations: int = 10,
     skip_ref_check: bool = False,
@@ -2640,19 +3368,57 @@ def run(
     """
     _tag = f"[{file_name}]"
 
-    if sum((fmha_v2_context, fmha_v2_vit, paged_kv)) > 1:
+    if sum((fmha_v2_context, fmha_v2_vit, paged_kv, paged_kv_ragged)) > 1:
         raise ValueError(
-            f"{_tag} --fmha_v2_context, --fmha_v2_vit, and --paged_kv "
+            f"{_tag} --fmha_v2_context, --fmha_v2_vit, --paged_kv, and "
+            "--paged_kv_ragged "
             "are mutually exclusive"
+        )
+    if paged_kv_ragged:
+        paged_kv = True
+    if paged_q_seqlens is not None and not paged_kv:
+        raise ValueError(f"{_tag} paged_q_seqlens requires --paged_kv or --paged_kv_ragged")
+    if paged_q_seqlens is not None and (
+        len(paged_q_seqlens) != batch_size
+        or any(length <= 0 or length > seqlen_q for length in paged_q_seqlens)
+    ):
+        raise ValueError(
+            f"{_tag} paged_q_seqlens must contain {batch_size} positive lengths no larger than seqlen_q"
+        )
+    if paged_kv_seqlens is not None and not paged_kv:
+        raise ValueError(f"{_tag} paged_kv_seqlens requires --paged_kv or --paged_kv_ragged")
+    if paged_kv_seqlens is not None and (
+        len(paged_kv_seqlens) != batch_size
+        or any(length <= 0 or length > seqlen_k for length in paged_kv_seqlens)
+    ):
+        raise ValueError(
+            f"{_tag} paged_kv_seqlens must contain {batch_size} positive lengths no larger than seqlen_k"
         )
     if fmha_v2_vit and is_causal:
         raise ValueError(f"{_tag} packed ViT mode is bidirectional; do not pass --is_causal")
     if fmha_v2_vit and vision_block:
         raise ValueError(f"{_tag} vision-block overlay is a Context FMHA mode, not packed ViT")
-    if paged_kv and vision_block:
+    if paged_kv and vision_block and not paged_kv_ragged:
         raise ValueError(f"{_tag} --paged_kv does not support the vision-block overlay")
-    if paged_kv and not is_causal:
-        raise ValueError(f"{_tag} --paged_kv requires --is_causal")
+    if paged_kv_ragged and vision_block and not export_only:
+        raise ValueError("Use contextAttentionTest for ragged vision-block numerical validation")
+    if paged_kv_ragged and vision_block and (head_dim not in (256, 512) or not is_causal):
+        raise ValueError("Ragged vision-block attention requires causal FP16 D256 or D512")
+    if paged_kv_two_pool and (not export_only or not paged_kv_non_causal or head_dim != 128):
+        raise ValueError("--paged_kv_two_pool is a d128 non-causal AOT export; use plugin tests for numerical validation")
+    if paged_kv_fp8 and not paged_kv_two_pool:
+        raise ValueError("FP8 paged prefix loading requires --paged_kv_two_pool")
+    if paged_kv_non_causal and not paged_kv_two_pool:
+        raise ValueError("Paged non-causal attention requires --paged_kv_two_pool")
+    if paged_kv_fp8 and (not paged_kv_non_causal or not paged_kv or head_dim != 128):
+        raise ValueError("FP8 paged KV requires --paged_kv --paged_kv_non_causal --head_dim 128")
+    if paged_kv_non_causal:
+        if not paged_kv:
+            raise ValueError(f"{_tag} --paged_kv_non_causal requires --paged_kv or --paged_kv_ragged")
+        if is_causal:
+            raise ValueError(f"{_tag} --paged_kv_non_causal is non-causal; do not pass --is_causal")
+    if paged_kv and not is_causal and not paged_kv_non_causal:
+        raise ValueError(f"{_tag} --paged_kv non-causal mode requires --paged_kv_non_causal")
     if paged_kv and (
         dtype != cutlass.Float16
         or n_block_size <= 0
@@ -2662,6 +3428,19 @@ def run(
             f"{_tag} --paged_kv requires Float16 Q/K/V/O and Bc that "
             "divides the 128-token page size"
         )
+    skip_softmax = skip_softmax or skip_softmax_threshold is not None
+    if skip_softmax and skip_softmax_threshold is None:
+        skip_softmax_threshold = 1e-6  # self-test lambda; the exported ABI takes the table
+    if skip_softmax:
+        if not paged_kv or paged_kv_ragged or window_size_left >= 0:
+            raise ValueError(
+                f"{_tag} --skip_softmax / --skip_softmax_threshold require --paged_kv (causal, "
+                "non-ragged) without --window_size_left"
+            )
+        if not 0.0 < skip_softmax_threshold < 1.0:
+            raise ValueError(f"{_tag} --skip_softmax_threshold must be in (0, 1)")
+        if seqlen_k < seqlen_q:
+            raise ValueError(f"{_tag} skip-softmax self-test needs seqlen_k >= seqlen_q")
     if vit_seqlens is not None:
         if not fmha_v2_vit:
             raise ValueError(f"{_tag} --vit_seqlens requires --fmha_v2_vit")
@@ -2684,7 +3463,7 @@ def run(
             f"{_tag} num_head ({num_head}) must be divisible by kv_group_size ({kv_group_size})"
         )
 
-    if cp.cuda.runtime.getDeviceCount() == 0:
+    if not export_only and cp.cuda.runtime.getDeviceCount() == 0:
         raise RuntimeError("GPU is required to run this kernel.")
 
     if softmax_scale <= 0.0:
@@ -2696,7 +3475,7 @@ def run(
             f"head_dim={head_dim}, is_causal={is_causal}, "
             f"paged_kv={paged_kv}, kv_group={kv_group_size}, "
             f"Br={m_block_size}, Bc={n_block_size}, threads={num_threads}, "
-            f"skip_rescale={skip_rescale}"
+            f"skip_rescale={skip_rescale}, skip_softmax={skip_softmax}"
         )
     else:
         print(f"{_tag} Running FMHA-v2 CuTe DSL forward with:")
@@ -2704,37 +3483,113 @@ def run(
         print(f"{_tag}   B={batch_size}, S_q={seqlen_q}, S_k={seqlen_k}, "
               f"H_q={num_head}, kv_group={kv_group_size}")
         print(f"{_tag}   softmax_scale={softmax_scale}, is_causal={is_causal}")
-        print(f"{_tag}   paged_kv={paged_kv}")
+        print(f"{_tag}   paged_kv={paged_kv}, paged_kv_fp8={paged_kv_fp8}")
         print(f"{_tag}   Br={m_block_size}, Bc={n_block_size}, threads={num_threads}")
         print(f"{_tag}   skip_rescale={skip_rescale}, hybrid_exp2={hybrid_exp2}")
+        if skip_softmax:
+            print(f"{_tag}   skip_softmax lambda={skip_softmax_threshold} "
+                  f"(scale_factor S = lambda * seqlen_k = {skip_softmax_threshold * seqlen_k})")
         print(f"{_tag}   warmup={warmup_iterations}, iterations={iterations}, "
               f"skip_ref_check={skip_ref_check}, use_cold_l2={use_cold_l2}")
 
     h_q = num_head
     h_kv = h_q // kv_group_size
+    q_lengths = paged_q_seqlens or (seqlen_q,) * batch_size
+    kv_lengths = paged_kv_seqlens or (seqlen_k,) * batch_size
+    total_q_seq_len = sum(q_lengths)
+    max_q_seq_len = max(q_lengths)
+    if paged_kv_ragged and not export_only:
+        print(
+            f"{_tag}   packed Q lengths={q_lengths}, packed KV lengths={kv_lengths}, "
+            f"total_q={total_q_seq_len}"
+        )
     if not export_only:
         cp.random.seed(20260723)
         print(f"{_tag}   CuPy random seed=20260723")
 
-    q_dyn, q_arr = _create_bsnd_tensor(
-        batch_size, seqlen_q, h_q, head_dim, dtype, fill_random=not export_only
-    )
+    if paged_kv_ragged:
+        q_dyn, q_arr = _create_shd_tensor(
+            total_q_seq_len, h_q, head_dim, dtype,
+            fill_random=not export_only, storage_free=export_only,
+        )
+    else:
+        q_dyn, q_arr = _create_bsnd_tensor(
+            batch_size, seqlen_q, h_q, head_dim, dtype,
+            fill_random=not export_only, storage_free=export_only,
+        )
     k_dyn, k_arr = _create_bsnd_tensor(
-        batch_size, seqlen_k, h_kv, head_dim, dtype, fill_random=not export_only
+        batch_size, seqlen_k, h_kv, head_dim, dtype,
+        fill_random=not export_only, storage_free=export_only,
     )
     v_dyn, v_arr = _create_bsnd_tensor(
-        batch_size, seqlen_k, h_kv, head_dim, dtype, fill_random=not export_only
+        batch_size, seqlen_k, h_kv, head_dim, dtype,
+        fill_random=not export_only, storage_free=export_only,
     )
-    o_dyn, o_arr = _create_bsnd_tensor(
-        batch_size, seqlen_q, h_q, head_dim, dtype, fill_random=False
+    # Skip-softmax self-test data: K on the causal diagonal (key i + offset for
+    # query i) is 8*Q of the group's first head, so each row's running max is
+    # set by its first (diagonal) tile and every earlier tile falls far below
+    # lambda (diagonal score ~ 8*D/3/sqrt(D) vs off-diagonal sigma ~ 8/3, i.e.
+    # >= 5 sigma even at D=64, so the skipped mass is negligible and the dense
+    # reference gate still applies). Uniform random data almost never trips the
+    # predicate, so --skip_ref_check (random data) benchmarks the never-firing
+    # skip build against dense; FMHA_V2_HOT_DIAGONAL=1 keeps the hot data under
+    # --skip_ref_check to benchmark the all-skip bound at lengths whose FP32
+    # reference would not fit in memory.
+    hot_diagonal = skip_softmax and not export_only and (
+        not skip_ref_check or bool(os.getenv("FMHA_V2_HOT_DIAGONAL"))
     )
-    cu_q_dyn, cu_q_arr = _create_cu_seqlens_tensor(batch_size, seqlen_q)
-    cu_k_dyn, cu_k_arr = _create_cu_seqlens_tensor(batch_size, seqlen_k)
+
+    def make_hot_diagonal(q_hot, k_hot):
+        diag_offset = seqlen_k - seqlen_q
+        for kv_head in range(h_kv):
+            # Every Q head of the GQA group shares the first head's rows so all
+            # of them see the hot diagonal (else only 1/kv_group_size skips).
+            for q_head in range(kv_head * kv_group_size + 1, (kv_head + 1) * kv_group_size):
+                q_hot[:, :, q_head, :] = q_hot[:, :, kv_head * kv_group_size, :]
+            k_hot[:, diag_offset:diag_offset + seqlen_q, kv_head, :] = (
+                8 * q_hot[:, :, kv_head * kv_group_size, :]
+            )
+
+    if hot_diagonal:
+        make_hot_diagonal(q_arr, k_arr)
+    if paged_kv_ragged:
+        o_dyn, o_arr = _create_shd_tensor(
+            total_q_seq_len, h_q, head_dim, dtype,
+            fill_random=False, storage_free=export_only,
+        )
+    else:
+        o_dyn, o_arr = _create_bsnd_tensor(
+            batch_size, seqlen_q, h_q, head_dim, dtype,
+            fill_random=False, storage_free=export_only,
+        )
+    if paged_q_seqlens is not None:
+        cu_q_dyn, cu_q_arr = _create_cu_seqlens_from_lengths(
+            q_lengths, storage_free=export_only
+        )
+    else:
+        cu_q_dyn, cu_q_arr = _create_cu_seqlens_tensor(
+            batch_size, seqlen_q, storage_free=export_only
+        )
+    if paged_kv_seqlens is not None:
+        cu_k_dyn, cu_k_arr = _create_cu_seqlens_from_lengths(
+            kv_lengths, storage_free=export_only
+        )
+    else:
+        cu_k_dyn, cu_k_arr = _create_cu_seqlens_tensor(
+            batch_size, seqlen_k, storage_free=export_only
+        )
     block_begin_dyn = None
     block_end_dyn = None
-    if vision_block:
-        block_begin_dyn, _ = _create_block_range_tensor(batch_size, seqlen_q)
-        block_end_dyn, _ = _create_block_range_tensor(batch_size, seqlen_q)
+    if vision_block and paged_kv_ragged:
+        block_begin_dyn, _ = _create_packed_block_range_tensor(total_q_seq_len, storage_free=export_only)
+        block_end_dyn, _ = _create_packed_block_range_tensor(total_q_seq_len, fill=-2, storage_free=export_only)
+    elif vision_block:
+        block_begin_dyn, _ = _create_block_range_tensor(
+            batch_size, seqlen_q, storage_free=export_only
+        )
+        block_end_dyn, _ = _create_block_range_tensor(
+            batch_size, seqlen_q, fill=-2, storage_free=export_only
+        )
 
     kv_pool_dyn = None
     kv_pool_arr = None
@@ -2742,7 +3597,7 @@ def run(
     page_list_arr = None
     if paged_kv:
         tokens_per_page = 128
-        max_pages_per_seq = (seqlen_k + tokens_per_page - 1) // tokens_per_page
+        max_pages_per_seq = (max(kv_lengths) + tokens_per_page - 1) // tokens_per_page
         physical_pages_per_batch = max_pages_per_seq + 1
         num_pages = batch_size * physical_pages_per_batch
         num_flat_pages = 2 * num_pages
@@ -2751,49 +3606,60 @@ def run(
             tokens_per_page,
             h_kv,
             head_dim,
-            dtype,
+            cutlass.Float8E4M3FN if paged_kv_fp8 else dtype,
+            storage_free=export_only,
         )
-        # Unreachable K/V pages and the unused tail of the final live page
-        # remain distinct poisons. Any identity mapping, plane mix-up, or
-        # out-of-range token read therefore fails the FP32 reference check.
-        kv_pool_arr[:num_pages].fill(cp.float16(-127.0))
-        kv_pool_arr[num_pages:].fill(cp.float16(109.0))
-        page_list_host = np.empty(
-            (batch_size, 2, max_pages_per_seq), dtype=np.int32
-        )
-        page_rng = np.random.default_rng(20260723)
-        for batch_idx in range(batch_size):
-            physical_base = batch_idx * physical_pages_per_batch
-            k_pages = (
-                physical_base
-                + 1
-                + page_rng.permutation(max_pages_per_seq)
+        if export_only:
+            page_list_dyn = _make_page_list_placeholder(
+                batch_size, max_pages_per_seq
             )
-            v_pages = (
-                physical_base
-                + 1
-                + page_rng.permutation(max_pages_per_seq)
+        else:
+            # Unreachable K/V pages and the unused tail of the final live page
+            # remain distinct poisons. Any identity mapping, plane mix-up, or
+            # out-of-range token read therefore fails the FP32 reference check.
+            kv_pool_arr[:num_pages].fill(cp.float16(-127.0))
+            kv_pool_arr[num_pages:].fill(cp.float16(109.0))
+            page_list_host = np.empty(
+                (batch_size, 2, max_pages_per_seq), dtype=np.int32
             )
-            for logical_page in range(max_pages_per_seq):
-                # Independent K/V permutations exercise fragmented traversal
-                # while leaving physical_base poisoned.
-                k_page = int(k_pages[logical_page])
-                v_page = int(v_pages[logical_page])
-                page_list_host[batch_idx, 0, logical_page] = k_page
-                page_list_host[batch_idx, 1, logical_page] = (
-                    num_pages + v_page
+            page_rng = np.random.default_rng(20260723)
+            for batch_idx in range(batch_size):
+                physical_base = batch_idx * physical_pages_per_batch
+                logical_pages = (
+                    kv_lengths[batch_idx] + tokens_per_page - 1
+                ) // tokens_per_page
+                k_pages = (
+                    physical_base
+                    + 1
+                    + page_rng.permutation(max_pages_per_seq)
                 )
-                token_begin = logical_page * tokens_per_page
-                token_end = min(token_begin + tokens_per_page, seqlen_k)
-                live_tokens = token_end - token_begin
-                kv_pool_arr[k_page, :live_tokens, :, :] = k_arr[
-                    batch_idx, token_begin:token_end, :, :
-                ]
-                kv_pool_arr[
-                    num_pages + v_page, :live_tokens, :, :
-                ] = v_arr[batch_idx, token_begin:token_end, :, :]
-        page_list_arr = cp.asarray(page_list_host)
-        page_list_dyn = _wrap_page_list_tensor(page_list_arr)
+                v_pages = (
+                    physical_base
+                    + 1
+                    + page_rng.permutation(max_pages_per_seq)
+                )
+                page_list_host[batch_idx, 0].fill(physical_base)
+                page_list_host[batch_idx, 1].fill(num_pages + physical_base)
+                for logical_page in range(logical_pages):
+                    # Independent K/V permutations exercise fragmented traversal
+                    # while leaving physical_base poisoned.
+                    k_page = int(k_pages[logical_page])
+                    v_page = int(v_pages[logical_page])
+                    page_list_host[batch_idx, 0, logical_page] = k_page
+                    page_list_host[batch_idx, 1, logical_page] = (
+                        num_pages + v_page
+                    )
+                    token_begin = logical_page * tokens_per_page
+                    token_end = min(token_begin + tokens_per_page, kv_lengths[batch_idx])
+                    live_tokens = token_end - token_begin
+                    kv_pool_arr[k_page, :live_tokens, :, :] = k_arr[
+                        batch_idx, token_begin:token_end, :, :
+                    ]
+                    kv_pool_arr[
+                        num_pages + v_page, :live_tokens, :, :
+                    ] = v_arr[batch_idx, token_begin:token_end, :, :]
+            page_list_arr = cp.asarray(page_list_host)
+            page_list_dyn = _wrap_page_list_tensor(page_list_arr)
         print(
             f"{_tag}   paged pool physical=NHD, tokens_per_page=128, "
             f"K_pages={num_pages}, flattened_pages={num_flat_pages}"
@@ -2811,12 +3677,53 @@ def run(
         num_threads=num_threads,
         is_causal=is_causal,
         use_sliding_window=window_size_left >= 0,
-        packed_varlen=fmha_v2_vit,
+        packed_varlen=fmha_v2_vit or paged_kv_ragged,
         skip_rescale=skip_rescale,
         hybrid_exp2=hybrid_exp2,
+        skip_softmax=skip_softmax,
+        software_fp8=target_sm in (80, 86, 87),
     )
 
-    current_stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    current_stream = (
+        aot_placeholders.make_stream()
+        if export_only
+        else cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    )
+    # Runtime persistent-grid size (sm_count kernel argument): AOT callers pass
+    # the deployment GPU's multiprocessor count at launch; only the non-export
+    # smoke path seeds it from the local device.
+    _sm_count = (
+        aot_placeholders.runtime_int32()
+        if export_only
+        else cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count())
+    )
+
+    # Skip-softmax runtime args: the exported ABI takes only the scale table
+    # (one row [0, S], S = lambda * seqlen_k); the reference self-test build
+    # additionally takes two Int32[1] (skipped, visited) warp-tile counters.
+    # Benchmarks (--skip_ref_check) use the exported ABI.
+    skip_softmax_args = ((cutlass.Float32(0.03125), cutlass.Float32(0.015625))
+                         if paged_kv_fp8 else ())
+    skip_count_arr = total_count_arr = None
+    skip_softmax_verify = skip_softmax and not export_only and not skip_ref_check
+    if paged_kv_two_pool:
+        action_pool_dyn, _ = _create_paged_kv_pool_tensor(
+            2 * batch_size, 128, h_kv, head_dim, cutlass.Float16, storage_free=True)
+        action_pages_dyn = _make_page_list_placeholder(batch_size, 1)
+        skip_softmax_args = (cutlass.Float32(0.03125), cutlass.Float32(0.015625),
+                             action_pool_dyn, action_pages_dyn)
+    if skip_softmax:
+        skip_table_dyn, _skip_table_arr = _create_skip_softmax_scale_table(
+            int(skip_softmax_threshold * seqlen_k), storage_free=export_only
+        )
+        skip_softmax_args = (skip_table_dyn,)
+        if skip_softmax_verify:
+            skip_count_arr = cp.zeros(1, dtype=cp.int32)
+            total_count_arr = cp.zeros(1, dtype=cp.int32)
+            skip_softmax_args += (
+                from_dlpack(skip_count_arr, assumed_align=16),
+                from_dlpack(total_count_arr, assumed_align=16),
+            )
 
     # Optional ptxas pass-through (FMHA_V2_PTXAS_VERBOSE=1 / FMHA_V2_PTXAS_OPTS=...).
     _ptx_parts = []
@@ -2825,15 +3732,53 @@ def run(
     _extra_ptx = os.getenv("FMHA_V2_PTXAS_OPTS", "")
     if _extra_ptx:
         _ptx_parts.append(_extra_ptx)
+    if skip_softmax and "-O" not in _extra_ptx:
+        # ptxas -O3 mis-allocates the skip build once acc_O reaches 128 regs/thread
+        # (D >= 256): the same PTX assembles to 32 regs + 17 KB of spills at -O3 and
+        # to 249 regs, 0 spills at -O2 (CUDA 13.1, sm_100a). -O2 is also faster for
+        # D = 64/128 here.
+        _ptx_parts.append("-O2")
     compile_options = (
         {"options": f"--ptxas-options={','.join(_ptx_parts)}"} if _ptx_parts else {}
     )
 
     print(f"{_tag} Compiling kernel...")
     t0 = time.time()
-    if paged_kv:
+    if paged_kv_ragged:
+        attention_sinks_dyn, _attention_sinks_arr = _create_attention_sink_tensor(
+            h_q, storage_free=export_only
+        )
         compiled_fa2 = cute.compile(
-            fa2_fwd.__call_context_paged__,
+            (fa2_fwd.__call_context_paged_ragged_vision__
+             if vision_block else fa2_fwd.__call_context_paged_ragged__),
+            q_dyn,
+            kv_pool_dyn,
+            page_list_dyn,
+            o_dyn,
+            cu_q_dyn,
+            cu_k_dyn,
+            attention_sinks_dyn,
+            cutlass.Int32(0),
+            cutlass.Int32(max_q_seq_len),
+            cutlass.Int32(max(window_size_left, 0)),
+            cutlass.Float32(softmax_scale),
+            _sm_count,
+            current_stream,
+            *([block_begin_dyn, block_end_dyn] if vision_block else []),
+            **compile_options,
+        )
+    elif paged_kv:
+        paged_entry = fa2_fwd.__call_context_paged__
+        if paged_kv_two_pool:
+            paged_entry = fa2_fwd.__call_context_paged_two_pool__
+        if skip_softmax:
+            paged_entry = (
+                fa2_fwd.__call_context_paged_skipsoftmax_verify__
+                if skip_softmax_verify
+                else fa2_fwd.__call_context_paged_skipsoftmax__
+            )
+        compiled_fa2 = cute.compile(
+            paged_entry,
             q_dyn,
             kv_pool_dyn,
             page_list_dyn,
@@ -2842,8 +3787,9 @@ def run(
             cu_k_dyn,
             cutlass.Int32(max(window_size_left, 0)),
             cutlass.Float32(softmax_scale),
-            cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+            _sm_count,
             current_stream,
+            *skip_softmax_args,
             **compile_options,
         )
     elif fmha_v2_vit:
@@ -2853,18 +3799,24 @@ def run(
         max_vit_seqlen = max(packed_lengths)
         total_s = sum(packed_lengths)
         q_vit_dyn, q_vit_arr = _create_shd_tensor(
-            total_s, h_q, head_dim, dtype, fill_random=not export_only
+            total_s, h_q, head_dim, dtype,
+            fill_random=not export_only, storage_free=export_only,
         )
         k_vit_dyn, k_vit_arr = _create_shd_tensor(
-            total_s, h_kv, head_dim, dtype, fill_random=not export_only
+            total_s, h_kv, head_dim, dtype,
+            fill_random=not export_only, storage_free=export_only,
         )
         v_vit_dyn, v_vit_arr = _create_shd_tensor(
-            total_s, h_kv, head_dim, dtype, fill_random=not export_only
+            total_s, h_kv, head_dim, dtype,
+            fill_random=not export_only, storage_free=export_only,
         )
         o_vit_dyn, o_vit_arr = _create_shd_tensor(
-            total_s, h_q, head_dim, dtype, fill_random=False
+            total_s, h_q, head_dim, dtype,
+            fill_random=False, storage_free=export_only,
         )
-        cu_vit_dyn, cu_vit_arr = _create_cu_seqlens_from_lengths(packed_lengths)
+        cu_vit_dyn, cu_vit_arr = _create_cu_seqlens_from_lengths(
+            packed_lengths, storage_free=export_only
+        )
         compiled_fa2 = cute.compile(
             fa2_fwd.__call_vit__,
             q_vit_dyn,
@@ -2876,7 +3828,7 @@ def run(
             cutlass.Float32(softmax_scale * 1.4426950408889634),
             cutlass.Float32(softmax_scale),
             cutlass.Float32(1.0),
-            cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+            _sm_count,
             current_stream,
             **compile_options,
         )
@@ -2896,7 +3848,7 @@ def run(
             cutlass.Float32(1.0),
             cutlass.Float32(1.0),
             cutlass.Float32(1.0),
-            cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+            _sm_count,
             current_stream,
             **compile_options,
         )
@@ -2934,7 +3886,24 @@ def run(
     # (compares against a FP32 BSHD reference); this CLI path only smoke-checks
     # that the launch is
     # well-formed when not exporting.
-    if paged_kv:
+    if paged_kv_ragged:
+        compiled_fa2(
+            q_dyn,
+            kv_pool_dyn,
+            page_list_dyn,
+            o_dyn,
+            cu_q_dyn,
+            cu_k_dyn,
+            attention_sinks_dyn,
+            cutlass.Int32(0),
+            cutlass.Int32(max_q_seq_len),
+            cutlass.Int32(max(window_size_left, 0)),
+            cutlass.Float32(softmax_scale),
+            cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+            current_stream,
+            *([block_begin_dyn, block_end_dyn] if vision_block else []),
+        )
+    elif paged_kv:
         compiled_fa2(
             q_dyn,
             kv_pool_dyn,
@@ -2944,8 +3913,9 @@ def run(
             cu_k_dyn,
             cutlass.Int32(max(window_size_left, 0)),
             cutlass.Float32(softmax_scale),
-            cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+            _sm_count,
             current_stream,
+            *skip_softmax_args,
         )
     elif fmha_v2_vit:
         compiled_fa2(
@@ -2958,7 +3928,7 @@ def run(
             cutlass.Float32(softmax_scale * 1.4426950408889634),
             cutlass.Float32(softmax_scale),
             cutlass.Float32(1.0),
-            cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+            _sm_count,
             current_stream,
         )
     elif fmha_v2_context:
@@ -2976,7 +3946,7 @@ def run(
             cutlass.Float32(1.0),
             cutlass.Float32(1.0),
             cutlass.Float32(1.0),
-            cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+            _sm_count,
             current_stream,
         )
     else:
@@ -2987,15 +3957,22 @@ def run(
     cp.cuda.Device().synchronize()
 
     if not skip_ref_check and (paged_kv or fmha_v2_context) and not vision_block:
-        reference = _fmha_v2_reference(
-            q_arr,
-            k_arr,
-            v_arr,
-            softmax_scale,
-            is_causal=is_causal,
-            window_size_left=window_size_left,
+        reference = (
+            _fmha_v2_paged_ragged_reference(
+                q_arr, k_arr, v_arr, q_lengths, kv_lengths, softmax_scale,
+                is_causal=is_causal, window_size_left=window_size_left,
+            )
+            if paged_kv_ragged
+            else _fmha_v2_reference(
+                q_arr, k_arr, v_arr, softmax_scale,
+                is_causal=is_causal, window_size_left=window_size_left,
+            )
         )
-        _report_reference_error(_tag, o_arr, reference)
+        _report_reference_error(
+            _tag,
+            o_arr,
+            reference,
+        )
     elif not skip_ref_check and fmha_v2_vit:
         reference = cp.zeros(o_vit_arr.shape, dtype=cp.float32)
         start = 0
@@ -3020,23 +3997,51 @@ def run(
         )
     elif paged_kv:
         print(f"{_tag} PAGED_KV_REFERENCE_SKIPPED")
+    if skip_softmax_verify:
+        skipped = int(skip_count_arr.get()[0])
+        visited = int(total_count_arr.get()[0])
+        print(
+            f"{_tag} skip_softmax: skipped {skipped} / {visited} non-diagonal "
+            f"warp-tiles (rate {skipped / max(visited, 1):.4f})"
+        )
+        if skipped == 0:
+            raise RuntimeError(f"{_tag} skip-softmax self-test: no warp-tile was skipped")
 
     def generate_tensors():
         if paged_kv:
-            q_w, _ = _create_bsnd_tensor(
-                batch_size, seqlen_q, h_q, head_dim, dtype, fill_random=True
-            )
+            q_w_arr = None
+            if paged_kv_ragged:
+                q_w, _ = _create_shd_tensor(
+                    total_q_seq_len, h_q, head_dim, dtype, fill_random=True
+                )
+            else:
+                q_w, q_w_arr = _create_bsnd_tensor(
+                    batch_size, seqlen_q, h_q, head_dim, dtype, fill_random=True
+                )
             k_w, k_w_arr = _create_bsnd_tensor(
                 batch_size, seqlen_k, h_kv, head_dim, dtype, fill_random=True
             )
             v_w, v_w_arr = _create_bsnd_tensor(
                 batch_size, seqlen_k, h_kv, head_dim, dtype, fill_random=True
             )
-            o_w, _ = _create_bsnd_tensor(
-                batch_size, seqlen_q, h_q, head_dim, dtype, fill_random=False
-            )
-            cu_q_w, _ = _create_cu_seqlens_tensor(batch_size, seqlen_q)
-            cu_k_w, _ = _create_cu_seqlens_tensor(batch_size, seqlen_k)
+            if hot_diagonal:
+                make_hot_diagonal(q_w_arr, k_w_arr)
+            if paged_kv_ragged:
+                o_w, _ = _create_shd_tensor(
+                    total_q_seq_len, h_q, head_dim, dtype, fill_random=False
+                )
+            else:
+                o_w, _ = _create_bsnd_tensor(
+                    batch_size, seqlen_q, h_q, head_dim, dtype, fill_random=False
+                )
+            if paged_q_seqlens is not None:
+                cu_q_w, _ = _create_cu_seqlens_from_lengths(q_lengths)
+            else:
+                cu_q_w, _ = _create_cu_seqlens_tensor(batch_size, seqlen_q)
+            if paged_kv_seqlens is not None:
+                cu_k_w, _ = _create_cu_seqlens_from_lengths(kv_lengths)
+            else:
+                cu_k_w, _ = _create_cu_seqlens_tensor(batch_size, seqlen_k)
             kv_pool_w, kv_pool_w_arr = _create_paged_kv_pool_tensor(
                 num_flat_pages,
                 tokens_per_page,
@@ -3047,7 +4052,8 @@ def run(
             kv_pool_w_arr[:num_pages].fill(cp.float16(-127.0))
             kv_pool_w_arr[num_pages:].fill(cp.float16(109.0))
             for batch_idx in range(batch_size):
-                for logical_page in range(max_pages_per_seq):
+                logical_pages = (kv_lengths[batch_idx] + tokens_per_page - 1) // tokens_per_page
+                for logical_page in range(logical_pages):
                     k_page = int(
                         page_list_host[batch_idx, 0, logical_page]
                     )
@@ -3056,7 +4062,7 @@ def run(
                         - num_pages
                     )
                     token_begin = logical_page * tokens_per_page
-                    token_end = min(token_begin + tokens_per_page, seqlen_k)
+                    token_end = min(token_begin + tokens_per_page, kv_lengths[batch_idx])
                     live_tokens = token_end - token_begin
                     kv_pool_w_arr[k_page, :live_tokens, :, :] = k_w_arr[
                         batch_idx, token_begin:token_end, :, :
@@ -3065,6 +4071,22 @@ def run(
                         num_pages + v_page, :live_tokens, :, :
                     ] = v_w_arr[batch_idx, token_begin:token_end, :, :]
             page_list_w = _wrap_page_list_tensor(cp.asarray(page_list_host))
+            if paged_kv_ragged:
+                return testing.JitArguments(
+                    q_w,
+                    kv_pool_w,
+                    page_list_w,
+                    o_w,
+                    cu_q_w,
+                    cu_k_w,
+                    attention_sinks_dyn,
+                    cutlass.Int32(0),
+                    cutlass.Int32(max_q_seq_len),
+                    cutlass.Int32(max(window_size_left, 0)),
+                    cutlass.Float32(softmax_scale),
+                    cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+                    current_stream,
+                )
             return testing.JitArguments(
                 q_w,
                 kv_pool_w,
@@ -3074,8 +4096,9 @@ def run(
                 cu_k_w,
                 cutlass.Int32(max(window_size_left, 0)),
                 cutlass.Float32(softmax_scale),
-                cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+                _sm_count,
                 current_stream,
+                *skip_softmax_args,
             )
         if fmha_v2_vit:
             total_s = sum(packed_lengths)
@@ -3102,7 +4125,7 @@ def run(
                 cutlass.Float32(softmax_scale * 1.4426950408889634),
                 cutlass.Float32(softmax_scale),
                 cutlass.Float32(1.0),
-                cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+                _sm_count,
                 current_stream,
             )
         if fmha_v2_context:
@@ -3123,7 +4146,7 @@ def run(
             block_end_w = None
             if vision_block:
                 block_begin_w, _ = _create_block_range_tensor(batch_size, seqlen_q)
-                block_end_w, _ = _create_block_range_tensor(batch_size, seqlen_q)
+                block_end_w, _ = _create_block_range_tensor(batch_size, seqlen_q, fill=-2)
             return testing.JitArguments(
                 q_w,
                 k_w,
@@ -3138,7 +4161,7 @@ def run(
                 cutlass.Float32(1.0),
                 cutlass.Float32(1.0),
                 cutlass.Float32(1.0),
-                cutlass.Int32(utils.HardwareInfo().get_device_multiprocessor_count()),
+                _sm_count,
                 current_stream,
             )
         q_w, _ = _create_bsnd_tensor(
@@ -3159,7 +4182,7 @@ def run(
         block_end_w = None
         if vision_block:
             block_begin_w, _ = _create_block_range_tensor(batch_size, seqlen_q)
-            block_end_w, _ = _create_block_range_tensor(batch_size, seqlen_q)
+            block_end_w, _ = _create_block_range_tensor(batch_size, seqlen_q, fill=-2)
         return testing.JitArguments(
             q_w, k_w, v_w, o_w, cu_q_w, cu_k_w, block_begin_w, block_end_w,
             softmax_scale, h_kv, current_stream
@@ -3197,9 +4220,8 @@ def run(
 
     # FMHA forward FLOPs: 4 * B * H * Sq * Sk * D (Q@K^T + P@V, fp32 acc).
     causal_factor = 0.5 if is_causal else 1.0
-    flops = (
-        4.0 * batch_size * h_q * seqlen_q * seqlen_k * head_dim * causal_factor
-    )
+    q_tokens_for_flops = total_q_seq_len if paged_kv_ragged else batch_size * seqlen_q
+    flops = 4.0 * q_tokens_for_flops * h_q * seqlen_k * head_dim * causal_factor
     tflops = flops / (avg_time_us * 1e-6) / 1e12
     print(f"{_tag} avg_time_us: {avg_time_us:.2f}  |  {tflops:.2f} TFLOPS ({dtype})")
     return avg_time_us
@@ -3248,6 +4270,38 @@ def _parse_args(argv=None):
         help="Run/export FP16 FMHA-v2 directly against a 128-token paged NHD KV cache.",
     )
     p.add_argument(
+        "--paged_kv_ragged",
+        action="store_true",
+        help="Export native paged FMHA-v2 with packed [total_q, H, D] Q/O.",
+    )
+    p.add_argument("--paged_kv_two_pool", action="store_true", help="Separate read-only prefix and FP16 action pools")
+    p.add_argument("--paged_kv_fp8", action="store_true", help="FP8 E4M3 paged KV with FP16 Q/O")
+    p.add_argument("--target_sm", type=int, default=None, help="Explicit AOT target SM for FP8 conversion")
+    p.add_argument(
+        "--paged_kv_non_causal",
+        action="store_true",
+        help="Explicitly compile native paged non-causal attention; "
+        "requires --paged_kv or --paged_kv_ragged and forbids --is_causal.",
+    )
+    p.add_argument(
+        "--benchmark_paged_kv_ragged",
+        action="store_true",
+        help="Benchmark only native ragged paged FMHA-v2 with packed [total_q, H, D] Q/O. "
+        "Skips the reference check and reports average kernel latency.",
+    )
+    p.add_argument(
+        "--paged_q_seqlens",
+        type=str,
+        default=None,
+        help="Comma-separated packed Q lengths; requires --paged_kv_ragged.",
+    )
+    p.add_argument(
+        "--paged_kv_seqlens",
+        type=str,
+        default=None,
+        help="Comma-separated logical KV lengths; requires --paged_kv or --paged_kv_ragged.",
+    )
+    p.add_argument(
         "--fmha_v2_vit",
         action="store_true",
         help="Export packed-varlen bidirectional ViT FMHA with the optimized-compatible ABI.",
@@ -3268,6 +4322,23 @@ def _parse_args(argv=None):
                    help="Tier-1: clamp rescale factor to 1.0 when within 2^-8 of unity.")
     p.add_argument("--hybrid_exp2", action="store_true",
                    help="Scaffold for FA4-style 75%% MUFU + 25%% polynomial exp2 (not validated).")
+    p.add_argument(
+        "--skip_softmax",
+        action="store_true",
+        help="Compile the skip-softmax (BLASST) path into the native-paged causal "
+        "kernel with the scale-table ABI (what the AOT paged kernels ship); the "
+        "local self-test then uses lambda = 1e-6.",
+    )
+    p.add_argument(
+        "--skip_softmax_threshold",
+        type=float,
+        default=None,
+        help="Compile the skip-softmax (BLASST) path into the native-paged causal "
+        "kernel: a warp skips a KV tile when exp(scale*(tile_max - running_max)) "
+        "< lambda for all its rows. The VALUE only drives the local self-test "
+        "(lambda in (0,1)); the exported kernel takes the calibrated scale "
+        "factor S as a trailing runtime argument and derives lambda = S / seqlen_kv.",
+    )
     p.add_argument("--warmup_iterations", type=int, default=3)
     p.add_argument("--iterations", type=int, default=10)
     p.add_argument("--skip_ref_check", action="store_true")
@@ -3286,9 +4357,18 @@ def _parse_args(argv=None):
 
 def main():
     args = _parsed_args
+    if args.benchmark_paged_kv_ragged and (args.paged_kv or args.paged_kv_ragged or args.export_only):
+        raise ValueError("--benchmark_paged_kv_ragged cannot be combined with --paged_kv, "
+                         "--paged_kv_ragged, or --export_only")
     vit_seqlens = None
+    paged_q_seqlens = None
+    paged_kv_seqlens = None
     if args.vit_seqlens is not None:
         vit_seqlens = tuple(int(value) for value in args.vit_seqlens.split(","))
+    if args.paged_q_seqlens is not None:
+        paged_q_seqlens = tuple(int(value) for value in args.paged_q_seqlens.split(","))
+    if args.paged_kv_seqlens is not None:
+        paged_kv_seqlens = tuple(int(value) for value in args.paged_kv_seqlens.split(","))
     run(
         dtype=args.dtype,
         batch_size=args.batch_size,
@@ -3305,14 +4385,23 @@ def main():
         vision_block=args.vision_block,
         fmha_v2_context=args.fmha_v2_context,
         paged_kv=args.paged_kv,
+        paged_kv_ragged=args.paged_kv_ragged or args.benchmark_paged_kv_ragged,
+        paged_kv_non_causal=args.paged_kv_non_causal,
+        paged_kv_fp8=args.paged_kv_fp8,
+        target_sm=args.target_sm,
+        paged_kv_two_pool=args.paged_kv_two_pool,
+        paged_q_seqlens=paged_q_seqlens,
+        paged_kv_seqlens=paged_kv_seqlens,
         fmha_v2_vit=args.fmha_v2_vit,
         vit_seqlens=vit_seqlens,
         window_size_left=args.window_size_left,
         skip_rescale=args.skip_rescale,
         hybrid_exp2=args.hybrid_exp2,
+        skip_softmax_threshold=args.skip_softmax_threshold,
+        skip_softmax=args.skip_softmax,
         warmup_iterations=args.warmup_iterations,
         iterations=args.iterations,
-        skip_ref_check=args.skip_ref_check,
+        skip_ref_check=args.skip_ref_check or args.benchmark_paged_kv_ragged,
         use_cold_l2=args.use_cold_l2,
         export_only=args.export_only,
         output_dir=args.output_dir,

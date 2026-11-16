@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import pathlib
 
+from cutedsl_utils import aot_placeholders
+
 # Max expert count: sizes the AOT trace buffers and caps the persistent grid.
 # Not baked into the cubin -- the runtime group_count argument carries E.
 MAX_NUM_EXPERTS = 256
@@ -28,45 +30,23 @@ BYTES_PER_TENSORMAP = 128
 TENSORMAPS_PER_BLOCK = 3
 
 
-def get_max_active_clusters(family: str) -> int:
-    """Return a conservative persistent grid size for one kernel family."""
-    import cutlass
+def runtime_max_active_clusters(family: str):
+    """Create the persistent-grid scalar supplied by the runtime C++ caller.
 
-    hardware_info = cutlass.utils.HardwareInfo()
-    if family == "ampere":
-        # Ampere does not support CTA clusters; querying cluster occupancy
-        # returns CUDA_ERROR_INVALID_CLUSTER_SIZE. The grouped scheduler uses
-        # an ordinary one-CTA-per-SM persistent grid on this family.
-        return min(MAX_NUM_EXPERTS,
-                   hardware_info.get_device_multiprocessor_count())
-    if family not in ("blackwell", "blackwell_geforce"):
+    The exported wrapper receives the deployment GPU's persistent block count
+    at runtime, so this value only establishes the AOT argument type. Do not
+    probe the build GPU here (``HardwareInfo``): artifact generation must not
+    depend on a physical GPU, and the occupancy probe launches a helper kernel
+    that fails when cross-compiling a CTA-cluster target on a foreign GPU.
+    """
+    if family not in ("ampere", "blackwell", "blackwell_geforce"):
         raise ValueError(f"Unsupported f16_moe family: {family}")
-    return min(
-        MAX_NUM_EXPERTS,
-        hardware_info.get_max_active_clusters(1),
-    )
+    return aot_placeholders.runtime_int32()
 
 
-def make_ptr(data_type, value: int, assumed_align: int | None = None):
-    """Build a typed CuTe global-memory pointer for a CuPy allocation."""
-    import cutlass.cute as cute
-
-    try:
-        import cute_utils
-    except ImportError:
-        import sys
-
-        nvfp4_dir = pathlib.Path(
-            __file__).resolve().parents[1] / "nvfp4_moe_cutedsl"
-        sys.path.insert(0, str(nvfp4_dir))
-        import cute_utils
-
-    return cute_utils.make_ptr(
-        data_type,
-        value,
-        cute.AddressSpace.gmem,
-        assumed_align=assumed_align,
-    )
+def make_ptr(data_type, assumed_align: int = DESCRIPTOR_ALIGNMENT):
+    """Build a typed, aligned pointer carrying no backing storage."""
+    return aot_placeholders.make_ptr(data_type, assumed_align=assumed_align)
 
 
 def verify_export(output_dir: str, file_name: str) -> tuple[str, str]:

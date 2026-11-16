@@ -20,6 +20,7 @@
 #include "common/checkMacros.h"
 #include "common/logger.h"
 #include "common/safetensorsUtils.h"
+#include "common/trtInterop.h"
 #include "kernels/preprocessKernels/imageUtilKernels.h"
 #include "multimodal/common/imageUtils.h"
 #include "multimodal/common/modelTypes.h"
@@ -40,8 +41,8 @@ namespace trt_edgellm
 namespace rt
 {
 
-Phi4MMViTRunner::Phi4MMViTRunner(std::string const& engineDir, cudaStream_t stream)
-    : MultimodalRunner(engineDir, stream)
+Phi4MMViTRunner::Phi4MMViTRunner(std::string const& engineDir, cudaStream_t stream, std::string const& checkpointDir)
+    : MultimodalRunner(engineDir, stream, checkpointDir)
     , mEngineDir(engineDir)
 {
     std::string const configPath = engineDir + "/config.json";
@@ -120,7 +121,7 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
         mConfig.maxNumBlocks, mConfig.numChannels, mConfig.blockImageSizeH, mConfig.blockImageSizeW);
     mVitInput
         = rt::Tensor({mConfig.maxNumBlocks, mConfig.numChannels, mConfig.blockImageSizeH, mConfig.blockImageSizeW},
-            rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mVitInput");
+            rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "Phi4MMViTRunner::mVitInput");
     setTensorAddressStatus &= mVisualContext->setTensorAddress(binding_names::kVisualInput, mVitInput.rawPointer());
     LOG_INFO("mConfig.maxNumBlocks: %d, mConfig.outHiddenSize: %d", mConfig.maxNumBlocks, mConfig.outHiddenSize);
 
@@ -136,9 +137,9 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
     int64_t const totalCapacity = vitImageTokens + conservativeExtra;
 
     mEngineOutputEmbedding = rt::Tensor({vitImageTokens, mConfig.outHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mEngineOutputEmbedding");
+        trt_edgellm::DataType::kHALF, "Phi4MMViTRunner::mEngineOutputEmbedding");
     mOutputEmbedding = rt::Tensor({totalCapacity, mConfig.outHiddenSize}, rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mOutputEmbedding");
+        trt_edgellm::DataType::kHALF, "Phi4MMViTRunner::mOutputEmbedding");
     setTensorAddressStatus
         &= mVisualContext->setTensorAddress(binding_names::kVisualOutput, mEngineOutputEmbedding.rawPointer());
     if (!setTensorAddressStatus)
@@ -147,51 +148,34 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
         return false;
     }
 
-    // Copy image mean and std to device to be used in normalizeImage
-    int64_t const channels = static_cast<int64_t>(mConfig.imageMean.size());
-    check::check(channels == mConfig.numChannels, "channel of imageMean != numChannels");
-    mImageMean
-        = rt::Tensor({channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "Phi4MMViTRunner::mImageMean");
-    mImageStd = rt::Tensor({channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "Phi4MMViTRunner::mImageStd");
-    CUDA_CHECK(cudaMemcpyAsync(
-        mImageMean.rawPointer(), mConfig.imageMean.data(), channels * sizeof(float), cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(cudaMemcpyAsync(
-        mImageStd.rawPointer(), mConfig.imageStd.data(), channels * sizeof(float), cudaMemcpyHostToDevice, stream));
+    check::check(
+        static_cast<int64_t>(mConfig.imageMean.size()) == mConfig.numChannels, "channel of imageMean != numChannels");
+    mImageMean = mConfig.imageMean;
+    mImageStd = mConfig.imageStd;
 
-    // Pre-allocate temporary image buffers for preprocessing
     int64_t const maxImagePixels = mVitInput.getShape().volume();
-    mImageDevice = rt::Tensor(
-        {maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8, "Phi4MMViTRunner::mImageDevice");
-    mNormalizedImageDevice = rt::Tensor(
-        {maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mNormalizedImageDevice");
-
-    // GPU image-resize scratch.
-    // Horizontal-pass scratch holds [rawH, outW, C] floats. computeBestBlockGridForResize snaps to a
-    // block grid and does NOT preserve aspect ratio, so bound each dimension independently: rawH by the
-    // raw cap and outW by the widest single-row block grid (maxNumBlocks * blockImageSizeW).
-    int64_t const kMaxResizeTmpElems
-        = kernel::kGpuResizeMaxRawDim * mConfig.maxNumBlocks * mConfig.blockImageSizeW * channels;
-    kernel::allocateResizeScratch(channels, kMaxResizeTmpElems, mRawImageDevice, mResizeTmpDevice);
+    mNormalizedImageDevice = rt::Tensor({maxImagePixels}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF,
+        "Phi4MMViTRunner::mNormalizedImageDevice");
 
     // Pre-allocate temporary index tensors for Phi4MM postprocess (assign to members)
     mHBlocks = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "Phi4MMViTRunner::mHBlocks");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "Phi4MMViTRunner::mHBlocks");
     mWBlocks = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "Phi4MMViTRunner::mWBlocks");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT32, "Phi4MMViTRunner::mWBlocks");
     mSrcGlbStart = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSrcGlbStart");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "Phi4MMViTRunner::mSrcGlbStart");
     mSrcSubStart = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSrcSubStart");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "Phi4MMViTRunner::mSrcSubStart");
     mDstOutStart = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mDstOutStart");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "Phi4MMViTRunner::mDstOutStart");
     mSubOutLen = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSubOutLen");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kGPU, trt_edgellm::DataType::kINT64, "Phi4MMViTRunner::mSubOutLen");
 
     // Initialize newline embeddings and load from safetensors file
     mSubGNProj = rt::Tensor(
-        {mConfig.outHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mSubGNProj");
+        {mConfig.outHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "Phi4MMViTRunner::mSubGNProj");
     mGlbGNProj = rt::Tensor(
-        {mConfig.outHiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "Phi4MMViTRunner::mGlbGNProj");
+        {mConfig.outHiddenSize}, rt::DeviceType::kGPU, trt_edgellm::DataType::kHALF, "Phi4MMViTRunner::mGlbGNProj");
     CUDA_CHECK(cudaMemsetAsync(mSubGNProj.rawPointer(), 0, mSubGNProj.getMemoryCapacity(), stream));
     CUDA_CHECK(cudaMemsetAsync(mGlbGNProj.rawPointer(), 0, mGlbGNProj.getMemoryCapacity(), stream));
     // Try to load GN tensors from safetensors companion file
@@ -204,7 +188,7 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
         {
             if (t.getName() == "sub_GN")
             {
-                check::check(t.getDataType() == nvinfer1::DataType::kHALF, "sub_GN must be FP16");
+                check::check(t.getDataType() == trt_edgellm::DataType::kHALF, "sub_GN must be FP16");
                 check::check(
                     t.getShape().getNumDims() == 1 && t.getShape()[0] == mConfig.outHiddenSize, "sub_GN size mismatch");
                 CUDA_CHECK(cudaMemcpyAsync(mSubGNProj.rawPointer(), t.rawPointer(),
@@ -212,7 +196,7 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
             }
             else if (t.getName() == "glb_GN")
             {
-                check::check(t.getDataType() == nvinfer1::DataType::kHALF, "glb_GN must be FP16");
+                check::check(t.getDataType() == trt_edgellm::DataType::kHALF, "glb_GN must be FP16");
                 check::check(
                     t.getShape().getNumDims() == 1 && t.getShape()[0] == mConfig.outHiddenSize, "glb_GN size mismatch");
                 CUDA_CHECK(cudaMemcpyAsync(mGlbGNProj.rawPointer(), t.rawPointer(),
@@ -228,17 +212,17 @@ bool Phi4MMViTRunner::allocateBuffer(cudaStream_t stream)
 
     // Pre-allocate temporary index CPU buffers for Phi4MM postprocess
     mHBlocksHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "Phi4MMViTRunner::mHBlocksHost");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "Phi4MMViTRunner::mHBlocksHost");
     mWBlocksHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "Phi4MMViTRunner::mWBlocksHost");
-    mSrcGlbStartHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSrcGlbStartHost");
-    mSrcSubStartHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSrcSubStartHost");
-    mDstOutStartHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mDstOutStartHost");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT32, "Phi4MMViTRunner::mWBlocksHost");
+    mSrcGlbStartHost = rt::Tensor({mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
+        "Phi4MMViTRunner::mSrcGlbStartHost");
+    mSrcSubStartHost = rt::Tensor({mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
+        "Phi4MMViTRunner::mSrcSubStartHost");
+    mDstOutStartHost = rt::Tensor({mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64,
+        "Phi4MMViTRunner::mDstOutStartHost");
     mSubOutLenHost = rt::Tensor(
-        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64, "Phi4MMViTRunner::mSubOutLenHost");
+        {mConfig.maxNumBlocks}, rt::DeviceType::kCPU, trt_edgellm::DataType::kINT64, "Phi4MMViTRunner::mSubOutLenHost");
 
     return true;
 }
@@ -287,10 +271,8 @@ void Phi4MMViTRunner::formatPatch(imageUtils::ImageData const& image, std::vecto
         imageTokenLengths.back() += subLen;
     }
 
-    // mImageDevice already holds the [1, height, width, channels] image (resized on the GPU by the
-    // caller); normalize and patchify consume it in place.
+    // mNormalizedImageDevice already holds the [1, height, width, channels] preprocessed image.
     check::check(mNormalizedImageDevice.reshape({1, height, width, channels}), "Tensor reshape failed");
-    kernel::normalizeImage(mImageDevice, mImageMean, mImageStd, mNormalizedImageDevice, stream);
 
     // Transpose to patch
     int64_t offset = totalNumBlocks * mConfig.numChannels * mConfig.blockImageSizeH * mConfig.blockImageSizeW;
@@ -319,7 +301,8 @@ void Phi4MMViTRunner::imagePreprocessTokenLengthsOnly(
             // Sub-crops
             auto const [h, w] = image.doResize
                 ? imageUtils::computeBestBlockGridForResize(image.height, image.width, mConfig.minImageTokensPerImage,
-                      mConfig.maxImageTokensPerImage, mConfig.blockImageSizeH, mConfig.blockImageSizeW)
+                      mConfig.maxImageTokensPerImage, mConfig.blockImageSizeH, mConfig.blockImageSizeW,
+                      kernel::kTokensPerBlockPhi4)
                 : std::make_tuple(image.height, image.width);
             int64_t const hBlocks = h / mConfig.blockImageSizeH;
             int64_t const wBlocks = w / mConfig.blockImageSizeW;
@@ -357,9 +340,8 @@ void Phi4MMViTRunner::imagePreprocess(rt::LLMGenerationRequest const& request, s
         {
             // Thumbnail (global) crop: a fixed one-block resize of the original image, independent of
             // image.doResize.
-            kernel::copyImageToDeviceAndResize(image.data(), 1, image.height, image.width, image.channels,
-                mRawImageDevice, mResizeTmpDevice, mImageDevice, mConfig.blockImageSizeH, mConfig.blockImageSizeW,
-                stream);
+            rt::imageUtils::resizeAndNormalizeToRgb(image, 0, 1, mImageMean, mImageStd, mNormalizedImageDevice,
+                mConfig.blockImageSizeH, mConfig.blockImageSizeW, stream);
             formatPatch(image.resizedMeta(mConfig.blockImageSizeH, mConfig.blockImageSizeW), imageTokenLengths,
                 numImage, totalNumBlocks, true, stream);
 
@@ -367,12 +349,11 @@ void Phi4MMViTRunner::imagePreprocess(rt::LLMGenerationRequest const& request, s
             {
                 auto [resizedHeight, resizedWidth] = imageUtils::computeBestBlockGridForResize(image.height,
                     image.width, mConfig.minImageTokensPerImage, mConfig.maxImageTokensPerImage,
-                    mConfig.blockImageSizeH, mConfig.blockImageSizeW);
+                    mConfig.blockImageSizeH, mConfig.blockImageSizeW, kernel::kTokensPerBlockPhi4);
                 blockGridHWPerBatch.push_back(
                     {resizedHeight / mConfig.blockImageSizeH, resizedWidth / mConfig.blockImageSizeW});
-                kernel::copyImageToDeviceAndResize(image.data(), image.frames, image.height, image.width,
-                    image.channels, mRawImageDevice, mResizeTmpDevice, mImageDevice, resizedHeight, resizedWidth,
-                    stream);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, image.frames, mImageMean, mImageStd,
+                    mNormalizedImageDevice, resizedHeight, resizedWidth, stream);
                 formatPatch(image.resizedMeta(resizedHeight, resizedWidth), imageTokenLengths, numImage, totalNumBlocks,
                     false, stream);
             }
@@ -381,8 +362,8 @@ void Phi4MMViTRunner::imagePreprocess(rt::LLMGenerationRequest const& request, s
                 LOG_DEBUG("Skipping resize for pre-resized image %ldx%ld", image.height, image.width);
                 blockGridHWPerBatch.push_back(
                     {image.height / mConfig.blockImageSizeH, image.width / mConfig.blockImageSizeW});
-                kernel::copyImageToDeviceAndResize(image.data(), image.frames, image.height, image.width,
-                    image.channels, mRawImageDevice, mResizeTmpDevice, mImageDevice, image.height, image.width, stream);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, image.frames, mImageMean, mImageStd,
+                    mNormalizedImageDevice, image.height, image.width, stream);
                 formatPatch(image, imageTokenLengths, numImage, totalNumBlocks, false, stream);
             }
         }
@@ -508,8 +489,8 @@ bool Phi4MMViTRunner::preprocess(rt::LLMGenerationRequest const& request,
         {
             LOG_ERROR("Preprocess failed: %s", e.what());
         }
-        // Drain async H2D copies that may still read the request's image buffers, so the caller can
-        // safely release them after the failure -- including when the error propagates.
+        // Preprocessing reads the request's image buffers in place, so drain the stream before the
+        // caller may release them after the failure -- including when the error propagates.
         cudaStreamSynchronize(stream);
         if (actionable)
         {
@@ -534,7 +515,7 @@ bool Phi4MMViTRunner::infer(cudaStream_t stream)
 
         bool setEngineIOStatus{true};
         setEngineIOStatus
-            &= mVisualContext->setInputShape(binding_names::kVisualInput, mVitInput.getShape().getTRTDims());
+            &= mVisualContext->setInputShape(binding_names::kVisualInput, toTrtDims(mVitInput.getShape()));
 
         if (!setEngineIOStatus)
         {
