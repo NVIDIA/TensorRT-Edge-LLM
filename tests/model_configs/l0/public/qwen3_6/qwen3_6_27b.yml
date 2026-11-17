@@ -1,0 +1,39 @@
+schema_version: 1
+model_id: Qwen/Qwen3.6-27B
+inputs: [text]
+outputs: [text]
+cases:
+  # Weight-only NVFP4 through the dense Marlin GEMM (Nvfp4A16GemmPlugin), the
+  # only CI case on that path. The recipe is mixed: 13 NVFP4 linears run as A16,
+  # while the 13 FP8 linears and the FP8 KV cache keep their activation
+  # quantization.
+  - name: w4a16-four-layer-parity
+    model_name: Qwen3.6-27B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: /scratch.trt_llm_data/llm-models/Qwen3.6-27B-NVFP4
+    requirements:
+      min_sm: 100
+      # Same golden peak as Qwen3.8-27B-NVFP4: eager NVFP4 dequantization of the
+      # lm_head runs out of memory on a 32 GiB card.
+      min_gpu_memory_gb: 36
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      # Measured 0.99934 on RTX 5090 in four separate builds, worst tensor always
+      # r2.b2.layer_3.value (FP8 KV cache); logits 0.99998. A dense model has no
+      # expert routing, so the value reproduces to the digit. 0.99 still passes
+      # the W4A4 arm (0.99875), so it does not detect a fallback to activation
+      # quantization; it does catch a broken Marlin epilogue, which drops the
+      # global scale and turns every tensor into NaN.
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 4
+        cosine_threshold: 0.99
+        minimum_compute_capability: 100
+        arguments:
+          - --direct-builder
+          - --no-quantize-activations

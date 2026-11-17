@@ -1,0 +1,130 @@
+schema_version: 1
+model_id: Qwen/Qwen3-4B-Instruct-2507
+inputs: [text]
+outputs: [text]
+cases:
+  - name: int4-dflash-tree-direct
+    mode: direct_builder
+    platform: l0_e2e_a30
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3-4B-Instruct-2507-INT4-AWQ
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 7
+    spec_decode_config: dflash
+    draft_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3-4B-DFlash-b16-INT4-AWQ
+    draft_model_name: zlab
+    tree_speculative_decoding: true
+    engine:
+      max_kv_cache_capacity: 2048
+      max_input_len: 1024
+      max_batch_size: 1
+      max_spec_verify_tokens: 16
+      max_spec_draft_tokens: 16
+      eagle_draft_top_k: 4
+    inference:
+      - name: basic
+        scenario: generate
+        input_file: tests/test_cases/llm_basic.json
+        warmup: 1
+        checks:
+          accuracy:
+            required: [rouge1, rouge_l]
+            max_regression: 0.30
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - spec_decode_acceptance_rate
+              - spec_decode_average_accept_length
+              - spec_decode_tokens_per_second
+            max_regression: 0.30
+
+  - name: int4-dflash-tree-jump-direct
+    mode: direct_builder
+    platform: l0_e2e_a30
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3-4B-Instruct-2507-INT4-AWQ
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 7
+    spec_decode_config: dflash
+    draft_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3-4B-DFlash-b16-INT4-AWQ
+    draft_model_name: zlab
+    tree_speculative_decoding: true
+    engine:
+      max_kv_cache_capacity: 2048
+      max_input_len: 1024
+      max_batch_size: 1
+      # The runtime verifies 16 tokens; the 16 rows above are jump-forward headroom.
+      max_spec_verify_tokens: 32
+      spec_verify_tokens: 16
+      max_spec_draft_tokens: 16
+      eagle_draft_top_k: 4
+    inference:
+      - name: guided-decoding-jump-forward
+        scenario: generate
+        input_file: tests/test_cases/llm_guided_decoding_jump_forward.json
+
+  - name: int4-dspark-tree-direct
+    mode: direct_builder
+    platform: l0_e2e_a30
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3-4B-Instruct-2507-INT4-AWQ
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 9
+    spec_decode_config: dspark
+    draft_id_or_dir: ${LLM_MODELS_DIR}/dspark/dspark_qwen3_4b_block7
+    draft_model_name: block7
+    tree_speculative_decoding: true
+    engine:
+      max_kv_cache_capacity: 2048
+      max_input_len: 1024
+      max_batch_size: 1
+      max_spec_verify_tokens: 8
+      max_spec_draft_tokens: 7
+      eagle_draft_top_k: 2
+    inference:
+      - name: basic
+        scenario: generate
+        input_file: tests/test_cases/llm_basic.json
+        checks:
+          accuracy:
+            required: [rouge1, rouge_l]
+            max_regression: 0.30
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - spec_decode_acceptance_rate
+              - spec_decode_average_accept_length
+              - spec_decode_tokens_per_second
+            max_regression: 0.30
+
+  - name: nvfp4-dspark-onnx
+    mode: onnx
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3-4B-Instruct-2507-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 9
+    spec_decode_config: dspark
+    draft_id_or_dir: ${LLM_MODELS_DIR}/dspark/dspark_qwen3_4b_block7
+    draft_model_name: block7
+    engine:
+      max_kv_cache_capacity: 2048
+      max_input_len: 1024
+      max_batch_size: 1
+      max_spec_verify_tokens: 8
+      max_spec_draft_tokens: 7
+    inference:
+      - name: basic
+        scenario: generate
+        input_file: tests/test_cases/llm_basic_sampled.json
+        checks:
+          accuracy:
+            required: [rouge1, rouge_l]
+            max_regression: 0.30
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - spec_decode_acceptance_rate
+              - spec_decode_average_accept_length
+              - spec_decode_tokens_per_second
+            max_regression: 0.30

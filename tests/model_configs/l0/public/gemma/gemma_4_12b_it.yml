@@ -1,0 +1,29 @@
+schema_version: 1
+model_id: google/gemma-4-12B-it
+inputs: [text]
+outputs: [text]
+cases:
+  # The dense gemma4_unified member of the family, distinct from the gemma4 MoE
+  # covered by gemma-4-26B-A4B. Its leading layers are sliding-window attention
+  # and run through the CuTe DSL FMHA-v2 vision-block kernel, which no other
+  # few-layer case reaches.
+  - name: four-layer-parity
+    mode: direct_builder
+    platform: l0_e2e_rtx5090
+    quantized_model_id_or_dir: /scratch.trt_llm_data/llm-models/gemma/gemma-4-12B-it
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 7
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 4
+        cosine_threshold: 0.99
+        minimum_compute_capability: 100
+        arguments:
+          - --direct-builder

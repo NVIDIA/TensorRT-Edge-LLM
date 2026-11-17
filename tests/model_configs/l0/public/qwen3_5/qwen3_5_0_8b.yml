@@ -1,0 +1,163 @@
+schema_version: 1
+model_id: Qwen/Qwen3.5-0.8B
+inputs: [text, image, video]
+outputs: [text]
+cases:
+  - name: int4-trt-rtx-onnx
+    mode: onnx
+    platform: l0_e2e_a30_trtrtx
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3.5-0.8B-INT4-AWQ
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 4
+    inputs: [text]
+    export:
+      int4_gemm_plugin_version: 1
+    engine:
+      max_kv_cache_capacity: 4096
+      max_input_len: 2048
+      max_batch_size: 4
+    inference:
+      - name: basic
+        scenario: generate
+        input_file: tests/test_cases/llm_basic.json
+        checks:
+          accuracy:
+            required: [rouge1, rouge_l]
+            max_regression: 0.30
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - generation_tokens_per_second
+            max_regression: 0.30
+
+  - name: fp8-mtp-onnx
+    model_name: Qwen3.5-0.8B-FP8
+    mode: onnx
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3.5-0.8B-FP8
+    requirements:
+      min_sm: 90
+      min_gpu_memory_gb: 5
+    inputs: [text]
+    spec_decode_config: mtp
+    draft_id_or_dir: self
+    engine:
+      max_kv_cache_capacity: 2048
+      max_input_len: 1024
+      max_batch_size: 1
+    inference:
+      - name: basic
+        scenario: generate
+        input_file: tests/test_cases/llm_basic.json
+        checks:
+          accuracy:
+            required: [rouge1, rouge_l]
+            max_regression: 0.30
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - spec_decode_acceptance_rate
+              - spec_decode_average_accept_length
+              - spec_decode_tokens_per_second
+            max_regression: 0.30
+      - name: runtime-bench-fixed-round
+        scenario: runtime_bench
+        bench_mode: fixed_round
+        input_len: 32
+      - name: logit-bias
+        scenario: generate
+        input_file: tests/test_cases/llm_logit_bias.json
+        warmup: 1
+        checks:
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - spec_decode_acceptance_rate
+              - spec_decode_average_accept_length
+              - spec_decode_tokens_per_second
+            max_regression: 0.30
+      - name: guided-decoding-jump-forward
+        scenario: generate
+        input_file: tests/test_cases/llm_guided_decoding_jump_forward.json
+
+  # Hybrid GDN counterpart of the Qwen3-0.6B fp16-ifb-onnx case: compact steps
+  # run the packed-varlen GDN prefill and conv1d kernels, which SM100 registers.
+  - name: fp16-ifb-onnx
+    mode: onnx
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: Qwen/Qwen3.5-0.8B
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 5
+    inputs: [text]
+    engine:
+      max_kv_cache_capacity: 4096
+      max_input_len: 1024
+      max_batch_size: 4
+    inference:
+      - name: compact-engine-tests
+        scenario: compact_engine_tests
+      - name: ifb-mixed
+        scenario: ifb_trace
+      - name: ifb-priority
+        scenario: ifb_trace
+        test_case: ifb_priority
+      - name: ifb-context-cache
+        scenario: ifb_trace
+        test_case: ifb_context_cache
+      - name: guided-decoding-jump-forward
+        scenario: generate
+        input_file: tests/test_cases/llm_guided_decoding_jump_forward.json
+
+  - name: fp8-kv-image-server
+    model_name: Qwen3.5-0.8B-FP8-FP8-KV
+    mode: server
+    platform: l0_e2e_drive_thor
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3.5-0.8B-FP8-FP8-KV
+    requirements:
+      min_sm: 90
+      min_gpu_memory_gb: 5
+    engine:
+      max_kv_cache_capacity: 2048
+      max_input_len: 1024
+      max_batch_size: 1
+      context_reuse: true
+      min_image_tokens: 128
+      max_image_tokens: 1024
+      max_image_tokens_per_image: 512
+    inference:
+      - name: image
+        scenario: openai
+        input_file: tests/test_cases/vlm_basic.json
+      - name: context-reuse
+        scenario: openai
+        input_file: tests/test_cases/llm_context_reuse.json
+
+  - name: nemo-evaluator
+    mode: server
+    platform: l0_nemo_eval_a30
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/Qwen3.5-0.8B
+    inputs: [text]
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 5
+    engine:
+      max_kv_cache_capacity: 8192
+      max_input_len: 2048
+      max_batch_size: 4
+    inference:
+      - name: mmlu
+        scenario: nemo_evaluator
+        evaluator:
+          eval_type: mmlu
+          params:
+            limit_samples: 8
+            parallelism: 1
+            max_new_tokens: 2048
+            request_timeout: 300
+            temperature: 0.0
+            top_p: 1.0
+        score:
+          key: score
+          min: 0.20

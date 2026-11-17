@@ -1,0 +1,49 @@
+schema_version: 1
+model_id: Qwen/Qwen3-0.6B
+inputs: [text]
+outputs: [text]
+cases:
+  # The real-engine compact (phase-8) session tests skip in the C++ unit jobs,
+  # which have no engine; this case runs them on its engine. ifb_trace forces
+  # ifb_scheduling_mode=mixed, so an older GPU fails at engine start instead of
+  # falling back to prefillFirst.
+  - name: fp16-ifb-onnx
+    mode: onnx
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: Qwen/Qwen3-0.6B
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 5
+    engine:
+      max_kv_cache_capacity: 4096
+      max_input_len: 1024
+      max_batch_size: 4
+    inference:
+      - name: compact-engine-tests
+        scenario: compact_engine_tests
+      - name: ifb-mixed
+        scenario: ifb_trace
+      - name: ifb-priority
+        scenario: ifb_trace
+        test_case: ifb_priority
+      - name: ifb-context-cache
+        scenario: ifb_trace
+        test_case: ifb_context_cache
+
+  # The HTTP server under in-flight batching with the priority policy, pause
+  # preemption and a reserved slot, end to end.
+  - name: fp16-ifb-server
+    mode: server
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: Qwen/Qwen3-0.6B
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 5
+    engine:
+      max_kv_cache_capacity: 4096
+      max_input_len: 1024
+      max_batch_size: 4
+      in_flight_batching: true
+    inference:
+      - name: ifb-server
+        scenario: ifb_server

@@ -1,0 +1,37 @@
+schema_version: 1
+model_id: Qwen/Qwen3.5-4B
+inputs: [text, image, video]
+outputs: [text]
+cases:
+  - name: nvfp4-dflash-onnx
+    mode: onnx
+    platform: l0_e2e_spark
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3.5-4B-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 10
+    inputs: [text]
+    spec_decode_config: dflash
+    draft_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3.5-4B-DFlash-NVFP4
+    draft_model_name: b16
+    engine:
+      max_kv_cache_capacity: 2048
+      max_input_len: 1024
+      max_batch_size: 1
+      max_spec_verify_tokens: 16
+      max_spec_draft_tokens: 16
+    inference:
+      - name: basic
+        scenario: generate
+        input_file: tests/test_cases/llm_basic.json
+        checks:
+          accuracy:
+            required: [rouge1, rouge_l]
+            max_regression: 0.30
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - spec_decode_acceptance_rate
+              - spec_decode_average_accept_length
+              - spec_decode_tokens_per_second
+            max_regression: 0.30

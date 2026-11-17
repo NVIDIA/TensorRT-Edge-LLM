@@ -1,0 +1,41 @@
+schema_version: 1
+model_id: Qwen/Qwen3.8-27B
+inputs: [text, image]
+outputs: [text]
+cases:
+  # Dense qwen3_5, in contrast to the MoE members of that family. The checkpoint
+  # name says NVFP4, but the recipe is mixed: the golden patches 13 NVFP4 and 13
+  # FP8 linears. The FP8 half is on a much finer grid than NVFP4's E2M1, which is
+  # why this lands far above the other quantized cases.
+  - name: four-layer-parity
+    model_name: Qwen3.8-27B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: /scratch.edge_llm_cache/checkpoints/huggingface/RadixArk/Qwen3.8-27B-NVFP4
+    inputs: [text]
+    requirements:
+      min_sm: 100
+      # 36, not the 9 the reduced-checkpoint rule gives. That rule counts resident
+      # checkpoint bytes, and the golden's peak is set by something else: it
+      # dequantizes NVFP4 weights eagerly, and _nvfp4_dequantize_eager
+      # materializes a float per element, so a wide lm_head costs several GiB of
+      # temporaries. Measured by running out of memory on a 32 GiB card with
+      # 29.8 GiB resident while asking for another 4.7 GiB.
+      min_gpu_memory_gb: 36
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      # The gate is the 0.96 the other quantized cases use, not the measured value
+      # (0.99892; the worst tensor is a KV cache, not logits -- a dense model has no
+      # expert routing to disagree about). An NVFP4 threshold is set by headroom
+      # across architectures, not by what one runner produced.
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 4
+        cosine_threshold: 0.96
+        minimum_compute_capability: 100
+        arguments:
+          - --direct-builder

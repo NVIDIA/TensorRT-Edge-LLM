@@ -26,7 +26,7 @@ Take the benchmark, sample budget, and baseline from the user; then run Phases 1
 - `docs/source/user_guide/examples/integration/nemo-evaluator.md`
 - `scripts/run_nemo_eval.py` (`--help` and the parser at its end)
 - `requirements-nemo-evaluator.txt` (pinned evaluator packages)
-- `tests/model_configs/l0/qwen3_5/qwen3_5_0_8b.yml`, case `nemo-evaluator`: the
+- `tests/model_configs/l0/public/qwen3_5/qwen3_5_0_8b.yml`, case `nemo-evaluator`: the
   CI-verified recipe and its `score.min` gate
 
 ## Inputs

@@ -395,6 +395,10 @@ def pytest_addoption(parser):
                      default=False,
                      help="Use experimental internal TRT/Myelin weightless "
                      "engines in checkpoint-direct pipeline validation")
+    parser.addoption("--public",
+                     action="store_true",
+                     default=False,
+                     help="Select only public model configurations")
     parser.addoption("--priority",
                      action="store",
                      default=None,
@@ -544,7 +548,7 @@ def _filter_direct_model_quantization_items(items):
     items[:] = [item for item in items if id(item) in keep_ids]
 
 
-def _get_test_list_file(priority):
+def _get_test_list_file(priority, public_only=False):
     """Get test configuration with caching"""
     if priority is None:
         return None
@@ -557,7 +561,7 @@ def _get_test_list_file(priority):
                 "CI_MERGE_REQUEST_DESCRIPTION is required for a custom L0 run")
         custom_description = _complete_merge_request_description(
             custom_description)
-    cache_key = (priority, custom_description)
+    cache_key = (priority, custom_description, public_only)
     if cache_key not in _test_config_cache:
         if explicit_list:
             config_file = priority
@@ -570,7 +574,7 @@ def _get_test_list_file(priority):
         except FileNotFoundError:
             config = {}
         model_tests = ([] if explicit_list else load_model_tests(
-            priority, custom_description))
+            priority, custom_description, public_only))
         tests = config.setdefault('tests', [])
         project_setup = 'tests/defs/test_common.py::test_build_project'
         if (any('test_checkpoint_export.py' not in test.node
@@ -593,7 +597,8 @@ def _configured_test_paths(config):
         return None
 
     priority = config.getoption("--priority", "l0")
-    test_list_file = _get_test_list_file(priority)
+    test_list_file = _get_test_list_file(priority,
+                                         config.getoption("--public"))
     if not test_list_file:
         return None
 
@@ -636,7 +641,8 @@ def pytest_generate_tests(metafunc):
         return
 
     priority = metafunc.config.getoption("--priority", "l0")
-    test_list_file = _get_test_list_file(priority)
+    test_list_file = _get_test_list_file(priority,
+                                         metafunc.config.getoption("--public"))
 
     if not test_list_file:
         return
@@ -697,7 +703,8 @@ def pytest_collection_modifyitems(config, items):
         return
 
     priority = config.getoption("--priority", "l0")
-    test_list_file = _get_test_list_file(priority)
+    test_list_file = _get_test_list_file(priority,
+                                         config.getoption("--public"))
 
     if not test_list_file:
         return

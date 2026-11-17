@@ -1,0 +1,129 @@
+schema_version: 1
+model_id: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+inputs: [text]
+outputs: [text]
+cases:
+  # NVFP4 MoE that is structurally different from the Qwen cases: ungated ReLU^2
+  # experts (activation_type=4) with sigmoid group-top-k routing
+  # (routed_scaling_factor=2.5, top_k=6) behind a latent projection.
+  # num_layers 6 is the MINIMUM that works: experts sit at blocks 1/3 but the
+  # first attention layer is at block 5, and fewer layers leaves the HF cache
+  # with no attention layer ("get_seq_length can only be called on Attention
+  # layers").
+  #
+  # Keep this on an SM100 job: the same NVFP4 relu2 MoE computes garbage on
+  # SM120 from the first MoE layer onwards, which is a product defect tracked
+  # separately, not something this case should absorb.
+  - name: nvfp4-six-layer-parity
+    model_name: NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 8
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      # 0.95 rather than 0.96: on the ragged fixture this reads 0.96217, and it reads
+      # it twice to the digit across separate builds. The worst tensor is a Mamba
+      # conv_state, not logits, so this is a deterministic numerical floor rather than
+      # a routing flip -- but 0.002 of headroom is less than a TensorRT tactic change
+      # moves the other cases here, so the gate would fail on a rebuild rather than on
+      # a defect.
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 6
+        cosine_threshold: 0.95
+        minimum_compute_capability: 100
+        timeout_seconds: 3600
+
+  # Same NVFP4 checkpoint and golden, routed experts through TensorRT's native
+  # TRT_MoE op instead of the plugin (IMoELayer non-gated form, kRELU2, W4A8:
+  # FP4 weights + static FP8 activations) with the sigmoid group-top-k routing
+  # computed in the graph; the shared expert stays a pair of dense NVFP4
+  # linears. The two arms share one PyTorch reference, so a regression in
+  # either shows up against the same number.
+  - name: nvfp4-trt-native-six-layer-parity
+    model_name: NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 8
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 6
+        cosine_threshold: 0.95
+        minimum_compute_capability: 100
+        timeout_seconds: 3600
+        # Non-gated experts and kRELU2 need TensorRT 11.5 or newer; the case is
+        # skipped until TRT_VERSION reaches it.
+        minimum_trt_version: "11.5"
+        arguments: [--trt-native-moe]
+
+  # The W4A4 form of the native arm (TRT_MoE quantization mode 2) on the same
+  # checkpoint and golden.
+  - name: nvfp4-trt-native-w4a4-six-layer-parity
+    model_name: NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 8
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 6
+        cosine_threshold: 0.95
+        minimum_compute_capability: 100
+        timeout_seconds: 3600
+        # TRT_MoE quantization mode 2 needs TensorRT 11.6 or newer
+        # (IMoELayer::setQuantizationDynamicDblQ); the case is skipped until
+        # TRT_VERSION reaches it.
+        minimum_trt_version: "11.6"
+        arguments: [--trt-native-moe, --trt-native-moe-w4a4]
+
+  # The unquantized checkpoint through Fp16MoePlugin: the FP16 reference arm for
+  # this MoE (ReLU^2 experts, sigmoid group-top-k routing). The worst tensor on
+  # this model is a Mamba conv / recurrent state, not the MoE output, and the
+  # expert precision does not move it.
+  - name: bf16-six-layer-parity
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 12
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      # 0.95 for the same reason as the NVFP4 arm: 0.96815 on the ragged fixture,
+      # reproducing to the digit, worst tensor the same Mamba conv_state. That the
+      # unquantized arm lands within 0.0006 of the quantized one is the evidence that
+      # expert precision is not what sets this number.
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 6
+        cosine_threshold: 0.95
+        minimum_compute_capability: 100
+        timeout_seconds: 3600

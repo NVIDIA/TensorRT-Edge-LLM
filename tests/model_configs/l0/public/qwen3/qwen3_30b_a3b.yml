@@ -1,0 +1,114 @@
+schema_version: 1
+model_id: Qwen/Qwen3-30B-A3B
+inputs: [text]
+outputs: [text]
+cases:
+  # NVFP4 MoE through the Edge-LLM MoE plugin (Nvfp4MoePlugin, W4A4 CuTeDSL).
+  # Gate 0.96 follows the NVFP4 few-layer precedent (discrete routing loosens it).
+  - name: nvfp4-two-layer-parity
+    model_name: Qwen3-30B-A3B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/Qwen3/nvidia-Qwen3-30B-A3B-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 6
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 2
+        cosine_threshold: 0.96
+        minimum_compute_capability: 100
+
+  # Same checkpoint and golden, exported through TensorRT's native TRT_MoE op
+  # (IMoELayer -> Myelin moe_op, W4A8: FP4 weights + FP8 activations) instead of
+  # the plugin. The two cases share one PyTorch reference, so a regression in
+  # either arm shows up against the same number.
+  - name: nvfp4-trt-native-two-layer-parity
+    model_name: Qwen3-30B-A3B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/Qwen3/nvidia-Qwen3-30B-A3B-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 6
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 2
+        cosine_threshold: 0.96
+        minimum_compute_capability: 100
+        # TRT_MoE has an ONNX importer only in TensorRT >= 11.3. No CI lane installs
+        # that yet: l0_e2e_b100 runs TRT_VERSION (.gitlab-ci.yml, 10.16.0.72) and the
+        # TRT11 lanes run TRT11_VERSION (11.0.0.114) on sm_80/sm_86. The case is
+        # skipped with that reason today and executes once TRT_VERSION reaches 11.3.
+        # The direct-builder frontend of the same arm is covered GPU-free by
+        # tests/python-unittests/test_direct_builder_trt_native_moe.py and by hand
+        # with scripts/few-layer-validation.sh --direct-builder --trt-native-moe
+        # (docs/source/developer_guide/testing/few-layer-validation.md).
+        minimum_trt_version: "11.3"
+        arguments: [--trt-native-moe]
+
+  # The W4A4 form of the same arm (TRT_MoE quantization mode 2: FP4 weights
+  # with NVFP4 dynamically quantized activations, the plugins' recipe). Same
+  # checkpoint and golden as the two cases above.
+  - name: nvfp4-trt-native-w4a4-two-layer-parity
+    model_name: Qwen3-30B-A3B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/Qwen3/nvidia-Qwen3-30B-A3B-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 6
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 2
+        cosine_threshold: 0.96
+        minimum_compute_capability: 100
+        # TRT_MoE quantization mode 2 needs TensorRT 11.6 or newer
+        # (IMoELayer::setQuantizationDynamicDblQ); the case is skipped until
+        # TRT_VERSION reaches it.
+        minimum_trt_version: "11.6"
+        arguments: [--trt-native-moe, --trt-native-moe-w4a4]
+
+  # INT4 GPTQ, the recipe the NVFP4 cases above do not reach, and the only
+  # frontend that can build it: the ONNX export succeeds but the TRT engine
+  # build fails in QkvConcatPlugin::getOutputShapes on the INT4 GPTQ attention
+  # path.
+  - name: gptq-int4-four-layer-parity
+    model_name: Qwen3-30B-A3B-GPTQ-Int4
+    mode: direct_builder
+    platform: l0_e2e_rtx5090
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/Qwen3/Qwen3-30B-A3B-GPTQ-Int4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 6
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 4
+        cosine_threshold: 0.98
+        minimum_compute_capability: 100
+        arguments:
+          - --direct-builder

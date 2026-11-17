@@ -1,0 +1,30 @@
+schema_version: 1
+model_id: google/gemma-4-26B-A4B-it
+inputs: [text]
+outputs: [text]
+cases:
+  - name: four-layer-parity
+    model_name: gemma-4-26B-A4B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/gemma/nvidia-Gemma-4-26B-A4B-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 21
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      # 0.90, below the 0.95-0.98 band the other MoE cases use, and measured: seven
+      # runs on this fixture read 0.92576-0.93964, so the gate sits one spread below
+      # the lowest sample. The worst tensor is always the logits of a decode round;
+      # every KV entry reads >= 0.994. At 0.90 a dropped scale factor, a wrong kernel
+      # or a structurally broken layer still land far below, and the norm-ratio gate
+      # (scale-tol 0.25) covers the scale invariance cosine throws away.
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 4
+        cosine_threshold: 0.90
+        minimum_compute_capability: 100

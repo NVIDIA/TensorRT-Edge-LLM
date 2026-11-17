@@ -1,0 +1,21 @@
+schema_version: 1
+model_id: Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+inputs: [text]
+outputs: [audio]
+cases:
+  - name: fp16-text-to-speech-direct
+    mode: direct_builder
+    platform: l0_e2e_a30
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/Qwen3/Qwen3-TTS-12Hz-0.6B-CustomVoice
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 6
+    engine:
+      max_kv_cache_capacity: 4096
+      max_input_len: 4096
+      max_batch_size: 1
+    inference:
+      - name: speech
+        scenario: generate
+        input_file: tests/test_cases/tts_basic.json
+        multistage_parity: true

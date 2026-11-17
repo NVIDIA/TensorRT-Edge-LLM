@@ -1,0 +1,38 @@
+schema_version: 1
+model_id: Qwen/Qwen3-8B
+inputs: [text]
+outputs: [text]
+cases:
+  - name: nvfp4-jetspec-tree-direct
+    mode: direct_builder
+    platform: l0_e2e_rtx5090
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/Qwen3-8B-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 11
+    spec_decode_config: jetspec
+    draft_id_or_dir: ${EDGELLM_DATA_DIR}/checkpoints/huggingface/JetSpec/jetspec-qwen3-8b
+    draft_model_name: hf
+    tree_speculative_decoding: true
+    engine:
+      max_kv_cache_capacity: 2048
+      max_input_len: 1024
+      max_batch_size: 1
+      max_spec_verify_tokens: 128
+      max_spec_draft_tokens: 128
+      eagle_draft_top_k: 7
+    inference:
+      - name: basic
+        scenario: generate
+        input_file: tests/test_cases/llm_basic.json
+        checks:
+          accuracy:
+            required: [rouge1, rouge_l]
+            max_regression: 0.30
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - spec_decode_acceptance_rate
+              - spec_decode_average_accept_length
+              - spec_decode_tokens_per_second
+            max_regression: 0.30

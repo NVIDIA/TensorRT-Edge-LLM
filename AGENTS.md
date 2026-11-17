@@ -18,6 +18,7 @@ for Google's developer documentation guidance and repository checks.
 - Read and follow `CODING_GUIDELINES.md` for ALL code changes (C++ and Python)
 - NVIDIA copyright header on ALL new files (update year on modified files) — see `LICENSE_HEADER` for the SPDX template (pre-commit `insert-license` hook auto-injects it for `.py`, `.cpp`, `.cu`, `.cuh`, `.h`, `.hpp` files)
 - `git commit -s` (DCO sign-off required). Never attribute AI tools in sign-off line. Always rely on `git` to do the sign off instead of directly adding sign off in commit message.
+- Cryptographically sign every commit intended for the TensorRT Edge-LLM GitHub repository, including forks and amended commits, with `git commit -S -s`. Use a signing key registered with the author's GitHub account. The DCO sign-off (`-s`) does not replace the cryptographic signature (`-S`). Verify the signature with `git verify-commit HEAD` before pushing.
 - Do not add co-authors to the git commit message unless explicitly instructed to do so by the user.
 - `pre-commit` hooks run on commit — if files are modified by hooks, re-stage and commit again
 - PR title format: Conventional Commits style (e.g., `feat: Add Qwen3 support`, `fix: Prevent a runtime memory leak`)

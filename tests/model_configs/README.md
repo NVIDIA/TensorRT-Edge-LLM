@@ -1,7 +1,7 @@
 # Model-owned L0 tests
 
 Use this directory to add or change a model deployment tested by L0. Each base
-model has one file at `l0/<model-family>/<base-model>.yml`; each named case
+model has one file at `l0/public/<model-family>/<base-model>.yml`; each named case
 selects a checkpoint, target job, engine settings, and inference scenarios.
 
 ## Add or modify a case
@@ -200,3 +200,20 @@ The Pydantic models define allowed fields, types, and combinations:
 When adding a new field, update its owning model and check that the selected
 executor consumes it. The [loader](../defs/model_test_config.py) resolves paths
 and turns validated cases into executable tests.
+
+## Public and private model cases
+
+Keep public cases under `l0/public/` and internal cases under `l0/private/`.
+Both directories retain the model-family and one-file-per-model layout. A model
+may have a file in each directory with distinct case names. Native test runs
+load both directories. GitHub-origin jobs pass `--public`, which reads only
+public declarations, including their generated export, build, and inference
+phases. Private declarations are not parsed in that mode.
+
+```bash
+python3 -m pytest tests --priority=l0_e2e_a30 --public --collect-only -q
+```
+
+The flag filters checked-in model configurations. Explicit YAML lists,
+`--test-param`, and custom MR cases retain their existing selection behavior.
+A run that collects no tests retains pytest's no-tests failure.
