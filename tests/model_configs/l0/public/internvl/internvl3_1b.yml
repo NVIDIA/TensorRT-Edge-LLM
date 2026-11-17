@@ -1,0 +1,53 @@
+schema_version: 1
+model_id: OpenGVLab/InternVL3-1B
+inputs: [text, image]
+outputs: [text]
+cases:
+  - name: int4-image-onnx
+    model_name: InternVL3-1B-INT4-AWQ
+    mode: onnx
+    platform: l0_e2e_orin
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/InternVL3-1B-INT4-AWQ
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 5
+    engine:
+      max_kv_cache_capacity: 2048
+      max_input_len: 1024
+      max_batch_size: 1
+      min_image_tokens: 256
+      max_image_tokens: 1024
+      max_image_tokens_per_image: 512
+    inference:
+      - name: image
+        scenario: generate
+        input_file: tests/test_cases/vlm_basic.json
+        checks:
+          accuracy:
+            required: [rouge1, rouge_l]
+            max_regression: 0.30
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - generation_tokens_per_second
+              - multimodal_time_per_token_ms
+            max_regression: 0.30
+
+  - name: int4-image-ipc-onnx
+    model_name: InternVL3-1B-INT4-AWQ
+    mode: onnx
+    platform: l0_e2e_drive_thor
+    quantized_model_id_or_dir: /scratch.edge_llm_data/onnx_models/modelopt-0.45.0/quantization_checkpoint/public/InternVL3-1B-INT4-AWQ
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 5
+    engine:
+      max_kv_cache_capacity: 2048
+      max_input_len: 1024
+      max_batch_size: 1
+      min_image_tokens: 256
+      max_image_tokens: 1024
+      max_image_tokens_per_image: 512
+    inference:
+      - name: media-ipc
+        scenario: media_ipc_server

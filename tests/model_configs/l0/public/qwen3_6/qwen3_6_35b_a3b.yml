@@ -1,0 +1,80 @@
+schema_version: 1
+model_id: Qwen/Qwen3.6-35B-A3B
+inputs: [text]
+outputs: [text]
+cases:
+  # qwen3_5_moe with NVFP4 experts. The INT4-GPTQ recipe on this architecture is
+  # covered by Qwen3.5-35B-A3B; NVFP4 experts behave differently enough to be
+  # worth their own case, as the threshold below records.
+  - name: four-layer-parity
+    model_name: Qwen3.6-35B-A3B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_b100
+    quantized_model_id_or_dir: /scratch.trt_llm_data/llm-models/Qwen3.6-35B-A3B-NVFP4
+    requirements:
+      min_sm: 100
+      min_gpu_memory_gb: 9
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      # 0.90 sits below the 0.95-0.98 band the other MoE cases use, and is measured.
+      # Six repeats on a 128-round fixture landed in 0.926-0.948, always on the logits
+      # of a round whose hidden state falls on an expert-routing boundary, where the
+      # two sides legitimately select different experts. Cutting the fixture to six
+      # rounds did not help: it measured 0.93781, inside that same range. The
+      # disagreement is characteristic of the recipe, not a rare draw, so do not
+      # tighten this expecting the newer fixture to have removed it.
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 4
+        cosine_threshold: 0.90
+        minimum_compute_capability: 100
+        arguments:
+          - --direct-builder
+
+  - name: nvfp4-four-layer-parity
+    model_name: Qwen3.6-35B-A3B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_rtx5090
+    quantized_model_id_or_dir: nvidia/Qwen3.6-35B-A3B-NVFP4
+    requirements:
+      min_sm: 120
+      min_gpu_memory_gb: 8
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 1
+    inference:
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/llm_few_layer.json
+        num_layers: 4
+        cosine_threshold: 0.96
+        minimum_compute_capability: 120
+        timeout_seconds: 3600
+
+  - name: w4a16-four-layer-parity
+    model_name: Qwen3.6-35B-A3B-NVFP4
+    mode: direct_builder
+    platform: l0_e2e_rtx5090
+    quantized_model_id_or_dir: nvidia/Qwen3.6-35B-A3B-NVFP4
+    requirements:
+      min_sm: 120
+      min_gpu_memory_gb: 8
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 1
+    inference:
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/llm_few_layer.json
+        num_layers: 4
+        cosine_threshold: 0.96
+        minimum_compute_capability: 120
+        timeout_seconds: 3600
+        arguments:
+          - --no-quantize-activations

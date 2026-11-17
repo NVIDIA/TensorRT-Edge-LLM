@@ -17,7 +17,7 @@ Install `httpx`, `psutil`, `pytest`, and the
 requires a built runtime and the `[build,runtime]` extras. Run the commands below
 from the repository root.
 The example uses the smallest L0 model above 0.6B, `Qwen/Qwen3.5-0.8B`, covered
-by the L0 server case in `tests/model_configs/l0/qwen3_5/qwen3_5_0_8b.yml`.
+by the [L0 server case](../model_configs/l0/public/qwen3_5/qwen3_5_0_8b.yml).
 The checked-in [complete test setup](../test_cases/llm_server_stress.json)
 contains the server launch command, engine limits, request prompts, load profiles,
 timeouts, and pass/fail limits. With the runtime built and its Python environment

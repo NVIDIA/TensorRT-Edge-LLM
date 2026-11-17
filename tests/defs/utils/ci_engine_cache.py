@@ -489,6 +489,17 @@ def _cache_mode():
 
 def _namespace_policy(environment=None):
     environment = os.environ if environment is None else environment
+    if environment.get("GITHUB_PIPELINE") == "true":
+        namespace = environment.get("GITHUB_CACHE_NAMESPACE", "")
+        pull_request = environment.get("GITHUB_PR_NUMBER", "")
+        base_project = environment.get("CI_PROJECT_ID", "")
+        if (not re.fullmatch(r"[a-z0-9][a-z0-9-]*", namespace)
+                or not re.fullmatch(r"[1-9][0-9]*", pull_request)
+                or not re.fullmatch(r"[1-9][0-9]*", base_project)):
+            raise CacheError("invalid GitHub cache identity")
+        overlay = f"{namespace}-mr-{pull_request}"
+        trusted = f"project-{base_project}-main"
+        return [overlay, trusted], overlay
     project = environment.get("CI_PROJECT_ID", "local")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", project):
         raise CacheError("CI_PROJECT_ID is not a safe cache component")
@@ -539,11 +550,12 @@ def _cache_root() -> pathlib.Path:
 
 
 def _configured_limit():
+    overlay = bool(
+        os.environ.get("CI_MERGE_REQUEST_IID")
+        or os.environ.get("GITHUB_PIPELINE") == "true")
     name = ("EDGE_LLM_ENGINE_MR_CACHE_BYTES"
-            if os.environ.get("CI_MERGE_REQUEST_IID") else
-            "EDGE_LLM_ENGINE_TRUSTED_CACHE_BYTES")
-    default = 100 * 1024**3 if os.environ.get(
-        "CI_MERGE_REQUEST_IID") else 200 * 1024**3
+            if overlay else "EDGE_LLM_ENGINE_TRUSTED_CACHE_BYTES")
+    default = 100 * 1024**3 if overlay else 200 * 1024**3
     value = os.environ.get(name, str(default))
     if not value.isdecimal():
         raise CacheError("{} must be a nonnegative integer".format(name))
@@ -1085,9 +1097,8 @@ class EngineBundleCache:
             # MR publishers and cleanup run under different NFS identities.
             _allow_shared_read(temporary,
                                shared_writes=bool(
-                                   re.fullmatch(
-                                       r"project-[A-Za-z0-9._-]+-mr-[0-9]+",
-                                       self._write_namespace)))
+                                   re.fullmatch(r"[A-Za-z0-9._-]+-mr-[0-9]+",
+                                                self._write_namespace)))
             _replace_directory(temporary, entry)
             result = {
                 "namespace": self._write_namespace,

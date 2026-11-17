@@ -488,17 +488,24 @@ def _custom_document(description: str) -> Any:
     return yaml.safe_load(blocks[0])
 
 
-def load_model_tests(
-        priority: str,
-        custom_description: Optional[str] = None) -> list[ModelTest]:
-    """Return checked-in or MR-provided model cases for one existing L0 job."""
+def load_model_tests(priority: str,
+                     custom_description: Optional[str] = None,
+                     public_only: bool = False) -> list[ModelTest]:
+    """Return one L0 job's cases, optionally excluding private model files.
+
+    Public-only discovery does not read or validate private declarations.
+    Custom MR cases retain their existing selection behavior.
+    """
     tests: list[ModelTest] = []
     if custom_description is not None:
         tests.extend(
             _parse_model_document(_custom_document(custom_description),
                                   "MR Summary custom L0 block"))
-    if MODEL_CONFIG_ROOT.is_dir():
-        for path in sorted(MODEL_CONFIG_ROOT.rglob("*.yml")):
+    roots = [MODEL_CONFIG_ROOT / "public"]
+    if not public_only:
+        roots.append(MODEL_CONFIG_ROOT / "private")
+    for root in roots:
+        for path in sorted(root.rglob("*.yml")):
             with path.open(encoding="utf-8") as stream:
                 tests.extend(
                     _parse_model_document(yaml.safe_load(stream),

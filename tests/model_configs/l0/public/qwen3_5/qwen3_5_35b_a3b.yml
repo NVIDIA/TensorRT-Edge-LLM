@@ -1,0 +1,38 @@
+schema_version: 1
+model_id: Qwen/Qwen3.5-35B-A3B
+inputs: [text, image, video]
+outputs: [text]
+cases:
+  - name: int4-four-layer-parity
+    model_name: Qwen3.5-35B-A3B-GPTQ-Int4
+    mode: direct_builder
+    platform: l0_e2e_a30
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/Qwen3.5-35B-A3B-GPTQ-Int4
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 7
+    inputs: [text]
+    engine:
+      max_kv_cache_capacity: 256
+      max_input_len: 256
+      max_batch_size: 4
+    inference:
+      # 0.94, not the 0.96 this recipe uses elsewhere, and measured on the ragged
+      # fixture rather than carried over from the single-request one. Four runs gave
+      # 0.96702, 0.97691, 0.97715 and 0.99392, always on the logits of a decode round
+      # and never on a cache tensor: the signature of two sides picking different
+      # experts for a token sitting on a routing boundary, not of arithmetic drift.
+      # Four sequences draw from that boundary far more often than one did, which is
+      # why the same case read 0.99994 before the fixture changed.
+      #
+      # The gate sits a full spread below the lowest sample, the way the Qwen3.6 case
+      # is set. At 0.94 it still catches a dropped scale factor, a wrong kernel or a
+      # structurally broken layer -- all of which land far below 0.9 -- and no longer
+      # claims to catch a 2% drift.
+      - name: pytorch-parity
+        scenario: few_layer
+        input_file: tests/test_cases/ragged_batch.json
+        num_layers: 4
+        cosine_threshold: 0.94
+        minimum_compute_capability: 80
+        timeout_seconds: 3600

@@ -1,0 +1,65 @@
+schema_version: 1
+model_id: Qwen/Qwen3-ASR-0.6B
+inputs: [text, audio]
+outputs: [text]
+cases:
+  - name: fp16-audio-direct
+    mode: direct_builder
+    platform: l0_e2e_a30
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/Qwen3/Qwen3-ASR-0.6B
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 5
+    engine:
+      max_kv_cache_capacity: 4096
+      max_input_len: 1024
+      max_batch_size: 1
+      min_time_steps: 100
+      max_time_steps: 3000
+    inference:
+      - name: transcription
+        scenario: generate
+        input_file: tests/test_cases/asr_basic.json
+        warmup: 1
+        multistage_parity: true
+        checks:
+          accuracy:
+            required: [wer]
+            max_regression: 0.30
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - generation_tokens_per_second
+              - multimodal_time_per_token_ms
+            max_regression: 0.30
+
+  - name: fp16-audio-onnx
+    mode: onnx
+    platform: l0_e2e_drive_thor
+    quantized_model_id_or_dir: ${LLM_MODELS_DIR}/Qwen3/Qwen3-ASR-0.6B
+    requirements:
+      min_sm: 80
+      min_gpu_memory_gb: 5
+    engine:
+      max_kv_cache_capacity: 4096
+      max_input_len: 1024
+      max_batch_size: 1
+      min_time_steps: 100
+      max_time_steps: 3000
+    inference:
+      - name: transcription
+        scenario: generate
+        input_file: tests/test_cases/asr_basic.json
+        warmup: 1
+        checks:
+          accuracy:
+            required: [wer]
+            max_regression: 0.30
+          performance:
+            required:
+              - prefill_tokens_per_second
+              - generation_tokens_per_second
+              - multimodal_time_per_token_ms
+            max_regression: 0.30
+      - name: media-ipc
+        scenario: media_ipc_server
