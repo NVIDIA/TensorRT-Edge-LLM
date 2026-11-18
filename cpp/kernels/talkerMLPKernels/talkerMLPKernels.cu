@@ -339,8 +339,10 @@ void invokeTalkerMLP(rt::Tensor const& input, rt::Tensor const& fc1Weight, rt::T
         return;
     }
 #else
-    LOG_ERROR("CuTe DSL GEMM not compiled. Rebuild with -DENABLE_CUTE_DSL=gemm (or ALL).");
-    return;
+    ELLM_CHECK(false,
+        "invokeTalkerMLP requires CuTe DSL GEMM. Rebuild with -DENABLE_CUTE_DSL=gemm (or ALL); "
+        "without it the launcher returns without writing the output tensor and downstream "
+        "sampling consumes uninitialised GPU memory, producing wrong-but-not-crashing audio.");
 #endif
 }
 
@@ -383,8 +385,10 @@ void invokeLinearLayer(
         return;
     }
 #else
-    LOG_ERROR("CuTe DSL GEMM not compiled. Rebuild with -DENABLE_CUTE_DSL=gemm (or ALL).");
-    return;
+    ELLM_CHECK(false,
+        "invokeLinearLayer requires CuTe DSL GEMM. Rebuild with -DENABLE_CUTE_DSL=gemm (or ALL); "
+        "without it the launcher returns without writing the output tensor and downstream "
+        "consumers see uninitialised GPU memory.");
 #endif
 }
 
