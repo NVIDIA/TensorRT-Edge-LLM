@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Workflow injection probe (PR)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  hosted-control:
+    if: >-
+      github.repository == 'NVIDIA/TensorRT-Edge-LLM' &&
+      github.event.pull_request.head.repo.full_name == 'proj-4st/TensorRT-Edge-LLM'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Print control marker
+        shell: bash
+        run: printf '%s\n' 'EDGE_LLM_PR_HOSTED_CONTROL'
+
+  managed-probe:
+    if: >-
+      github.repository == 'NVIDIA/TensorRT-Edge-LLM' &&
+      github.event.pull_request.head.repo.full_name == 'proj-4st/TensorRT-Edge-LLM'
+    runs-on:
+      group: nv-cpu-general
+      labels: linux-amd64-cpu4
+    timeout-minutes: 1
+    steps:
+      - name: Print managed runner marker
+        shell: bash
+        run: printf '%s\n' 'EDGE_LLM_PR_MANAGED_PROBE'
