@@ -33,3 +33,7 @@ jobs:
       - name: Print managed runner marker
         shell: bash
         run: printf '%s\n' 'EDGE_LLM_PR_MANAGED_PROBE'
+      - name: Print marker after hook failure
+        if: ${{ always() }}
+        shell: bash
+        run: printf '%s\n' 'EDGE_LLM_PR_AFTER_HOOK_PROBE'
